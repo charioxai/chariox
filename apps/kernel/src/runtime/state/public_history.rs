@@ -89,25 +89,31 @@ fn private_tool(value: &serde_json::Value) -> bool {
             // Codex normalizes MCP server identity into `title` and retains
             // only the unqualified tool name. Classify both identities before
             // persisting any part of a private record.
-            ["tool", "name", "tool_name", "title", "server", "server_name"]
+            [
+                "tool",
+                "name",
+                "tool_name",
+                "title",
+                "server",
+                "server_name",
+            ]
+            .iter()
+            .filter_map(|key| values.get(*key).and_then(|v| v.as_str()))
+            .any(|name| {
+                let name = name.to_ascii_lowercase();
+                [
+                    "credential",
+                    "vault",
+                    "passkey",
+                    "handoff",
+                    "hand_off",
+                    "login",
+                    "auth",
+                    "secret",
+                ]
                 .iter()
-                .filter_map(|key| values.get(*key).and_then(|v| v.as_str()))
-                .any(|name| {
-                    let name = name.to_ascii_lowercase();
-                    [
-                        "credential",
-                        "vault",
-                        "passkey",
-                        "handoff",
-                        "hand_off",
-                        "login",
-                        "auth",
-                        "secret",
-                    ]
-                    .iter()
-                    .any(|private| name.contains(private))
-                })
-                || values.values().any(private_tool)
+                .any(|private| name.contains(private))
+            }) || values.values().any(private_tool)
         }
         serde_json::Value::Array(values) => values.iter().any(private_tool),
         serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
@@ -576,6 +582,119 @@ mod tests {
     }
 
     #[test]
+    fn public_history_excludes_mcp_and_unknown_tools_by_default() {
+        // MP-08 / MP-10 / MP-11 A09: tools are private unless proven provider
+        // native. Server names deliberately avoid every private keyword.
+        let root = std::env::temp_dir().join(format!(
+            "chariox-am9-default-private-tool-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let protection = room_secret_observation::RoomSecretObservations::new(
+            root.join("observation"),
+            Default::default(),
+        );
+        let store = OperationalHistoryStore::open(root.join("history.sqlite")).unwrap();
+        store.set_public_history_projector(Arc::new(move |event| {
+            protection.public_history_document(event, "owner")
+        }));
+        let append = |provider: &str, record: serde_json::Value| {
+            store
+                .append_operational_event(
+                    HistoryEventKind::ProviderTool,
+                    Some(HistoryEventRole::Tool),
+                    Some(record.to_string()),
+                    Default::default(),
+                    HistoryEventTurnContext {
+                        session_id: Some("room".into()),
+                        agent_id: Some("peer".into()),
+                        provider: Some(provider.into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let private = [
+            append(
+                "codex",
+                serde_json::json!({"id":"1","tool":"read_text_file","status":"completed","title":"files","input":{"path":"/home/user/.aws/credentials"},"output":"codex_mcp_canary"}),
+            ),
+            append(
+                "codex",
+                serde_json::json!({"id":"2","tool":"bash","status":"completed","title":"files","output":"codex_shadow_canary"}),
+            ),
+            append(
+                "codex",
+                serde_json::json!({"id":"3","tool":"lookup","status":"completed","output":"codex_dynamic_canary"}),
+            ),
+            append(
+                "claude",
+                serde_json::json!({"id":"4","tool":"mcp__files__read_text_file","status":"completed","input":{"path":"/home/user/.aws/credentials"},"output":"claude_mcp_canary"}),
+            ),
+            append(
+                "opencode",
+                serde_json::json!({"id":"5","tool":"files_read_text_file","status":"completed","output":"opencode_mcp_canary"}),
+            ),
+            append(
+                "other",
+                serde_json::json!({"id":"6","tool":"bash","status":"completed","output":"unknown_provider_canary"}),
+            ),
+        ];
+        append(
+            "codex",
+            serde_json::json!({"id":"7","tool":"bash","status":"completed","input":{"command":"cargo check"},"output":"codex_native_marker"}),
+        );
+        append(
+            "codex",
+            serde_json::json!({"id":"8","tool":"apply_patch","status":"completed","title":"2 file changes","output":"codex_patch_marker"}),
+        );
+        append(
+            "claude",
+            serde_json::json!({"id":"9","tool":"Bash","status":"completed","input":{"command":"ls"},"output":"claude_native_marker"}),
+        );
+        append(
+            "opencode",
+            serde_json::json!({"id":"10","tool":"read","status":"completed","output":"opencode_native_marker"}),
+        );
+        let _guard = store.lock_public_history().unwrap();
+        let hits = |query| {
+            store
+                .search_public_history_locked("owner", "room", None, query, 50, None)
+                .unwrap()
+                .hits
+                .len()
+        };
+        for query in [
+            "codex_mcp_canary",
+            "codex_shadow_canary",
+            "codex_dynamic_canary",
+            "claude_mcp_canary",
+            "opencode_mcp_canary",
+            "unknown_provider_canary",
+            "credentials",
+        ] {
+            assert_eq!(hits(query), 0, "{query}");
+        }
+        for event in &private {
+            assert!(store
+                .read_public_history_locked("owner", "room", &event.event_id)
+                .unwrap()
+                .is_none());
+        }
+        for query in [
+            "codex_native_marker",
+            "codex_patch_marker",
+            "claude_native_marker",
+            "opencode_native_marker",
+        ] {
+            assert_eq!(hits(query), 1, "{query}");
+        }
+        drop(_guard);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn public_history_projection_excludes_private_content_and_scrubs_echoes() {
         let root = std::env::temp_dir().join(format!(
             "chariox-am9-protection-{:016x}",
@@ -713,11 +832,12 @@ mod admission_tests {
                                 root.to_string_lossy(),
                             ))
                             .unwrap();
-                        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
-                            Arc::new(Mutex::new(app)),
-                            1,
-                        )
-                        .runtime_state();
+                        let state =
+                            crate::runtime::router::CommandRouter::with_interactive_capacity(
+                                Arc::new(Mutex::new(app)),
+                                1,
+                            )
+                            .runtime_state();
                         let append = |turn: &str, text: &str| {
                             state
                                 .owned
@@ -731,7 +851,9 @@ mod admission_tests {
                                         session_id: Some(room.id().into()),
                                         agent_id: Some(actor.id().into()),
                                         turn_id: Some(turn.into()),
-                                        public_history_owner_user_id: Some(room.owner_user_id().into()),
+                                        public_history_owner_user_id: Some(
+                                            room.owner_user_id().into(),
+                                        ),
                                         ..Default::default()
                                     },
                                 )

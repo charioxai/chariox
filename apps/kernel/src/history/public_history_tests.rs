@@ -920,3 +920,77 @@ fn public_history_assembled_answer_is_bounded_and_uses_only_retained_public_part
     assert_eq!(document.text.chars().count(), 40_000);
     assert!(!document.truncated);
 }
+
+#[test]
+fn public_history_search_matches_streamed_message_once() {
+    // MP-08 / MP-10 / MP-11: FTS indexes the message, not each provider delta.
+    let f = Fixture::new();
+    let append = |key: &str, text: &str| {
+        f.store
+            .append_transcript(
+                &SessionHistoryEntry::provider_output(
+                    "room",
+                    "run",
+                    Some("peer"),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some(key.into()),
+                    text.to_owned(),
+                ),
+                HistoryEventTurnContext {
+                    session_id: Some("room".into()),
+                    agent_id: Some("peer".into()),
+                    provider_run_id: Some("run".into()),
+                    prompt_id: Some("prompt".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = append("message", "The stale ");
+    for delta in ["cur", "sor must restart", " the query. Restart", " now."] {
+        append("message", delta);
+    }
+    append("other-message", "unrelated restart");
+    for query in ["stale cursor", "cursor", "the query now"] {
+        let page = f.search("room", query, 50, None).unwrap();
+        assert_eq!(page.hits.len(), 1, "{query}");
+        assert_eq!(page.hits[0].event_ref, first.event_id);
+    }
+    let page = f.search("room", "restart", 50, None).unwrap();
+    assert_eq!(page.hits.len(), 2);
+    assert!(page.coverage.complete);
+    assert_eq!(page.coverage.excluded_events, 0);
+    let _guard = f.store.lock_public_history().unwrap();
+    assert_eq!(
+        f.store
+            .read_public_history_locked("owner", "room", &first.event_id)
+            .unwrap()
+            .unwrap()
+            .text,
+        "The stale cursor must restart the query. Restart now."
+    );
+}
+
+#[test]
+fn public_history_invalidation_survives_busy_wal_reader() {
+    // MP-08 / MP-10 / MP-11: an active reader can delay WAL truncation, but the
+    // committed secure delete must not fail the protected mutation.
+    let f = Fixture::new();
+    let event = f.append("room", "busy_reader_marker");
+    let reader = Connection::open(f.root.join("history.sqlite")).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM history_events", [], |r| r.get(0))
+        .unwrap();
+    let _guard = f.store.lock_public_history().unwrap();
+    f.store
+        .invalidate_public_history_locked(Some("room"))
+        .unwrap();
+    assert!(f
+        .store
+        .read_public_history_locked("owner", "room", &event.event_id)
+        .unwrap()
+        .is_none());
+    drop(_guard);
+    reader.execute_batch("COMMIT").unwrap();
+}

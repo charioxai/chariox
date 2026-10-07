@@ -261,43 +261,7 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
             .unwrap()
             .is_some());
     }
-    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
-    let mut credential = browser_credential("creation", "creation-key");
-    credential.metadata =
-        Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
-    let vault_config = crate::config::UserCredentialVaultConfig {
-        path: root.path().join("vault").display().to_string(),
-        ..Default::default()
-    };
-    crate::secret::create_chariox_encrypted_vault_for_test(
-        std::path::Path::new(&vault_config.path),
-        "synthetic-passphrase-only",
-    )
-    .unwrap();
-    crate::secret::unlock_chariox_encrypted_vault(
-        std::path::Path::new(&vault_config.path),
-        "synthetic-passphrase-only",
-        crate::secret::VaultUnlockLease::KernelShutdown,
-    )
-    .unwrap();
-    let service =
-        crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config).unwrap();
-    room.runtime
-        .upsert_observed_vault_credential(
-            &service,
-            &registry,
-            credential,
-            "synthetic_vault_creation_value",
-            false,
-        )
-        .await
-        .unwrap();
-    assert!(room
-        .runtime
-        .owned
-        .room_secret_observations
-        .uses_vault_key(&room.session_id, "creation-key")
-        .unwrap());
+    create_room_vault_credential(&room, &root, "creation", "synthetic_vault_creation_value").await;
     let _guard = history.lock_public_history().unwrap();
     assert!(history
         .search_public_history_locked(
@@ -377,7 +341,10 @@ async fn public_history_protected_room_withholds_fragmented_answers() {
         .await
         .unwrap();
     assert!(!read.ok);
-    assert_eq!(read.payload["error"], "Public history reference is unavailable");
+    assert_eq!(
+        read.payload["error"],
+        "Public history reference is unavailable"
+    );
     let turn = room
         .runtime
         .room_public_turn(
@@ -390,4 +357,110 @@ async fn public_history_protected_room_withholds_fragmented_answers() {
     assert!(turn.ok);
     let events = turn.payload["events"].as_array().unwrap();
     assert!(events.is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room
+// into metadata before this Vault mutation.
+async fn create_room_vault_credential(room: &TestRoom, root: &TestRoot, id: &str, secret: &str) {
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = browser_credential(id, &format!("{id}-key"));
+    credential.metadata =
+        Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
+    let vault_config = crate::config::UserCredentialVaultConfig {
+        path: root.path().join("vault").display().to_string(),
+        ..Default::default()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let service =
+        crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config).unwrap();
+    room.runtime
+        .upsert_observed_vault_credential(&service, &registry, credential, secret, false)
+        .await
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(&vault_config.path).unwrap();
+}
+
+#[tokio::test]
+async fn public_history_agent_vault_credential_keeps_room_output_visible() {
+    // MP-08 / MP-10 / MP-11: a Vault value that was never inserted into the
+    // Room is scrub-only. It must not fence the session's provider stream.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-scrub-only");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    create_room_vault_credential(&room, &root, "generated", "synthetic_generated_value").await;
+    let store = &room.runtime.owned.room_secret_observations;
+    assert_eq!(
+        store.protect_unframed_bytes(&room.session_id, b"later visible answer"),
+        b"later visible answer"
+    );
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    let entry = |text: &str| {
+        crate::history::SessionHistoryEntry::provider_output(
+            &room.session_id,
+            "later-run",
+            Some(&room.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some(format!("later-{text}")),
+            text.to_owned(),
+        )
+    };
+    assert_eq!(
+        store
+            .protect_transcript_entry(entry("later visible answer"))
+            .text,
+        "later visible answer"
+    );
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &entry(text),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let later = append("later visible answer");
+    let echo = append("echo synthetic_generated_value");
+    let events = store.protect_history_events(vec![later.clone(), echo]);
+    assert_eq!(events[0].content.as_deref(), Some("later visible answer"));
+    assert_eq!(events[1].content.as_deref(), Some("echo [redacted]"));
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, later.event_id, None)
+        .await
+        .unwrap();
+    assert!(read.ok);
+    assert_eq!(read.payload["event"]["text"], "later visible answer");
 }
