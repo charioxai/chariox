@@ -1076,3 +1076,123 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         later.sequence
     );
 }
+
+#[test]
+fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "q".into(),
+        run: Some("child-run".into()),
+        now: 1,
+    });
+    let mut event = occurrence(
+        "room",
+        "child",
+        "parent",
+        "request",
+        "message",
+        serde_json::json!({"message":"a real answer is requested"}),
+    );
+    event.reply_requested = true;
+    event.urgent = true;
+    let Outcome::Event(event) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event,
+    }) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: event.sequence,
+        prompt: format!("agent-event-child-{}", event.sequence),
+        target: Some("q".into()),
+        run: Some("child-run".into()),
+        now: 2,
+    });
+    let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "q".into(),
+        run: "child-run".into(),
+        has_answer: false,
+        cancelled: false,
+        now: 3,
+    }) else {
+        panic!()
+    };
+    assert!(correction);
+    let corrected = task.pending_prompt_id.unwrap();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: corrected.clone(),
+        run: Some("child-run".into()),
+        now: 4,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: corrected,
+        run: "child-run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 5,
+    });
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "q".into(),
+        occurrence: "task-terminal-q".into(),
+        success: true,
+        public_answer: Some(serde_json::json!({"excerpt":"verified result"})),
+        now: 6,
+    });
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+    f.begin("independent");
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+    });
+    let reply = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(reply.len(), 1);
+    assert_eq!(
+        reply[0].payload["public_answer"]["excerpt"],
+        "verified result"
+    );
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: reply[0].sequence,
+        handled: true,
+        now: 7,
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let sender = tasks.iter().find(|t| t.task_id == "p").unwrap();
+    assert_eq!(sender.obligations[0].status, "satisfied");
+    assert_eq!(sender.progress_sequence, 1);
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == "independent")
+            .unwrap()
+            .progress_sequence,
+        0
+    );
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "q".into(),
+        occurrence: "task-terminal-q".into(),
+        success: true,
+        public_answer: None,
+        now: 8,
+    });
+    assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
+}

@@ -65,6 +65,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }
+            replies::bind(tx, &e, target.as_deref())?;
             e.state = "submitting".into();
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;
@@ -170,6 +171,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;
+            replies::reconcile_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }
         Operation::Ack {
@@ -205,11 +207,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }
                     }
                     // Handling an actual resource outcome is progress; a receipt ACK alone is not.
-                    if changed
-                        || e.kind == "source_completed"
-                        || (e.kind == "source_lost"
-                            && e.payload["success"].as_bool() == Some(false))
-                    {
+                    let belongs = e.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                        || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                        });
+                    if changed || belongs {
                         t.no_progress_wakes = 0;
                         t.progress_sequence += 1;
                         t.last_progress_at_ms = now;

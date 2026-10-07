@@ -104,6 +104,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     save(tx, &t)?;
                 }
             }
+            replies::reconcile_source(tx, &room, &source)?;
             Ok(Outcome::Saved)
         }
         Operation::Sweep { now } => {
