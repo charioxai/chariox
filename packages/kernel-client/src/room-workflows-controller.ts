@@ -64,14 +64,14 @@ export class RoomWorkflowsPaneController {
   if (!record) return
   if (record.busy) { this.report(record, "busy", "Start refused: another workflow request is busy; try again when it finishes"); return }
   if (!row || !record.draft.trim()) { this.report(record, "no-selection-or-prompt", "Select an entry point and enter a prompt"); return }
-  const prompt = record.draft; record.busy = true; record.message = "Submitting…"; this.deps.changed()
+  const prompt = record.draft; record.lastGuard = "ready"; record.busy = true; record.message = "Submitting…"; this.deps.changed()
   try {
    if (!record.fresh) await this.resync(record)
    const current = record.inventory.workflows.find(workflow => workflow.workflow_id === row.workflow.workflow_id)?.endpoints.find(endpoint => endpoint.endpoint_id === row.endpoint.endpoint_id)
    if (!current?.can_start) throw new Error(current?.start_disabled_reason ?? "The selected entry point cannot start")
    const response = await this.deps.send<{ WorkflowRunInvoked?: { workflow_run: { id: string } }; WorkflowPromptEnqueued?: { queued_prompt: { id: string } } }>(invokeWorkflowEndpointRequest(record.inventory.session_id, row.workflow.workflow_id, row.endpoint.endpoint_id, prompt))
-   if (response.WorkflowRunInvoked?.workflow_run.id) record.message = `Started run ${response.WorkflowRunInvoked.workflow_run.id}`
-   else if (response.WorkflowPromptEnqueued?.queued_prompt.id) record.message = `Queued request ${response.WorkflowPromptEnqueued.queued_prompt.id}`
+   if (response.WorkflowRunInvoked?.workflow_run.id) { if (record.lastGuard !== "busy") record.message = `Started run ${response.WorkflowRunInvoked.workflow_run.id}` }
+   else if (response.WorkflowPromptEnqueued?.queued_prompt.id) { if (record.lastGuard !== "busy") record.message = `Queued request ${response.WorkflowPromptEnqueued.queued_prompt.id}` }
    else throw new Error("Kernel did not confirm whether the request started or queued")
    if (record.draft === prompt) record.draft = ""
   } catch (error) { record.message = error instanceof Error ? error.message : "Start failed" }
@@ -83,7 +83,7 @@ export class RoomWorkflowsPaneController {
   if (record.busy) { this.report(record, "busy", `${action} refused: another workflow request is busy; try again when it finishes`); return }
   if (!row || !ids.length) { this.report(record, !row ? "no-selection" : "no-targets", `${action} refused: ${!row ? "select a workflow" : "no eligible runs"}`); return }
   // MP-08 / MP-10: capture targets before refresh; never include later admissions.
-  record.busy = true; record.message = `${action} current runs (${ids.length})…`; this.deps.changed()
+  record.lastGuard = "ready"; record.busy = true; record.message = `${action} current runs (${ids.length})…`; this.deps.changed()
   try {
    if (!record.fresh) await this.resync(record)
    const request = controlRoomWorkflowRunsRequest(record.inventory.session_id, row.workflow.workflow_id, action, ids)
@@ -91,7 +91,7 @@ export class RoomWorkflowsPaneController {
    const response = await this.deps.send<{ RoomWorkflowRunsControlled?: RoomWorkflowRunsControlled }>(request)
    const result = response.RoomWorkflowRunsControlled
    if (!result || result.inventory.session_id !== record.inventory.session_id || result.inventory.home_kernel_id !== record.inventory.home_kernel_id) throw new Error("Kernel did not confirm the captured run outcomes")
-   record.message = result.results.map(result => `${result.run_id}: ${result.outcome}${result.error ? ` — ${result.error}` : ""}`).join("\n")
+   if (record.lastGuard !== "busy") record.message = result.results.map(result => `${result.run_id}: ${result.outcome}${result.error ? ` — ${result.error}` : ""}`).join("\n")
   } catch (error) { this.report(record, "send-or-refresh-failed", error instanceof Error ? error.message : "Control failed") }
   finally { record.busy = false; this.deps.changed() }
  }

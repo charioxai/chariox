@@ -196,7 +196,8 @@ try {
       const nextDeadline=Date.now()+90000
       while(!(await readFile(followup,'utf8').catch(()=>''))) {assert.ok(Date.now()<nextDeadline,'MP-08 queued follow-up must run after Stop');await diagnostics(await stateUntil(()=>true));await sleep(250)}
       await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].queued_count===0,90000)
-      await capture(label+'-followup-completed',text=>text.includes('0 running')&&text.includes('0 queued'))
+      await capture(label+'-followup-completed',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
+      await key('\t')
     }
   }
   if (noisyInterruptRounds) {

@@ -46,7 +46,7 @@ test("busy and empty-target controls visibly report the guard", async () => {
  const h = harness(); h.pane.apply(inventory()); h.pane.draft("start")
  const pending = h.pane.start(); await h.pane.control("stop")
  assert.match(h.pane.record!.message, /busy/)
- h.respond({ WorkflowRunInvoked: { workflow_run: { id: "run" } } }); await pending
+ h.respond({ WorkflowRunInvoked: { workflow_run: { id: "run" } } }); await pending; assert.match(h.pane.record!.message, /busy/, "refusal survives the in-flight reply")
  await h.pane.control("resume"); assert.match(h.pane.record!.message, /no eligible runs/)
 })
 test("failed resync refuses visibly without controlling a different home", async () => {
