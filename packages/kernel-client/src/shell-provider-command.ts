@@ -77,7 +77,7 @@ export async function executeProviderCommand(
     }>(response, "ProviderAccountCredentialStored")
     return {
       ok: true,
-      message: `${stored.provider}/${stored.account_profile} setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`,
+      message: `${stored.provider}/${stored.account_profile} setup token verified and ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`,
       data: { provider: stored.provider, account_profile: stored.account_profile, replaced: stored.replaced },
     }
   }
