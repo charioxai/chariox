@@ -16,7 +16,15 @@ impl Fixture {
         Self::with_session_id(format!("decision-cleanup-{:016x}", rand::random::<u64>()))
     }
     fn with_session_id(session_id: String) -> Self {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        Self::with_session_config(session_id, false)
+    }
+    fn with_room_tools() -> Self {
+        Self::with_session_config(format!("am2-sweep-{:016x}", rand::random::<u64>()), true)
+    }
+    fn with_session_config(session_id: String, room_tools: bool) -> Self {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = room_tools;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             session_id,
             None,
@@ -269,6 +277,56 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.state.owned.sweep_kernel_operation_interactions(true);
     }
+}
+
+#[tokio::test]
+async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: "unloaded-room".into(),
+            agent: "old-agent".into(),
+            prompt: "a-old-blocked".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Block {
+            task: "a-old-blocked".into(),
+            prompt: "a-old-blocked".into(),
+            reason: "Original receipt requires owner reconciliation".into(),
+        })
+        .unwrap();
+    let before = store.agent_tasks(Some("unloaded-room"), None).unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-current-idle".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    f.state
+        .sweep_agent_lifecycle()
+        .await
+        .expect("old unloaded Room must not stop current Room sweep and owner visibility");
+    assert_eq!(
+        store.agent_tasks(Some("unloaded-room"), None).unwrap(),
+        before,
+        "unavailable Room obligations remain durable without guessed completion or replay"
+    );
+    let current = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
+    assert_eq!(current.state, ExecutionState::Blocked);
+    assert!(f.active_ids().contains(&format!(
+        "task-blocked-{}-{}",
+        current.task_id, current.blocked_revision
+    )));
 }
 
 #[tokio::test]
