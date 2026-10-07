@@ -68,9 +68,27 @@ identity. Public projection version2 fences/removes predecessor version1 rows,
 so an upgrade cannot retain already admitted private output. Raw records are
 never backfilled. Wire shapes and daemon453/relay73 remain unchanged.
 
-Fail-first and focused GREEN check receipts are recorded with exact source and
-binary identities in the external round3 evidence and lane status. Those checks
-do not close the live private-service blocker.
+MP-08 / MP-10 / MP-11: fail-first source
+`a0c054e3e82e540e8a555e1149ad8d62607a6440` reproduced both assertion failures
+(exit101 each): a private normalized MCP record was searchable, and predecessor
+version1 rows survived. These are supplementary regression REDs.
+
+The first corrected suite passed23 and failed only the coverage-result snapshot:
+version2 changes the reported index/redaction values. The reviewed expected hash
+was updated without changing wire fields/types. Final source
+`4fbadc8624b8a7bddb3e8f2396e1833bd2fdff73` passed24 public-history checks,
+183 protocol checks and the native build, all under the builder2 compile lock.
+Native SHA-256 is
+`69eb2460697dd6a19eb05b73b380984b49e64f6a1fe1568682efa7ea2a6834c0`.
+
+The exact rebuilt kernel, real compiled TUI and linked official Codex then passed
+a safe public-history smoke: actual search reported index/redaction version2,
+and actual read returned its matching safe public task prompt. Actual managed
+capability discovery returned no MCP extensions; product credential list was
+empty and Room status had no Environment. The private-service and protected-input
+cells remain BLOCKED. `round3-p1` contains step screenshots, console/TUI captures
+and actual MCP calls; `round3/p1-live-smoke-verification.json` checks the actual
+search/read payloads. This public smoke does not establish private-service safety.
 
 ## MP-08 / MP-10 / MP-11: remaining acceptance and cleanup
 
