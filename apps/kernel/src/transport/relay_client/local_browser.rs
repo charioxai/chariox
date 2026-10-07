@@ -26,7 +26,6 @@ mod tests;
 
 pub(crate) const LOCAL_BROWSER_PATH: &str = "/v1/browser";
 const LOCAL_BROWSER_PORT_ENV: &str = "CHARIOX_KERNEL_BROWSER_PORT";
-const DEFAULT_LOCAL_BROWSER_PORT: u16 = 43117;
 const GRANT_TTL_MS: u64 = 30_000;
 const MAX_OUTSTANDING_GRANTS: usize = 64;
 const AUTHORITY_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -219,8 +218,8 @@ impl LocalBrowserDirect {
         let bound = LocalBrowserEndpoint {
             port: listener
                 .local_addr()
-                .map(|addr| addr.port())
-                .unwrap_or(port),
+                .map_err(|_| unavailable("local browser endpoint port is unavailable"))?
+                .port(),
             epoch: random_token(),
         };
         crate::logging::info_with_fields(
@@ -291,9 +290,11 @@ fn paired_cloud_origin(api_url: &str) -> Option<String> {
     origin.is_tuple().then(|| origin.ascii_serialization())
 }
 
+/// Ephemeral by default so every kernel on a machine gets its own endpoint;
+/// the grant carries the bound URL.
 fn configured_port(value: Option<&str>) -> Option<u16> {
     match value.map(str::trim) {
-        None | Some("") => Some(DEFAULT_LOCAL_BROWSER_PORT),
+        None | Some("") => Some(0),
         Some("off") => None,
         Some(value) => value.parse::<u16>().ok(),
     }

@@ -493,12 +493,15 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    `{"LocalBrowserConnectIssued":{"endpoint","grant","kernel_id",
    "endpoint_epoch","expires_at_ms"}}`; the grant is a random single-use value
    that expires after 30 seconds or with the identity, whichever is first.
-2. The kernel lazily binds literal `127.0.0.1` only (default port 43117,
-   `CHARIOX_KERNEL_BROWSER_PORT`; `off` disables). The upgrade to
+2. The kernel lazily binds literal `127.0.0.1` only (an ephemeral port by
+   default so several kernels can share a machine; `CHARIOX_KERNEL_BROWSER_PORT`
+   pins one; `off` disables). The grant carries the bound endpoint. The upgrade to
    `ws://127.0.0.1:<port>/v1/browser` must come from a loopback peer, carry exactly
    that `Host`, no query and no proxy headers, and exactly one `Origin` equal to
    the origin of the paired Cloud `api_url` (HTTPS, or HTTP on loopback for local
-   development). Anything else receives HTTP 403.
+   development). Anything else receives HTTP 403. At most eight connections
+   may be unauthenticated at once; a new one evicts the oldest, so idle local
+   connections cannot hold the endpoint.
 3. The kernel sends `{"kind":"local_challenge","kernel_id","endpoint_epoch",
    "challenge"}`. Within five seconds and a 16 KiB frame the browser answers
    `{"kind":"local_connect","proof":<encrypted payload>}`: `{"grant","challenge",

@@ -1,5 +1,6 @@
 //! Loopback upgrade policy and the first-message grant/key handshake.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use super::*;
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_HANDSHAKE_FRAME_BYTES: usize = 16 * 1024;
 const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_PENDING_HANDSHAKES: usize = 8;
+pub(super) const MAX_PENDING_HANDSHAKES: usize = 8;
 const MAX_SESSIONS: usize = 32;
 const FORWARDING_HEADERS: [&str; 5] = [
     "forwarded",
@@ -92,7 +93,7 @@ async fn run_listener(
     listener: TcpListener,
     endpoint: LocalBrowserEndpoint,
 ) {
-    let handshakes = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    let mut handshakes = VecDeque::<tokio::task::AbortHandle>::new();
     let sessions = Arc::new(Semaphore::new(MAX_SESSIONS));
     let health = direct.router.transport_health_store();
     let mut shutdown = direct.shutdown.clone();
@@ -106,28 +107,35 @@ async fn run_listener(
         if *shutdown.borrow() {
             return;
         }
-        let (Ok(handshake), Ok(session)) = (
-            Arc::clone(&handshakes).try_acquire_owned(),
-            Arc::clone(&sessions).try_acquire_owned(),
-        ) else {
+        let Ok(session) = Arc::clone(&sessions).try_acquire_owned() else {
             refuse(peer, "local browser endpoint is at capacity");
             continue;
         };
+        // Idle local connections cannot pin the endpoint: at capacity the
+        // oldest unauthenticated handshake makes room for the newest.
+        handshakes.retain(|handshake| !handshake.is_finished());
+        if handshakes.len() >= MAX_PENDING_HANDSHAKES {
+            if let Some(oldest) = handshakes.pop_front() {
+                oldest.abort();
+            }
+        }
         let direct = Arc::clone(&direct);
         let endpoint = endpoint.clone();
-        tokio::spawn(async move {
+        let handshake = tokio::spawn(async move {
             let admitted = timeout(HANDSHAKE_DEADLINE, admit(&direct, &endpoint, stream, peer))
                 .await
                 .unwrap_or(Err("local browser handshake timed out"));
-            drop(handshake);
             match admitted {
                 Ok((socket, grant)) => {
-                    session::run(direct, socket, grant).await;
-                    drop(session);
+                    tokio::spawn(async move {
+                        session::run(direct, socket, grant).await;
+                        drop(session);
+                    });
                 }
                 Err(reason) => refuse(peer, reason),
             }
         });
+        handshakes.push_back(handshake.abort_handle());
     }
 }
 

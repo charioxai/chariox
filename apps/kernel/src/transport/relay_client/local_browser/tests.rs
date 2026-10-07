@@ -80,6 +80,10 @@ impl Kernel {
     /// `paired_at_start: false` pairs only after the carrier exists, as when a
     /// running kernel completes `/cloud link`.
     fn with_pairing(paired_at_start: bool) -> Self {
+        Self::build(paired_at_start, Some(0))
+    }
+
+    fn build(paired_at_start: bool, port: Option<u16>) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             api_url: ORIGIN.into(),
@@ -124,7 +128,7 @@ impl Kernel {
             Arc::new(RelayEventRuntime::for_tests(64)),
             Arc::new(CommandResultCache::default()),
             shutdown_rx,
-            Some(0),
+            port,
         );
         if !paired_at_start {
             let mut paired = projection.snapshot();
@@ -358,6 +362,48 @@ fn mp08_kernel_paired_after_start_admits_its_first_browser() {
 }
 
 #[test]
+fn mp08_default_endpoint_lets_several_kernels_share_a_machine() {
+    large_stack(async {
+        let browser = Browser::new();
+        let first = Kernel::build(true, configured_port(None));
+        let second = Kernel::build(true, configured_port(None));
+        let first_grant = first.mint(&browser, browser.identity()).await.unwrap();
+        let second_grant = second.mint(&browser, browser.identity()).await.unwrap();
+        assert_ne!(first_grant.endpoint, second_grant.endpoint);
+        for (kernel, grant) in [(&first, &first_grant), (&second, &second_grant)] {
+            let (_socket, verdict) = connect(kernel, &browser, grant).await;
+            assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        }
+    });
+}
+
+#[test]
+fn mp11_idle_local_connections_cannot_pin_handshake_slots() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let address = grant
+            .endpoint
+            .trim_start_matches("ws://")
+            .trim_end_matches(LOCAL_BROWSER_PATH);
+        let mut idle = Vec::new();
+        for _ in 0..admission::MAX_PENDING_HANDSHAKES * 2 {
+            idle.push(tokio::net::TcpStream::connect(address).await.unwrap());
+        }
+        sleep(Duration::from_millis(200)).await;
+        // Well inside the five-second handshake deadline the idle peers hold.
+        let (_socket, verdict) = timeout(
+            Duration::from_secs(2),
+            connect(&kernel, &browser, &grant),
+        )
+        .await
+        .expect("paired browser admitted while idle peers hold the endpoint");
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+    });
+}
+
+#[test]
 fn mp11_upgrade_refuses_foreign_missing_null_and_duplicate_origins() {
     large_stack(async {
         let kernel = Kernel::new();
@@ -577,7 +623,7 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
         paired_cloud_origin("https://val.example:8443/x").as_deref(),
         Some("https://val.example:8443")
     );
-    assert_eq!(configured_port(None), Some(DEFAULT_LOCAL_BROWSER_PORT));
+    assert_eq!(configured_port(None), Some(0));
     assert_eq!(configured_port(Some("off")), None);
     assert_eq!(configured_port(Some("43999")), Some(43999));
 }
@@ -615,7 +661,7 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol456() {
     .is_err());
     let wire = serde_json::json!({
         "path": LOCAL_BROWSER_PATH,
-        "default_port": DEFAULT_LOCAL_BROWSER_PORT,
+        "default_port": configured_port(None),
         "request": {"local_browser_connect": {}},
         "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms"],
         "proof": ["grant", "challenge", "origin", "kernel_id", "endpoint_epoch"],
@@ -625,6 +671,6 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol456() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "6f99800ac7b32c4bc6cb56a7f521eb9cc46d687b9742ba30bbe7051a99fb1b8f"
+        "caf0b656c95fc1e46a118ca48deb7fff9d542d2b166182f6e9c838d49fb38924"
     );
 }
