@@ -246,7 +246,7 @@ impl<'a> KernelAgentService<'a> {
         mut prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptAdmission, DaemonError> {
         if self.app.config().room_agent_tools {
-            prepared.allocate_draft_prompt_id(|| self.app.sessions().reserve_prompt_id());
+            prepared.prepare_task_prompt_identity(|| self.app.sessions().reserve_prompt_id())?;
         }
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();

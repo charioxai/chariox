@@ -673,7 +673,8 @@ impl KernelRuntimeState {
         authorize()?;
         self.owned.require_publication_activation()?;
         if self.owned.config_projection.snapshot().room_agent_tools {
-            prepared.allocate_draft_prompt_id(|| self.owned.session_store.reserve_prompt_id());
+            prepared
+                .prepare_task_prompt_identity(|| self.owned.session_store.reserve_prompt_id())?;
         }
         {
             let owned = &self.owned;

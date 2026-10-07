@@ -287,10 +287,35 @@ pub(crate) struct KernelPreparedPromptSubmission {
 }
 
 impl KernelPreparedPromptSubmission {
-    pub(crate) fn allocate_draft_prompt_id(&mut self, allocate: impl FnOnce() -> String) {
+    pub(crate) fn prepare_task_prompt_identity(
+        &mut self,
+        allocate: impl FnOnce() -> String,
+    ) -> Result<(), DaemonError> {
+        use sha2::{Digest, Sha256};
         if self.prompt.id().starts_with("pending-draft:") {
             self.prompt = self.prompt.clone().with_id(allocate());
         }
+        // Durable task admission and provider receipts must identify the same
+        // prompt through queueing, promotion and replay. Reuse the existing
+        // durable-operation contract, including its collision check.
+        if self.prompt.durable_operation_id().is_none() {
+            let request = serde_json::to_vec(&(
+                &self.session_id,
+                self.prompt.target_agent_id(),
+                self.prompt.prompt(),
+                self.prompt.attachments(),
+                self.prompt.hidden_system_context(),
+            ))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "prepare task prompt identity",
+                message: error.to_string(),
+            })?;
+            self.prompt = self
+                .prompt
+                .clone()
+                .with_durable_operation(self.prompt.id(), format!("{:x}", Sha256::digest(request)));
+        }
+        Ok(())
     }
 }
 

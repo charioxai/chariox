@@ -632,6 +632,7 @@ mod tests {
         };
         assert_eq!(prompt.id(), id);
         let mut previous = id;
+        let mut queued_ids = Vec::new();
         for _ in 0..2 {
             let mut prepared = crate::app::KernelPreparedPromptSubmission {
                 session_id: session.id().into(),
@@ -645,9 +646,13 @@ mod tests {
                 force_queue: false,
                 refresh_projection: false,
             };
-            prepared.allocate_draft_prompt_id(|| app.sessions.reserve_prompt_id());
+            prepared
+                .prepare_task_prompt_identity(|| app.sessions.reserve_prompt_id())
+                .unwrap();
             let allocated = prepared.prompt.id().to_string();
-            prepared.allocate_draft_prompt_id(|| panic!("allocated IDs must stay stable"));
+            prepared
+                .prepare_task_prompt_identity(|| panic!("allocated IDs must stay stable"))
+                .unwrap();
             assert_ne!(allocated, previous);
             assert!(!allocated.starts_with("pending-draft:"));
             let outcome = app
@@ -657,7 +662,23 @@ mod tests {
                 panic!()
             };
             assert_eq!(prompt.id(), allocated);
+            queued_ids.push(allocated.clone());
             previous = allocated;
+        }
+        for queued_id in queued_ids {
+            app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+                .unwrap();
+            let replacement_id = app.sessions.reserve_prompt_id();
+            let promoted = app
+                .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                    session.id(),
+                    agent.id(),
+                    Some(&queued_id),
+                    replacement_id,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(promoted.id(), queued_id);
         }
     }
 
