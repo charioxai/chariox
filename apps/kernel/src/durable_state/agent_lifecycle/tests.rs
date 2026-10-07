@@ -673,6 +673,8 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         accepted: true,
         resource: Some("child".into()),
     });
+    // Explicit subscriptions and the automatic completion subscription bind together.
+    f.subscribe();
     for prompt in ["first-child-task", "independent-child-task"] {
         f.apply(Operation::Begin {
             owner: "owner".into(),
@@ -687,10 +689,11 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         f.task().obligations[0].completion_task_id.as_deref(),
         Some("first-child-task")
     );
-    assert_eq!(
-        f.store.agent_registrations("p").unwrap()[0].source_id,
-        "first-child-task"
-    );
+    let registrations = f.store.agent_registrations("p").unwrap();
+    assert_eq!(registrations.len(), 2);
+    assert!(registrations
+        .iter()
+        .all(|registration| registration.source_id == "first-child-task"));
     f.apply(Operation::SourceOutcome {
         public_answer: None,
         room: "room".into(),

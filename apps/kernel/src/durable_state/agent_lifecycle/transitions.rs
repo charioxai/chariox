@@ -444,7 +444,7 @@ fn bind_first_delegate_task(
                     registration.source_id = child.task_id.clone();
                     tx.execute(
                         "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                        params![id, encode(&registration)?],
+                        params![registration.id, encode(&registration)?],
                     )
                     .map_err(sql)?;
                 }
