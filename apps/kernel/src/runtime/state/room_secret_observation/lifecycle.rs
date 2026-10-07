@@ -152,23 +152,28 @@ impl KernelRuntimeState {
             crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
             _ => None,
         };
-        let result = self
-            .with_authorized_app_side_effect(|_| {
-                self.with_forwarded_binding_operation(|| {
-                    service.upsert_vault_backed_credential_with_secret(
-                        registry, credential, secret, overwrite,
-                    )
-                })
+        self.with_authorized_app_side_effect(|_| {
+            self.with_forwarded_binding_operation(|| {
+                let _history = self.owned.operational_history_store.lock_public_history()?;
+                let result = service.upsert_vault_backed_credential_with_secret(
+                    registry, credential, secret, overwrite,
+                )?;
+                if let Some(room) = room {
+                    let source = self
+                        .owned
+                        .room_secret_observations
+                        .register_credential_source(&room, key.as_deref());
+                    // Protect the value even if persisting its provenance fails.
+                    let protection = self
+                        .owned
+                        .room_secret_observations
+                        .register_with_locked_public_history(&room, secret);
+                    source?;
+                    protection?;
+                }
+                Ok(result)
             })
-            .await?;
-        if let Some(room) = room {
-            self.owned
-                .room_secret_observations
-                .register_credential_source(&room, key.as_deref())?;
-            self.owned
-                .room_secret_observations
-                .register(&room, secret)?;
-        }
-        Ok(result)
+        })
+        .await
     }
 }

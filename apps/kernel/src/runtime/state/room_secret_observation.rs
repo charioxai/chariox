@@ -194,6 +194,28 @@ impl RoomSecretObservations {
     pub(super) fn register(&self, room: &str, value: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
         let _history_guard = self.invalidate_public_history(room)?;
+        self.register_value(room, value)
+    }
+
+    // MP-08 / MP-10 / MP-11: the Vault mutation caller holds this store's
+    // public-history mutex across storage and registration, with no await gap.
+    pub(super) fn register_with_locked_public_history(
+        &self,
+        room: &str,
+        value: &str,
+    ) -> Result<(), DaemonError> {
+        let room = self.room_key(room);
+        if let Some(store) = &self.public_history {
+            store.invalidate_public_history_locked(if self.worker_room.is_some() {
+                None
+            } else {
+                Some(room)
+            })?;
+        }
+        self.register_value(room, value)
+    }
+
+    fn register_value(&self, room: &str, value: &str) -> Result<(), DaemonError> {
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         if !rooms.contains_key(room) {
             rooms.insert(room.into(), self.initial(room)?);
