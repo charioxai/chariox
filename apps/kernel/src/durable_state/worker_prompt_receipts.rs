@@ -28,6 +28,9 @@ pub(crate) struct WorkerPromptReceipt {
 pub(crate) struct WorkerPromptReceiptRecord {
     pub(crate) leased_agent_id: String,
     pub(crate) receipt: WorkerPromptReceipt,
+    // Worker-local admission identity, never projected onto the relay receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) worker_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) caller: Option<LeaseCallerBinding>,
 }
@@ -149,6 +152,10 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
     !record.leased_agent_id.trim().is_empty()
         && !receipt.home_prompt_id.trim().is_empty()
         && !receipt.execution_lease_id.trim().is_empty()
+        && record
+            .worker_prompt_id
+            .as_deref()
+            .is_none_or(|id| !id.trim().is_empty())
         && receipt
             .worker_provider_run_id
             .as_deref()
@@ -164,6 +171,10 @@ fn validate_receipt_transition(
     if previous.leased_agent_id != next.leased_agent_id
         || previous.receipt.home_prompt_id != next.receipt.home_prompt_id
         || previous.receipt.execution_lease_id != next.receipt.execution_lease_id
+        || previous
+            .worker_prompt_id
+            .as_ref()
+            .is_some_and(|id| next.worker_prompt_id.as_ref() != Some(id))
         || previous
             .caller
             .as_ref()
@@ -225,6 +236,7 @@ mod tests {
                 execution_lease_id: "lease-1".to_string(),
                 phase,
             },
+            worker_prompt_id: None,
             caller: None,
         }
     }
@@ -244,7 +256,19 @@ mod tests {
         store
             .persist(receipt(WorkerPromptReceiptPhase::Dispatching))
             .expect("dispatching receipt should persist");
+        let mut bound = receipt(WorkerPromptReceiptPhase::Dispatching);
+        bound.worker_prompt_id = Some("worker-prompt-1".to_string());
+        store
+            .persist(bound.clone())
+            .expect("worker prompt binding persists");
+        let mut rebound = bound;
+        rebound.worker_prompt_id = Some("worker-prompt-2".to_string());
+        assert!(
+            store.persist(rebound).is_err(),
+            "worker prompt cannot be rebound before acceptance"
+        );
         let mut accepted = receipt(WorkerPromptReceiptPhase::Accepted);
+        accepted.worker_prompt_id = Some("worker-prompt-1".to_string());
         accepted.receipt.worker_provider_run_id = Some("worker-run-1".to_string());
         store
             .persist(accepted.clone())

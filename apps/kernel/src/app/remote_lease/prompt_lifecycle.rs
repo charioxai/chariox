@@ -119,6 +119,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 execution_lease_id: leased_agent.lease_id,
                 phase: WorkerPromptReceiptPhase::Dispatching,
             },
+            worker_prompt_id: None,
             caller,
         };
         self.app.worker_prompt_receipts.persist(record)?;
@@ -766,6 +767,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             PromptSubmissionOutcome::Started { prompt }
             | PromptSubmissionOutcome::Queued { prompt } => prompt,
         };
+        // MP-08 / MP-10: bind reusable-run accounting to the admitted worker prompt.
+        // The public relay receipt keeps its existing shape; this identity is worker-local.
+        if let Some(home_prompt_id) = home_prompt_id.as_deref() {
+            if let Some(mut record) = self
+                .app
+                .worker_prompt_receipts
+                .get(&leased_agent.id, home_prompt_id)
+                .cloned()
+            {
+                record.worker_prompt_id = Some(accepted_prompt.id().to_string());
+                record.receipt.worker_provider_run_id = Some(provider_run_id.clone());
+                self.app.worker_prompt_receipts.persist(record)?;
+            }
+        }
         let backing_active = self.app.prompt_owner_active_prompt_for_agent(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,

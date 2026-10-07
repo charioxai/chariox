@@ -5,6 +5,7 @@
 //! official harness counters, never estimates from text length. Input includes
 //! cache; output includes reasoning. None means unreported, not zero.
 
+pub(crate) mod record;
 pub mod report;
 
 use serde::{Deserialize, Serialize};

@@ -6,6 +6,66 @@ use crate::{
     usage_accounting::report::{self, TurnUsage},
 };
 impl RemoteLeaseRuntime<'_> {
+    pub(super) fn bind_worker_turn_usage(
+        &self,
+        leased: &crate::execution_lease::LeasedAgent,
+        run_id: &str,
+        completions: &[crate::transport::relay_peer::RelayProjectedCompletion],
+        active_worker_prompt_id: Option<&str>,
+        run: &mut crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let home_prompt = completions
+            .first()
+            .map(|c| c.home_prompt_id.as_deref())
+            .unwrap_or(leased.active_home_prompt_id.as_deref());
+        let same_prompt = completions
+            .iter()
+            .all(|c| c.home_prompt_id.as_deref() == home_prompt);
+        let worker_prompt_id = if !same_prompt {
+            None
+        } else if let Some(home_prompt) = home_prompt {
+            self.app
+                .worker_prompt_receipts
+                .get(&leased.id, home_prompt)
+                .filter(|r| {
+                    r.receipt.execution_lease_id == leased.lease_id
+                        && r.receipt.worker_provider_run_id.as_deref() == Some(run_id)
+                })
+                .and_then(|r| r.worker_prompt_id.clone())
+        } else {
+            // A worker-native turn has no home admission receipt. Its active or
+            // settled worker prompt remains the accounting identity.
+            active_worker_prompt_id.map(str::to_string).or_else(|| {
+                self.app
+                    .completed_git_turn_snapshot_store()
+                    .latest_projection_for_agent(
+                        &leased.backing_session_id,
+                        &leased.backing_agent_id,
+                    )
+                    .filter(|turn| turn.provider_run_id == run_id)
+                    .map(|turn| turn.prompt_id)
+            })
+        };
+        let turn = worker_prompt_id
+            .as_deref()
+            .map(|prompt| {
+                report::latest(
+                    &self.app.operational_history,
+                    &leased.backing_session_id,
+                    prompt,
+                    run_id,
+                )
+            })
+            .transpose()?
+            .flatten()
+            .filter(|turn| turn.agent_id == leased.backing_agent_id);
+        let mut counters = run.usage();
+        counters.turn_accounting = turn.as_ref().and_then(|turn| turn.usage);
+        counters.accounting = turn.as_ref().and_then(|turn| turn.provider_counters);
+        run.set_usage(counters);
+        Ok(())
+    }
+
     pub(super) fn persist_home_turn_usage(
         &self,
         session: &str,

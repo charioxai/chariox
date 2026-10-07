@@ -9,6 +9,7 @@ import time
 from uuid import uuid4
 from pathlib import Path
 
+from contract import settled_measurement
 from swe_adapter import load_tasks
 from turn import preflight, resource_sample
 
@@ -105,6 +106,9 @@ def main():
             return 2  # Keep this attempt; retry only after a fresh plan window.
         if not measurement['cleanup_complete']:
             raise RuntimeError('MP-11: incomplete runtime cleanup at ' + instance)
+        if not settled_measurement(measurement):
+            print('MP-08 / MP-10: unscored admission/measurement blocker at ' + instance, flush=True)
+            return 2
         if not prediction.exists():
             # Settled failures stay in the official denominator, with no patch.
             prediction.write_text(json.dumps({'instance_id': instance,

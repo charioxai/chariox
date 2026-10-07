@@ -15,7 +15,7 @@ def settle_job(job, task):
             continue
         project=(trial.name+'__env').lower()
         removed=[]
-        ids=output(['docker','ps','-aq','--filter','label=com.docker.compose.project='+project]).splitlines()
+        ids=output(['docker','ps','-aq','--no-trunc','--filter','label=com.docker.compose.project='+project]).splitlines()
         for cid in ids:
             actual=output(['docker','inspect',cid,'--format','{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}'])
             if actual!=cid+' '+project:
