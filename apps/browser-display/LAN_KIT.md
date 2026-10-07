@@ -8,10 +8,12 @@ Python/PyAV and the explicit loader are bundled. Runtime identities are generate
 through product paths in disposable state. The host supplies sandboxed Chromium,
 Xvfb, FFmpeg, iproute2 and ethtool. No provider accounts or operator keys are used.
 
-From a clean committed checkout, after building the ELF at that source:
+From a clean committed checkout, after building both ELFs at that source with `--features native-display`:
 
 ```sh
 export MD_NODE_ARCHIVE=/absolute/node-v22.20.0-linux-x64.tar.xz
+export MD_NATIVE_WORKER=/absolute/chariox-kernel
+export MD_KERNEL_BUILD_SOURCE=$(git rev-parse HEAD)
 python3 apps/browser-display/build-lan-kit.py /absolute/kernel-tests \
   /absolute/public-node-tools /absolute/pyav-tools /absolute/evidence-output
 ```
@@ -42,7 +44,7 @@ Software x264 (hardware disabled even if a device is present):
 
 ```sh
 sudo env MD_GEOMETRY=1920x1080 MD_CODEC=avc1.420033 MD_SOFTWARE=1 \
-  MD_CASES=local:docs:8000000,local:canvas:8000000,local:video:8000000,local:scroll30:8000000,local:wheel30:8000000 \
+  MD_CASES=local:docs:8000000,local:canvas:8000000,local:video:8000000,local:scroll30:8000000,local:scroll60:8000000,local:wheel30:8000000,local:wheel60:8000000 \
   ./display-lan-kit/run-lan.sh
 ```
 
@@ -50,13 +52,22 @@ VAAPI probe and matrix (iHD device access inherited from invoking user groups):
 
 ```sh
 sudo env MD_GEOMETRY=1920x1080 MD_CODEC=avc1.420033 MD_SOFTWARE=0 \
-  MD_CASES=local:docs:8000000,local:canvas:8000000,local:video:8000000,local:scroll30:8000000,local:wheel30:8000000 \
+  MD_CASES=local:docs:8000000,local:canvas:8000000,local:video:8000000,local:scroll30:8000000,local:scroll60:8000000,local:wheel30:8000000,local:wheel60:8000000 \
   ./display-lan-kit/run-lan.sh
 ```
 
 `/dev/dri` and advertised FFmpeg encoders establish capability only. Successful
 `motion_backend_vaapi` traces establish actual use; unavailable hardware falls
 back to software and must be reported as such. This builder has a virtio render device whose VAAPI initialization fails; no Intel GPU success is claimed. Native-feature kernels use the same masked capture/codec path for VAAPI and software. A requested hardware run without successful VAAPI packets prints HARDWARE REQUEST FAILED and records hardware_fallback=true.
+
+MP-08/MP-10: repeat the same seven-case software and hardware matrices at
+Retina density by adding `MD_GEOMETRY=1280x800 MD_DPR=2` to each command.
+Report all cases, including requested hardware fallback, separately. For the
+unchanged privacy regression run three sequential DPR2 canvas campaigns with
+`MD_CASES=local:canvas:8000000 MD_PROTECTED=1 MD_DYNAMIC_PROTECTED=1
+MD_PROTECTION_REPETITIONS=70`; add `MD_SUPERVISOR_CRASH=1` to the third run.
+Each campaign retains screenshots and logs. Zero masking violations and exact
+owned cleanup are required; these fixture runs remain supplementary evidence.
 
 `MD_CHROME=/absolute/browser` selects Chromium. Builder runs set
 `MD_MEMORY_FLOOR_GIB=12`; the laptop default reserves 15% of RAM (between 0.5 and 2 GiB), with a 10 GiB disk reserve. Explicit builder limits remain authoritative. These are drill reserves, not product runtime requirements. The old
