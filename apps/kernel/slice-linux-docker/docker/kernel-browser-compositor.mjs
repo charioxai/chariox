@@ -51,7 +51,8 @@ export class CompositorSource {
       const header=Buffer.from(data.slice(0,40),'base64');
       const png=header.length>=24&&header.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
       const geometry=png?{width:header.readUInt32BE(16),height:header.readUInt32BE(20)}:jpegDimensions(Buffer.from(data,'base64'));
-      if(!geometry||geometry.width!==this.width||geometry.height!==this.height){this.latest=null;return;}
+      // Protected capture owns geometry and pixels; screencast is only a wake.
+      if(!geometry||geometry.width<1||geometry.height<1||geometry.width>2560||geometry.height>1600||!this.protect&&(geometry.width!==this.width||geometry.height!==this.height)){this.latest=null;return;}
       this.pendingImage={data,receivedAt:performance.timeOrigin+this.now(),format:png?'png':'jpeg'};
       void this.processLatest();
     });
@@ -89,7 +90,19 @@ export class CompositorSource {
         if(this.sampling||this.now()<this.ignoreUntil)continue;
         if(fingerprint.width!==this.width||fingerprint.height!==this.height)throw Error('source geometry');
         if(this.latest?.signature!==fingerprint.signature){this.motionStreak=this.now()-this.changedAt<90?this.motionStreak+1:1;this.serial++;this.changedAt=this.now();}
-        this.latest={data_base64:data,[displayMaskRegions]:protectedRegions,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
+        let raw;
+        if(this.protect){
+          const verified=decodePng(data,this.scale);
+          if(verified.width!==this.width||verified.height!==this.height)throw Error('protected raster geometry');
+          // One immutable bounded raster allows the existing H.264 stripe
+          // encoder to use protected CDP pixels at emulated density.
+          let opaque=true;for(let i=3;i<verified.pixels.length;i+=4)if(verified.pixels[i]!==255){opaque=false;break;}
+          if(opaque){
+            const pixels=Buffer.from(verified.pixels);for(let i=0;i<pixels.length;i+=4){const red=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=red;}
+            raw={format:'bgr0',width:this.width,height:this.height,length:pixels.length,pixels,[displayMaskRegions]:protectedRegions};
+          }
+        }
+        this.latest={...(raw?{raw}:{}),data_base64:data,[displayMaskRegions]:protectedRegions,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
         if(this.attested)for(const listener of this.listeners)listener(this.latest);
       }
     }catch{this.fenced=true;this.attested=false;this.latest=null;await this.close().catch(error=>{this.failure=error});}
