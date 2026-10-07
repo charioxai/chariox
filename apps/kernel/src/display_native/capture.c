@@ -24,9 +24,9 @@ struct Capture {
     int attached, event, width, height, window_height, offset;
     unsigned long owner;
     uint8_t *previous,*captured;
-    int initialized,captured_initialized;
+    int initialized,captured_initialized,motion_height;
     double cpu[3];
-    int tile_count,tiles[32][4],adjacent_count,adjacent[32][4];
+    int tile_count,tiles[128][4],adjacent_count,adjacent[128][4];
 };
 static unsigned long window_pid(Display *d, Window w) {
     Atom actual; int format; unsigned long count, remaining; unsigned char *data = NULL;
@@ -104,19 +104,23 @@ int cx_capture_damage(struct Capture *c) {
     return dirty;
 }
 /* MP-08/MP-10/MP-11: exact changed tiles relative to the delivered base. */
-int cx_capture_difference(const uint8_t *raw,const uint8_t *previous,int width,int height,int *bounds,int *tile_out) {
+int cx_capture_difference(const uint8_t *raw,const uint8_t *previous,int width,int height,int *bounds,int *tile_out,int *motion_height) {
     if(width<1||width>2560||height<1||height>1600)return -2;
-    size_t stride=(size_t)width*4;int initialized=previous!=NULL,count=-1,tiles[32][4];
+    size_t stride=(size_t)width*4;int initialized=previous!=NULL,count=-1,tiles[128][4];
+    /* MP-08/MP-10: same bounded CSS input footprint at fourfold Retina pixels. */
+    int tile_limit=width==2560&&height==1600?128:32;
+    if(motion_height)*motion_height=height;
     int top=height,bottom=0,left=width,right=0,changed_count=0;
     unsigned char changed_rows[1600]={0};
     if (initialized) {
         for (int y=0;y<height;y++) if (memcmp(raw+y*stride,previous+y*stride,stride)) { if (top==height) top=y; bottom=y+1;changed_rows[y]=1;changed_count++; }
-        if (top==height) {return 0;}
+        if (top==height) {if(motion_height)*motion_height=0;return 0;}
+        if(motion_height)*motion_height=bottom-top;
         if (changed_count<=height*.15) {
             unsigned char marked[80*50]={0};int columns=(width+31)/32;count=0;
             for(int y=top;y<bottom;y++)if(changed_rows[y])for(int x=0;x<width;x+=32){int n=width-x<32?width-x:32;
                 if(memcmp(raw+y*stride+x*4,previous+y*stride+x*4,n*4)){int index=y/32*columns+x/32;
-                    if(!marked[index]){marked[index]=1;if(count==32){count=-1;goto dense_tiles;}int *rect=tiles[count++];rect[0]=x;rect[1]=y/32*32;rect[2]=x+n;rect[3]=rect[1]+32<height?rect[1]+32:height;}
+                    if(!marked[index]){marked[index]=1;if(count==tile_limit){count=-1;goto dense_tiles;}int *rect=tiles[count++];rect[0]=x;rect[1]=y/32*32;rect[2]=x+n;rect[3]=rect[1]+32<height?rect[1]+32:height;}
                 }
             }
         }
@@ -143,7 +147,7 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
     int adjacent_bounds[4];
-    c->adjacent_count=cx_capture_difference(raw,c->captured_initialized?c->captured:NULL,c->width,c->height,adjacent_bounds,(int*)c->adjacent);
+    c->adjacent_count=cx_capture_difference(raw,c->captured_initialized?c->captured:NULL,c->width,c->height,adjacent_bounds,(int*)c->adjacent,&c->motion_height);
     if(c->adjacent_count==0){
         c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;return 0;
     }
@@ -151,7 +155,7 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
      * Sparse cumulative damage alone checks the complete delivered exact base.
      * Adjacent tiles can echo input over a contiguous LOSSY canvas; they never
      * certify its untouched pixels. Dropped captures still use cumulative tiles. */
-    if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles);
+    if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles,NULL);
     else {bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;}
     if(c->tile_count==0){/* Pixels returned to the exact base; ship a conservative full update. */bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;c->tile_count=-1;}
     memcpy(c->captured,raw,size);c->captured_initialized=1;
@@ -164,3 +168,6 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
 int cx_capture_tiles(struct Capture *c,int *out){if(c->tile_count>0)memcpy(out,c->tiles,c->tile_count*4*sizeof(int));return c->tile_count;}
 int cx_capture_adjacent_tiles(struct Capture *c,int *out){if(c->adjacent_count>0)memcpy(out,c->adjacent,c->adjacent_count*4*sizeof(int));return c->adjacent_count;}
 void cx_capture_admit(struct Capture *c,const uint8_t *pixels){memcpy(c->previous,pixels,(size_t)c->width*c->height*4);c->initialized=1;}
+
+/* MP-08/MP-10/MP-11: scheduling only; exact/base bounds stay conservative. */
+int cx_capture_motion_height(struct Capture *c){return c->motion_height;}

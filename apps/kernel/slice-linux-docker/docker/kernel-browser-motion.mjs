@@ -5,8 +5,10 @@ const frameBytes=frame=>JSON.stringify(frame.encoded??{}).length+(frame.encoded?
 // MP-08/MP-10: full viewport motion benefits from vertical reference reuse
 // across stripe boundaries. Existing negotiated full-video packets provide
 // that path; sparse rows still keep their independent bounded references.
+// The private exact row span selects codec mode only, never cropped pixels.
+const motionHeight=raw=>Number.isSafeInteger(raw.motion_height)&&raw.motion_height>=0&&raw.motion_height<=raw.height?raw.motion_height:raw.height;
 const denseNative=raw=>raw?.nativeEncode&&Array.isArray(raw.damage)&&raw.damage.length===4&&
- (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2;
+ (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2&&motionHeight(raw)>=raw.height*.75;
 export class MotionEncoder {
  constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
   Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();

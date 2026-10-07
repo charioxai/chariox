@@ -406,8 +406,9 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: park one serial capture credit on source/codec
         // readiness during motion instead of exchanging hundreds of empty RPCs.
         // This is negative-only scheduling; every pixel still takes full fences.
-        if(cachedSource.motionStreak>=2&&performance.now()-cachedSource.changedAt<50)
-          await stream.producer.waitReady(20,signal);
+        // Input's sparse source offer also wakes this bounded wait. Idle exact
+        // credits must not poll the kernel/controller thousands of times/sec.
+        await stream.producer.waitReady(20,signal);
         assertNotCancelled(signal);
         if(empty())return {generation:this.generation,frame_sent:false,display_frame:null};
       }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { DisplayStream, PortableEncoder, safeChildPid, dirtyTiles } from './kernel-browser-display.mjs';
-import { encodePng, decodePng, maskPng } from './kernel-browser-pixels.mjs';
+import { encodePng, decodePng, maskPng, displayMaskRegions } from './kernel-browser-pixels.mjs';
 function fixture(value = 255) {
   const pixels = Buffer.alloc(256 * 256 * 4, 255); pixels[0] = value;
   return { generation: 1, data_base64: encodePng(256, 256, pixels) };
@@ -343,4 +343,17 @@ test('MP-08/MP-10/MP-11 private encoder snapshot is stable across source mutatio
   pixels.fill(0);const recover=await encoder.encodeStripes(raw,8000000,true);assert(recover.stripes.every(row=>row.key));encoder.discard(recover);
   await encoder.close();assert.deepEqual(await readdir(root),[],'owned handoff and packet artifacts must settle');
  }finally{await encoder.close();if(previous===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;else process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT=previous;await rm(root,{recursive:true,force:true})}
+});
+
+test('MP-08 Retina input preserves a bounded fourfold physical sparse budget',async()=>{
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',bitrate:8000000,device_scale_factor:2,codec:'avc1.420033'},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
+ try{
+  stream.previous={};stream.exact=false;stream.compositorSerial=10;stream.compositorMasks='[]';
+  const tiles=Array.from({length:96},(_,n)=>{const x=n%32*32,y=Math.floor(n/32)*32;return [x,y,x+32,y+32]});
+  const raw={nativeExact:async()=>{},format:'bgr0',width:2560,height:1600,length:2560*1600*4,pixels:Buffer.alloc(2560*1600*4),damage:[0,0,2560,1600],serial:11,base_serial:1,adjacent_damage_tiles:tiles,[displayMaskRegions]:[]};
+  assert.equal(stream.canPatchNative({serial:11,raw}),true);
+  assert.equal(stream.canPatchNative({serial:12,raw:{...raw,serial:12}}),false);
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,adjacent_damage_tiles:Array(129).fill([0,0,32,32])}}),false);
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4)}}),false);
+ }finally{await stream.close();}
 });

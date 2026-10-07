@@ -172,3 +172,13 @@ test('MP-08/MP-10/MP-11 motion readiness parks a credit until encoded pixels, pa
   const closing=f.m.waitReady(1000);await f.m.close();await closing;assert.equal(f.m.readyWaiters.size,0);
  }finally{await f.m.close()}
 });
+
+test('MP-08 limited vertical native motion keeps row reuse; malformed hints take conservative whole video',async()=>{
+ let latest,offer;const calls=[],source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={async encode(raw,b,key){calls.push(['whole',key]);return{key,data_base64:'AA=='}},async encodeStripes(raw,b,key){calls.push(['rows',key]);return{stripes:[{row:0,key:key===true,data_base64:'AA=='}]}}};
+ const motion=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
+ try{
+  let serial=0;for(const height of [420,800,-1,801,undefined]){latest={serial:++serial,raw:{width:1280,height:800,damage:[0,0,1280,800],motion_height:height,nativeEncode(){}}};offer(latest);await motion.active;motion.take();}
+  assert.deepEqual(calls,[['rows',true],['whole',true],['whole',false],['whole',false],['whole',false]]);
+ }finally{await motion.close();}
+});

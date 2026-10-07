@@ -37,7 +37,9 @@ export function nativeDamageTiles(raw, checkOnly = false, adjacent = false) {
   if(raw.nativeExact&&(adjacent||Array.isArray(raw.damage_tiles))){
     const tiles=adjacent?raw.adjacent_damage_tiles:raw.damage_tiles;
     if(!Array.isArray(tiles))return null;
-    if(!tiles.length||tiles.length>32||tiles.some(r=>!Array.isArray(r)||r.length!==4||!r.every(Number.isSafeInteger)||r[0]<0||r[1]<0||r[2]<=r[0]||r[3]<=r[1]||r[2]>raw.width||r[3]>raw.height||(r[2]-r[0])*(r[3]-r[1])>1024)||tiles.reduce((n,r)=>n+(r[2]-r[0])*(r[3]-r[1]),0)>32768)return null;
+    // MP-08/MP-10: Retina quadruples physical pixels, with the same CSS input bound.
+    const limit=raw.width===2560&&raw.height===1600?128:32;
+    if(!tiles.length||tiles.length>limit||tiles.some(r=>!Array.isArray(r)||r.length!==4||!r.every(Number.isSafeInteger)||r[0]<0||r[1]<0||r[2]<=r[0]||r[3]<=r[1]||r[2]>raw.width||r[3]>raw.height||(r[2]-r[0])*(r[3]-r[1])>1024)||tiles.reduce((n,r)=>n+(r[2]-r[0])*(r[3]-r[1]),0)>limit*1024)return null;
     if(checkOnly)return true;throw Error('MP-11: native sparse tiles require native exact preparation');
   }
   const [left,top,right,bottom]=raw.damage;

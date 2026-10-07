@@ -18,6 +18,7 @@ fn mp08_native_damage_covers_disjoint_changes_since_the_exact_base_and_rejects_d
             h as i32,
             bounds.as_mut_ptr(),
             tiles.as_mut_ptr(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(diff(&current, &mut bounds, &mut tiles), 0);
@@ -124,46 +125,49 @@ fn mp11_native_tile_only_plan_retains_exact_rgb_and_opaque_fallback_keeps_full_p
 }
 #[test]
 fn mp11_native_codec_masks_before_conversion_and_guards_motion_settle_and_idr() {
-    let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, 8) });
-    assert!(!codec.0.is_null());
-    let regions = [Rect {
-        left: 36,
-        top: 20,
-        right: 70,
-        bottom: 48,
-    }];
-    for cycle in 0..12 {
-        let source = vec![if cycle % 2 == 0 { 220 } else { 128 }; 128 * 128 * 4];
-        let before = source.clone();
-        let mut rows = [RowResult::default(); 8];
-        let count = unsafe {
-            ffi::cx_codec_encode(
-                codec.0,
-                source.as_ptr(),
-                if cycle % 3 == 0 { 255 } else { 0 },
-                regions.as_ptr(),
-                regions.len(),
-                rows.as_mut_ptr(),
-            )
-        };
-        assert_eq!(
-            source, before,
-            "native masking must not mutate immutable capture leases"
-        );
-        assert!(
-            count >= 0,
-            "decoded-output guard must accept opaque mask across native motion/IDR"
-        );
-        assert!(rows[..count as usize]
-            .iter()
-            .all(|r| r.length > 0 && r.length < 1024 * 1024));
-        if cycle % 3 == 0 {
-            assert_eq!(count, 8);
-            assert!(rows.iter().all(|r| r.key != 0 && r.sequence == 1));
+    for row_count in [1, 8] {
+        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, row_count) });
+        assert!(!codec.0.is_null());
+        let regions = [Rect {
+            left: 36,
+            top: 20,
+            right: 70,
+            bottom: 48,
+        }];
+        for cycle in 0..12 {
+            let source = vec![if cycle % 2 == 0 { 220 } else { 128 }; 128 * 128 * 4];
+            let before = source.clone();
+            let mut rows = [RowResult::default(); 8];
+            let count = unsafe {
+                ffi::cx_codec_encode(
+                    codec.0,
+                    source.as_ptr(),
+                    if cycle % 3 == 0 { 255 } else { 0 },
+                    regions.as_ptr(),
+                    regions.len(),
+                    rows.as_mut_ptr(),
+                )
+            };
+            assert_eq!(
+                source, before,
+                "native masking must not mutate immutable capture leases"
+            );
+            assert!(
+                count >= 0,
+                "decoded-output guard must accept opaque mask across native motion/IDR"
+            );
+            assert!(rows[..count as usize]
+                .iter()
+                .all(|r| r.length > 0 && r.length < 1024 * 1024));
+            if cycle % 3 == 0 {
+                assert_eq!(count, row_count);
+                assert!(rows[..count as usize]
+                    .iter()
+                    .all(|r| r.key != 0 && r.sequence == 1));
+            }
         }
     }
 }
-
 #[test]
 fn mp08_native_exact_repairs_colored_pixels_and_retains_only_certified_neutrals_or_overlays() {
     for rows in [1, 8] {
@@ -257,4 +261,60 @@ fn mp08_native_exact_repairs_colored_pixels_and_retains_only_certified_neutrals_
             "no delivered reference certifies nothing"
         );
     }
+}
+
+#[test]
+fn mp08_native_retina_sparse_damage_scales_physical_tiles_and_rejects_dense_motion() {
+    let (w, h) = (2560usize, 1600usize);
+    let base = vec![255; w * h * 4];
+    let mut current = base.clone();
+    let mut bounds = [0; 4];
+    let mut tiles = [0; 512];
+    let mut motion_height = 0;
+    for n in 0..96 {
+        let x = n % 32 * 32;
+        let y = n / 32 * 32;
+        current[(y * w + x) * 4] = 0;
+    }
+    let diff = |raw: &[u8],
+                bounds: &mut [i32; 4],
+                tiles: &mut [i32; 512],
+                motion_height: &mut i32| unsafe {
+        ffi::cx_capture_difference(
+            raw.as_ptr(),
+            base.as_ptr(),
+            w as i32,
+            h as i32,
+            bounds.as_mut_ptr(),
+            tiles.as_mut_ptr(),
+            motion_height,
+        )
+    };
+    assert_eq!(
+        diff(&current, &mut bounds, &mut tiles, &mut motion_height),
+        96
+    );
+    assert_eq!(
+        motion_height, 65,
+        "codec scheduling retains the proved adjacent vertical span"
+    );
+    assert_eq!(&tiles[..4], &[0, 0, 32, 32]);
+    assert_eq!(&tiles[95 * 4..96 * 4], &[992, 64, 1024, 96]);
+    for n in 96..129 {
+        let x = n % 40 * 32;
+        let y = n / 40 * 32 + 256;
+        current[(y * w + x) * 4] = 0;
+    }
+    assert_eq!(
+        diff(&current, &mut bounds, &mut tiles, &mut motion_height),
+        -1,
+        "Retina cannot exceed128 sparse tiles"
+    );
+    current.fill(0);
+    assert_eq!(
+        diff(&current, &mut bounds, &mut tiles, &mut motion_height),
+        -1
+    );
+    assert_eq!(bounds, [0, 0, 2560, 1600]);
+    assert_eq!(motion_height, 1600);
 }

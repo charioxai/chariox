@@ -42,7 +42,7 @@ pub(super) fn epoch() -> f64 {
 }
 fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
     let bytes = serde_json::to_vec(&header).map_err(|_| "MP-11: native header")?;
-    if bytes.len() > 4096 || payload.is_empty() || payload.len() > 2560 * 1600 * 4 {
+    if bytes.len() > 8192 || payload.is_empty() || payload.len() > 2560 * 1600 * 4 {
         return Err("MP-11: native reply bound".into());
     }
     let mut out = std::io::stdout().lock();
@@ -140,10 +140,10 @@ pub(super) fn run() -> Result<(), String> {
                         .ok_or("MP-11: native serial overflow")?;
                     slot.serial = Some(serial);
                     slot.bounds = bounds;
-                    let mut tile_bounds = [0i32; 128];
+                    let mut tile_bounds = [0i32; 512];
                     let count =
                         unsafe { ffi::cx_capture_tiles(capture.0, tile_bounds.as_mut_ptr()) };
-                    slot.tiles = if changed > 0 && (1..=32).contains(&count) {
+                    slot.tiles = if changed > 0 && (1..=128).contains(&count) {
                         Some(
                             tile_bounds[..count as usize * 4]
                                 .chunks_exact(4)
@@ -157,7 +157,7 @@ pub(super) fn run() -> Result<(), String> {
                     let adjacent_count = unsafe {
                         ffi::cx_capture_adjacent_tiles(capture.0, tile_bounds.as_mut_ptr())
                     };
-                    slot.adjacent = if changed > 0 && (1..=32).contains(&adjacent_count) {
+                    slot.adjacent = if changed > 0 && (1..=128).contains(&adjacent_count) {
                         Some(
                             tile_bounds[..adjacent_count as usize * 4]
                                 .chunks_exact(4)
@@ -168,13 +168,14 @@ pub(super) fn run() -> Result<(), String> {
                         None
                     };
                     let adjacent_headers = slot.adjacent.clone();
+                    let motion_height = unsafe { ffi::cx_capture_motion_height(capture.0) };
                     let index = slots.iter().position(|s| s.serial == Some(serial)).unwrap();
                     let mut cpu = [0f64; 3];
                     unsafe {
                         ffi::cx_capture_cpu(capture.0, cpu.as_mut_ptr());
                     }
                     emit(
-                        json!({"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
+                        json!({"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
                         &[0],
                     )?;
                     refresh = false;
