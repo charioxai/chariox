@@ -253,6 +253,9 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-/// Version 456 adds the same-machine browser carrier: relay-minted
-/// `local_browser_connect` grants and the loopback `/v1/browser` handshake.
+/// Version 456 (an unreleased branch number) added the same-machine browser
+/// carrier: relay-minted `local_browser_connect` grants and the loopback
+/// `/v1/browser` handshake.
+/// Version 464 adds relay-renewed `local_browser_renew` leases and the
+/// 30-second relay identity ceiling for local browser grants and renewals.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 464;

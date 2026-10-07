@@ -909,3 +909,115 @@ fn mp11_relay_renewal_extends_the_socket_only_to_short_identity_expiry() {
         );
     });
 }
+
+fn renewed_lease(browser: &Browser, outcome: RelayRequestOutcome) -> serde_json::Value {
+    assert!(outcome.error.is_none(), "renewal refused: {:?}", outcome.error);
+    let plaintext = relay_crypto::decrypt_payload_for_private_key(
+        &browser.private_key,
+        &outcome.encrypted_response.unwrap(),
+    )
+    .unwrap();
+    serde_json::from_slice::<serde_json::Value>(&plaintext.plaintext).unwrap()
+        ["LocalBrowserLeaseRenewed"]
+        .clone()
+}
+
+async fn admitted_lease(kernel: &Kernel, browser: &Browser) -> (ClientSocket, Grant) {
+    let grant = kernel.mint(browser, browser.identity()).await.unwrap();
+    let (socket, verdict) = connect(kernel, browser, &grant).await;
+    assert_eq!(verdict["kind"], "local_connected");
+    for _ in 0..100 {
+        if kernel
+            .direct
+            .leases
+            .lock()
+            .unwrap()
+            .contains_key(&grant.grant)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    (socket, grant)
+}
+
+#[test]
+fn mp11_short_leases_tolerate_bounded_clock_skew_with_cloud() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let now = crate::session::unix_epoch_ms;
+
+        // This kernel's clock is 5 s behind Cloud: a fresh 30-second identity
+        // looks like 35 s, but the lease stays 30 s on this clock.
+        let mut behind = browser.identity();
+        behind.expires_at_ms = now() + 35_000;
+        let grant = kernel.mint(&browser, behind.clone()).await.unwrap();
+        assert!(grant.expires_at_ms <= now() + 30_000);
+        let (_socket, grant) = admitted_lease(&kernel, &browser).await;
+        let lease = renewed_lease(
+            &browser,
+            renew(&kernel, &browser, behind, &grant, 1, true).await,
+        );
+        assert!(lease["expires_at_ms"].as_u64().unwrap() <= now() + 30_000);
+
+        // This kernel's clock is 15 s ahead: the lease ends with the identity,
+        // because every relay dispatch requires a live identity, and still
+        // outlasts the 10-second renewal cadence.
+        let mut ahead = browser.identity();
+        ahead.expires_at_ms = now() + 15_000;
+        let lease = renewed_lease(
+            &browser,
+            renew(&kernel, &browser, ahead.clone(), &grant, 2, true).await,
+        );
+        assert_eq!(lease["expires_at_ms"], ahead.expires_at_ms);
+
+        // Beyond the allowance, long-lived and expired identities stay refused.
+        let mut long = browser.identity();
+        long.expires_at_ms = now() + GRANT_TTL_MS + CLOCK_SKEW_ALLOWANCE_MS + 1_000;
+        assert_eq!(
+            kernel.mint(&browser, long.clone()).await.unwrap_err().code,
+            "unauthorized"
+        );
+        assert!(renew(&kernel, &browser, long, &grant, 3, true)
+            .await
+            .error
+            .is_some());
+        let mut expired = browser.identity();
+        expired.expires_at_ms = now() - 1;
+        assert!(renew(&kernel, &browser, expired, &grant, 3, true)
+            .await
+            .error
+            .is_some());
+    });
+}
+
+#[test]
+fn mp11_renewal_recovers_a_lost_response_without_accepting_replays() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_socket, grant) = admitted_lease(&kernel, &browser).await;
+        // Sequence 1 was spent but its response was lost: the browser retries
+        // with the next sequence, whether or not the kernel applied 1.
+        let lease = renewed_lease(
+            &browser,
+            renew(&kernel, &browser, browser.identity(), &grant, 2, true).await,
+        );
+        assert_eq!(lease["next_sequence"], 3);
+        for replay in [1, 2] {
+            assert!(
+                renew(&kernel, &browser, browser.identity(), &grant, replay, true)
+                    .await
+                    .error
+                    .is_some(),
+                "sequence {replay} replayed"
+            );
+        }
+        let lease = renewed_lease(
+            &browser,
+            renew(&kernel, &browser, browser.identity(), &grant, 3, true).await,
+        );
+        assert_eq!(lease["next_sequence"], 4);
+    });
+}

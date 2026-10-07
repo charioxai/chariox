@@ -10,7 +10,6 @@ const localKernelProbeTimeoutMs = 2_000
 
 export type LocalKernelTarget = {
   readonly kernelId?: string | null | undefined
-  readonly kernelAlias?: string | null | undefined
 }
 
 export type LocalKernelSelection = {
@@ -43,7 +42,7 @@ export async function selectLocalKernelClient(
   const client = createClient(endpoint)
   try {
     const status = await withTimeout(getRelayStatus(client), localKernelProbeTimeoutMs)
-    if (status.daemon_id === presence.kernelId && (!kernelId || status.daemon_id === kernelId)) {
+    if (status.daemon_id === kernelId) {
       return { client, endpoint, presence }
     }
   } catch {

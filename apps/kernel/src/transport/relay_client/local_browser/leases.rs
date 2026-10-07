@@ -63,15 +63,15 @@ impl LocalBrowserDirect {
             || identity.user_id != original.user_id
             || identity.realm_id != original.realm_id
             || identity.public_key_thumbprint != original.public_key_thumbprint
-            || identity.expires_at_ms <= now
-            || identity.expires_at_ms > now.saturating_add(GRANT_TTL_MS)
             || authority.as_ref() != Some(&lease.grant.authority)
             || lease.expiry.borrow().expires_at_ms <= now
-            || sequence != lease.sequence
+            // A higher sequence recovers a renewal whose response was lost;
+            // every used sequence stays refused.
+            || sequence < lease.sequence
         {
             return Err(denied());
         }
-        let expires_at_ms = (now + GRANT_TTL_MS).min(identity.expires_at_ms);
+        let expires_at_ms = short_identity_deadline(identity, now).ok_or_else(denied)?;
         lease.sequence = sequence.checked_add(1).ok_or_else(denied)?;
         lease.expiry.send_replace(LocalBrowserLeaseState {
             expires_at_ms,

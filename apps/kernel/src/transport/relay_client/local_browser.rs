@@ -28,6 +28,11 @@ mod tests;
 pub(crate) const LOCAL_BROWSER_PATH: &str = "/v1/browser";
 const LOCAL_BROWSER_PORT_ENV: &str = "CHARIOX_KERNEL_BROWSER_PORT";
 const GRANT_TTL_MS: u64 = 30_000;
+/// Cloud stamps identity expiry on its clock and this kernel reads it on the
+/// user's clock. On a machine behind Cloud (VMs, WSL, no NTP) a fresh 30-second
+/// identity looks longer; the allowance keeps it short without extending any
+/// lease past the identity's expiry.
+const CLOCK_SKEW_ALLOWANCE_MS: u64 = 10_000;
 const MAX_OUTSTANDING_GRANTS: usize = 64;
 const AUTHORITY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -131,8 +136,6 @@ impl LocalBrowserDirect {
         if identity.subject_kind != RelaySubjectKind::Client
             || identity.user_id.is_none()
             || identity.realm_id != authority.realm_id
-            || identity.expires_at_ms <= now_ms
-            || identity.expires_at_ms > now_ms.saturating_add(GRANT_TTL_MS)
             || thumbprint.is_empty()
         {
             return Err(relay_error(
@@ -141,9 +144,15 @@ impl LocalBrowserDirect {
                 false,
             ));
         }
+        let expires_at_ms = short_identity_deadline(identity, now_ms).ok_or_else(|| {
+            relay_error(
+                "unauthorized",
+                "local browser connect requires a live 30-second relay identity; check that the system clock is synchronized",
+                false,
+            )
+        })?;
         let endpoint = self.ensure_endpoint().await?;
         let grant = random_token();
-        let expires_at_ms = (now_ms + GRANT_TTL_MS).min(identity.expires_at_ms);
         {
             let mut grants = self.grants.lock().expect("local browser grants poisoned");
             grants.retain(|_, grant| grant.expires_at_ms > now_ms);
@@ -304,6 +313,17 @@ fn configured_port(value: Option<&str>) -> Option<u16> {
         Some("off") => None,
         Some(value) => value.parse::<u16>().ok(),
     }
+}
+
+/// The lease a short, live relay identity earns at `now_ms`: at most
+/// `GRANT_TTL_MS` and never past the identity's expiry, which every relay
+/// dispatch also requires. `None` when the identity is expired or long-lived
+/// even allowing for clock skew.
+fn short_identity_deadline(identity: &RelayCallerIdentity, now_ms: u64) -> Option<u64> {
+    let short = identity.expires_at_ms
+        <= now_ms.saturating_add(GRANT_TTL_MS + CLOCK_SKEW_ALLOWANCE_MS);
+    (identity.expires_at_ms > now_ms && short)
+        .then(|| identity.expires_at_ms.min(now_ms + GRANT_TTL_MS))
 }
 
 fn random_token() -> String {

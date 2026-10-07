@@ -42,7 +42,7 @@ test("MP-08 selects the local endpoint only after the kernel proves its identity
 test("MP-08 alias-only targets never select a same-named kernel from another realm", async () => {
   let probes = 0
   const local = statusClient(async () => ({ RelayStatus: { status: { daemon_id: "home-1" } } }))
-  assert.equal(await selectLocalKernelClient({ kernelAlias: "home" }, () => { probes++; return local.client }, () => [presence]), null)
+  assert.equal(await selectLocalKernelClient({ kernelId: null }, () => { probes++; return local.client }, () => [presence]), null)
   assert.equal(probes, 0)
 })
 

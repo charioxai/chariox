@@ -218,7 +218,7 @@ export async function bootstrapCliRuntime(
     // MP-08: a relay-addressed kernel on this machine is reached directly; the
     // relay remains the path whenever the local kernel cannot prove identity.
     const local = await deps.selectLocalKernelClient(
-      { kernelId: cliOptions.targetDaemonId, kernelAlias: cliOptions.targetDaemonAlias },
+      { kernelId: cliOptions.targetDaemonId },
       (endpoint) => deps.createClient(endpoint),
     )
     if (local) {

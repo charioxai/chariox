@@ -234,7 +234,7 @@ test("MP-08 a relay-addressed kernel on this machine is attached through its loc
   assert.equal(result.kind, "ready")
   assert.equal(result.kernelEndpoint, "ws://127.0.0.1:43118/kernel")
   assert.equal(relayClosed, true)
-  assert.deepEqual(targets, [{ kernelId: "home-1", kernelAlias: undefined }])
+  assert.deepEqual(targets, [{ kernelId: "home-1" }])
 })
 
 test("MP-08 a relay-addressed kernel elsewhere keeps the relay client", async () => {

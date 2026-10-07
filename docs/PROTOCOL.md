@@ -524,16 +524,28 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    Cloud bootstrap and uses its separate 30-second `localLeaseRelayToken`
    over the encrypted relay carrier to request `local_browser_renew` with the
    redeemed grant and a strictly increasing one-use `sequence` starting at 1.
-   `LocalBrowserLeaseRenewed` returns `expires_at_ms` and `next_sequence`.
+   Every attempt spends its sequence; the kernel accepts any sequence at or
+   above the next expected one and returns `LocalBrowserLeaseRenewed` with
+   `expires_at_ms` and `next_sequence` (the accepted sequence plus one), so a
+   retry after a lost response recovers while every used sequence stays refused.
    Only a live relay-verified client with the original browser key, user and
    realm can renew. The kernel refuses long-lived renewal identities, expired
    leases, unredeemed/retired grants, replays and direct-carrier renewals.
-   Lease expiry is bounded by the freshly verified renewal identity's expiry. The session uses that freshly verified identity for
+   Cloud stamps identity expiry on its clock and the kernel reads it on the
+   user's clock with a 10-second skew allowance: an identity counts as short
+   when it expires at most 40 seconds ahead of the kernel clock, so a machine
+   clock up to 10 seconds behind Cloud keeps direct mode. The lease ends at the
+   earlier of 30 seconds on the kernel clock and the identity's expiry, which
+   every relay dispatch also requires; a kernel clock ahead of Cloud shortens
+   each lease by the same amount, and direct mode tolerates up to about 15
+   seconds of it. The session uses that freshly verified identity for
    subsequent dispatch, allowing continuous renewal across identity expiry.
-   Thus even a cached authorization issued before
-   Cloud revocation cannot extend the session beyond one 30-second period.
-   Failed renewal retires the local transport epoch before reconnecting through
-   the relay. Socket backpressure does not delay the kernel lease deadline.
+   Thus even a cached authorization issued before Cloud revocation cannot
+   extend the session beyond its expiry. The browser
+   retries one failed renewal after one second, well inside the lease; a
+   second consecutive failure or a kernel-key or sequence mismatch retires the
+   local transport epoch before reconnecting through the relay. Socket
+   backpressure does not delay the kernel lease deadline.
 6. The session closes with `relay token expired` at the latest identity's
    expiry, `local browser lease expired` at the lease deadline, and
    `local browser authority revoked` within 250 ms when the kernel's Cloud

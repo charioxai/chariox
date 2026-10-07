@@ -463,7 +463,7 @@ struct LocalBrowserRenewEnvelope {
     local_browser_renew: LocalBrowserRenewRequest,
 }
 
-/// Protocol 456: `{"local_browser_connect":{}}`, encrypted with the browser key
+/// Protocol 464: `{"local_browser_connect":{}}`, encrypted with the browser key
 /// bound into the caller's relay identity.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
