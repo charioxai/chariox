@@ -7,6 +7,18 @@ final class FakeSource: NativeSource {
     var secureInput = false
     var bundleIdentifier: String? = "com.apple.TextEdit"
     var appleSigned = true
+    var screenRecording = true
+    var accessibility = true
+    var permissionChecks: [String] = []
+    func checkPermission(_ operation: Operation) throws {
+        try checkOperationPermissions(operation, screenCaptureAccess: {
+            permissionChecks.append("screen")
+            return screenRecording
+        }, accessibilityAccess: {
+            permissionChecks.append("accessibility")
+            return accessibility
+        })
+    }
     func validateTarget(_ request: Request) throws {
         guard request.pid == 42, request.window == 1 else { throw Refusal.target }
         if request.ownerWindow {
@@ -26,6 +38,40 @@ final class FakeSource: NativeSource {
 }
 @main struct Tests {
     static func main() async throws {
+        let revoked = FakeSource()
+        revoked.screenRecording = false; revoked.accessibility = false
+        do {
+            _ = try await run(Request(enabled: true, pid: 42, window: 1,
+                                      operations: [.capture("unused")]), source: revoked)
+            print("FAIL revoked capture admitted"); exit(1)
+        } catch Refusal.permission { }
+        guard revoked.permissionChecks == ["screen"], revoked.calls == 0 else {
+            print("FAIL capture did not check Screen Recording before Accessibility"); exit(1)
+        }
+        print("PASS revoked capture checks Screen Recording before Accessibility")
+        revoked.accessibility = true
+        revoked.permissionChecks = []
+        do {
+            _ = try await run(Request(enabled: true, pid: 42, window: 1,
+                                      operations: [.capture("unused")]), source: revoked)
+            print("FAIL Screen Recording revocation admitted capture"); exit(1)
+        } catch Refusal.permission { }
+        precondition(revoked.permissionChecks == ["screen"] && revoked.calls == 0)
+        revoked.permissionChecks = []
+        _ = try await run(Request(enabled: true, pid: 42, window: 1,
+                                  operations: [.text("public")]), source: revoked)
+        precondition(revoked.permissionChecks == ["accessibility"] && revoked.calls == 1)
+        precondition(revoked.typed == [112, 117, 98, 108, 105, 99])
+        print("PASS Screen Recording revocation refuses frames but permits short text")
+        revoked.accessibility = false
+        revoked.permissionChecks = []
+        do {
+            _ = try await run(Request(enabled: true, pid: 42, window: 1,
+                                      operations: [.text("public")]), source: revoked)
+            print("FAIL Accessibility revocation admitted input"); exit(1)
+        } catch Refusal.permission { }
+        precondition(revoked.permissionChecks == ["accessibility"] && revoked.calls == 1)
+        print("PASS subsequent Accessibility revocation refuses input without a capture check")
         guard signingInformationFlags().rawValue & kSecCSSigningInformation != 0 else {
             print("FAIL signing information flag missing"); exit(1)
         }
@@ -34,7 +80,8 @@ final class FakeSource: NativeSource {
             print("FAIL 22-unit emoji payload admitted"); exit(1)
         } catch Refusal.text { }
         var identityFailures = 0
-        for (bundle, signed) in [("com.apple.Safari", true), ("com.apple.TextEdit", false)] {
+        for (bundle, signed) in [("com.apple.Safari", true), ("ai.chariox.computer-fixture", true),
+                                 ("com.apple.TextEdit", false)] {
             let refused = FakeSource()
             refused.bundleIdentifier = bundle; refused.appleSigned = signed
             do {
@@ -43,7 +90,7 @@ final class FakeSource: NativeSource {
                 print("FAIL owner target admitted bundle=\(bundle) appleSigned=\(signed)")
                 identityFailures += 1
             } catch Refusal.target {
-                precondition(refused.calls == 0)
+                precondition(refused.calls == 0 && refused.permissionChecks.isEmpty)
             }
         }
         if identityFailures > 0 { exit(1) }

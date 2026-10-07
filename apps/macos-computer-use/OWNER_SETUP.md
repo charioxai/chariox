@@ -167,13 +167,47 @@ or selected automatically.
 
 With the owner present, list public window IDs, PIDs and app bundle identifiers.
 This command does not capture pixels, read AX, list window titles or post input.
+
+```bash
+open -n -g -W --stdout "$cu_evidence/owner-window-choices.json" --stderr "$cu_evidence/owner-window-choices.err" "$cu_helper" --args --enable-owner-window --list-windows
+cat "$cu_evidence/owner-window-choices.json" "$cu_evidence/owner-window-choices.err"
+```
+
+Successful `--list-windows` stdout contains exactly two JSON lines: the helper's
+public launch identity, then an array of visible, layer-zero windows whose live
+PIDs pass the Apple TextEdit allowlist. Each array item has exactly `bundle`,
+`pid` and `windowID`, for example
+`[{"bundle":"com.apple.TextEdit","pid":123,"windowID":456}]`.
+The numbers must be the live TextEdit PID and window ID. There are no window
+titles, fixture entries or other bundle IDs; stderr is empty on success.
+An empty array means no allowed window was found.
+
+Inspect `owner-window-choices.json` and record in `owner-allowlist.txt` that the
+array contains only `com.apple.TextEdit` and no `ai.chariox.computer-fixture`
+entry, while the fixture remains open. If TextEdit is missing, another bundle
+appears, or discovery refuses, stop the drill and record `allowlist gate FAILED`
+with the observed output. Do not continue with a guessed or fixture PID.
+
+Exercise the owner-mode allowlist against the still-open fixture before selecting
+TextEdit. Run this one command separately. During the countdown, click the
+fixture's ordinary field and leave it frontmost until completion, so a focus
+failure cannot substitute for the allowlist refusal:
+
+```bash
+cu_scope=(--enable-owner-window --owner-pid "$cu_pid" --window-id "$cu_window" --target focused)
+cu_delay owner-fixture-refusal --ax-read
+```
+
+Expect `refused: target` in `owner-fixture-refusal.err`, with no AX role receipt,
+capture or input. Record that result alongside the discovery check in
+`owner-allowlist.txt`. Record `allowlist gate PASS` only when both checks match;
+otherwise record `allowlist gate FAILED` and stop.
+
 Choose the PID/window ID for `com.apple.TextEdit`. If several TextEdit windows
 are listed and the owner cannot identify the blank one, stop and arrange one
 unambiguous blank window before listing again. Never guess the ID.
 
 ```bash
-open -n -g -W --stdout "$cu_evidence/owner-window-choices.json" --stderr "$cu_evidence/owner-window-choices.err" "$cu_helper" --args --enable-owner-window --list-windows
-cat "$cu_evidence/owner-window-choices.json" "$cu_evidence/owner-window-choices.err"
 cu_real_pid=REPLACE_WITH_OWNER_SELECTED_PID
 cu_real_window=REPLACE_WITH_OWNER_SELECTED_WINDOW_ID
 cu_scope=(--enable-owner-window --owner-pid "$cu_real_pid" --window-id "$cu_real_window" --target focused)
@@ -214,18 +248,37 @@ long holds or retries. Do not label those broader checks PASS.
 
 ## Minutes 12-15: revoke and finish
 
-The owner switches off only the installed helper in both permission lists and
-removes its entries with the minus button where available. Do not reset TCC
-globally. Run each command separately and focus the selected TextEdit text area
-during its countdown:
+First the owner switches off only the installed helper's Screen Recording grant
+and removes that entry with the minus button where available. Leave the helper's
+Accessibility grant enabled. Do not reset TCC globally. Run each command below
+separately and focus the selected TextEdit text area during its countdown:
 
 ```bash
 cu_delay revoked-frame --capture "$cu_evidence/revoked.png"
+cu_delay screen-revoked-input --text public
+```
+
+Expect `revoked-frame` to print `refused: permission` with no PNG. The capture
+path checks Screen Recording before Accessibility or AX target resolution.
+Expect `screen-revoked-input` to print `dispatched; application completion unproven`
+and observe exactly `public` inserted in TextEdit. This input does not check
+Screen Recording. Record both results and that Accessibility stayed enabled;
+these establish the Screen Recording revocation separately. Stop and record
+revocation FAILED if a frame appears or the short text does not dispatch and
+complete.
+
+Then the owner switches off only the installed helper's Accessibility grant and
+removes that entry where available, keeping Screen Recording disabled. Focus
+the same selected TextEdit text area during this countdown:
+
+```bash
 cu_delay revoked-input --text public
 ```
 
-Expect refusals and no new pixels/input. These are fresh helper processes. If
-attribution failed, cancel its prompt instead of granting another app.
+Expect `refused: permission` and no additional text. Record the separate
+Accessibility revocation result; any input is revocation FAILED. These are
+fresh helper processes. If attribution failed, cancel its prompt instead of
+granting another app.
 
 Close the fixture using Stop or its close button and close the synthetic
 TextEdit document without saving. Each helper already exited. Inventory only

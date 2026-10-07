@@ -44,7 +44,15 @@ struct Request {
 }
 protocol NativeSource {
     func validateTarget(_ request: Request) throws
+    func checkPermission(_ operation: Operation) throws
     func perform(_ operation: Operation, request: Request) async throws -> String
+}
+func checkOperationPermissions(_ operation: Operation, screenCaptureAccess: () -> Bool,
+                               accessibilityAccess: () -> Bool) throws {
+    if case .capture = operation {
+        guard screenCaptureAccess() else { throw Refusal.permission }
+    }
+    guard accessibilityAccess() else { throw Refusal.permission }
 }
 func run(_ request: Request, source: NativeSource) async throws -> [String] {
     guard request.enabled else { throw Refusal.disabled }
@@ -57,6 +65,7 @@ func run(_ request: Request, source: NativeSource) async throws -> [String] {
     var result: [String] = []
     for operation in request.operations {
         try source.validateTarget(request)
+        try source.checkPermission(operation)
         result.append(try await source.perform(operation, request: request))
     }
     return result

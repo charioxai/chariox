@@ -5,6 +5,14 @@ import ScreenCaptureKit
 import Security
 
 struct MacSource: NativeSource {
+    func checkPermission(_ operation: Operation) throws {
+        try checkOperationPermissions(operation, screenCaptureAccess: {
+            if #available(macOS 14.0, *) { return CGPreflightScreenCaptureAccess() }
+            return false
+        }, accessibilityAccess: {
+            AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary)
+        })
+    }
     func validateTarget(_ request: Request) throws {
         guard let app = NSRunningApplication(processIdentifier: request.pid), !app.isTerminated else { throw Refusal.target }
         if request.ownerWindow {
@@ -133,6 +141,7 @@ struct MacSource: NativeSource {
     }
     func perform(_ operation: Operation, request: Request) async throws -> String {
         try validateTarget(request)
+        try checkPermission(operation)
         let element = try target(request)
         try fence(request, element: element, typing: false)
         if case .capture(let path) = operation {
