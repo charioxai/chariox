@@ -60,3 +60,11 @@ test("MD-stack user App and browser surfaces require union protocol 443", () => 
   }
   assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
 })
+
+// MP-08 / MP-11: only the new Computer command depends on local446.
+test("MP-08 Computer refuses pre446 before sending input", () => {
+  const request = {KernelBrowser:{command:{op:"computer",command:{op:"state"}}}}
+  assert.throws(() => requireKernelFeatureProtocol(request,443),/446/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request,446))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({KernelBrowser:{command:{op:"state"}}},443))
+})

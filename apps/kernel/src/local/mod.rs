@@ -288,6 +288,7 @@ pub use api::{
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+    KernelComputerCommand, KernelComputerInput, KernelComputerKeyState, KernelDesktopTarget,
 };
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use api::{

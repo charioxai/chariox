@@ -126,6 +126,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     pulseaudio \
     python3 \
     python3-venv \
+    python3-pil \
+    python3-pyatspi \
+    python3-xlib \
     screen \
     scrot \
     socat \
@@ -242,6 +245,8 @@ COPY apps/kernel/slice-linux-docker/docker/canonical-display.py /opt/chariox-sli
 COPY apps/kernel/slice-linux-docker/docker/canonical_vnc.py /opt/chariox-slice/canonical_vnc.py
 COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/chariox-slice/browser-controller-display.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
+# MP-08 / MP-11: shared native Computer adapter and typed-refusal assets.
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs apps/kernel/slice-linux-docker/docker/native-computer.mjs apps/kernel/slice-linux-docker/docker/native-computer.py apps/kernel/slice-linux-docker/docker/native-accessibility.mjs apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs apps/kernel/slice-linux-docker/docker/native-accessibility.py apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs apps/kernel/slice-linux-docker/docker/linux-desktop-session.py apps/kernel/slice-linux-docker/docker/x11-text-keyboard.py /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py

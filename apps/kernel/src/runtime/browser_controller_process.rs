@@ -34,6 +34,7 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
 mod display_packets;
@@ -531,7 +532,9 @@ impl BrowserControllerProcessStdioBackend {
     ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
-            "host.browser"
+            "host.computer"
+                | "host.computer.reset"
+                | "host.browser"
                 | "host.secret"
                 | "browser.action"
                 | "browser.upload"

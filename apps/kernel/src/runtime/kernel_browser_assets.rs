@@ -59,6 +59,20 @@ const ASSETS: &[(&str, &[u8])] = &[
         "kernel-browser-sample-lane.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
     ),
+    ("room-native-accessibility.mjs", include_bytes!("../../slice-linux-docker/docker/room-native-accessibility.mjs")),
+    ("native-keyboard-channel.mjs", include_bytes!("../../slice-linux-docker/docker/native-keyboard-channel.mjs")),
+    ("native-accessibility.mjs", include_bytes!("../../slice-linux-docker/docker/native-accessibility.mjs")),
+    ("native-accessibility.py", include_bytes!("../../slice-linux-docker/docker/native-accessibility.py")),
+
+    ("native-computer.mjs", include_bytes!("../../slice-linux-docker/docker/native-computer.mjs")),
+    ("native-computer.py", include_bytes!("../../slice-linux-docker/docker/native-computer.py")),
+    ("x11-text-keyboard.py", include_bytes!("../../slice-linux-docker/docker/x11-text-keyboard.py")),
+    ("slice-keyboard.py", include_bytes!("../../slice-linux-docker/docker/slice-keyboard.py")),
+    ("slice-text-finder.py", include_bytes!("../../slice-linux-docker/docker/slice-text-finder.py")),
+
+    ("linux-owned-desktop.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-desktop.mjs")),
+    ("linux-owned-process.mjs", include_bytes!("../../slice-linux-docker/docker/linux-owned-process.mjs")),
+    ("linux-desktop-session.py", include_bytes!("../../slice-linux-docker/docker/linux-desktop-session.py")),
     (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),

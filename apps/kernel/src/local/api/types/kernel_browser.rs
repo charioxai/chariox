@@ -4,6 +4,13 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    Computer {
+        command: KernelComputerCommand,
+    },
+    /// MP-08 / MP-11 (local 461): `None` restores every owned agent after "revoke all".
+    GrantRoomComputer {
+        agent_id: Option<String>,
+    },
     ListGrants,
     SubscribeGrants {
         after: u64,

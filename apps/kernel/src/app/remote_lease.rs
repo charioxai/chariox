@@ -766,10 +766,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 LeasedAgentCleanupPhase::Agent => {
                     let session_store = self.app.session_state_store();
                     let mut sessions = session_store.write();
-                    self.app
+                    let result = self
+                        .app
                         .agents
-                        .destroy_agent(&agent.backing_agent_id, &mut sessions)
-                        .map(|_| ())
+                        .destroy_agent(&agent.backing_agent_id, &mut sessions);
+                    drop(sessions);
+                    if result.is_ok() {
+                        self.app
+                            .forget_room_computer_access(&agent.backing_agent_id);
+                    }
+                    result.map(|_| ())
                 }
                 LeasedAgentCleanupPhase::BackingSessionEnd => {
                     if backing_session_still_used {

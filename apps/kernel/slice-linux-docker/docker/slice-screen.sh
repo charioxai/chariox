@@ -431,7 +431,12 @@ PYTHON
   # Desktop-launched programs inherit one session bus. Without it, ordinary
   # GTK applications cannot persist dconf settings. The supervisor stops the
   # bus when Openbox exits, so stop only Openbox rather than killing both.
-  nohup dbus-run-session -- openbox >"$LOGS/openbox.log" 2>&1 &
+  # MP-08 / MP-11: native observations attach to the SAME desktop session bus.
+  local computer_runtime="$ROOT/private"
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then computer_runtime="$CHARIOX_SLICE_PRIVATE_ROOT/runtime"; fi
+  install -d -m 0700 "$computer_runtime"
+  rm -f "$computer_runtime/desktop-session-address"
+  nohup dbus-run-session -- sh -c 'umask 077; printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > "$1"; exec openbox' sh "$computer_runtime/desktop-session-address" >"$LOGS/openbox.log" 2>&1 &
   nohup tint2 -c "$ROOT/tint2rc" >"$LOGS/taskbar.log" 2>&1 &
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
     if ! slice_selkies start >/dev/null; then
@@ -456,6 +461,9 @@ PYTHON
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
   require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  # MP-08 / MP-11: Xorg/desktop clients may install Mode_switch on code8.
+  # Prepare one inert text slot after startup, before publishing readiness.
+  CHARIOX_OWNED_VIRTUAL_DISPLAY=1 /usr/bin/python3 "$ROOT/slice-keyboard.py" prepare-owned-keymap
   status
 }
 
@@ -680,17 +688,13 @@ computer_key_stdin() {
     return 2
   fi
   if [[ -z "$key" || ${#key} -gt 128 || "$key" == -* || "$key" =~ [[:space:]] ]]; then
-    printf 'computer key must be a non-whitespace xdotool key name of at most 128 bytes\n' >&2
+    printf 'computer key must be a non-whitespace native key name of at most 128 bytes\n' >&2
     return 2
   fi
-  # DOM callers use Enter; X11's ordinary Enter keysym is Return. Translate
-  # whole chord components only, preserving native names such as KP_Enter.
-  local chord="+$key+"
-  while [[ "$chord" == *"+Enter+"* ]]; do
-    chord="${chord//+Enter+/+Return+}"
-  done
-  key="${chord:1:${#chord}-2}"
-  run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
+  # MP-08/MP-11: use the same strict XTEST chords as host native input.
+  # xdotool can return success for unknown lowercase keysyms without input.
+  printf '%s' "$key" | timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py" key-repeat "$repeat"
 }
 
 computer_input_reset() {
