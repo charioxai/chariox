@@ -25,8 +25,8 @@ impl Default for UserHistoryConfig {
 }
 
 /// The models that write provider-switch handoff briefs, per target harness.
-/// Unset, a brief uses the source model when the harness can run it and the
-/// target model otherwise.
+/// Unset, a Codex brief uses a fast default, and a Claude brief the source
+/// model when the harness can run it and the target model otherwise.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserHandoffHistoryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]

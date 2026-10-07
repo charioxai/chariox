@@ -60,8 +60,10 @@ How it is written:
 Which model writes it:
 
 - `history.handoff.codex_brief_model` or `history.handoff.claude_brief_model`, when set.
+- Otherwise, on Codex, `gpt-6-luna`: it writes an L brief in about 5 s, where gpt-5.5 took up to 19 s.
 - Otherwise the source model, when the target harness can run it, as on an account switch.
 - Otherwise the target model.
+- If the chosen model fails on the first call, for instance because the account cannot run it, the brief is retried once on the target model.
 
 The update has 120 seconds. If it fails, times out, or the target is a Claude native run, the packet keeps the stored brief, if any, and its deterministic sections.
 

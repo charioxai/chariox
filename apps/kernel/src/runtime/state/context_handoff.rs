@@ -1187,6 +1187,44 @@ mod tests {
     }
 
     #[test]
+    fn codex_briefs_default_to_the_fast_model_and_configuration_wins() {
+        let handoff = |source_provider: &str, source_model: &str| PendingAgentContextHandoff {
+            source_provider: source_provider.to_string(),
+            source_model: source_model.to_string(),
+            target_provider_run_id: None,
+            target_provider: String::new(),
+            target_account_profile: "default".to_string(),
+            target_model: None,
+            conversation: AgentConversation::default(),
+            derived: true,
+        };
+        let codex = test_run_in_session("run", "agent", "codex", "gpt-5.5", None);
+        let claude = test_run_in_session("run", "agent", "claude", "opus", None);
+        let brief_model = super::brief_refresh::brief_model;
+
+        assert_eq!(
+            brief_model(None, &handoff("claude", "sonnet"), &codex),
+            "gpt-6-luna"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("codex", "gpt-6"), &codex),
+            "gpt-6-luna"
+        );
+        assert_eq!(
+            brief_model(Some("gpt-5.6-luna"), &handoff("claude", "sonnet"), &codex),
+            "gpt-5.6-luna"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("claude", "sonnet"), &claude),
+            "sonnet"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("codex", "gpt-6"), &claude),
+            "opus"
+        );
+    }
+
+    #[test]
     fn handoff_injection_is_source_agnostic() {
         let store = PendingAgentContextHandoffStore::default();
         store.set(
