@@ -32,3 +32,8 @@ test('MP-08/MP-10 native exact frames retain ordinary sequencing and byte pacing
  const source={native_exact:true,settled_verified:true,width:1280,height:800,data_base64:'AA==',generation:1,refinement_serial:4};
  try{const frame=await stream.frame(source,'d',1);assert.equal(frame.kind,'png');assert.equal(frame.sequence,2);assert.equal(stream.exact,true);assert.equal(stream.pixels.worker,null);}finally{await stream.close()}
 });
+
+test('MP-11 native encoder close retires only its private session',async()=>{
+ const encoder=new PortableEncoder();const retired=[];const raw={nativeRetire:name=>retired.push(name),nativeEncode:async()=>({backend:'native-x264',stripes:[],revision:1})};
+ await encoder.encodeStripes(raw,8000000,false);await encoder.close();await encoder.close();assert.deepEqual(retired,[encoder.nativeSession]);
+});

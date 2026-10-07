@@ -25,6 +25,7 @@ export class NativeWorkerControl {
    delete value.timings;waiter.resolve(value);
   }catch(error){waiter.reject(error);this.close()}
  }
+ retire(encoder){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({retire:encoder})+'\n');}
  delivered(encoder,revision){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({delivered:encoder,revision})+'\n');}
  commit(encoder,serial){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({commit:encoder,serial})+'\n');}
  close(){if(this.closed)return;this.closed=true;for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}

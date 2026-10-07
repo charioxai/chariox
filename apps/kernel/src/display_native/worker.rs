@@ -25,6 +25,7 @@ struct Config {
 enum Command {
     Encode { encode: Encode },
     Exact { exact: Exact },
+    Retire { retire: String },
     Commit { commit: String, serial: u64 },
     Delivered { delivered: String, revision: u64 },
     Release { release: usize, serial: u64 },
@@ -209,6 +210,7 @@ pub(super) fn run() -> Result<(), String> {
                     }
                     slot.serial = None;
                 }
+                Command::Retire { retire } => sessions.retire(&retire),
                 Command::Commit {
                     commit,
                     serial: committed,

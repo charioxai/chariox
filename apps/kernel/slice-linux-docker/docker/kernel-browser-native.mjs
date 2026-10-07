@@ -77,6 +77,7 @@ export class LinuxCapture {
     if(this.nativeWorker){
      raw.nativeEncode=values=>this.nativeWorker.request('encode',{...values,serial:raw.serial});
      raw.nativeExact=values=>this.nativeWorker.request('exact',{...values,serial:raw.serial});
+     raw.nativeRetire=encoder=>this.nativeWorker.retire(encoder);
      raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
      raw.nativeCommit=encoder=>this.nativeWorker.commit(encoder,raw.serial);
     }

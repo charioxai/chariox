@@ -27,6 +27,7 @@ export class PortableEncoder {
     return this.exchange({raw,bitrate,reset,codec,operation:'stripes'});
   }
     async nativeEncode(raw,bitrate,reset,stripes){
+      this.nativeRetire=raw.nativeRetire;
       const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),regions:raw[displayMaskRegions]??[]});
       if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
       this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
@@ -127,7 +128,7 @@ export class PortableEncoder {
   }
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
   async close() {
-    try{await this.closeChild()}finally{
+    try{this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
       if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
     }
   }

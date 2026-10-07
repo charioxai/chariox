@@ -148,6 +148,9 @@ impl Sessions {
             root,
         }
     }
+    pub fn retire(&mut self, name: &str) {
+        self.sessions.remove(name);
+    }
     pub fn damage(&mut self, bounds: [i32; 4]) {
         for s in self.sessions.values_mut() {
             for r in 0..8 {
