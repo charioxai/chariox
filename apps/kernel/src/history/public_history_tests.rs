@@ -30,7 +30,7 @@ impl Fixture {
             .append_operational_event(
                 HistoryEventKind::UserPrompt,
                 Some(HistoryEventRole::User),
-                Some(text.into()),
+                Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
                     session_id: Some(room.into()),
@@ -655,7 +655,7 @@ fn public_history_turn_selection_is_scoped_and_distinguishes_missing_from_null_t
             .append_operational_event(
                 HistoryEventKind::UserPrompt,
                 Some(HistoryEventRole::User),
-                Some(text.into()),
+                Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
                     session_id: Some(room.into()),
@@ -718,7 +718,7 @@ fn public_history_recalls_fragmented_peer_answer_as_one_message() {
                     Some(agent),
                     crate::terminal::TerminalOutputKind::ProviderOutput,
                     Some(key.into()),
-                    text.into(),
+                    text.to_owned(),
                 ),
                 HistoryEventTurnContext {
                     session_id: Some(room.into()),
@@ -813,7 +813,7 @@ fn public_history_previous_turn_groups_prompt_and_native_output() {
             .append_operational_event(
                 kind,
                 None,
-                Some(text.into()),
+                Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
                     session_id: Some("room".into()),

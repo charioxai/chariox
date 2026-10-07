@@ -141,13 +141,34 @@ impl KernelRuntimeState {
                 }
             }
         }
-        self.with_authorized_app_side_effect(|_| {
-            self.with_forwarded_binding_operation(|| {
-                service.upsert_vault_backed_credential_with_secret(
-                    registry, credential, secret, overwrite,
-                )
+        // MP-08 / MP-10 / MP-11: runtime creation stamps its authoritative
+        // Room into metadata. A value becomes private when stored, before any
+        // later browser insertion; previously public echoes must be retired now.
+        let room = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.clone());
+        let key = match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
+            _ => None,
+        };
+        let result = self
+            .with_authorized_app_side_effect(|_| {
+                self.with_forwarded_binding_operation(|| {
+                    service.upsert_vault_backed_credential_with_secret(
+                        registry, credential, secret, overwrite,
+                    )
+                })
             })
-        })
-        .await
+            .await?;
+        if let Some(room) = room {
+            self.owned
+                .room_secret_observations
+                .register_credential_source(&room, key.as_deref())?;
+            self.owned
+                .room_secret_observations
+                .register(&room, secret)?;
+        }
+        Ok(result)
     }
 }

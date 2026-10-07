@@ -222,3 +222,88 @@ async fn corrupt_restarted_room_public_lifecycle(delete_only: bool) {
         assert!(!store.marker(&room.session_id).exists());
     }
 }
+
+#[tokio::test]
+async fn public_history_new_vault_credential_retires_prior_public_value() {
+    // MP-08 / MP-10 / MP-11: supplementary regression for the real hidden-input
+    // Vault creation drill. Only successful creation can invalidate public text.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-public-history-creation");
+    let owner = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let history = &room.runtime.owned.operational_history_store;
+    let prior = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("before synthetic_vault_creation_value".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    {
+        let _guard = history.lock_public_history().unwrap();
+        assert!(history
+            .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+            .unwrap()
+            .is_some());
+    }
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = browser_credential("creation", "creation-key");
+    credential.metadata =
+        Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &crate::config::UserCredentialVaultConfig {
+            backend: crate::config::CredentialVaultBackend::ProcessMemory,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    room.runtime
+        .upsert_observed_vault_credential(
+            &service,
+            &registry,
+            credential,
+            "synthetic_vault_creation_value",
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(room
+        .runtime
+        .owned
+        .room_secret_observations
+        .uses_vault_key(&room.session_id, "creation-key")
+        .unwrap());
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            &owner,
+            &room.session_id,
+            None,
+            "synthetic_vault_creation_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+    assert!(history
+        .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+        .unwrap()
+        .is_none());
+}
