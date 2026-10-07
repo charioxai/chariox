@@ -234,6 +234,7 @@ impl KernelRuntimeState {
                     agent: agent.into(),
                     sequence,
                     state: state.into(),
+                    now: crate::session::unix_epoch_ms(),
                 })?
         else {
             unreachable!()

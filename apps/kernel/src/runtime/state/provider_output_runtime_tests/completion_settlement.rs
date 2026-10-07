@@ -303,6 +303,7 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             agent: agent.id().into(),
             sequence: e.sequence,
             state: "rejected".into(),
+            now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
         })
         .unwrap();
     assert!(store.agent_tasks(None, None).unwrap().is_empty());
@@ -3086,6 +3087,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
                 agent: agent.id().into(),
                 sequence: e.sequence,
                 state: "rejected".into(),
+                now: now,
             })
             .unwrap();
     }

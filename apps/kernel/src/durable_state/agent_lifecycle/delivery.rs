@@ -146,6 +146,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             agent,
             sequence,
             state,
+            now,
         } => {
             if !matches!(state.as_str(), "accepted" | "rejected" | "uncertain") {
                 return Err(error("invalid delivery receipt"));
@@ -163,16 +164,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if let Some(prompt) = e.prompt_id.as_deref() {
                     revert_refused_wake(tx, &e.room_id, &e.agent_id, prompt)?;
                 }
+                // Steering is a busy refusal even when its receipt arrives
+                // after the turn ends or the admitted attempt times out.
+                if e.target_prompt_id.is_none() {
+                    tx.execute(
+                        "INSERT INTO agent_inbox_refusals VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",
+                        params![sql_integer(e.sequence)?, sql_integer(now)?],
+                    ).map_err(sql)?;
+                }
                 e.prompt_id = None;
                 e.target_prompt_id = None;
                 e.provider_run_id = None;
-                // Keep the steer marker, but supervise idle refusals separately.
-                if let Some(at) = e.attempted_at_ms {
-                    tx.execute(
-                        "INSERT INTO agent_inbox_refusals VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",
-                        params![sql_integer(e.sequence)?, sql_integer(at)?],
-                    ).map_err(sql)?;
-                }
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;

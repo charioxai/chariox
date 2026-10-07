@@ -609,6 +609,7 @@ pub(crate) fn finish_provider_event_submit(
         agent: finished.agent_id.clone(),
         sequence: event.sequence,
         state: state.into(),
+        now: crate::session::unix_epoch_ms(),
     })? {
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,

@@ -184,6 +184,7 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
         state: String,
+        now: u64,
     },
     Ack {
         room: String,

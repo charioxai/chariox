@@ -458,6 +458,9 @@ MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
 window. Repeated refusals while idle have a separate bounded escalation clock;
 an active recipient turn clears that clock. Unsupported or refused steering
 stays queued through long turns and retries when the recipient becomes idle.
+Steer rejections do not start the idle-refusal clock; idle refusals start it at
+receipt time. A damaged refusal clock is retained and quarantines only its
+own delivery through the owner-action path; supervision of other Rooms continues.
 
 `chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
 messages wait behind active work; idle/yielded receivers wake. Urgent messages

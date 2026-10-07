@@ -214,6 +214,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
+                let mut clock_quarantined = false;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
                     // The next idle refusal starts a new bounded window.
@@ -229,19 +230,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         continue;
                     }
                     let at = tx.query_row(
-                        "SELECT first_refused_at_ms FROM agent_inbox_refusals WHERE sequence=?1",
+                        "SELECT first_refused_at_ms, typeof(first_refused_at_ms) || ':' || hex(CAST(first_refused_at_ms AS BLOB)) FROM agent_inbox_refusals WHERE sequence=?1",
                         [sql_integer(e.sequence)?],
-                        |r| r.get::<_, i64>(0),
+                        |r| Ok((r.get::<_, i64>(0), r.get::<_, String>(1)?)),
                     ).optional().map_err(sql)?;
-                    at.map(|at| u64::try_from(at).map_err(|_| error("invalid refusal clock")))
-                        .transpose()?
+                    match at {
+                        None => None,
+                        Some((Ok(at), _)) if at >= 0 => Some(at as u64),
+                        Some((_, raw)) => {
+                            // Preserve type and bytes, even for unreadable text.
+                            // Only this event enters the existing owner block.
+                            quarantine::retain(tx, "refusal-clock", &e.sequence.to_string(), &raw)?;
+                            clock_quarantined = true;
+                            None
+                        }
+                    }
                 } else {
                     e.attempted_at_ms
                 };
                 if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
-                    && deadline_start
-                        .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
+                    && (clock_quarantined
+                        || deadline_start.is_some_and(|at| {
+                            now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
+                        }))
                 {
+                    let reason = if clock_quarantined {
+                        format!("Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel", e.sequence)
+                    } else {
+                        format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel", e.sequence)
+                    };
                     e.state = "blocked".into();
                     save_event(tx, &e)?;
                     // Only the task this delivery belongs to waits on its
@@ -259,7 +276,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             }
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
-                            t.reason=format!("Unconfirmed delivery {}: owner must reconcile the original attempt",e.sequence);
+                            t.reason = if clock_quarantined {
+                                reason.clone()
+                            } else {
+                                format!("Unconfirmed delivery {}: owner must reconcile the original attempt", e.sequence)
+                            };
                             t.revision += 1;
                             save(tx, &t)?;
                             changed.push(t);
@@ -270,7 +291,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         let mut task = new_task(e.room_id, e.agent_id, id, e.provider_run_id, now);
                         task.state = ExecutionState::Blocked;
                         task.blocked_revision = task.revision;
-                        task.reason = format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel",e.sequence);
+                        task.reason = reason;
                         save(tx, &task)?;
                         changed.push(task);
                     }
