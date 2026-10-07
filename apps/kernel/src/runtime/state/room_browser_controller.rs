@@ -308,6 +308,29 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
+        if matches!(command, Command::NoteObservation { .. }) {
+            // MD-N2: Ping is understood by old workers; only send the new variant
+            // after a current, authenticated response from this exact target.
+            let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
+            let response = Box::pin(self.send_room_slice_peer_request(
+                &config,
+                target.clone(),
+                RelayPeerRequest::Ping {
+                    value: value.clone(),
+                },
+                Duration::from_secs(15),
+            ))
+            .await?;
+            let version = match response {
+                RelayPeerResponse::Pong {
+                    value: received,
+                    relay_peer_protocol_version,
+                    ..
+                } if received == value => relay_peer_protocol_version,
+                _ => None,
+            };
+            super::room_browser_controller_admission::require_notes_worker_protocol(version)?;
+        }
         let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {
             session_id: session_id.to_string(),
@@ -775,6 +798,13 @@ async fn execute_local(
         Command::Artifact { request } => processes
             .browser_artifact(&session_id, &request)
             .map(|capture| Response::Artifact { capture }),
+        Command::NoteObservation {
+            target_id,
+            document_id,
+            quote,
+        } => processes
+            .note_observation(&session_id, &target_id, &document_id, quote.as_ref())
+            .map(|observation| Response::NoteObservation { observation }),
         Command::Snapshot {
             target_id,
             document_id,

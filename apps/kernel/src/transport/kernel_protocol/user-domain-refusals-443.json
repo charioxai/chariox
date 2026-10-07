@@ -1,0 +1,50 @@
+[
+  {
+    "reason": "not_focused_agent",
+    "error": {
+      "code": "user_domain_not_focused_agent",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
+    "reason": "foreign_owner",
+    "error": {
+      "code": "user_domain_foreign_owner",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
+    "reason": "stale_epoch",
+    "error": {
+      "code": "user_domain_stale_epoch",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
+    "reason": "stale_reference",
+    "error": {
+      "code": "user_domain_stale_reference",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
+    "reason": "not_granted",
+    "error": {
+      "code": "user_domain_not_granted",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  },
+  {
+    "reason": "sensitive_requires_focus",
+    "error": {
+      "code": "user_domain_sensitive_requires_focus",
+      "message": "User-domain request refused",
+      "retryable": false
+    }
+  }
+]

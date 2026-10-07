@@ -370,6 +370,9 @@ impl RoomSecretObservations {
     }
 
     fn scrub_error_inner(&self, room: &str, error: DaemonError, observation: bool) -> DaemonError {
+        if matches!(error, DaemonError::UserDomainRefused { .. }) {
+            return error;
+        }
         let original = error.to_string();
         match if observation {
             self.scrub(room, original.clone())
