@@ -12,6 +12,10 @@ test('MP-11 bounded safe lossless fallback progressively repairs its admitted ba
   assert.equal(frame.kind,'tiles');assert.equal(frame.base_sequence,frame.sequence-1);assert(Buffer.byteLength(JSON.stringify(frame))*4/3+1024<1024*1024);
   for(const tile of frame.tiles){const p=decodePng(tile.data_base64).pixels;for(let y=0;y<tile.height;y++)p.copy(actual,((tile.y+y)*512+tile.x)*4,y*tile.width*4,(y+1)*tile.width*4)}
  }assert.equal(stream.exact,true);assert.deepEqual(actual,pixels);
- await assert.rejects(stream.frame(source,'other',stream.sequence),/bounded egress/);
+ const bootstrap=await stream.frame(source,'other',stream.sequence);
+ assert.equal(bootstrap.kind,'png');assert.equal(stream.exact,false);
+ const black=decodePng(bootstrap.data_base64).pixels;
+ for(let n=0;n<black.length;n+=4)assert.deepEqual(black.subarray(n,n+4),Buffer.from([0,0,0,255]));
+ assert.ok(stream.repair?.length,'a new document starts bounded exact recovery');
  }finally{await stream.close()}
 });
