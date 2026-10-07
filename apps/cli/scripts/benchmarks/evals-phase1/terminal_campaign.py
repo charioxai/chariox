@@ -28,46 +28,56 @@ def trial_results(job):
     return [p for p in job.glob('*/result.json') if 'task_name' in json.loads(p.read_text())]
 
 
-def resume_quota_campaign(campaign, identity):
-    """MP-08 / MP-10 / MP-11: preserve admission attempt; completed official tasks stay fixed."""
-    if any(campaign.get(k)!=v for k,v in identity.items()):
-        raise ValueError('MP-08 / MP-10: resumed campaign identity differs')
-    if campaign.get('status')!='blocked' or not campaign.get('tasks'):
-        raise ValueError('MP-08 / MP-10: only a quota-paused campaign can resume')
-    last=campaign['tasks'][-1]
-    official=json.loads(Path(last['official_result']).read_text())
-    measurement=((official.get('agent_result') or {}).get('metadata') or {}).get('chariox') or {}
-    if measurement.get('status')!='quota_exhausted' or not measurement.get('cleanup_complete') or last['cleanup']['remaining_containers']:
-        raise ValueError('MP-08 / MP-10 / MP-11: quota admission and complete cleanup required')
-    campaign.setdefault('quota_attempts',[]).append(campaign['tasks'].pop())
-    campaign['status']='running';campaign.pop('first_failing_task',None)
-    return campaign
+PRE_PROMPT_SEAMS = {'launch', 'kernel_start', 'kernel_ready', 'tui_ready', 'profile_link', 'relay_tui_attach'}
 
 
-def resume_setup_campaign(campaign, identity):
-    """MP-08 / MP-10 / MP-11: retry only a clean failure before any solver or oracle."""
+def archive_last_attempt(campaign, identity, kind, admissible):
+    """MP-08 / MP-10 / MP-11: preserve one admissible failed attempt; scored tasks stay fixed."""
     if any(campaign.get(k) != v for k, v in identity.items()) or campaign.get('status') != 'blocked' or not campaign.get('tasks'):
-        raise ValueError('MP-08 / MP-10: setup resume identity/status differs')
+        raise ValueError('MP-08 / MP-10: resumed campaign identity/status differs')
     last = campaign['tasks'][-1]
     official = json.loads(Path(last['official_result']).read_text())
-    error = official.get('exception_info') or {}
-    metadata = ((official.get('agent_result') or {}).get('metadata') or {}).get('chariox')
     cleanup = last['cleanup']
-    if (not {'agent_execution', 'verifier', 'verifier_result', 'agent_result'} <= official.keys()
-            or error.get('exception_type') != 'RuntimeError'
-            or error.get('exception_message') != 'MP-08 / MP-10: task runner dependencies unavailable'
-            or official.get('agent_execution') is not None or official.get('verifier') is not None
-            or official.get('verifier_result') is not None or metadata is not None
-            or official['agent_info']['version'] != campaign['source_commit']
-            or official['task_name'].split('/')[-1] != last['task_id']
+    if (not admissible(official, ((official.get('agent_result') or {}).get('metadata') or {}).get('chariox'), last, campaign)
             or cleanup['remaining_containers']
-            or any(r.get('removed_containers') or r.get('retained_volumes') for r in cleanup['manual_settlement'])):
-        raise ValueError('MP-08 / MP-10 / MP-11: clean dependency failure before provider/verifier required')
-    campaign.setdefault('setup_attempts', []).append(campaign['tasks'].pop())
+            or any(r.get('removed_containers') or r.get('retained_volumes') for r in cleanup.get('manual_settlement', []))):
+        raise ValueError('MP-08 / MP-10 / MP-11: admissible ' + kind + ' failure and complete cleanup required')
+    campaign.setdefault(kind + '_attempts', []).append(campaign['tasks'].pop())
     campaign['status'] = 'running'
     campaign.pop('first_failing_task', None)
     campaign.pop('finished_at', None)
     return campaign
+
+
+def resume_quota_campaign(campaign, identity):
+    """MP-08 / MP-10 / MP-11: retry only a clean proven quota admission."""
+    return archive_last_attempt(campaign, identity, 'quota', lambda official, measurement, last, campaign:
+        (measurement or {}).get('status') == 'quota_exhausted' and measurement.get('cleanup_complete'))
+
+
+def unverified(official, campaign, last, message):
+    error = official.get('exception_info') or {}
+    return (error.get('exception_type') == 'RuntimeError' and error.get('exception_message') == message
+            and {'agent_execution', 'verifier', 'verifier_result', 'agent_result'} <= official.keys()
+            and official.get('verifier') is None and official.get('verifier_result') is None
+            and official['agent_info']['version'] == campaign['source_commit']
+            and official['task_name'].split('/')[-1] == last['task_id'])
+
+
+def resume_setup_campaign(campaign, identity):
+    """MP-08 / MP-10 / MP-11: retry only a clean failure before any solver or oracle."""
+    return archive_last_attempt(campaign, identity, 'setup', lambda official, measurement, last, campaign:
+        unverified(official, campaign, last, 'MP-08 / MP-10: task runner dependencies unavailable')
+        and measurement is None and official.get('agent_execution') is None)
+
+
+def resume_admission_campaign(campaign, identity):
+    """MP-08 / MP-10 / MP-11: retry only a clean runtime/profile admission failure before any task prompt or oracle."""
+    return archive_last_attempt(campaign, identity, 'admission', lambda official, measurement, last, campaign:
+        unverified(official, campaign, last, 'MP-08 / MP-10: Chariox task did not settle; retain failed task in campaign ledger')
+        and measurement is not None and measurement.get('status') == 'failed'
+        and measurement.get('first_failing_seam') in PRE_PROMPT_SEAMS and measurement.get('cleanup_complete') is True
+        and measurement.get('usage') is None and 'prompt_id' not in measurement)
 
 
 def main():
@@ -83,12 +93,13 @@ def main():
     resume = p.add_mutually_exclusive_group()
     resume.add_argument('--resume',action='store_true')
     resume.add_argument('--resume-setup',action='store_true')
+    resume.add_argument('--resume-admission',action='store_true')
     args=p.parse_args()
     scripts=Path(__file__).resolve().parent
     lock=json.loads((scripts/'inputs.lock.json').read_text());validate_lock(lock)
     if command_output(['git','-C',str(args.tasks),'rev-parse','HEAD']) != lock['terminal_bench_2']['revision'] or command_output(['git','-C',str(args.tasks),'status','--porcelain']):
         raise ValueError('MP-08 / MP-10: exact clean official task checkout required')
-    resuming = args.resume or args.resume_setup
+    resuming = args.resume or args.resume_setup or args.resume_admission
     if not args.output.is_absolute() or (args.output.exists() and not resuming) or args.output.resolve().is_relative_to(scripts.parents[4]):
         raise ValueError('MP-11: new absolute external evidence directory required')
     preflight(str(args.runtime_root),args.source_commit,args.kernel_sha256,args.local_protocol)
@@ -102,9 +113,9 @@ def main():
     if resuming:
         identity={key:campaign[key] for key in ['benchmark','phase','task_ids','source_commit','kernel_sha256','model','harness_revision','task_revision']}
         saved = json.loads((args.output/'campaign.json').read_text())
-        campaign = (resume_setup_campaign if args.resume_setup else resume_quota_campaign)(saved, identity)
+        campaign = (resume_setup_campaign if args.resume_setup else resume_admission_campaign if args.resume_admission else resume_quota_campaign)(saved, identity)
     attempts=args.output/'campaign-attempts';attempts.mkdir(mode=0o700,exist_ok=True)
-    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':resuming,'resume_kind':'setup' if args.resume_setup else 'quota' if args.resume else None},indent=2)+'\n')
+    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':resuming,'resume_kind':'setup' if args.resume_setup else 'admission' if args.resume_admission else 'quota' if args.resume else None},indent=2)+'\n')
     def save(): (args.output/'campaign.json').write_text(json.dumps(campaign,indent=2)+'\n')
     save()
     env={**os.environ,'PYTHONPATH':str(scripts),'PYTHONDONTWRITEBYTECODE':'1','HARBOR_DISABLE_TELEMETRY':'1'}
