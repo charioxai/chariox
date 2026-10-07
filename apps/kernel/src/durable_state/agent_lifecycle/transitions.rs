@@ -111,6 +111,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                     task.revision += 1;
                     save(tx, &task)?;
+                    if let Some(reg) = registrations(tx, &task.task_id)?
+                        .into_iter()
+                        .find(|r| r.id == format!("completion-{id}"))
+                    {
+                        recover_source(tx, &mut task, reg)?;
+                    }
                     return Ok(Outcome::Task(task));
                 }
             }
@@ -136,31 +142,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![registration.id,task,encode(&registration)?]).map_err(sql)?;
-            let source:Option<(i64,String,bool)>=tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![t.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
-            if let Some((seq, id, success)) = source {
-                let e = occurrence(
-                    &t.room_id,
-                    &t.agent_id,
-                    &registration.source_id,
-                    &id,
-                    if success {
-                        "source_completed"
-                    } else {
-                        "source_lost"
-                    },
-                    serde_json::json!({"task_id":t.task_id,"source_id":registration.source_id,"success":success}),
-                );
-                event(tx, e)?;
-                let mut registration = registration;
-                registration.live = false;
-                registration.source_cursor =
-                    u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
-                tx.execute(
-                    "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                    params![registration.id, encode(&registration)?],
-                )
-                .map_err(sql)?;
-            }
+            recover_source(tx, &mut load(tx, &task)?, registration)?;
             Ok(Outcome::Saved)
         }
         Operation::Unsubscribe {
@@ -590,4 +572,47 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             Ok(Outcome::Task(t))
         }
     }
+}
+
+fn recover_source(
+    tx: &Transaction<'_>,
+    task: &mut AgentTaskExecution,
+    mut registration: Registration,
+) -> Result<(), DaemonError> {
+    let source: Option<(i64,String,bool)> = tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
+    if let Some((seq, id, success)) = source {
+        event(
+            tx,
+            occurrence(
+                &task.room_id,
+                &task.agent_id,
+                &registration.source_id,
+                &id,
+                if success {
+                    "source_completed"
+                } else {
+                    "source_lost"
+                },
+                serde_json::json!({"task_id":task.task_id,"source_id":registration.source_id,"public_history_ref":registration.source_id,"occurrence_id":id,"success":success}),
+            ),
+        )?;
+        registration.live = false;
+        registration.source_cursor =
+            u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
+        tx.execute(
+            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+            params![registration.id, encode(&registration)?],
+        )
+        .map_err(sql)?;
+        if let Some(o) = task
+            .obligations
+            .iter_mut()
+            .find(|o| Some(&o.id) == registration.obligation_id.as_ref() && o.status == "open")
+        {
+            o.status = if success { "settling" } else { "failed" }.into();
+            task.revision += 1;
+            save(tx, task)?;
+        }
+    }
+    Ok(())
 }
