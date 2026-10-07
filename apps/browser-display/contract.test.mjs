@@ -17,7 +17,7 @@ export async function contract() {
 }
 test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 447', async()=>{
  const version=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
- assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 447\b/);
+ assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 463\b/);
  const frames=await contract();
  assert.equal(createHash('sha256').update(JSON.stringify(frames)).digest('hex'),'2ee8a6385402e07acc6ea78752e7f6832ea269faa9646362475c6f5705c672a6');
 });
@@ -34,7 +34,7 @@ test('MD-DISPLAY443 pins explicit dependency admission and key/delta/IDR contrac
 test('MP-08/MP-10/MP-11 protocol447/peer90 pins stripe offer and atomic row packet',async()=>{
  const local=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
  const peer=await readFile(new URL('../kernel/src/transport/relay_peer.rs',import.meta.url),'utf8');
- assert.match(local,/LOCAL_DAEMON_PROTOCOL_VERSION = 447\b/);assert.match(peer,/RELAY_PEER_PROTOCOL_VERSION: u32 = 90\b/);
+ assert.match(local,/LOCAL_DAEMON_PROTOCOL_VERSION = 463\b/);assert.match(peer,/RELAY_PEER_PROTOCOL_VERSION: u32 = 93\b/);
  const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true,stripes:true,css_width:1920,css_height:1080},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
  const stripes=Array.from({length:8},(_,row)=>({row,y:2*Math.floor(540*row/8),height:2*(Math.floor(540*(row+1)/8)-Math.floor(540*row/8)),codec:'avc1.420033',key:true,sequence:1,reference_sequence:null,data_base64:'opaque'}));
  try{

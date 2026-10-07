@@ -8,7 +8,7 @@ fn mdaccess_protocol_463_grant_shapes_and_hash() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 463);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        92
+        93
     );
     let mut values = Vec::new();
     for command in [

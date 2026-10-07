@@ -170,7 +170,7 @@ try {
   })
   assert.equal(polls, 8)
   assert.deepEqual(advertised, [false, false, false, true, true, true, true, false])
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 436)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 463)
   // Upgraded kernels and direct CLIs must also work before Cloud is upgraded.
   rejectedPoll = undefined
   legacyServer = true
