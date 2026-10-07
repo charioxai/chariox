@@ -140,6 +140,18 @@ static int output_safe(struct Row *row,const uint8_t *packet,size_t length,int w
     }
     return 1;
 }
+/* MP-08/MP-10: visible dimensions differ from aligned VAAPI pool storage.
+ * A driver/runtime failure restarts the SAME masked stream with software IDRs. */
+static AVPacket *hardware_encode(struct Codec *c,struct Row *row,int h) {
+    if(av_frame_make_writable(row->staging)<0||I420ToNV12(row->picture.img.plane[0],row->picture.img.i_stride[0],row->picture.img.plane[1],row->picture.img.i_stride[1],row->picture.img.plane[2],row->picture.img.i_stride[2],row->staging->data[0],row->staging->linesize[0],row->staging->data[1],row->staging->linesize[1],c->width,h))return NULL;
+    AVFrame *frame=av_frame_alloc();if(!frame)return NULL;
+    int status=av_hwframe_get_buffer(row->hardware->hw_frames_ctx,frame,0);
+    if(status>=0){frame->width=c->width;frame->height=h;status=av_hwframe_transfer_data(frame,row->staging,0);}
+    if(status>=0){frame->pts=(int64_t)row->sequence;frame->pict_type=row->sequence?AV_PICTURE_TYPE_NONE:AV_PICTURE_TYPE_I;status=avcodec_send_frame(row->hardware,frame);}
+    av_frame_free(&frame);if(status<0)return NULL;
+    AVPacket *packet=av_packet_alloc();if(!packet)return NULL;
+    if(avcodec_receive_packet(row->hardware,packet)<0){av_packet_free(&packet);return NULL;}return packet;
+}
 /* -1: unavailable, -2: unsafe lossy output (discard ALL rows), >=0: count.
  * Exact memcmp, never a hash collision, decides unchanged-row reuse. */
 int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const struct Rect *regions,size_t count,struct RowResult *results) {
@@ -174,13 +186,8 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         at=cpu_ms();
         AVPacket *hardware_packet=NULL;int length;
         if(row->hardware) {
-            if(av_frame_make_writable(row->staging)<0||I420ToNV12(row->picture.img.plane[0],row->picture.img.i_stride[0],row->picture.img.plane[1],row->picture.img.i_stride[1],row->picture.img.plane[2],row->picture.img.i_stride[2],row->staging->data[0],row->staging->linesize[0],row->staging->data[1],row->staging->linesize[1],c->width,h))return -1;
-            AVFrame *frame=av_frame_alloc();if(!frame)return -1;
-            if(av_hwframe_get_buffer(row->hardware->hw_frames_ctx,frame,0)<0||av_hwframe_transfer_data(frame,row->staging,0)<0){av_frame_free(&frame);return -1;}
-            frame->width=c->width;frame->height=h;frame->pts=(int64_t)row->sequence;frame->pict_type=row->sequence?AV_PICTURE_TYPE_NONE:AV_PICTURE_TYPE_I;
-            int status=avcodec_send_frame(row->hardware,frame);av_frame_free(&frame);if(status<0)return -1;
-            hardware_packet=av_packet_alloc();if(!hardware_packet)return -1;
-            if(avcodec_receive_packet(row->hardware,hardware_packet)<0){av_packet_free(&hardware_packet);return -1;}
+            hardware_packet=hardware_encode(c,row,h);
+            if(!hardware_packet){for(int i=0;i<8;i++)row_close(&c->rows[i]);c->fallback=3;return cx_codec_encode(c,source,255,regions,count,results);}
             length=hardware_packet->size;
         }else length=x264_encoder_encode(row->codec,&nals,&n,&row->picture,&out);
         c->cpu[3]+=cpu_ms()-at;
