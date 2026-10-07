@@ -261,7 +261,13 @@ try {
       const processEnded=progressSamples.find(entry=>entry.at>=control.sentAtMs&&!entry.processAlive)
       sample.stopToCommandExitedMs=processEnded ? processEnded.at-control.sentAtMs : null
       sample.commandExitedWithinBudget=Boolean(processEnded && sample.stopToCommandExitedMs<=1000)
+      const finalOutput=(await interruptTraces(path.join(state,'logs'))).filter(trace=>
+        trace.message==='codex command output received trace' && trace.providerRunId===timing.sent.providerRunId
+        && trace.at>=control.sentAtMs).at(-1)
+      sample.stopToLastOutputReceivedMs=finalOutput ? finalOutput.at-control.sentAtMs : 0
+      sample.outputStoppedWithinBudget=sample.stopToLastOutputReceivedMs<=1000
       sample.producerStopped &&= lastChange-control.sentAtMs<=1000 && sample.commandExitedWithinBudget
+        && sample.outputStoppedWithinBudget
       sample.stopToProducerStoppedMs=sample.producerStopped ? lastChange-control.sentAtMs : null
       await writeFile(path.join(args.output,label+'-timing.json'),JSON.stringify({mpItems:receipt.mpItems,...sample},null,2)+'\n',{mode:0o600})
       if(!sample.producerStopped)receipt.noisyProducerFailures.push({round:round+1,action,
