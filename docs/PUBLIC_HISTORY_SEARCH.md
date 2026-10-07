@@ -84,3 +84,13 @@ MP-08 / MP-11: appends enqueue sanitized records while holding the projection
 fence, then wait for the existing batched writer outside that fence. Protection
 invalidation drains the queue before deleting public rows and changing provenance,
 so delayed writes cannot restore a stale sanitized projection.
+
+MP-08 / MP-11: projection version2 classifies normalized MCP server identity
+(`title`, `server`, `server_name`) alongside the tool name. Upgrading from version1
+fences and removes predecessor public projections before reads or rebuilds; it
+never reimports raw records that may contain private MCP output. This internal
+projection change does not alter daemon453 or relay73 wire shapes.
+
+MP-08 / MP-10 / MP-11: [round 3 live validation](PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
+reports real local Codex results, including answer-fragmentation and logical-turn
+failures. These results do not establish full A09 acceptance.

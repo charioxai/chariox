@@ -1,8 +1,8 @@
 # MP-08 / MP-10 / MP-11 — A09 real history search replay
 
 This is a user-driven replay for PR9. It requires the exact built kernel/TUI and
-an authorized Chariox-linked official provider profile. Round 2 uses the
-coordinator-supplied dedicated drill profile. Do not substitute a stub
+an authorized Chariox-linked official provider profile. Use the profile authorized for the current round. Round 3 permits linking
+the existing `/root/.codex-agents` login through the product command. Do not substitute a stub
 provider, synthetic page or internal IPC call for a live acceptance step. Record
 source/binary hashes, exit codes and screenshots per step outside the checkout.
 
@@ -60,7 +60,14 @@ In a second terminal with the same environment:
    prompts, logs or evidence; inspect via product protection status and safe public
    task references. Capture invalidated references/cursors and coverage after
    protected provenance changes, deletion and rotation.
-6. Reconnect the real TUI, then restart only the owned kernel/provider at the
+6. Invoke an owner-approved real private MCP service whose normalized tool name
+   is generic (for example `read`) and whose server is private (for example
+   `vault`). Search/read its safe public task references from a peer. The whole
+   private tool record must be unavailable, including values not previously
+   registered in the Room. Never copy a real credential into the prompt/evidence.
+   If the real service/account is absent, report BLOCKED; the normalized-shape
+   regression is supplementary.
+7. Reconnect the real TUI, then restart only the owned kernel/provider at the
    appendix boundaries. Finish actual review work and reconcile retained public
    history after restart. Run A09 S04 retained/rebuild/legacy-provenance, S03
    protected invalidation and S02 forbidden global/foreign scope cases. Report any unavailable prerequisite as
@@ -69,7 +76,8 @@ In a second terminal with the same environment:
 ## MP-08 / MP-10 / MP-11: round 2 retained-history regressions
 
 Use the real official provider and the authorized worker/relay resources. These
-steps remain BLOCKED until the coordinator supplies the dedicated drill profile.
+steps require authorized live worker/relay resources. Existing local Codex
+readiness does not establish worker or hosted readiness.
 Source regressions do not substitute for them.
 
 - Search/read useful peer review findings before leased projection initialization,
@@ -98,3 +106,6 @@ Stop only processes this run owns (PID > 1 and original process identity), verif
 owned descendants exited, inventory the exact disposable state path and remove
 its generated runtime identities/materialized profiles. Preserve native linked
 profiles, durable key stores, shared reviewer state and all other lanes' resources.
+
+MP-08 / MP-10 / MP-11: [round 3 live results](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
+record local passes, newly reproduced failures and exact protected-service blockers.
