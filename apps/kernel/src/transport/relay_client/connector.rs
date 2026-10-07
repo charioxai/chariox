@@ -838,8 +838,18 @@ async fn run_daemon_relay_connector_inner(
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
-                    let mut event_write_coalescer =
-                        RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+                    // MP-08/MP-10: a software display packet can exceed the
+                    // small-event priority threshold even for one typed key.
+                    // Keep its bounded event lane and control priority, but
+                    // don't add a whole33ms frame after capture/encoding.
+                    let event_delay = if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref()
+                        == Ok("1")
+                    {
+                        0
+                    } else {
+                        RELAY_EVENT_WRITE_COALESCE_MS
+                    };
+                    let mut event_write_coalescer = RelayEventWriteCoalescer::new(event_delay);
                     'writer_loop: while priority_open
                         || event_open
                         || !event_write_coalescer.is_empty()

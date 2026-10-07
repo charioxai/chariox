@@ -3,6 +3,12 @@ name = "chariox-kernel"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+native-display = []
+
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 portable-pty = "0.8.1"
 rand = "0.8"

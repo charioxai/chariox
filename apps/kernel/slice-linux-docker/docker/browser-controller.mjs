@@ -199,8 +199,10 @@ export class BrowserControllerStdioServer {
     browser = new BrowserCdpClient(),
     resourceInventory = observeBrowserResources,
     handleRequest = handleBrowserControllerRequest,
+    scheduleRequest = classifyScheduling,
   } = {}) {
     this.handleRequest = handleRequest;
+    this.scheduleRequest = scheduleRequest;
     this.input = input;
     this.output = output;
     this.processId = processId;
@@ -286,7 +288,7 @@ export class BrowserControllerStdioServer {
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      waiting.push({ request, action, stopAction, scheduling: classifyScheduling(request, server.browser) });
+      waiting.push({ request, action, stopAction, scheduling: server.scheduleRequest(request, server.browser) });
       pump();
       if (request.method === "shutdown") {
         lines.close();
