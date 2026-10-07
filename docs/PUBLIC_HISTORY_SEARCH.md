@@ -75,3 +75,8 @@ before transcript/projection locks. This internal field is skipped by serde;
 serialized history cannot supply it. Query services release projection locks to
 revalidate canonical authority, then fence the room/index revision before releasing
 a result. Invalidated snapshots fail visibly and require a fresh query.
+
+MP-08 / MP-11: appends enqueue sanitized records while holding the projection
+fence, then wait for the existing batched writer outside that fence. Protection
+invalidation drains the queue before deleting public rows and changing provenance,
+so delayed writes cannot restore a stale sanitized projection.

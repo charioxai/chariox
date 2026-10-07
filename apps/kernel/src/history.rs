@@ -776,6 +776,7 @@ impl OperationalHistoryStore {
         }
         entry.validate_for_history_append("replace operational history transcript")?;
         let _public_guard = self.lock_public_history()?;
+        self.flush_public_history_appends_locked()?;
         let mut connection =
             self.connection
                 .lock()
@@ -1013,45 +1014,54 @@ impl OperationalHistoryStore {
                 merge_key,
             });
         }
-        let (response, response_receiver) = mpsc::channel();
+        let response = self.enqueue_history_records(encoded_events)?;
+        // Enqueue while provenance is fenced, then release before the writer ACK
+        // so concurrent producers retain the existing grouped-write behavior.
+        drop(_public_guard);
+        self.await_history_write(response)?;
+        self.enforce_size_budget_after_append(estimated_append_bytes)?;
+        Ok(())
+    }
+
+    fn enqueue_history_records(
+        &self,
+        records: Vec<OperationalHistoryWriteRecord>,
+    ) -> Result<Receiver<Result<(), String>>, DaemonError> {
+        let (response, receiver) = mpsc::channel();
         self.writer
             .sender
             .lock()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "lock operational history writer",
-                message: error.to_string(),
-            })?
+            .map_err(|error| history_writer_error(error.to_string()))?
             .as_ref()
-            .ok_or_else(|| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "append operational history event",
-                message: "operational history writer stopped".to_string(),
-            })?
-            .send(OperationalHistoryWriteRequest {
-                records: encoded_events,
-                response,
-            })
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "enqueue operational history append",
-                message: error.to_string(),
-            })?;
-        response_receiver
+            .ok_or_else(|| history_writer_error("operational history writer stopped".into()))?
+            .send(OperationalHistoryWriteRequest { records, response })
+            .map_err(|error| history_writer_error(error.to_string()))?;
+        Ok(receiver)
+    }
+
+    fn await_history_write(
+        &self,
+        response: Receiver<Result<(), String>>,
+    ) -> Result<(), DaemonError> {
+        response
             .recv()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "receive operational history append acknowledgement",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "append operational history event",
-                message,
-            })?;
-        drop(_public_guard);
-        self.enforce_size_budget_after_append(estimated_append_bytes)?;
-        Ok(())
+            .map_err(|error| history_writer_error(error.to_string()))?
+            .map_err(history_writer_error)
+    }
+
+    // Caller holds the projection mutex. Every previously projected record is
+    // committed before invalidation, and no new projection can enqueue until
+    // the protected mutation releases that mutex. No writer takes this mutex.
+    pub(super) fn flush_public_history_appends_locked(&self) -> Result<(), DaemonError> {
+        self.await_history_write(self.enqueue_history_records(Vec::new())?)
+    }
+}
+
+fn history_writer_error(message: String) -> DaemonError {
+    DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation: "write operational history",
+        message,
     }
 }
 

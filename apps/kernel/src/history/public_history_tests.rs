@@ -389,3 +389,46 @@ fn public_history_complete_snapshot_keeps_paginating_while_later_rows_rebuild() 
     assert_eq!(c.hits[0].event_ref, first.event_id);
     assert!(c.next_cursor.is_none());
 }
+
+#[test]
+fn public_history_queued_append_is_drained_before_protection_invalidation() {
+    let f = Fixture::new();
+    let event = HistoryEvent::operational(
+        f.store.reserve_sequence(),
+        HistoryEventKind::UserPrompt,
+        Some(HistoryEventRole::User),
+        Some("queued public finding".into()),
+        Default::default(),
+        HistoryEventTurnContext {
+            session_id: Some("room".into()),
+            agent_id: Some("peer".into()),
+            ..Default::default()
+        },
+    );
+    let _guard = f.store.lock_public_history().unwrap();
+    let response = f
+        .store
+        .enqueue_history_records(vec![super::super::OperationalHistoryWriteRecord {
+            event_json: serde_json::to_string(&event).unwrap(),
+            metadata_text: super::super::searchable_metadata(&event),
+            merge_key: None,
+            public_document: f.store.project_public_history(&event),
+            event: event.clone(),
+        }])
+        .unwrap();
+    f.store
+        .invalidate_public_history_locked(Some("room"))
+        .unwrap();
+    response.recv().unwrap().unwrap();
+    assert!(f
+        .store
+        .read_public_history_locked("owner", "room", &event.event_id)
+        .unwrap()
+        .is_none());
+    assert!(f
+        .store
+        .search_public_history_locked("owner", "room", None, "finding", 20, None)
+        .unwrap()
+        .hits
+        .is_empty());
+}

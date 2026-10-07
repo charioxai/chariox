@@ -109,6 +109,7 @@ impl OperationalHistoryStore {
         &self,
         room: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.flush_public_history_appends_locked()?;
         let mut connection = self.connection.lock().map_err(|_| invalid_search())?;
         let tx = connection.transaction().map_err(public_error)?;
         tx.execute(
