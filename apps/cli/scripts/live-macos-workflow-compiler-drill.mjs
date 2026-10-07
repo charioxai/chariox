@@ -236,7 +236,7 @@ workflow.endpoint(worker,{handle:'entry'});`)
   passed(stage)
   report.status = 'passed'
 } catch (error) {
-  if (stage.startsWith('owner-') && screen) {
+  if (screen) {
     await Bun.sleep(250)
     await writeFile(path.join(options.evidence, 'failed-tui.ansi'), screen)
   }
