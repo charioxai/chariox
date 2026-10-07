@@ -484,6 +484,47 @@ pub(crate) fn occurrence(
     }
 }
 
+/// MP-08/MP-09/MP-10/MP-11: receipt for one delivery attempt. `None` means
+/// the submission failed before any provider I/O.
+pub(crate) fn delivery_receipt_state(
+    submitted: Option<&Result<bool, DaemonError>>,
+    structured: bool,
+) -> &'static str {
+    match submitted {
+        Some(Ok(true)) if structured => "submitting",
+        Some(Ok(true)) => "uncertain",
+        Some(Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. })) => "rejected",
+        Some(Err(_)) | None => "uncertain",
+    }
+}
+
+/// MP-08/MP-09/MP-10/MP-11: a Working task with no live executor blocks
+/// after the delivery timeout.
+pub(crate) fn lacks_live_executor(
+    task: &AgentTaskExecution,
+    now: u64,
+    active: bool,
+    _queued: bool,
+) -> bool {
+    task.state == ExecutionState::Working
+        && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS
+        && !active
+}
+
+/// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks its task.
+pub(crate) fn block_failed_turn(
+    store: &DurableKernelStateStore,
+    task: &AgentTaskExecution,
+    reason: String,
+) -> Result<(), DaemonError> {
+    store.agent_lifecycle(Operation::Block {
+        task: task.task_id.clone(),
+        prompt: task.prompt_id.clone(),
+        reason,
+    })?;
+    Ok(())
+}
+
 /// MP-08/MP-09/MP-10/MP-11: client-visible text for an exact delivery receipt.
 pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
     let n = event.sequence;

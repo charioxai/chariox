@@ -1407,3 +1407,226 @@ fn a02_rejected_submission_withdraws_only_untouched_admission() {
         .is_err());
     assert_eq!(f.task().obligations.len(), 1);
 }
+
+// MP-08/MP-09/MP-10/MP-11 #914 review regressions.
+fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "p",
+        "deadline",
+        "deadline_reached",
+        serde_json::json!({"task_id":"p"}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        prompt: "wake".into(),
+        target: None,
+        run: None,
+        now: 4,
+    });
+    assert_eq!(f.task().state, ExecutionState::Working);
+    e
+}
+
+#[test]
+fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
+    // Rejected before admission, and after admission but before provider I/O.
+    for admitted in [false, true] {
+        let f = Fixture::new();
+        let e = waiting_with_deadline_wake(&f);
+        if admitted {
+            f.apply(Operation::Begin {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "parent".into(),
+                prompt: "wake".into(),
+                run: None,
+                now: 5,
+            });
+        }
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            state: "rejected".into(),
+        });
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Waiting, "admitted={admitted}");
+        assert!(t.wait.is_some());
+        assert_eq!(t.pending_prompt_id, None);
+        assert_eq!(
+            t.no_progress_wakes, 0,
+            "a refused wake is not a no-progress strike"
+        );
+    }
+}
+
+#[test]
+fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "owner must choose".into(),
+    });
+    let before = f.task();
+    block_failed_turn(&f.store, &before, "Provider run failed".into())
+        .expect("an already blocked task keeps its owner action");
+    assert_eq!(f.task(), before);
+}
+
+#[test]
+fn a02_review_late_rejected_dispatch_receipt_cannot_corrupt_done_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::RegisterObligation {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: Some("run".into()),
+        id: "message".into(),
+        kind: "message".into(),
+        resource: Some("peer".into()),
+        now: 1,
+    });
+    let receipt = |accepted| {
+        f.store.agent_lifecycle(Operation::DispatchReceipt {
+            id: "message".into(),
+            accepted,
+            resource: Some("peer".into()),
+        })
+    };
+    receipt(true).unwrap();
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Done);
+    let _ = receipt(false);
+    let _ = receipt(true);
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    assert_eq!(tasks.len(), 1, "no quarantine task: {tasks:?}");
+    assert_eq!(tasks[0].state, ExecutionState::Done);
+    assert_eq!(tasks[0].obligations[0].status, "satisfied");
+}
+
+#[test]
+fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
+    let f = Fixture::new();
+    for parent in ["parent", "parent2"] {
+        let prompt = format!("{parent}-turn");
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: parent.into(),
+            prompt: prompt.clone(),
+            run: Some(format!("{parent}-run")),
+            now: 1,
+        });
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: parent.into(),
+            prompt,
+            run: Some(format!("{parent}-run")),
+            id: format!("{parent}-delegation"),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: format!("{parent}-delegation"),
+            accepted: true,
+            resource: Some("child".into()),
+        });
+    }
+    for prompt in ["child-task-1", "child-task-2"] {
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: prompt.into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+    }
+    let bound = |agent: &str| {
+        f.store.agent_tasks(Some("room"), Some(agent)).unwrap()[0].obligations[0]
+            .completion_task_id
+            .clone()
+    };
+    assert_eq!(bound("parent").as_deref(), Some("child-task-1"));
+    assert_eq!(bound("parent2").as_deref(), Some("child-task-2"));
+}
+
+#[test]
+fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "peer",
+        "unrelated-message",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        prompt: "message-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 10,
+    });
+    f.apply(Operation::Sweep {
+        now: 10 + DELIVERY_TIMEOUT_MS,
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let waiting = tasks.iter().find(|t| t.task_id == "p").unwrap();
+    assert_eq!(waiting.state, ExecutionState::Waiting);
+    assert!(tasks
+        .iter()
+        .any(|t| t.task_id == format!("delivery-{}", e.sequence)
+            && t.state == ExecutionState::Blocked));
+}
+
+#[test]
+fn a02_review_queued_working_task_is_not_a_missing_executor() {
+    let f = Fixture::new();
+    f.begin("p");
+    let t = f.task();
+    let late = t.last_progress_at_ms + DELIVERY_TIMEOUT_MS;
+    assert!(lacks_live_executor(&t, late, false, false));
+    assert!(!lacks_live_executor(&t, late, true, false));
+    assert!(!lacks_live_executor(&t, late, false, true));
+}
+
+#[test]
+fn a02_review_delivery_receipt_classification() {
+    let busy = Err(error("target agent is busy"));
+    // A non-structured adapter write is its only acceptance receipt.
+    assert_eq!(delivery_receipt_state(Some(&Ok(true)), false), "accepted");
+    assert_eq!(delivery_receipt_state(Some(&Ok(true)), true), "submitting");
+    assert_eq!(delivery_receipt_state(Some(&Ok(false)), true), "rejected");
+    assert_eq!(delivery_receipt_state(Some(&busy), true), "uncertain");
+    // Nothing reached the provider: retain for a later wake, never uncertain.
+    assert_eq!(delivery_receipt_state(None, true), "rejected");
+}

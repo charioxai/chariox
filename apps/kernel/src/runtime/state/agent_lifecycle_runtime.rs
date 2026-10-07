@@ -507,14 +507,20 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            if task.state == ExecutionState::Working
-                && now.saturating_sub(task.last_progress_at_ms) >= ledger::DELIVERY_TIMEOUT_MS
-                && self
-                    .owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &task.agent_id)
-                    .is_none()
-            {
+            let active = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &task.agent_id)
+                .is_some();
+            let queued = session
+                .queued_prompts_for_agent(&task.agent_id)
+                .is_some_and(|q| {
+                    q.iter().any(|p| {
+                        p.id() == task.prompt_id
+                            || task.pending_prompt_id.as_deref() == Some(p.id())
+                    })
+                });
+            if ledger::lacks_live_executor(&task, now, active, queued) {
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }

@@ -34,3 +34,24 @@ test("MP-08 / MP-10: settings switch registers output projection, never emits", 
   assert.equal((await executeWorkflowNotificationSettings(["on", "--fields", "verdict,review_url"], context, deps)).ok, true)
   assert.deepEqual(calls, [{ RegisterWorkflowNotificationSource: { session_id: "target", workflow_ref: "consumer", enabled: true, output_fields: ["verdict", "review_url"] } }])
 })
+test("MP-08 / MP-10: list shows every subscription id and diagnostics so detach is reachable", async () => {
+  const subscription = { subscription_id: "sub-1", source_id: "source", source_available: true, events: "success", delivery_mode: "queue", publication_id: "publication", ttl_days: 7 }
+  const offline = { ...subscription, subscription_id: "sub-2", source_available: false }
+  const deps = { client: { async send(request: Record<string, unknown>) {
+    if ("ListWorkflowNotifications" in request) return { WorkflowNotifications: { sources: [source], subscriptions: [subscription, offline], diagnostics: [{ source_id: "source", occurrence_id: "run-9", code: "filtered" }] } }
+    if ("ListWorkflowPublications" in request) return { WorkflowPublicationsListed: { publications: [{ id: "publication", workflow_id: "consumer", enabled: true, kind: "event_based" }] } }
+    return { WorkflowNotificationAttached: { subscription } }
+  } } }
+  const listed = await executeWorkflowNotificationTrigger(["list"], context, deps)
+  assert.match(listed.message ?? "", /sub-1/)
+  assert.match(listed.message ?? "", /sub-2.*source not available/)
+  assert.match(listed.message ?? "", /run-9.*filtered/)
+  const attached = await executeWorkflowNotificationTrigger(["attach", "Reviewer"], context, deps)
+  assert.match(attached.message ?? "", /sub-1/)
+})
+test("MP-08 / MP-10: bare --fields is a usage error, never clears the declaration", async () => {
+  const calls: Record<string, unknown>[] = []
+  const deps = { client: { async send(request: Record<string, unknown>) { calls.push(request); return { WorkflowNotificationSourceRegistered: { source: {} } } } } }
+  assert.equal((await executeWorkflowNotificationSettings(["on", "--fields"], context, deps)).ok, false)
+  assert.equal(calls.length, 0)
+})

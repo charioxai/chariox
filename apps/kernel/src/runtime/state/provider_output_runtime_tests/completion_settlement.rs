@@ -107,6 +107,64 @@ async fn a02_native_settlement_never_reacquires_held_provider_lane() {
 }
 
 #[tokio::test]
+async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("am2-non-structured-receipt");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    assert!(!crate::provider::provider_run_uses_structured_prompt_io(
+        &run
+    ));
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            session.id(),
+            agent.id(),
+            "peer",
+            "plain-message",
+            "message",
+            serde_json::json!({"message":"Review the PTY finding"}),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    let delivered = store
+        .agent_event_for_prompt(
+            session.id(),
+            agent.id(),
+            &format!("agent-event-{}-{}", agent.id(), event.sequence),
+        )
+        .unwrap()
+        .expect("delivery attempt must be recorded");
+    // The PTY write is the only receipt this adapter has; an `uncertain`
+    // receipt would block every task of the recipient after two minutes.
+    assert_eq!(delivered.state, "accepted");
+}
+
+#[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())

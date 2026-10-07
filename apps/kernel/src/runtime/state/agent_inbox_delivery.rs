@@ -165,12 +165,7 @@ impl KernelRuntimeState {
             let result = self
                 .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                 .await;
-            let state = match &result {
-                Ok(true) if structured => "submitting",
-                Ok(true) => "uncertain",
-                Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
-                Err(_) => "uncertain",
-            };
+            let state = ledger::delivery_receipt_state(Some(&result), structured);
             if state != "submitting" {
                 self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
             }
@@ -208,14 +203,7 @@ impl KernelRuntimeState {
                         let result = self
                             .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                             .await;
-                        let state = match &result {
-                            Ok(true) if structured => "submitting",
-                            Ok(true) => "uncertain",
-                            Ok(false) | Err(DaemonError::ProviderPromptSteerRejected { .. }) => {
-                                "rejected"
-                            }
-                            Err(_) => "uncertain",
-                        };
+                        let state = ledger::delivery_receipt_state(Some(&result), structured);
                         if state != "submitting" {
                             self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
                         }
@@ -223,7 +211,8 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(e) => {
-                    self.record_agent_delivery_receipt(room, agent, event.sequence, "uncertain")?;
+                    let state = ledger::delivery_receipt_state(None, false);
+                    self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
                     return Err(e);
                 }
             }
