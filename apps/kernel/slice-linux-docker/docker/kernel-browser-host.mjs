@@ -279,7 +279,10 @@ export class KernelBrowserHost {
         const sample = async () => {
           const compositor=this.compositors.get(tab.tab_id)?.source;
           if(clip)compositor?.pause();
-          try{return await connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
+          // A headed full-frame surface read must not resize the emulated
+          // viewport and invalidate its exact mirror epoch. Explicit CDP crops
+          // retain their ordinary surface semantics and protection admission.
+          try{return await connection.send("Page.captureScreenshot", { format, ...(!clip&&this.chromium.display?{fromSurface:false}:{}), ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
           finally{if(clip)compositor?.resume()}
         };
         const policy=this.protection;

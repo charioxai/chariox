@@ -777,3 +777,14 @@ test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutat
   assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
+
+test('MD-454: headed full capture reads native viewport without a virtual resize, while clip semantics remain explicit',()=>using(async({host,chromium,sent})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id);
+ chromium.display={};
+ await host.screenshot(tab);
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,false);
+ await host.screenshot(tab,{x:0,y:0,width:1280,height:800,scale:1});
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+ chromium.display=null;await host.screenshot(tab);
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+}));
