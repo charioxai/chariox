@@ -7,7 +7,7 @@ class ProxyTests(unittest.TestCase):
         q = proxy_quote('gpt-6.1-sol', dict(input_tokens=1000,cached_input_tokens=800,output_tokens=100,reasoning_tokens=50))
         self.assertEqual(q['unknown_fields'], ['context_band', 'cache_write_tokens'])
         self.assertEqual(q['lower_nanodollars'], 1480000)
-        self.assertEqual(q['upper_nanodollars'], 3460000)
+        self.assertEqual(q['upper_nanodollars'], 2660000)
         self.assertIsNone(q['point_nanodollars'])
 
     def test_reasoning_is_subset_of_output(self):
@@ -22,6 +22,6 @@ class ProxyTests(unittest.TestCase):
 
     def test_known_categories_can_produce_labeled_point(self):
         q=proxy_quote('gpt-6.1-sol',dict(input_tokens=1000,cached_input_tokens=800,output_tokens=100,context_band='short',cache_write_tokens=100))
-        self.assertEqual(q['point_nanodollars'],1730000)
+        self.assertEqual(q['point_nanodollars'],1530000)
         self.assertEqual(q['unknown_fields'],[])
         self.assertEqual(q['label'],'proxy')

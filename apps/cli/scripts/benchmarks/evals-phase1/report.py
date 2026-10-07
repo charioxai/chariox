@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from contract import validate_lock
-from proxy_prices import proxy_quote
+from proxy_prices import proxy_quote, load_price_table
 
 
 def main():
@@ -69,25 +69,10 @@ def main():
                'scope': 'local reproduction using unchanged official scorer; smoke is not full acceptance'}
     summary['tokens'] = {key: sum(row[key] for row in rows) if all(type(row[key]) is int for row in rows) else None for key in ['input_tokens','cached_input_tokens','output_tokens','reasoning_tokens']}
     summary['proxy_cost'] = {'label':'proxy','lower_usd': str(sum(Decimal(r['proxy_usd_lower']) for r in rows)), 'upper_usd': str(sum(Decimal(r['proxy_usd_upper']) for r in rows)), 'unknown_fields':['context_band','cache_write_tokens']} if all(r['proxy_usd_lower'] != '' for r in rows) else None
-    summary['proxy_mapping'] = json.loads(Path(__file__).with_name('proxy-prices-2026-10-06.json').read_text())
+    summary['proxy_mapping'] = load_price_table()
     (args.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.set(xlabel='Proxy API cost per task (USD; bounded)', ylabel='Task accuracy (%)',
-           ylim=(0, 100), title='MP-08 / MP-10: SWE Verified Mini ' + campaign['phase'])
-    if summary['proxy_cost']:
-        lower = float(summary['proxy_cost']['lower_usd']) / len(rows)
-        upper = float(summary['proxy_cost']['upper_usd']) / len(rows)
-        ax.plot([lower,upper],[summary['accuracy_percent']]*2,marker='|',linewidth=3,label='proxy interval; band/cache-write unknown')
-        ax.annotate(f"{len(resolved)}/{len(expected)}",((lower+upper)/2,summary['accuracy_percent']),xytext=(0,8),textcoords='offset points',ha='center')
-        ax.legend(loc='lower right')
-    else:
-        ax.text(0.5,0.5,'Proxy unavailable; no cost/accuracy point',transform=ax.transAxes,ha='center')
-    ax.grid(alpha=0.2); fig.tight_layout()
-    fig.savefig(args.output / 'cost-vs-accuracy.png', dpi=160)
-    plt.close(fig)
+    from terminal_report import plot
+    plot([summary], args.output / 'cost-vs-accuracy.png')
     print('MP-08 / MP-10: actual task CSV and scoped summary written')
 
 

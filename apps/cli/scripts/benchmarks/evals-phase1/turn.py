@@ -186,6 +186,7 @@ def run(request, evidence):
     env.update(HOME=str(state / 'home'), CHARIOX_HOME=str(state / 'kernel'),
                CHARIOX_LOG_DIR=str(state / 'logs'), CHARIOX_LOG_LEVEL='debug', TERM='xterm-256color',
                CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS=str(2**64 - 1))
+    env['CHARIOX_EVALS_SAFE_STATUS_ERRORS'] = str(evidence / 'profile-status-error-classes.jsonl')
     reservations = []
     for key in (['CHARIOX_KERNEL_PORT', 'CHARIOX_MCP_PORT', 'CHARIOX_CODEX_PORT', 'CHARIOX_OPENCODE_PORT'] if placement == 'local' else []):
         s = socket.socket(); s.bind(('127.0.0.1', 0)); reservations.append(s)
@@ -300,6 +301,10 @@ def run(request, evidence):
             if quota_exhausted(account['meters'], int(time.time() * 1000)):
                 measurement['status'] = 'quota_exhausted'
                 raise RuntimeError('MP-08 / MP-10: proven rolling plan quota exhaustion')
+            if request.get('profile_probe_only'):
+                measurement.update(status='profile_admission_ready', profile_admission_ready=True)
+                capture(evidence / 'setup.terminal.log', evidence / '00-profile-admission-ready.png')
+                return measurement
             setup.send('exit')
             client = launch_cli(['--create-session', '--workspace', request['workspace'], '--worktree', request['workspace'], '--provider', provider,
                                  '--model', request['model'], '--effort', request.get('effort', 'low'), '--account-profile', account['profile_id']], 'local' if request.get('relay_binary') else 'task')

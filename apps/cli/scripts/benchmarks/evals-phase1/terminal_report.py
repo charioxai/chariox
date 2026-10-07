@@ -8,7 +8,7 @@ from pathlib import Path
 from decimal import Decimal
 
 from contract import validate_lock, admit_token_usage
-from proxy_prices import proxy_quote
+from proxy_prices import proxy_quote, load_price_table
 
 
 def report(campaign_dir, output):
@@ -21,7 +21,7 @@ def report(campaign_dir, output):
     entries={item['task_id']:item for item in campaign['tasks']}
     if len(entries)!=len(campaign['tasks']) or not set(entries)<=set(expected):
         raise ValueError('MP-08 / MP-10: duplicate or foreign task')
-    rows=[];tokens=['input_tokens','cached_input_tokens','output_tokens','reasoning_tokens']
+    rows=[];solver_walls=[];tokens=['input_tokens','cached_input_tokens','output_tokens','reasoning_tokens']
     for task in expected:
         item=entries.get(task)
         row={'benchmark':'terminal_bench_2','phase':campaign['phase'],'task_id':task,'status':'not_run',
@@ -39,6 +39,7 @@ def report(campaign_dir, output):
             row.update(status=metadata.get('status','harness_error'),reward='' if reward is None else reward,
                        official_exception=exception or '',cleanup_complete=bool(metadata.get('cleanup_complete')) and not item['cleanup']['remaining_containers'],
                        wall_time_seconds=item['wall_time_seconds'],official_result_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            if reward is not None:solver_walls.append(metadata.get('wall_time_seconds'))
             usage=metadata.get('usage')
             if usage:
                 admit_token_usage(usage,metadata['session_id'])
@@ -58,7 +59,7 @@ def report(campaign_dir, output):
              'successes':successes,'complete':complete,'accuracy_percent':100*successes/len(expected) if complete else None,
              'harness_errors':sum(bool(r['official_exception']) for r in rows),'cleanup_complete':all(r['cleanup_complete'] for r in rows),
              'wall_time_seconds':campaign['finished_at']-campaign['started_at'],
-             'solver_wall_time_seconds':sum((((json.loads(Path(i['official_result']).read_text()).get('agent_result') or {}).get('metadata') or {}).get('chariox') or {}).get('wall_time_seconds',0) for i in entries.values()),
+             'solver_wall_time_seconds':sum(solver_walls) if all(type(w) in [int,float] for w in solver_walls) else None,
              'tokens':{key:sum(r[key] for r in rows) if all(type(r[key]) is int for r in rows) else None for key in tokens},
              'known_token_subtotal':{key:sum(r[key] for r in rows if type(r[key]) is int) for key in tokens},
              'unknown_token_tasks':{key:sum(type(r[key]) is not int for r in rows) for key in tokens},
@@ -72,7 +73,7 @@ def report(campaign_dir, output):
              'proxy_cost':{'label':'proxy','lower_usd':str(sum(Decimal(r['proxy_usd_lower']) for r in rows)),
                            'upper_usd':str(sum(Decimal(r['proxy_usd_upper']) for r in rows)),
                            'unknown_fields':['context_band','cache_write_tokens']} if all(r['proxy_usd_lower']!='' for r in rows) else None,
-             'proxy_mapping':json.loads((scripts/'proxy-prices-2026-10-06.json').read_text()),
+             'proxy_mapping':load_price_table(),
              'scope':'local official Harbor reproduction; incomplete campaigns have no accuracy score; smoke is not full acceptance'}
     output.mkdir(parents=True,exist_ok=False)
     with (output/'task-results.csv').open('w',newline='') as f:
@@ -85,20 +86,40 @@ def plot(summaries, output):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig,ax=plt.subplots(figsize=(8,4.5))
-    for summary in summaries:
-        quote=summary.get('proxy_cost');accuracy=summary.get('accuracy_percent')
-        label=('Terminal-Bench 2.0' if summary.get('benchmark')=='terminal_bench_2' else 'SWE Verified Mini')+' '+summary['phase']
-        if quote and accuracy is not None:
-            lo=float(quote['lower_usd'])/summary['denominator'];hi=float(quote['upper_usd'])/summary['denominator']
-            ax.plot([lo,hi],[accuracy]*2,marker='|',linewidth=3,label=label+f" ({summary.get('successes',summary.get('resolved'))}/{summary['denominator']})")
-        elif accuracy is not None and (known:=summary.get('known_proxy_subtotal')) and known['measured_tasks']:
-            lo=float(known['lower_usd'])/summary['denominator']
-            ax.scatter([lo],[accuracy],marker='>',label=label+f" ({summary['successes']}/{summary['denominator']}; proxy lower bound only)")
-            ax.annotate('Total upper bound unknown',xy=(lo,accuracy),xytext=(12,-18),textcoords='offset points',fontsize=8)
-        else: ax.plot([],[],label=label+' — incomplete/unpriced')
-    ax.set(xlabel='Proxy API cost per task (USD interval; band/cache-write unknown)',ylabel='Official task accuracy (%)',ylim=(0,100),title='MP-08 / MP-10: tokens primary; proxy cost versus accuracy')
-    ax.grid(alpha=.2);ax.legend(loc='best');fig.tight_layout();fig.savefig(output,dpi=160);plt.close(fig)
+    fig,(token_ax,proxy_ax)=plt.subplots(1,2,figsize=(12,4.5),sharey=True)
+    colors=plt.rcParams['axes.prop_cycle'].by_key()['color']
+    for index,summary in enumerate(summaries):
+        accuracy=summary.get('accuracy_percent');denominator=summary['denominator']
+        label=('TB2' if summary.get('benchmark')=='terminal_bench_2' else 'SWE Mini')+' '+summary['phase']
+        label+=f" ({summary.get('successes',summary.get('resolved'))}/{denominator})"
+        color=colors[index % len(colors)]
+        if accuracy is None:
+            label=('TB2' if summary.get('benchmark')=='terminal_bench_2' else 'SWE Mini')+' '+summary['phase']+f" ({summary.get('scored',summary.get('attempted'))}/{denominator} scored)"
+            for ax in (token_ax,proxy_ax):ax.plot([],[],color=color,label=label+'; incomplete')
+            continue
+        counts=summary.get('tokens') or {}
+        if all(type(counts.get(k)) is int for k in ['input_tokens','output_tokens']):
+            total=counts['input_tokens']+counts['output_tokens']
+            token_ax.scatter(total/denominator,accuracy,color=color,label=label)
+        elif (known:=summary.get('known_token_subtotal')) and summary.get('measured_tasks'):
+            token_ax.scatter((known['input_tokens']+known['output_tokens'])/denominator,accuracy,color=color,marker='>',label=label+'; lower bound')
+        else:token_ax.plot([],[],color=color,label=label+'; tokens unknown')
+        quote=summary.get('proxy_cost')
+        if quote:
+            lo=float(quote['lower_usd'])/denominator;hi=float(quote['upper_usd'])/denominator
+            proxy_ax.plot([lo,hi],[accuracy]*2,color=color,marker='|',linewidth=3,label=label)
+        elif (known:=summary.get('known_proxy_subtotal')) and known['measured_tasks']:
+            lo=float(known['lower_usd'])/denominator
+            proxy_ax.scatter(lo,accuracy,color=color,marker='>',label=label+'; lower bound')
+            proxy_ax.annotate('Total upper bound unknown',xy=(lo,accuracy),xytext=(12,-18),textcoords='offset points',fontsize=8)
+        else:proxy_ax.plot([],[],color=color,label=label+'; proxy unknown')
+    token_ax.set(xlabel='Provider tokens per task (input + output)',ylabel='Official task accuracy (%)',title='Primary metric: tokens')
+    token_ax.ticklabel_format(axis='x',style='sci',scilimits=(0,0))
+    proxy_ax.set(xlabel='Proxy API cost per task (USD interval)',title='Proxy: context band/cache writes unknown')
+    for ax in (token_ax,proxy_ax):
+        ax.set_ylim(0,100);ax.grid(alpha=.2);ax.legend(loc='lower right',fontsize=8)
+    fig.suptitle('MP-08 / MP-10: cost versus accuracy; cached/reasoning tokens included once')
+    fig.tight_layout();fig.savefig(output,dpi=160);plt.close(fig)
 
 
 def main():

@@ -59,3 +59,20 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(s['provider_failures'],1)
             self.assertIsNone(s['proxy_cost'])
             self.assertIsNotNone(s['known_proxy_subtotal'])
+
+    def test_pre_prompt_auth_failure_is_not_solver_wall_or_a_scored_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);campaign=self.setup_campaign(root,count=2)
+            for index,item in enumerate(campaign['tasks']):
+                path=Path(item['official_result']);record=json.loads(path.read_text())
+                metadata=record['agent_result']['metadata']['chariox']
+                metadata['wall_time_seconds']=7 if index==0 else 23
+                if index==1:
+                    metadata.update(status='failed',usage=None,first_failing_seam='profile_link')
+                    record['verifier_result']=None
+                    record['exception_info']={'exception_type':'RuntimeError'}
+                path.write_text(json.dumps(record))
+            s=report(root,root/'report')
+            self.assertEqual(s['scored'],1)
+            self.assertEqual(s['solver_wall_time_seconds'],7)
+            self.assertIsNone(s['accuracy_percent'])

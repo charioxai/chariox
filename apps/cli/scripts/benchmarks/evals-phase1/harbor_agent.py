@@ -35,6 +35,7 @@ class CharioxOptions(AgentOptions):
     kernel_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     local_protocol: int = Field(gt=0)
     provider: Literal['codex', 'claude', 'opencode'] = 'codex'
+    profile_probe_only: bool = False
 
 
 class CharioxAgent(BaseAgent):
@@ -44,7 +45,7 @@ class CharioxAgent(BaseAgent):
         super().__init__(*args, **kwargs)
         if not self.model_name:
             raise ValueError('MP-08 / MP-10: exact official provider model required')
-        for field in ['runtime_root', 'profile_path', 'source_commit', 'kernel_sha256', 'local_protocol', 'provider', 'runtime_bundle', 'placement', 'home_kernel_url', 'home_session_ref', 'home_agent_id', 'worker_kernel_id', 'home_auth_file', 'relay_binary', 'timeout_seconds']:
+        for field in ['runtime_root', 'profile_path', 'source_commit', 'kernel_sha256', 'local_protocol', 'provider', 'runtime_bundle', 'placement', 'home_kernel_url', 'home_session_ref', 'home_agent_id', 'worker_kernel_id', 'home_auth_file', 'relay_binary', 'timeout_seconds', 'profile_probe_only']:
             setattr(self, field, getattr(self.options, field))
         from contract import admit_placement
         admit_placement(self.options.model_dump())
@@ -84,7 +85,7 @@ class CharioxAgent(BaseAgent):
         if cwd.return_code != 0 or not cwd.stdout.strip().startswith('/'):
             raise RuntimeError('MP-08 / MP-10: task workspace unavailable')
         self._workspace = cwd.stdout.strip()
-        for name in ['turn.py', 'contract.py', 'product_status.mjs', 'usage_status.mjs', 'terminal_screen.py', 'relay_target.mjs', 'proxy_prices.py', 'proxy-prices-2026-10-06.json']:
+        for name in ['turn.py', 'contract.py', 'product_status.mjs', 'usage_status.mjs', 'terminal_screen.py', 'relay_target.mjs', 'proxy_prices.py', 'proxy-prices-2026-10-07.json']:
             await environment.upload_file(source_path=Path(__file__).with_name(name),
                                           target_path=f'{self._runner_root}/{name}')
         # Runner-only dependencies live outside the task workspace. Official
@@ -114,6 +115,7 @@ class CharioxAgent(BaseAgent):
         input_path = f'{self._runner_root}/input.json'
         result_path = f'{self._runner_root}/result.json'
         request = {'instruction': instruction, 'provider': self.provider,
+                   'profile_probe_only': self.profile_probe_only,
                    'model': self.model_name, 'profile_path': self.profile_path,
                    'workspace': self._workspace, 'runtime_root': self.runtime_root,
                    'source_commit': self.source_commit, 'kernel_sha256': self.kernel_sha256,

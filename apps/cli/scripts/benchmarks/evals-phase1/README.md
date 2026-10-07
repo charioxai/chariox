@@ -108,11 +108,13 @@ container scratch, outside the retained logs.
 the CSV, primary token totals, bounded proxy estimates, elapsed time and
 cost-versus-accuracy plot. `--compare-summary` can add the existing SWE result.
 Incomplete campaigns have no full accuracy score; missing accounting stays
-unknown. `proxy-prices-2026-10-06.json` is the editable model mapping. The exact
+unknown. `proxy-prices-2026-10-07.json` is the editable model mapping. The exact
 public API model exists, so `gpt-6.1-sol` maps to itself. Every dollar estimate
 is labeled proxy. Unknown context bands span the public bands; cache-write
-counts span zero through non-cached input using a conservative additive
-envelope. Reasoning is already included in output and is never added twice.
+counts span zero through non-cached input. Cache writes replace the uncached
+rate; the three input categories are disjoint, per the official prompt-caching
+guide linked by the mapping. Version-1 additive receipts remain archived; final
+reports reprice their original counters with version 2. Reasoning is already included in output and is never added twice.
 
 MP-11: `signal_guard.py` wraps real harness child-process signal operations
 with explicit system/invalid PID rejection. `harbor_cleanup.py` settles only
@@ -136,3 +138,14 @@ in addition to the Python screenshot dependencies. Public ELF packaging is
 explicitly hash-bound and mounted at the same absolute path; frozen source and
 official task/verifier files remain intact. A settled, measured provider failure
 continues to official verification and is retained in the denominator.
+
+## MP-08 / MP-10 / MP-11 — admission-only diagnostics
+
+`profile_probe_only=true` stops local admission after normal profile refresh
+and quota checks, before task session/agent/prompt creation. Harbor rejects
+this diagnostic as a benchmark result and skips verification. It is false by
+default. Account-status failures capture only fixed allowlisted class names,
+stage and codes in `profile-status-error-classes.jsonl`; opaque messages and
+credential payloads are never recorded there. A 401 requires normal product
+account repair. Preserve its failed receipt and every already scored task;
+the setup-only resume option does not admit later agent-wrapper failures.
