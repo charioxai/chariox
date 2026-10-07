@@ -3,6 +3,7 @@ use super::*;
 use crate::local::{KernelBrowserCommand, KernelBrowserInput, KernelBrowserRequest};
 use serde_json::{json, Value};
 mod access;
+mod capability_grants;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
     tokio::runtime::Builder::new_multi_thread()

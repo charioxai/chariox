@@ -265,4 +265,6 @@ pub use workspace::*;
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 450;
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 462;

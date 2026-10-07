@@ -167,7 +167,38 @@ impl CommandRouter {
             }
         };
         let command = meta_kernel_command(Some(&provider_run), &metaagent, &request);
-        let response = match self.dispatch(command, request).await {
+        let dispatched = if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
+            if grant.kind == ExtensionKind::App {
+                match self
+                    .runtime_state
+                    .authorize_agent_app_binding(
+                        session.id(),
+                        metaagent.id(),
+                        &grant.agent_ref,
+                        &grant.name,
+                    )
+                    .await
+                {
+                    Ok(Some(permit)) => self
+                        .runtime_state
+                        .grant_agent_app_for_tool(
+                            &grant.agent_ref,
+                            crate::extension::ExtensionGrant::app(&grant.name),
+                            metaagent.owner_user_id(),
+                            Some(permit),
+                        )
+                        .await
+                        .map(|agent| LocalDaemonResponse::AgentExtensionGranted { agent }),
+                    Ok(None) => Err(meta_command_error("App binding was not approved")),
+                    Err(error) => Err(error),
+                }
+            } else {
+                self.dispatch(command, request).await
+            }
+        } else {
+            self.dispatch(command, request).await
+        };
+        let response = match dispatched {
             Ok(response) => response,
             Err(error) => {
                 let result = meta_command_failure_result(&args.command, error);
@@ -715,21 +746,13 @@ impl CommandRouter {
                     && tokens.get(2).map(String::as_str) == Some("app") =>
             {
                 let agents = self.runtime_state.session_agents(session.id());
-                let request = meta_app_binding_request(session, metaagent, &tokens[1..], &agents)?;
-                if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
-                    if !self
-                        .runtime_state
-                        .authorize_agent_app_binding(
-                            session.id(),
-                            metaagent.id(),
-                            &grant.agent_ref,
-                            &grant.name,
-                        )
-                        .await?
-                    {
-                        return Err(meta_command_error("App binding was not approved"));
-                    }
-                }
+                let request = meta_app_binding_request(
+                    session,
+                    metaagent,
+                    &tokens[1..],
+                    &agents,
+                    self.runtime_state.room_agent_tools_enabled(),
+                )?;
                 Ok(request)
             }
             "extension" | "extensions" => meta_extension_import_request(session, &tokens[1..]),

@@ -31,6 +31,7 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum KernelBrowserCapability {
@@ -568,6 +569,7 @@ impl KernelBrowserHost {
                 }
             }
         }
+        self.arm_expiry();
         // No grant lock across authority callbacks: they can read kernel state.
         self.check_admission(admission)?;
         result
@@ -655,6 +657,9 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
             state.stopped = true;
+            if let Some(wake) = &state.expiry_wake {
+                wake.notify_one();
+            }
             let owners: BTreeSet<_> = state
                 .access
                 .holders()
@@ -748,6 +753,65 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// MP-08/MP-11 A05: absolute expiry is a live wake. With no further call,
+    /// the grant disappears, its epoch cancels in-flight work and clients see it.
+    #[tokio::test]
+    async fn capability_grant_expiry_is_a_live_wake() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-expiry"));
+        host.request_grant(
+            "owner",
+            "agent",
+            "prompt",
+            Duration::from_millis(200),
+            None,
+            "session",
+        )
+        .unwrap();
+        host.set_focus("owner", Some("focused"));
+        let admission = host.admit("owner", "agent").unwrap();
+        let cursor = host.grant_snapshot("owner", "kernel")["cursor"].as_u64();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host
+                .grant_holders()
+                .contains(&("owner".into(), "agent".into()))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the expiry wake revokes without any later request");
+        assert!(admission.cancellation.requested());
+        assert!(host.grant_snapshot("owner", "kernel")["cursor"].as_u64() > cursor);
+        assert!(
+            host.has_grant("owner", "focused"),
+            "unexpired grants remain"
+        );
+        assert!(KernelBrowserHost::grant_lifetime(Some(25)).is_err());
+        assert!(KernelBrowserHost::grant_lifetime(Some(0)).is_err());
+        assert_eq!(
+            KernelBrowserHost::grant_lifetime(Some(24)).unwrap(),
+            Duration::from_secs(24 * 3600)
+        );
+    }
+    #[tokio::test]
+    async fn capability_empty_revoke_invalidates_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-revoke"));
+        let cursor = host.grant_snapshot("owner", "kernel")["cursor"].as_u64();
+        host.revoke_grants("owner", None);
+        assert!(
+            host.request_grant(
+                "owner",
+                "agent",
+                "request",
+                Duration::from_secs(60),
+                cursor,
+                "room"
+            )
+            .is_err(),
+            "MP-11: a revoke must fence pending acquisition before any holder exists"
+        );
+        assert!(host.grant_holders().is_empty());
+    }
     #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/mdaccess"));

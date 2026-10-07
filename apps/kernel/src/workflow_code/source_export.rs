@@ -250,7 +250,16 @@ pub(super) fn workflow_code_definition_from_session_workflow(
             wait_for_all_inputs: Some(node.wait_for_all_inputs()),
             intermediate_output_schema: node.intermediate_output_schema_ref().map(str::to_string),
             max_turns: node.max_turns(),
-            extensions: agent.extension_grants().to_vec(),
+            extensions: agent
+                .extension_grants()
+                .iter()
+                .cloned()
+                .map(|mut grant| {
+                    // MP-11: exporting a definition never exports kernel-issued authority.
+                    grant.app_grant = None;
+                    grant
+                })
+                .collect(),
             canvas: canvas
                 .and_then(|layout| layout.nodes.get(node.id()))
                 .map(workflow_code_canvas_point_from_layout),

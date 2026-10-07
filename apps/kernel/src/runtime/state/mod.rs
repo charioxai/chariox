@@ -195,6 +195,7 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     notes: crate::runtime::notes::NoteStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    app_grant_epochs: Arc<capability_grant_runtime::AppGrantEpochs>,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
@@ -471,6 +472,8 @@ mod terminal_runtime_state;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+
+mod capability_grant_runtime;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
@@ -811,6 +814,7 @@ impl KernelRuntimeState {
                 slice_store,
                 notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
                 kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(config.private_runtime_state_root()),
+                app_grant_epochs: Arc::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
@@ -908,6 +912,7 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        runtime.recover_app_grant_expiries();
         runtime
     }
 

@@ -215,6 +215,14 @@ impl KernelRuntimeOwnedState {
             })?
         };
         if sudo.is_some()
+            && interaction_id.starts_with("capability-request-")
+            && pending.kernel_operation_owner.is_some()
+        {
+            return Err(interaction_error(
+                "sudo cannot authorize resource acquisition",
+            ));
+        }
+        if sudo.is_some()
             && (pending.terminal_credential_owner.is_some()
                 || pending.passkey_prompt.as_ref().is_some_and(|prompt| {
                     prompt.kind != crate::local::PasskeyPromptKind::CriticalApproval
