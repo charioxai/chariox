@@ -222,9 +222,12 @@ export class DisplayStream {
     // Half a second of negotiated frame budget, including outer base64. One
     // credit remains outstanding; narrow links reduce batch size/cadence.
     const patchLimit = exactPatchLimit(this.bitrate);
+    // MP-11: a safe codec fallback can exceed the wire PNG budget. Repair
+    // only an admitted base in credited tiles; never bootstrap from a patch.
+    const safeFallback = source.force_lossless && bound && this.previous;
     let payload, repair = null;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
-    else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {
+    else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
       const exact = source.native_repair?null:full();
       if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
