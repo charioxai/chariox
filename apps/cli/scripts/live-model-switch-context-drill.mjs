@@ -21,14 +21,14 @@
 //   [--round-trip]  after the recall, plant one more fact and switch back to the first profile
 import assert from "node:assert/strict"
 import { execSync } from "node:child_process"
-import { randomInt } from "node:crypto"
+import { randomInt, randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { agentSnapshot, assertContinuedPlacement, evidenceName, placementRequest, scoreFacts, scoreSummary } from "./lib/model-switch-coverage.mjs"
+import { agentSnapshot, assertContinuedPlacement, assertToolProbe, evidenceName, scoreFacts, scoreSummary } from "./lib/model-switch-coverage.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -37,6 +37,7 @@ import {
   deleteSessionRequest,
   getSessionHistoryBlobContentRequest,
   getSessionHistoryOutlineRequest,
+  spawnAgentRequest,
   submitPromptRequest,
   updateAgentProfileRequest,
 } from "../dist/ipc-requests.js"
@@ -67,7 +68,7 @@ async function turnOutput(client, sessionId, agentId, marker, timeoutMs) {
     const outline = variant(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 3)), "SessionHistoryOutline")
     const turn = outline.agents.find(agent => agent.agent_id === agentId)?.turns.find(turn => turn.user_prompt?.entry?.text.includes(marker))
     if (turn && ["completed", "failed", "cancelled"].includes(turn.lifecycle)) {
-      for (const blob of turn.blobs.filter(blob => ["provider_output", "provider_error"].includes(blob.kind))) {
+      for (const blob of turn.blobs.filter(blob => ["provider_output", "provider_error", "provider_tool"].includes(blob.kind))) {
         const content = variant(await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)), "SessionHistoryBlobContent")
         turn.entries.push(...content.entries)
       }
@@ -75,7 +76,8 @@ async function turnOutput(client, sessionId, agentId, marker, timeoutMs) {
       const errors = entries.filter(entry => entry.kind === "provider_error").map(entry => entry.text)
       const text = entries.filter(entry => entry.kind === "provider_output").map(entry => entry.text).join("")
       const runIds = [...new Set(entries.map(entry => entry.provider_run_id).filter(Boolean))]
-      return { lifecycle: turn.lifecycle, text, errors, runIds }
+      const tool_rows = entries.filter(entry => entry.kind === "provider_tool").map(entry => entry.text)
+      return { lifecycle: turn.lifecycle, text, errors, runIds, tool_rows }
     }
     await sleep(500)
   }
@@ -105,7 +107,7 @@ const facts = { codename: `${pick()}-${pick()}`, port: String(20000 + randomInt(
 if (richProbes) {
   Object.assign(facts, {
     cache_database: `${pick()}db`, current_task: `migrate-${pick()}-${pick()}`, next_step: `write-${pick()}-rollback`,
-    created_file: `ctx-${pick()}-${randomInt(1000, 9999)}.txt`, python_output: null, release_name: null,
+    created_file: `ctx-${pick()}-${randomUUID().slice(0, 8)}.txt`, python_output: null, release_name: null,
   })
 }
 // Notes a scripted long session pastes: numbered, varied lines, about 4 bytes per token.
@@ -120,6 +122,8 @@ const evidence = { from, to, placement, facts, started_at_ms: Date.now(), turns:
 const client = new LocalIpcClient(kernelUrl)
 let sessionId = null
 let scratch = null
+let ask = null
+let fileProbeAttempted = false
 try {
   const created = variant(await client.send(createSessionRequest(workspace, workspace, `ctxswitch-${Date.now()}`, {
     provider: from.provider, model: from.model, effort: from.effort, account_profile: from.accountProfile,
@@ -127,7 +131,9 @@ try {
   })), "SessionCreated")
   sessionId = created.session.id
   const agent = placement.kernelRef || placement.sliceRef
-    ? variant(await client.send(placementRequest(sessionId, from, placement)), "AgentSpawned").agent
+    ? variant(await client.send(spawnAgentRequest(sessionId, from.provider, "ctxswitch-coverage", from.model,
+      undefined, from.effort, "build", "yolo", placement.kernelRef ?? undefined, undefined,
+      placement.sliceRef ?? undefined, from.accountProfile)), "AgentSpawned").agent
     : created.agent
   const agentId = agent.id
   evidence.source_agent = agentSnapshot(agent)
@@ -142,7 +148,7 @@ try {
     variant(await client.send(submitPromptRequest(sessionId, attachment.id, agentId, `${marker} ${prompt}`, files)), "PromptSubmitted")
     return marker
   }
-  const ask = async (label, prompt, files = [], followUp = null) => {
+  ask = async (label, prompt, files = [], followUp = null) => {
     const marker = await submit(label, prompt, files)
     const followUpMarker = followUp && await submit(`${label}-follow-up`, followUp)
     const result = await turnOutput(client, sessionId, agentId, marker, timeoutMs)
@@ -177,7 +183,10 @@ try {
   }
   if (richProbes) {
     await ask("decision-new", `Decision changed: we will use ${facts.cache_database} for the cache instead of SQLite. Our current task is ${facts.current_task}, and the next step is ${facts.next_step}. Do not use tools. Reply with just OK.`)
-    await ask("file", `Using one shell command, create the file ${path.join(workspace, facts.created_file)} containing the line ${facts.codename}. Reply with just DONE.`)
+    fileProbeAttempted = true
+    const file = await ask("file", `In your current workspace, use one shell command to create the relative file ${facts.created_file} containing the line ${facts.codename}, then read that file back with cat. Reply with just the line read from the file.`)
+    assertToolProbe(file, facts.codename, "file creation/readback")
+    evidence.file_probe = { filename: facts.created_file, workspace_relative: true, verified: true }
     const [a, b] = [randomInt(1000, 9999), randomInt(1000, 9999)]
     facts.python_output = String(a * b)
     await ask("tool", `Run the shell command python3 -c "print(${a}*${b})" and reply with just its output.`)
@@ -242,12 +251,25 @@ try {
   process.exitCode = 1
 } finally {
   evidence.session_id = sessionId
+  // Use the execution agent's filesystem before ending its home-owned session.
+  if (fileProbeAttempted && ask) {
+    try {
+      const removed = await ask("file-cleanup", `In your current workspace, use one shell command to remove only the relative file ${facts.created_file}, verify that it no longer exists, and print CTXSWITCH_FILE_REMOVED. Reply with just that marker.`)
+      assertToolProbe(removed, "CTXSWITCH_FILE_REMOVED", "file cleanup")
+      evidence.file_cleanup = { filename: facts.created_file, verified: true }
+    } catch (error) {
+      evidence.file_cleanup = { filename: facts.created_file, verified: false, failure: error.message }
+      evidence.passed = false
+      evidence.failure ??= `file cleanup failed: ${error.message}`
+      process.exitCode = 1
+    }
+  }
   if (sessionId && !process.argv.includes("--keep-session")) {
     await client.send(deleteSessionRequest(sessionId, workspace)).catch(() => {})
   }
   await client.close().catch(() => {})
   if (scratch) await rm(scratch, { recursive: true, force: true })
-  if (facts.created_file) await rm(path.join(workspace, facts.created_file), { force: true })
+  if (facts.created_file && !placement.kernelRef && !placement.sliceRef) await rm(path.join(workspace, facts.created_file), { force: true })
 }
 
 await mkdir(evidenceRoot, { recursive: true })
