@@ -318,3 +318,41 @@ fn mp08_native_retina_sparse_damage_scales_physical_tiles_and_rejects_dense_moti
     assert_eq!(bounds, [0, 0, 2560, 1600]);
     assert_eq!(motion_height, 1600);
 }
+
+#[test]
+fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
+    let (w, h) = (1920, 1080);
+    let mut source = vec![0u8; w * h * 4];
+    let mut noise = 17u32;
+    for pixel in source.chunks_exact_mut(4) {
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        pixel.copy_from_slice(&[noise as u8, (noise >> 8) as u8, (noise >> 16) as u8, 255]);
+    }
+    let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, 1) });
+    assert!(!codec.0.is_null());
+    for _ in 0..3 {
+        let mut rows = [RowResult::default(); 8];
+        assert_eq!(
+            unsafe {
+                ffi::cx_codec_encode(
+                    codec.0,
+                    source.as_ptr(),
+                    255,
+                    std::ptr::null(),
+                    0,
+                    rows.as_mut_ptr(),
+                )
+            },
+            1
+        );
+        assert!(rows[0].key != 0 && rows[0].sequence == 1);
+        // Twice the 50ms VBV budget leaves headers room without a 300ms key.
+        assert!(
+            rows[0].length <= 45000,
+            "MP-08/MP-10: unpaced recovery key: {}",
+            rows[0].length
+        );
+    }
+}

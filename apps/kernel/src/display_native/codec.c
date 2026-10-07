@@ -6,9 +6,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <math.h>
 static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
-static double wall_ms(void) {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
 #include <x264.h>
 #include <libyuv/convert.h>
 #include <libyuv/convert_from.h>
@@ -34,16 +32,12 @@ struct Row {
     uint8_t *previous,*packet,*rgb;
     size_t packet_capacity;
     uint64_t sequence;
-    int rate;
     /* x264 reconstruction (NV12) of the last encoded frame: bit-exact with
      * normative H.264 decoding; valid until this row's next encode/close. */
     const uint8_t *recon_y,*recon_uv;
     int recon_y_stride,recon_uv_stride;
 };
-/* MP-08/MP-10: constant-QP x264 skips CRF/VBV look-ahead analysis; this
- * bounded per-row controller keeps the negotiated motion rate instead. */
-struct Rate { int qp,key_qp; double at; };
-struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; struct Rate rate[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
 /* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
 static _Thread_local struct Codec *diagnosing;
 static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
@@ -76,7 +70,6 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count) {
     if (row_count!=1&&row_count!=8)return NULL;
     struct Codec *c=calloc(1,sizeof(*c));
     if (!c) return NULL;
-    for (int r=0;r<8;r++) c->rate[r]=(struct Rate){26,36,0};
     c->hardware_requested=!getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE")||strcmp(getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE"),"1");
     if(c->hardware_requested) {
         pthread_once(&diagnostic_once,diagnostic_install);
@@ -127,7 +120,11 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     p.vui.b_fullrange=0;p.i_level_idc=51;
     int rate=(int)((double)c->bitrate*.45*h/c->height/1000);
     if (rate<16)rate=16;
-    row->rate=rate;p.rc.i_rc_method=X264_RC_CQP;p.rc.i_qp_constant=26;
+    /* MP-08/MP-10: bound recovery keys as well as deltas. CQP clamps
+     * per-picture quantizers and cannot honor the paced link budget. */
+    p.rc.i_rc_method=X264_RC_CRF;p.rc.f_rf_constant=23;
+    p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;
+    p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
     if (x264_param_apply_profile(&p,"baseline")) return -1;
     if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}}
     if(!row->hardware)row->codec=x264_encoder_open(&p);
@@ -226,8 +223,6 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         if (ARGBToI420(data,c->width*4,row->picture.img.plane[0],row->picture.img.i_stride[0],row->picture.img.plane[1],row->picture.img.i_stride[1],row->picture.img.plane[2],row->picture.img.i_stride[2],c->width,h))return -1;
         c->cpu[2]+=cpu_ms()-at;
         row->picture.i_pts=(int64_t)row->sequence;row->picture.i_type=row->sequence?X264_TYPE_AUTO:X264_TYPE_IDR;
-        struct Rate *control=&c->rate[r];int *qp=row->sequence?&control->qp:&control->key_qp;
-        row->picture.i_qpplus1=*qp+1;
         x264_nal_t *nals;int n; x264_picture_t out;
         at=cpu_ms();
         AVPacket *hardware_packet=NULL;int length;
@@ -242,18 +237,6 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
             else row->recon_y=row->recon_uv=NULL;
         }
         c->cpu[3]+=cpu_ms()-at;
-        if(!row->hardware&&length>0) {
-            /* +6 QP roughly halves H.264 bits. Keys get four frames of budget. */
-            double now=wall_ms(),interval=control->at?now-control->at:1000./60;control->at=now;
-            if(interval<1000./60)interval=1000./60;
-            if(interval>100)interval=100;
-            double ratio=length/(row->rate*interval/8*(row->sequence?1:4));
-            if(ratio>1.15){int step=(int)lround(6*log2(ratio));*qp+=step<1?1:step>8?8:step;}
-            else if(ratio<.5)(*qp)--;
-            int floor=row->sequence?20:24;
-            if(*qp<floor)*qp=floor;
-            if(*qp>51)*qp=51;
-        }
         if (length<=0 || length>1024*1024 || (!hardware_packet&&n<1)){av_packet_free(&hardware_packet);return -1;}
         if (row->packet_capacity<(size_t)length) {
             uint8_t *buffer=realloc(row->packet,length);
