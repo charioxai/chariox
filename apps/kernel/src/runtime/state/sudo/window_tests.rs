@@ -101,6 +101,27 @@ async fn sudo_window_projection_keeps_deadline_and_warning_after_mutation() {
     assert!(projected.sudo_windows().is_empty());
 }
 
+#[tokio::test]
+async fn sudo_windows_are_projected_only_to_their_owner() {
+    let f = fixture_with_options(None, true);
+    let window = running(&f);
+    let projected = f.state.owned.update_session_projection(session(&f));
+    assert_eq!(
+        projected.clone().redacted_for_user("local").sudo_windows(),
+        &[window.clone()]
+    );
+    assert!(
+        projected
+            .redacted_for_user("member")
+            .sudo_windows()
+            .is_empty(),
+        "other members must not receive window, run or requester details"
+    );
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
 // MP-08/MP-10/MP-11: App read/publish paths must project the same kernel window.
 #[tokio::test]
 async fn app_session_snapshots_keep_the_current_kernel_sudo_window() {
@@ -369,6 +390,140 @@ async fn sudo_window_ends_when_its_owner_work_ends() {
         .owned
         .prompt_state_owner
         .sudo_work_held(&session(&f), &window.agent_id));
+}
+
+fn deferred_prompt_notices(f: &Fixture) -> usize {
+    f.state
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&f.request.session_id, None)
+        .unwrap()
+        .iter()
+        .filter(|entry| format!("{entry:?}").contains("Deferred prompt"))
+        .count()
+}
+
+#[tokio::test]
+async fn sudo_start_does_not_report_its_own_prompt_as_deferred() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    assert_eq!(deferred_prompt_notices(&f), 0);
+    let unrelated = crate::app::KernelPreparedPromptSubmission {
+        session_id: window.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            "unrelated-owner-prompt",
+            &f.request.attachment_id,
+            &window.agent_id,
+            "unrelated",
+            PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    f.state
+        .owned
+        .submit_local_prepared_prompt_with_queue_policy(&unrelated, true)
+        .unwrap();
+    assert_eq!(deferred_prompt_notices(&f), 1);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sudo_extension_before_the_first_turn_keeps_the_window() {
+    let f = fixture_with_options(None, true);
+    let agent = f.request.target_agent_id.clone().unwrap();
+    // The agent is busy with ordinary work, so the authorized window waits.
+    let busy = crate::app::KernelPreparedPromptSubmission {
+        session_id: f.request.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            "ordinary-busy-prompt",
+            &f.request.attachment_id,
+            &agent,
+            "ordinary",
+            PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    f.state
+        .owned
+        .submit_local_prepared_prompt_with_queue_policy(&busy, true)
+        .unwrap();
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let start = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    approve(&f, &popup(&f.state).await, None).await.unwrap();
+    let queued = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(turn) = f.state.list_sudo_turns("local").pop() {
+                if turn.deadline.is_some() {
+                    return turn;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(queued.prompt_id.is_none());
+    let state = f.state.clone();
+    let extend = tokio::spawn({
+        let request = ExtendKernelSudoRequest {
+            session_id: queued.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            entry_id: queued.entry_id.clone(),
+            revision: queued.revision,
+        };
+        async move { state.extend_sudo_window(request, "local").await }
+    });
+    let prompt = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(prompt) = f
+                .state
+                .passkey_prompts_for("local")
+                .into_iter()
+                .find(|p| p.interaction_id.contains(":extend:"))
+            {
+                return prompt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    approve(&f, &prompt, Some("120")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), extend)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // The busy turn ends; the extended window's first turn starts.
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session(&f), &agent)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), start)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let live = f.state.list_sudo_turns("local").pop().expect("window kept");
+    assert_eq!(
+        (live.revision, live.duration_minutes),
+        (queued.revision + 1, 120)
+    );
+    assert_eq!(live.prompt_id.as_deref(), Some(queued.entry_id.as_str()));
+    assert!(!outcomes(&f, &queued.entry_id).contains(&"refused_or_cancelled".to_owned()));
+    f.state
+        .revoke_sudo(Some("local"), Some(&queued.entry_id), "fixture_cleanup")
+        .unwrap();
 }
 
 #[tokio::test]
@@ -694,6 +849,88 @@ fn sudo_fence_lets_correlated_wakes_pass_deferred_messages() {
     assert!(
         forged.is_err(),
         "an unrelated event cannot claim the work binding"
+    );
+}
+
+#[tokio::test]
+async fn sudo_deferred_events_outlast_the_delivery_timeout_and_run_after_the_window() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let (room, agent) = (window.session_id.clone(), window.agent_id.clone());
+    let work = window.task_id.clone().unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session(&f), &agent)
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let occur = |id: &str, kind: &str, payload: serde_json::Value| {
+        let Outcome::Event(event) = store
+            .agent_lifecycle(Operation::Occur(ledger::occurrence(
+                &room, &agent, "peer", id, kind, payload,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        event
+    };
+    // An unrelated event whose idle refusal clock started before the window
+    // and is now older than the delivery timeout.
+    let unrelated = occur("peer-1", "message", serde_json::json!({"message": "later"}));
+    let stale = crate::session::unix_epoch_ms() - ledger::DELIVERY_TIMEOUT_MS - 1_000;
+    for op in [
+        Operation::Attempt {
+            room: room.clone(),
+            agent: agent.clone(),
+            sequence: unrelated.sequence,
+            prompt: "refused".into(),
+            target: None,
+            run: None,
+            now: stale,
+            work: None,
+        },
+        Operation::Receipt {
+            room: room.clone(),
+            agent: agent.clone(),
+            sequence: unrelated.sequence,
+            state: "rejected".into(),
+            now: stale,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    f.state.sweep_agent_lifecycle().await.unwrap();
+    let held = store.agent_inbox(&room, &agent, 0).unwrap();
+    assert_eq!(
+        held[0].state, "pending",
+        "deferral is waiting, not a lost delivery"
+    );
+    assert!(store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .iter()
+        .all(|t| t.task_id != format!("delivery-{}", unrelated.sequence)));
+    // The elevated task's own wakes still pass the deferred event.
+    let wake = occur("wake-1", "sudo_ended", serde_json::json!({"task_id": work}));
+    assert_eq!(
+        store
+            .agent_work_delivery_front(&room, &agent, Some(&work))
+            .unwrap()
+            .unwrap()
+            .sequence,
+        wake.sequence
+    );
+    // Once the window ends the deferred event runs as a regular turn.
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+    f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
+    let delivered = store.agent_inbox(&room, &agent, 0).unwrap();
+    assert!(
+        matches!(delivered[0].state.as_str(), "submitting" | "accepted"),
+        "{:?}",
+        delivered[0].state
     );
 }
 

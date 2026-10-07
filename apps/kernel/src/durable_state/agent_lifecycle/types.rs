@@ -212,6 +212,9 @@ pub(crate) enum Operation {
     Sweep {
         now: u64,
         busy_recipients: Vec<(String, String)>,
+        /// A04: (room, agent, task) of sudo-held recipients; their unrelated
+        /// events wait for the window to end like busy refusals.
+        held_work: Vec<(String, String, String)>,
     },
     CancelTask {
         task: String,

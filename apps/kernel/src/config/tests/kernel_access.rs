@@ -119,3 +119,36 @@ fn kernel_access_settings_persist_and_are_discoverable() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn kernel_access_legacy_configs_are_clamped_instead_of_refusing_boot() {
+    for (payload, default, max, notice) in [
+        // Valid before the 8 h default: only the old maximum was set.
+        ("grant_max_minutes = 240", 240, 240, 5),
+        // No upper bound existed before the 24 h maximum.
+        (
+            "grant_default_minutes = 2000\ngrant_max_minutes = 3000\ngrant_extend_notice_minutes = 1800",
+            1440,
+            1440,
+            1439,
+        ),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-access-legacy-{:016x}.toml",
+            rand::random::<u64>()
+        ));
+        std::fs::write(&path, format!("[kernel_access]\n{payload}\n")).unwrap();
+        let loaded = load_user_config_from_path(&path);
+        std::fs::remove_file(path).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(
+            (
+                loaded.kernel_access.grant_default_minutes,
+                loaded.kernel_access.grant_max_minutes,
+                loaded.kernel_access.grant_extend_notice_minutes,
+            ),
+            (default, max, notice),
+            "{payload}"
+        );
+    }
+}

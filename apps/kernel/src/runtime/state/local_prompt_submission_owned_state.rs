@@ -133,7 +133,12 @@ impl KernelRuntimeOwnedState {
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
-        if sudo_deferred {
+        if sudo_deferred
+            && matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            )
+        {
             self.record_notice_for_agent(
                 &session_id,
                 None,

@@ -257,15 +257,19 @@ impl KernelRuntimeState {
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         // Release sudo_turns before reading session/prompt state: interaction
         // resolution holds session_store, then prompt state, then sudo_turns.
-        let present = self
+        // Re-read the window: Extend may have renewed it while it waited.
+        let current = self
             .owned
             .sudo_turns
             .lock()
             .expect("access state poisoned")
-            .contains_key(&entry.entry_id);
-        if !present || !self.sudo_live(entry) {
+            .get(&entry.entry_id)
+            .filter(|current| current.prompt_id.is_none())
+            .cloned();
+        let Some(entry) = current.filter(|current| self.sudo_live(current)) else {
             return Err(error("queued sudo was revoked"));
-        }
+        };
+        let entry = &entry;
         let session = self.owned.session_store.get_session(&entry.session_id)?;
         let durable_work = self.owned.config_projection.snapshot().room_agent_tools;
         if durable_work {
@@ -369,23 +373,28 @@ impl KernelRuntimeState {
             .lock()
             .expect("access state poisoned");
         let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
-        if !bound
-            || access.get(&entry.entry_id).is_none_or(|current| {
-                current.revision != entry.revision || current.prompt_id.is_some()
-            })
-            || !policy::requester_grant_live(entry, &grants)
-        {
+        // The turn binds to the current window, so an Extend that landed
+        // after the caller's read keeps its fresh deadline and revision.
+        let Some(mut started) = access
+            .get(&entry.entry_id)
+            .filter(|current| bound && current.prompt_id.is_none())
+            .filter(|current| policy::requester_grant_live(current, &grants))
+            .cloned()
+        else {
             return Err(error("sudo authorization revoked before dispatch"));
-        }
+        };
+        started.prompt_id = turn.prompt_id.clone();
+        started.provider_run_id = turn.provider_run_id.clone();
+        started.task_id = turn.task_id.clone();
         let cutoff = crate::runtime::kernel_access::process::birth_cutoff()
             .map_err(|e| error(e.to_string()))?;
-        self.audit_sudo(turn, "started")?;
+        self.audit_sudo(&started, "started")?;
         self.owned
             .sudo_process_cutoffs
             .lock()
             .expect("sudo process cutoffs poisoned")
             .insert(entry.entry_id.clone(), cutoff);
-        access.insert(entry.entry_id.clone(), turn.clone());
+        access.insert(entry.entry_id.clone(), started);
         Ok(())
     }
 }
