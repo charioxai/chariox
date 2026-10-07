@@ -225,7 +225,7 @@ export class DisplayStream {
     // MP-11: a safe codec fallback can exceed the wire PNG budget. Repair
     // only an admitted base in credited tiles; never bootstrap from a patch.
     const safeFallback = source.force_lossless && bound && this.previous;
-    let payload, repair = null;
+    let payload, repair = null, bootstrap = false;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
     else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
       const exact = source.native_repair?null:full();
@@ -268,6 +268,7 @@ export class DisplayStream {
       for(let n=3;n<black.length;n+=4)black[n]=255;
       payload={kind:'png',data_base64:encodePng(current.width,current.height,black)};
       repair=remaining;
+      bootstrap=true;
     }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
@@ -301,6 +302,11 @@ export class DisplayStream {
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
     if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.encoder.discard?.(source.encoded);return null; }
+    if(bootstrap){
+      this.producer?.retireUnsent();this.refiner?.invalidate();
+      this.encoder.nativeRetire?.(this.encoder.nativeSession);
+      this.encoder.nativeRevision=undefined;this.encoder.nativeDeliveredRevision=undefined;
+    }
     this.encoder.handedOff?.(source.encoded);
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It

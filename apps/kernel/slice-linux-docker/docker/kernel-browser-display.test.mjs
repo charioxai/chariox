@@ -362,7 +362,9 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
  const width=600,height=600,pixels=randomBytes(width*height*4);
  for(let n=3;n<pixels.length;n+=4)pixels[n]=255;
  const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels),repair_tiles:[]};
- const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ let retired=0,refinements=0;
+ const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:{nativeSession:'fixture',nativeRevision:17,nativeDeliveredRevision:17,nativeRetire:()=>retired++,close:async()=>{}}});
+ stream.refiner={invalidate:()=>refinements++,close:async()=>{}};
  try{
   const first=await stream.frame(source,'d',0);
   assert.equal(first.kind,'png');assert.ok(JSON.stringify(first).length<1024*1024);
@@ -370,7 +372,7 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
   const black=Buffer.alloc(restored.length);for(let n=3;n<black.length;n+=4)black[n]=255;
   assert.deepEqual(restored,black,'bootstrap exposes only opaque black');
   assert.equal(restored[0],0);assert.equal(restored[3],255);assert.equal(stream.exact,false);
-  assert.ok(stream.repair?.length);
+  assert.ok(stream.repair?.length);assert.equal(retired,1,'bootstrap retires video certificates');assert.ok(refinements>0,'pending repairs of the replaced canvas retire');assert.equal(stream.encoder.nativeRevision,undefined);
   for(let n=0;!stream.exact&&n<100;n++){
    const frame=await stream.frame(source,'d',stream.sequence);
    assert.equal(frame.kind,'tiles');assert.ok(JSON.stringify(frame).length<1024*1024);
