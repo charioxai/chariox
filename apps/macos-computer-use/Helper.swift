@@ -5,7 +5,7 @@ func launchIdentity() throws -> [String: Any] {
     var code: SecCode?, staticCode: SecStaticCode?, info: CFDictionary?
     guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
           SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
-          SecCodeCopySigningInformation(staticCode, [], &info) == errSecSuccess,
+          SecCodeCopySigningInformation(staticCode, signingInformationFlags(), &info) == errSecSuccess,
           let data = info as? [String: Any] else { throw Refusal.native }
     return ["path": Bundle.main.executableURL!.resolvingSymlinksInPath().path,
             "identifier": data[kSecCodeInfoIdentifier as String] ?? "unsigned",
@@ -20,6 +20,10 @@ func launchIdentity() throws -> [String: Any] {
             let arguments = Array(CommandLine.arguments.dropFirst())
             print(String(data: try JSONSerialization.data(withJSONObject: launchIdentity(), options: [.sortedKeys]), encoding: .utf8)!)
             if arguments == ["--identity"] { return }
+            if arguments == ["--enable-owner-window", "--list-windows"] {
+                print(String(data: try JSONSerialization.data(withJSONObject: ownerWindowChoices(), options: [.sortedKeys]), encoding: .utf8)!)
+                return
+            }
             let request = try Request.parse(arguments)
             for receipt in try await run(request, source: MacSource()) { print(receipt) }
         } catch {

@@ -1,9 +1,11 @@
 # Computer mode on a macOS kernel host
 
-Status: design only, 2026-10-06. Lane `cumac/design`, based on `e325afa58`.
-Linux owns the first implementation of the shared Computer contract. Mac follows
-that contract with native capture, targeting and input adapters. This lane runs
-no prototype, TCC request, kernel, helper, signing operation or live drill.
+Status: M0 implemented but unattended, 2026-10-07. Lane `cu/macos-m0`, based on
+`e325afa58`. The disabled standalone helper and regression fixture compile and
+pass fake-source checks. M0 includes an explicit owner-selected real-window
+path. No live capture, AX or CGEvent drill has run; owner evidence remains
+required. Linux owns the shared Computer contract; kernel integration and the
+remaining Mac adapters follow that contract in M1-M5.
 
 ## Decision and dependencies
 
@@ -155,7 +157,8 @@ Capture with `showsCursor=false`. Publish the observed human cursor position
 and agent intended pointer separately through the shared actor projection.
 The viewer draws actor names, colors and action status above video. A small
 local helper overlay may show the agent pointer and Stop control; it must be
-excluded from captured pixels. CGEvent mouse input moves the real system cursor.
+excluded from captured pixels. Planned session/HID CGEvent mouse input moves the
+real system cursor. M0 uses per-PID posting and does not establish cursor movement.
 There is no second independently clickable Mac cursor.
 Use a labeled arrow for the human cursor initially; exact cross-app cursor shapes
 need separate validation. Cursor-only movement updates presence without a frame.
@@ -453,7 +456,7 @@ Split at responsibility boundaries when a PR exceeds its budget.
 
 | PR | Size | Deliverable and merge proof |
 | --- | --- | --- |
-| M0, feasibility helper | S, 250-450 | Native fixture app, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip; owner-attended evidence required |
+| M0, feasibility helper | S, 250-450 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
 | M1, shared adapter and lifecycle | M, 400-700 | Implement Linux-approved Computer adapter registration, private helper pairing, health/Stop/revoke and stale epochs; focused fake-backend tests and actual crash/denial proof |
 | M2, capture attachment | M, 500-800 | SCK filters/exclusions, HiDPI transforms, damage and protected exact repair; shared viewer shows public fixture pixels over encrypted kernel/relay events |
 | M3, input and takeover | M, 500-800 | Scoped mouse/scroll/keys/Unicode, seat serialization, local-human fence and owned reset; Linux-equivalent physical fixture and adversarial focus/takeover/death cases |
@@ -464,11 +467,19 @@ M2/M3 must remain feature-disabled until M4's protection gates pass. Every
 implementation PR includes its own focused tests, rollback and exact ownership
 cleanup. Allocate protocol changes in the shared contract PR rather than one
 number per OS module. Local `[skip ci]` checkpoints precede final-head review/CI
-when the feature is fully ready. No PR, push or CI is created by this design lane.
+when the feature is fully ready. M0 is published as draft PR #920; its review-fix
+checkpoint is local only, with no push or GitHub CI.
 
-## Minimal feasibility prototype, later and owner-attended
+## Minimal feasibility prototype, implemented M0 and owner-attended gates
 
-The prototype is a future gate, not an instruction to run capture now.
+M0's standalone helper is implemented but unattended. Follow
+`apps/macos-computer-use/OWNER_SETUP.md` with the owner present for the fixture
+regression checks and one explicitly selected real app window. M0 uses per-PID
+CGEvent delivery only. It does not prove session/HID posting, system cursor
+movement, session-tap observation or self-tagging. Text requests admit at most
+20 UTF-16 units and refuse whole overflowing strings without splitting a
+grapheme or surrogate pair. The broader steps below remain later acceptance
+gates, not instructions to run capture unattended.
 
 1. Build the smallest native helper plus public fixture with ordinary and secure
    text fields, buttons and moving color patches. Use external compiler output
@@ -508,5 +519,7 @@ explicit disposable `CHARIOX_HOME` outside source for later kernel drills, with
 no owner profiles or credentials. Inventory exact drill-owned processes and
 directories before removal; do not stop installed kernels or recursively clean
 shared state. Retain signing assets and grants unless the owner removes them.
-This design lane creates only this document, its local commit and the requested
-external lane status. It touches no running kernel, Keychain or reviewer state.
+M0 adds the standalone helper, public fixture, fake-source tests, build script
+and owner guide. Compile checks and ad-hoc signing have run; real-window drills,
+Developer ID signing and TCC attribution remain unproven. This lane touches no
+running kernel, Keychain or reviewer state.

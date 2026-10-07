@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-build=/Users/miguel/.chariox/dev/cumac/build
+build=${CUMAC_BUILD_DIR:-"$HOME/.chariox/dev/cumac/build"}
 mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
-swiftc "${flags[@]}" Policy.swift Tests.swift -o "$build/policy-tests"
+swiftc "${flags[@]}" Policy.swift Signing.swift Tests.swift -o "$build/policy-tests"
 "$build/policy-tests"
 for kind in Helper Fixture; do
   bundle="$build/Chariox Computer $kind.app"
@@ -25,7 +25,7 @@ for kind in Helper Fixture; do
 EOF
   if [[ $kind == Helper ]]; then /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$bundle/Contents/Info.plist"; fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Native.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Native.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
     swiftc "${flags[@]}" Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi

@@ -1,10 +1,11 @@
 import Foundation
+import Security
 
 final class FakeSource: NativeSource {
     var calls = 0
     var typed: [UInt16] = []
     var secureInput = false
-    func validateFixture(_ request: Request) throws {
+    func validateTarget(_ request: Request) throws {
         guard request.pid == 42, request.window == 1 else { throw Refusal.target }
         guard !secureInput else { throw Refusal.secure }
     }
@@ -16,7 +17,69 @@ final class FakeSource: NativeSource {
 }
 @main struct Tests {
     static func main() async throws {
+        guard signingInformationFlags().rawValue & kSecCSSigningInformation != 0 else {
+            print("FAIL signing information flag missing"); exit(1)
+        }
+        do {
+            _ = try textUnits(String(repeating: "😀", count: 11))
+            print("FAIL 22-unit emoji payload admitted"); exit(1)
+        } catch Refusal.text { }
         let source = FakeSource()
+        do {
+            let owner = try Request.parse(["--enable-owner-window", "--owner-pid", "42", "--window-id", "1", "--target", "focused", "--text", "public"])
+            _ = try await run(owner, source: source)
+        } catch { print("FAIL explicit owner-selected window refused"); exit(1) }
+        print("PASS explicit owner-selected window scope")
+        source.calls = 0
+        for arguments in [
+            ["--enable-owner-window", "--fixture-pid", "42"],
+            ["--enable-fixture", "--owner-pid", "42"],
+            ["--enable-owner-window", "--enable-fixture"],
+            ["--enable-owner-window", "--owner-pid", "42", "--fixture-pid", "42"]
+        ] {
+            do { _ = try Request.parse(arguments); print("FAIL mixed scope admitted"); exit(1) }
+            catch Refusal.arguments { }
+        }
+        for request in [Request(enabled: true, ownerWindow: true, pid: 42, window: 1, target: "ordinary", operations: [.read]),
+                        Request(enabled: true, ownerWindow: true, pid: 42, target: "focused", operations: [.read])] {
+            let isolated = FakeSource()
+            do { _ = try await run(request, source: isolated); print("FAIL invalid owner window admitted"); exit(1) }
+            catch Refusal.target { }
+            precondition(isolated.calls == 0)
+        }
+        let secureOwner = FakeSource(); secureOwner.secureInput = true
+        do {
+            _ = try await run(Request(enabled: true, ownerWindow: true, pid: 42, window: 1,
+                                      target: "focused", operations: [.capture("unused"), .text("public")]), source: secureOwner)
+            print("FAIL secure input admitted in owner window"); exit(1)
+        } catch Refusal.secure { }
+        precondition(secureOwner.calls == 0)
+        let longOwner = FakeSource()
+        do {
+            _ = try await run(Request(enabled: true, ownerWindow: true, pid: 42, window: 1,
+                                      target: "focused", operations: [.capture("unused"), .text(String(repeating: "😀", count: 11))]), source: longOwner)
+            print("FAIL overflowing owner batch admitted"); exit(1)
+        } catch Refusal.text { }
+        precondition(longOwner.calls == 0)
+        print("PASS mixed scopes, secure input and invalid owner batches refuse before dispatch")
+        try checkWindowBinding(pid: 42, ownerPID: 42, frontmostPID: 42, axMatches: 1, cgMatches: 1, focused: true)
+        for facts in [(43 as Int32, 42 as Int32?, 1, 1, true), (42, 43, 1, 1, true),
+                      (42, nil, 1, 1, true), (42, 42, 0, 1, true), (42, 42, 2, 1, true),
+                      (42, 42, 1, 2, true), (42, 42, 1, 1, false)] {
+            do {
+                try checkWindowBinding(pid: 42, ownerPID: facts.0, frontmostPID: facts.1,
+                                       axMatches: facts.2, cgMatches: facts.3, focused: facts.4)
+                print("FAIL unsafe window binding admitted"); exit(1)
+            } catch Refusal.target { }
+        }
+        print("PASS window ownership, frontmost, unique geometry and AX window focus fences")
+        let twentyUnits = try textUnits(String(repeating: "😀", count: 10))
+        precondition(twentyUnits == Array(String(repeating: "😀", count: 10).utf16))
+        for text in [String(repeating: "a", count: 19) + "😀", String(repeating: "👩‍💻", count: 5), "a" + String(repeating: "\u{301}", count: 20)] {
+            do { _ = try textUnits(text); print("FAIL grapheme boundary overflow admitted"); exit(1) }
+            catch Refusal.text { }
+        }
+        print("PASS 20-unit Unicode cap refuses whole overflowing graphemes; signing flags include Team ID data")
         do {
             _ = try await run(Request(operations: [.capture("unused")]), source: source)
             print("FAIL disabled capture was admitted"); exit(1)
@@ -39,7 +102,7 @@ final class FakeSource: NativeSource {
         }
         precondition(source.calls == 0)
         print("PASS secure target refuses reads and input")
-        for text in ["", "\n", "\t", "\u{1b}", "\u{2028}", String(repeating: "a", count: 65)] {
+        for text in ["", "\n", "\t", "\u{1b}", "\u{2028}", String(repeating: "a", count: 21)] {
             do {
                 _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                           operations: [.text(text)]), source: source)

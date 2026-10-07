@@ -1,8 +1,9 @@
 # M0 owner-attended session
 
-Budget 10 minutes. macOS 14+; use only the public fixture, with synthetic text.
+Budget 15 minutes. macOS 14+; use the public fixture and one owner-selected
+real app window, both with synthetic text.
 Nothing in this guide has been run against the desktop. This helper is disabled
-without `--enable-fixture` and a separate operation flag. It exits after each
+without `--enable-fixture` or `--enable-owner-window` and a separate operation flag. It exits after each
 batch, has no network listener, and is not integrated into the kernel.
 
 M0 compiles with the installed Xcode toolchain and uses ad-hoc signing. Its Team
@@ -15,7 +16,7 @@ this session. The plan's Developer ID feasibility gate remains UNPROVEN.
 Run from this checkout. Outputs stay outside source; no app is launched.
 
 ```bash
-bash apps/macos-computer-use/build.sh
+CUMAC_BUILD_DIR="$HOME/.chariox/dev/cumac/build" bash apps/macos-computer-use/build.sh
 ```
 
 ## Minutes 0-2: install and verify public identity
@@ -25,19 +26,22 @@ never overwrite a previously permissioned installation during this drill.
 Keep both bundles together so the helper's fixture path allowlist matches.
 
 ```bash
-cu_build=/Users/miguel/.chariox/dev/cumac/build
+cu_build=${CUMAC_BUILD_DIR:-"$HOME/.chariox/dev/cumac/build"}
 cu_install="$HOME/Applications/Chariox Computer M0"
-cu_evidence=/Users/miguel/.codex/evidence/browser-computer-use-macos
-test ! -e "$cu_install" || exit 1
-mkdir -p "$cu_install" "$cu_evidence"
-ditto "$cu_build/Chariox Computer Helper.app" "$cu_install/Chariox Computer Helper.app"
-ditto "$cu_build/Chariox Computer Fixture.app" "$cu_install/Chariox Computer Fixture.app"
-cu_helper="$cu_install/Chariox Computer Helper.app"
-codesign --verify --strict "$cu_helper"
-codesign -dvv "$cu_helper" 2> "$cu_evidence/owner-signature.txt"
-shasum -a 256 "$cu_helper/Contents/MacOS/helper" > "$cu_evidence/owner-sha256.txt"
-open -n -g -W --stdout "$cu_evidence/owner-identity.json" --stderr "$cu_evidence/owner-identity-error.txt" "$cu_helper" --args --identity
-cat "$cu_evidence/owner-identity.json"
+cu_evidence="$HOME/.codex/evidence/browser-computer-use-macos"
+if [ -e "$cu_install" ]; then
+  printf 'Installation exists; stop this drill and retain it.\n'
+else
+  mkdir -p "$cu_install" "$cu_evidence"
+  ditto "$cu_build/Chariox Computer Helper.app" "$cu_install/Chariox Computer Helper.app"
+  ditto "$cu_build/Chariox Computer Fixture.app" "$cu_install/Chariox Computer Fixture.app"
+  cu_helper="$cu_install/Chariox Computer Helper.app"
+  codesign --verify --strict "$cu_helper"
+  codesign -dvv "$cu_helper" 2> "$cu_evidence/owner-signature.txt"
+  shasum -a 256 "$cu_helper/Contents/MacOS/helper" > "$cu_evidence/owner-sha256.txt"
+  open -n -g -W --stdout "$cu_evidence/owner-identity.json" --stderr "$cu_evidence/owner-identity-error.txt" "$cu_helper" --args --identity
+  cat "$cu_evidence/owner-identity.json"
+fi
 ```
 
 Expected identifier `ai.chariox.computer-helper`, installed executable path,
@@ -74,69 +78,159 @@ the request to any other executable, cancel it and record attribution FAILED.
 Ad-hoc signing or a rebuilt binary may change TCC attribution; do not assume
 the result will survive a signing change.
 
-## Minutes 4-7: one window, AX target and benign input
+## Minutes 4-9: fixture regression checks
 
 ```bash
 open -n --stdout "$cu_evidence/owner-fixture.txt" "$cu_install/Chariox Computer Fixture.app"
 ```
 
-Read `fixturePID=... windowID=...` from `owner-fixture.txt`. Set these two
-variables to those exact printed numbers. The fixture must stay frontmost for
-input. Do not enter any real secret. The secure field starts empty.
+Read `fixturePID=... windowID=...` from `owner-fixture.txt` and set the exact
+numbers below. All operations require the selected window to be frontmost and
+AX-focused, including capture. Never enter a real secret. The secure field
+starts empty.
 
 ```bash
 cu_pid=REPLACE_WITH_FIXTURE_PID
 cu_window=REPLACE_WITH_WINDOW_ID
 cu_scope=(--enable-fixture --fixture-pid "$cu_pid" --window-id "$cu_window")
 cu_run() { open -n -g -W --stdout "$cu_evidence/$1.out" --stderr "$cu_evidence/$1.err" "$cu_helper" --args "${cu_scope[@]}" "${@:2}"; cat "$cu_evidence/$1.out" "$cu_evidence/$1.err"; }
-cu_run frame --capture "$cu_evidence/owner-fixture.png"
-cu_run ax --target ordinary --ax-read
-cu_run button --target button --click
-cu_run scroll --target scroll --scroll
+cu_delay() {
+  for cu_second in 5 4 3 2 1; do
+    printf 'Runs in %s seconds: click the selected window/field now.\n' "$cu_second"
+    sleep 1
+  done
+  cu_run "$@"
+}
 ```
 
-Inspect the PNG: exactly the selected fixture window, moving patch, no cursor,
-no other desktop windows or audio. Record pixel dimensions and display scale.
-Observe the button counter increase once and scroll rows move. Dispatch receipts
-alone do not establish application completion.
-
-Click the ordinary field yourself, leave the fixture frontmost, then run:
+Run each following command separately from Terminal. During each visible
+countdown, click the fixture's ordinary field, except where another field is
+specified. Stay in the fixture until the helper finishes. `open -g` leaves that
+app frontmost. Do not run the whole block as a batch. Returning to Terminal
+before dispatch should produce `refused: target` with no input or saved frame.
 
 ```bash
-cu_run unicode --target ordinary --text $'é e\u0301 😀 中'
-cu_run after --capture "$cu_evidence/owner-after.png"
-cu_run secure --target secure --text canary
+cu_delay frame --capture "$cu_evidence/owner-fixture.png"
+cu_delay ax --target ordinary --ax-read
+cu_delay button --target button --click
+cu_delay scroll --target scroll --scroll
 ```
 
-Expected ordinary text exactly `é é 😀 中`, no navigation or shortcut, and
-`refused: secure` for the secure target without any event. Unicode uses one
-bounded UTF-16 payload, clears modifiers and never normalizes or uses clipboard
-or AX value assignment. Keycode 0 inertness is experimental until observed.
-[Apple documents that apps may ignore the Unicode payload](https://developer.apple.com/documentation/coregraphics/cgevent/keyboardsetunicodestring(stringlength:unicodestring:)).
-Focus the secure field yourself, repeat `cu_run frame-secure --capture
-"$cu_evidence/owner-secure.png"`, and expect secure-input refusal. Then return
-focus to the ordinary field. Leave all real apps outside this fixture-only test.
+Inspect the PNG for exactly the selected fixture window and moving patch, no
+cursor, other windows or audio. Record dimensions and display scale. Observe
+the button counter increase once and scroll rows move. Dispatch receipts alone
+do not establish application completion.
 
-This implements only the window subset of plan steps 3-4. App/display scope,
-private-region masking, OCR, real apps, mixed-display movement, kernel grants,
-human takeover, local helper Stop and fatal owned-release proof require later
-slices. The fixture's Stop button closes the fixture; it is not the kernel Stop
-contract. Input checks narrow focus races but cannot make CGEvent delivery atomic.
-There are no long holds or retries. Do not label those broader checks PASS.
+Run these separately, clicking the ordinary field during each countdown. For
+`emoji20`, also put the caret at the end of the existing text during the
+countdown, for example with Command-Right Arrow:
 
-## Minutes 7-10: revoke and finish
+```bash
+cu_delay unicode --target ordinary --text $'é e\u0301 😀 中'
+cu_delay emoji20 --target ordinary --text '😀😀😀😀😀😀😀😀😀😀'
+cu_delay emoji22 --target ordinary --text '😀😀😀😀😀😀😀😀😀😀😀'
+cu_delay after --capture "$cu_evidence/owner-after.png"
+cu_delay secure --target secure --text canary
+```
+
+Expect the ordinary text exactly `é é 😀 中` followed by ten emoji. The eleven
+emoji request contains 22 UTF-16 units and must return `refused: text`, leaving
+text unchanged. Each request admits at most 20 UTF-16 units. Overflow refuses
+the whole string without truncation, grapheme splitting or surrogate splitting.
+The explicit secure target must return `refused: secure` without an event.
+There is no normalization, clipboard or AX value assignment. Modifiers are
+cleared. Keycode 0 inertness remains an owner-session gate; apps may ignore the
+[Unicode payload](https://developer.apple.com/documentation/coregraphics/cgevent/keyboardsetunicodestring(stringlength:unicodestring:)).
+
+For the actual secure-input test, run the following command, then click the
+empty secure field during the countdown and keep the fixture active. Do not
+return to Terminal until the helper exits. This capture uses the ordinary target
+by default, so refusal must come from the live secure-input/focus fence rather
+than the explicit `--target secure` policy. Expect `refused: secure` and no PNG.
+Record a failure if macOS does not enable secure input or the refusal differs.
+
+```bash
+cu_delay frame-secure --capture "$cu_evidence/owner-secure.png"
+```
+
+## Minutes 9-12: one owner-selected real app window
+
+The fixture is a regression target. It does not satisfy the real-app merge gate.
+The owner opens a new blank TextEdit document manually, makes it plain text and
+uses only synthetic content. Keep existing private documents out of this drill.
+Do not select System Settings, password fields or another person's window.
+The owner chooses the exact window ID anew in this session; no target is stored
+or selected automatically.
+
+With the owner present, list public window IDs, PIDs and app bundle identifiers.
+This command does not capture pixels, read AX, list window titles or post input.
+Choose the PID/window ID for `com.apple.TextEdit`. If several TextEdit windows
+are listed and the owner cannot identify the blank one, stop and arrange one
+unambiguous blank window before listing again. Never guess the ID.
+
+```bash
+open -n -g -W --stdout "$cu_evidence/owner-window-choices.json" --stderr "$cu_evidence/owner-window-choices.err" "$cu_helper" --args --enable-owner-window --list-windows
+cat "$cu_evidence/owner-window-choices.json" "$cu_evidence/owner-window-choices.err"
+cu_real_pid=REPLACE_WITH_OWNER_SELECTED_PID
+cu_real_window=REPLACE_WITH_OWNER_SELECTED_WINDOW_ID
+cu_scope=(--enable-owner-window --owner-pid "$cu_real_pid" --window-id "$cu_real_window" --target focused)
+```
+
+Run each command separately. During every countdown, click the blank document's
+text area and leave TextEdit frontmost until completion.
+
+```bash
+cu_delay real-before --capture "$cu_evidence/owner-real-before.png"
+cu_delay real-ax --ax-read
+cu_delay real-click --click
+cu_delay real-unicode --text $'é e\u0301 😀 中'
+cu_delay real-after --capture "$cu_evidence/owner-real-after.png"
+```
+
+Expect AXTextArea or AXTextField role only, one benign click, exact synthetic
+text and before/after PNGs containing only the selected real window. Inspect the
+real app's result personally. Switch to another window during an additional
+countdown to confirm `refused: target` and no event/frame, then restore focus.
+
+The owner path uses the same secure-input, PID/window-ownership, frontmost,
+AX-focused-window and input-hit fences as the fixture. The focused AX element
+must belong to that exact window; secure ancestors refuse. Public AX geometry
+must uniquely match the selected CG window, otherwise the helper refuses.
+No fallback to another window, application or display exists.
+
+M0 posts CGEvents to the selected PID only. These checks do not establish
+session/HID delivery, system cursor movement, session-tap observation or input
+self-tagging. The same limitation applies to fixture evidence.
+
+This implements the single-window part of plan steps 3-4 as standalone OS
+diagnostics. App/display scope, private-region masking, OCR, mixed-display
+movement, kernel grants, human takeover, local helper Stop and fatal
+owned-release proof require later slices. The fixture Stop button closes only
+the fixture. Focus checks cannot make CGEvent delivery atomic. There are no
+long holds or retries. Do not label those broader checks PASS.
+
+## Minutes 12-15: revoke and finish
 
 The owner switches off only the installed helper in both permission lists and
 removes its entries with the minus button where available. Do not reset TCC
-globally. Repeat `cu_run revoked-frame --capture "$cu_evidence/revoked.png"`
-and `cu_run revoked-input --target ordinary --text public`; expect refusals and
-no new pixels/input. If macOS needs a relaunch, these are fresh helper processes.
-If attribution failed, cancel its prompt instead of granting another app.
+globally. Run each command separately and focus the selected TextEdit text area
+during its countdown:
 
-Close the fixture using Stop or its close button. Each helper already exited.
-Inventory only the two installed bundles before removing the M0 install
-directory if the owner wants rollback; keep the public evidence. Do not touch
-installed kernels, shared state, signing assets, credentials or the reviewer.
-Record OS version, public identity/hash, displayed TCC app, success/refusals and
-any unproven checks in the evidence directory. Kernel attribution and the full
-plan gate remain pending even if every standalone fixture check succeeds.
+```bash
+cu_delay revoked-frame --capture "$cu_evidence/revoked.png"
+cu_delay revoked-input --text public
+```
+
+Expect refusals and no new pixels/input. These are fresh helper processes. If
+attribution failed, cancel its prompt instead of granting another app.
+
+Close the fixture using Stop or its close button and close the synthetic
+TextEdit document without saving. Each helper already exited. Inventory only
+the two installed bundles before removing the M0 install directory if the owner
+wants rollback; keep public evidence. Do not touch installed kernels, shared
+state, signing assets, credentials or the reviewer. Record OS version, public
+identity/hash, displayed TCC app, selected real PID/window ID, observed app
+results, success/refusals and unproven checks in the evidence directory. Kernel
+attribution, Developer ID and the full plan gate remain pending even if every
+standalone check succeeds. M0 remains implemented but unattended until this
+owner session produces real-app evidence.
