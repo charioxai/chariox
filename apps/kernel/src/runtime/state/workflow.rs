@@ -404,6 +404,23 @@ impl KernelRuntimeOwnedState {
             {
                 if run.state() == crate::provider::ProviderRunState::Starting {
                     dispatches.starting_provider_runs.push(run.id().to_string());
+                } else if run.state() == crate::provider::ProviderRunState::Running
+                    && !prepared.force_queue
+                {
+                    // MP-08 / MP-10: launch may have checked the queue before
+                    // admission committed it. Recheck after admission and wake
+                    // the existing Vault-aware promotion after claim release.
+                    let session = self.session_store.get_session(&prepared.session_id)?;
+                    if self
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, prepared.prompt.target_agent_id())
+                        .is_none()
+                    {
+                        dispatches.project_queue_promotions.push((
+                            prepared.session_id.clone(),
+                            prepared.prompt.target_agent_id().to_string(),
+                        ));
+                    }
                 }
             }
         }
