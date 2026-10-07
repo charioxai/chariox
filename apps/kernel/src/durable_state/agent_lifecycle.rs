@@ -176,6 +176,11 @@ pub(crate) enum Operation {
         run: Option<String>,
         now: u64,
     },
+    Expire {
+        room: String,
+        agent: String,
+        sequence: u64,
+    },
     Defer {
         room: String,
         agent: String,
@@ -571,7 +576,7 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     if encode(&e.payload)?.len() > 32_768 {
         return Err(error("event payload limit"));
     }
-    let count:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state')!='handled'",params![e.room_id,e.agent_id],|r|r.get(0)).map_err(sql)?;
+    let count:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![e.room_id,e.agent_id],|r|r.get(0)).map_err(sql)?;
     if count >= 1024 {
         return Err(error("inbox full; unacknowledged events retained"));
     }

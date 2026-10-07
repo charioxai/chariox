@@ -100,6 +100,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Event(e))
         }
+        Operation::Expire {
+            room,
+            agent,
+            sequence,
+        } => {
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if e.state != "pending" {
+                return Err(error("cannot expire an admitted or uncertain delivery"));
+            }
+            e.state = "expired".into();
+            save_event(tx, &e)?;
+            Ok(Outcome::Event(e))
+        }
         Operation::Defer {
             room,
             agent,

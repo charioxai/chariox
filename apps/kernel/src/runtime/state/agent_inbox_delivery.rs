@@ -11,25 +11,59 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))?;
-        if tasks.iter().any(|t| t.state == ExecutionState::Blocked)
-            || tasks
-                .last()
-                .is_some_and(|t| t.state == ExecutionState::Cancelled)
-        {
-            return Ok(());
-        }
         let session = self.owned.session_store.get_session(room)?;
         let active = self
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
-        let Some(event) = self
-            .owned
-            .durable_state_store
-            .agent_delivery_front(room, agent)?
-        else {
-            return Ok(());
+        let event = loop {
+            let Some(event) = self
+                .owned
+                .durable_state_store
+                .agent_delivery_front(room, agent)?
+            else {
+                return Ok(());
+            };
+            if event.state == "pending" && event.kind != "message" {
+                let mut ids = Vec::new();
+                if let Some(id) = event.payload["task_id"].as_str() {
+                    ids.push(id);
+                }
+                if let Some(more) = event.payload["task_ids"].as_array() {
+                    ids.extend(more.iter().filter_map(|v| v.as_str()));
+                }
+                if !ids.is_empty()
+                    && ids.iter().all(|id| {
+                        tasks.iter().find(|t| t.task_id == *id).is_none_or(|t| {
+                            matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                        })
+                    })
+                {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::Expire {
+                            room: room.into(),
+                            agent: agent.into(),
+                            sequence: event.sequence,
+                        })?;
+                    continue;
+                }
+                if ids.iter().any(|id| {
+                    tasks
+                        .iter()
+                        .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
+                }) {
+                    return Ok(());
+                }
+            }
+            break event;
         };
+        if tasks
+            .last()
+            .is_some_and(|t| t.state == ExecutionState::Cancelled)
+        {
+            return Ok(());
+        }
         if event.state != "pending" {
             return Ok(());
         }
