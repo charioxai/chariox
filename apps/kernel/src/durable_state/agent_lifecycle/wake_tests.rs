@@ -521,3 +521,47 @@ fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
         .agent_has_live_wake_admission(&unrelated, || 300_004)
         .unwrap());
 }
+
+// MP-09/MP-11: a long-lived inbox must retain the exact new admission witness.
+#[test]
+fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
+    let f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.wait_on(&["process"]);
+    for index in 0..128 {
+        let Outcome::Event(event) = f.apply(Operation::Occur(InboxEvent {
+            sequence: 0,
+            room_id: "room".into(),
+            agent_id: "agent".into(),
+            source_id: "history".into(),
+            occurrence_id: format!("handled-{index}"),
+            kind: "message".into(),
+            payload: serde_json::json!({}),
+            urgent: false,
+            reply_requested: false,
+            state: "pending".into(),
+            prompt_id: None,
+            target_prompt_id: None,
+            provider_run_id: None,
+            attempted_at_ms: None,
+            submit_epoch: None,
+        })) else { panic!("expected historical event") };
+        f.apply(Operation::Ack {
+            room: "room".into(), agent: "agent".into(),
+            sequence: event.sequence, handled: true, now: 100,
+        });
+    }
+    f.apply(Operation::ProcessExited {
+        id: "process".into(), exit_code: None,
+        tail: "process_lost".into(), now: 300_000,
+    });
+    let event = f.store.agent_inbox("room", "agent", 128).unwrap().remove(0);
+    assert!(event.sequence > 128);
+    f.apply(Operation::Attempt {
+        room: "room".into(), agent: "agent".into(),
+        sequence: event.sequence, prompt: "fresh-wake".into(),
+        target: None, run: None, now: 300_001,
+    });
+    assert!(f.store.agent_has_live_wake_admission(&f.task(), || 300_002).unwrap(),
+        "handled inbox history must not hide the exact new wake admission");
+}

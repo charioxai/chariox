@@ -30,11 +30,11 @@ impl DurableKernelStateStore {
         // Admission promotes the pending prompt before provider I/O starts.
         // Its exact submitting receipt remains the bounded liveness witness.
         let prompt = task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id);
-        let events = self.agent_inbox(&task.room_id, &task.agent_id, 0)?;
+        let event = self.agent_event_for_prompt(&task.room_id, &task.agent_id, prompt)?;
         // A sweep may await recovery before this read. Sample afterward so its
         // newly committed receipt is not rejected against the sweep-start clock.
         let now = clock();
-        Ok(events.iter().any(|event| {
+        Ok(event.iter().any(|event| {
             event.state == "submitting"
                 && event.prompt_id.as_deref() == Some(prompt)
                 && event
