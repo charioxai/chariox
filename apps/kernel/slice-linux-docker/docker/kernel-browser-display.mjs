@@ -260,7 +260,10 @@ export class DisplayStream {
     // first, then repair the SAME protected raster with ordinary tile credits.
     // No lossy pixels or partial canvas can authorize this bootstrap.
     if (payload.kind === 'png' && JSON.stringify(payload).length > 700_000) {
-      const remaining = source.repair_tiles ?? await this.pixels.run('tiles',{previous:null,current,all:true});
+      // Existing repair certificates belong to the replaced video canvas,
+      // not this new black base. Bootstrap must cover EVERY protected pixel.
+      const raster=current.pixels?current:await this.pixels.run('decode',{data:payload.data_base64,scale:this.device_scale_factor});
+      const remaining=await this.pixels.run('tiles',{previous:null,current:raster,all:true});
       const black = Buffer.alloc(current.width*current.height*4);
       for(let n=3;n<black.length;n+=4)black[n]=255;
       payload={kind:'png',data_base64:encodePng(current.width,current.height,black)};

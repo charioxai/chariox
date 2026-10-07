@@ -361,7 +361,7 @@ test('MP-08 Retina input preserves a bounded fourfold physical sparse budget',as
 test('MP-11 protected codec rejection bootstraps a bounded opaque base before exact repairs',async()=>{
  const width=600,height=600,pixels=randomBytes(width*height*4);
  for(let n=3;n<pixels.length;n+=4)pixels[n]=255;
- const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels)};
+ const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels),repair_tiles:[]};
  const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
  try{
   const first=await stream.frame(source,'d',0);
