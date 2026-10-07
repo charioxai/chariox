@@ -165,3 +165,22 @@ fn outbound_is_the_only_kernel_socket_writer() {
         1
     );
 }
+
+#[test]
+fn outbound_projected_browser_artifacts_keep_the_shared_chunk_budget() {
+    // MP-08 / MP-10 / MP-11: projection must retain normal client semantics.
+    let frame = serde_json::json!({"type":"response", "request_id":"large-artifact", "error":null,
+    "response":{"RoomBrowserArtifact":{"result":{"payload":{
+        "image_base64":"x".repeat(1024 * 1024), "width":1280, "height":720
+    }}}}});
+    let projected = project_payload(frame).unwrap();
+    let encoded = crate::transport::kernel_protocol::serialize_frame_value(projected).unwrap();
+    let decoded: Value = serde_json::from_str(&encoded).unwrap();
+    assert!(decoded
+        .pointer("/response/RoomBrowserArtifact/result/payload/image_base64")
+        .is_none());
+    assert_eq!(
+        decoded["response"]["RoomBrowserArtifact"]["result"]["payload"]["width"],
+        1280
+    );
+}

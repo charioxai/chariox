@@ -20,8 +20,8 @@ async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     if value["event"]["event"] == "session_snapshot" {
                         assert_eq!(
                             text.contains(CANARY),
-                            owner,
-                            "MP-11 credential visibility differs from caller authority"
+                            false,
+                            "MP-11 client serialization protects owner and external delivery"
                         );
                         assert_eq!(value["event"]["session"]["id"], "credential-session");
                         let agents = value["event"]["session"]["agents"].as_array().unwrap();
@@ -110,14 +110,23 @@ async fn kernel_access_subscription_initial_updated_replay_hide_worker_credentia
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
+    kernel.control("credential-check").await;
+    assert_eq!(
+        std::fs::read_to_string(kernel.root.join("credential-present")).unwrap(),
+        "true",
+        "MP-11 stored credential precondition"
+    );
     let owner = kernel
         .request(serde_json::json!({"GetSessionState":{"session_id":"credential-session"}}))
         .await;
     assert!(owner["error"].is_null(), "MP-11 owner read must succeed");
-    assert_eq!(owner["response"]["SessionState"]["session"]["id"], "credential-session");
+    assert_eq!(
+        owner["response"]["SessionState"]["session"]["id"],
+        "credential-session"
+    );
     assert!(
-        owner.to_string().contains(CANARY),
-        "MP-11 owner credential control"
+        !owner.to_string().contains(CANARY),
+        "MP-11 existing owner wire credential protection"
     );
     let attached = kernel.request(serde_json::json!({"AttachToSession":{
         "session_id":"credential-session", "client_id":"owner-control", "capability_level":"FullTerminal"
@@ -142,8 +151,11 @@ async fn kernel_access_subscription_initial_updated_replay_hide_worker_credentia
     let owner = kernel
         .request(serde_json::json!({"GetSessionState":{"session_id":"credential-session"}}))
         .await;
-    assert!(
-        owner.to_string().contains(CANARY),
+    assert!(!owner.to_string().contains(CANARY));
+    kernel.control("credential-check").await;
+    assert_eq!(
+        std::fs::read_to_string(kernel.root.join("credential-present")).unwrap(),
+        "true",
         "MP-11 projection must not mutate stored credentials"
     );
 }

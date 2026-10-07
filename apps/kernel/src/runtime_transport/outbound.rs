@@ -46,10 +46,12 @@ impl OutboundBoundary {
                         Err(_) => return false,
                     };
                     match project_payload(value) {
-                        Ok(value) => match serde_json::to_string(&value) {
-                            Ok(s) => s,
-                            Err(_) => return false,
-                        },
+                        Ok(value) => {
+                            match crate::transport::kernel_protocol::serialize_frame_value(value) {
+                                Ok(s) => s,
+                                Err(_) => return false,
+                            }
+                        }
                         Err(_) => match frame {
                             KernelOutgoingFrame::Response { request_id, .. } => {
                                 let refusal = KernelOutgoingFrame::Response {

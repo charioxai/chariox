@@ -89,14 +89,25 @@ fn kernel_access_child_server() {
             }
             // MP-11: a different owner session holds a worker admission credential.
             let mut remote = crate::agent::AgentInstance::new(
-                "remote-canary", "remote-canary", "credential-session", None,
-                "codex", None, None, None, crate::agent::GridPosition::new(0, 0, 1, 1),
+                "remote-canary",
+                "remote-canary",
+                "credential-session",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
             );
             remote.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
-                worker_kernel_id: "worker".into(), worker_machine_id: "worker-machine".into(),
-                execution_lease_id: "lease".into(), leased_agent_id: "leased".into(),
-                active_worker_provider_run_id: None, relay_url: None,
-                relay_token: Some(outbound_credentials::CANARY.into()), relay_peer_protocol_version: None,
+                worker_kernel_id: "worker".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: Some(outbound_credentials::CANARY.into()),
+                relay_peer_protocol_version: None,
             }));
             app.agents_mut().restore_agent(remote);
             let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
@@ -118,7 +129,21 @@ fn kernel_access_child_server() {
                             let _ = stop.send(());
                             break;
                         }
-                        if action == "noinherit" || action == "kernelchild" {
+                        if action == "credential-check" {
+                            let state = runtime
+                                .session_state_response(crate::local::GetSessionStateRequest {
+                                    session_id: "credential-session".into(),
+                                })
+                                .unwrap();
+                            let populated = serde_json::to_string(&state)
+                                .unwrap()
+                                .contains(outbound_credentials::CANARY);
+                            std::fs::write(
+                                control_root.join("credential-present"),
+                                populated.to_string(),
+                            )
+                            .unwrap();
+                        } else if action == "noinherit" || action == "kernelchild" {
                             let previous = (action == "noinherit")
                                 .then(|| runtime.use_kernel_ancestor_holder_for_test());
                             let root = control_root.clone();

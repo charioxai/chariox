@@ -860,10 +860,15 @@ fn kernel_error(code: &str, error: &DaemonError, retryable: bool) -> KernelTrans
 }
 
 pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
-    let mut value = serde_json::to_value(frame).map_err(|error| DaemonError::LocalTransport {
+    let value = serde_json::to_value(frame).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize kernel websocket frame",
         message: error.to_string(),
     })?;
+    serialize_frame_value(value)
+}
+
+/// MP-08 / MP-10 / MP-11: projected frames retain the shared artifact budget.
+pub(crate) fn serialize_frame_value(mut value: Value) -> Result<String, DaemonError> {
     crate::local::redact_client_response_value(&mut value);
     let encode = |value: &Value| {
         serde_json::to_string(value).map_err(|error| DaemonError::LocalTransport {
