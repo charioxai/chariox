@@ -877,3 +877,90 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         recorded
     );
 }
+
+#[test]
+fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    f.begin("independent");
+    f.apply(Operation::Subscribe {
+        task: "independent".into(),
+        prompt: "independent".into(),
+        registration: Registration {
+            id: "other-reg".into(),
+            task_id: "independent".into(),
+            source_id: "child".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_registrations SET payload='broken' WHERE id='reg'",
+        [],
+    )
+    .unwrap();
+    f.apply(Operation::SourceOutcome {
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "terminal".into(),
+        success: true,
+        now: 10,
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let blocked = tasks.iter().find(|t| t.task_id == "p").unwrap();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == "independent")
+            .unwrap()
+            .state,
+        ExecutionState::Working
+    );
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", 0)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "source_completed" && e.payload["task_id"] == "independent"));
+    let retained: i64 = db
+        .query_row(
+            "SELECT count(*) FROM agent_lifecycle_quarantine WHERE kind='registration'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 1);
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::OwnerResponse {
+            task: "p".into(),
+            revision: blocked.blocked_revision,
+            resume: true,
+            now: 20,
+        })
+        .is_err());
+    f.apply(Operation::OwnerResponse {
+        task: "p".into(),
+        revision: blocked.blocked_revision,
+        resume: false,
+        now: 20,
+    });
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .iter()
+            .find(|t| t.task_id == "p")
+            .unwrap()
+            .state,
+        ExecutionState::Cancelled
+    );
+}

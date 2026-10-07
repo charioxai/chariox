@@ -265,12 +265,27 @@ fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
 
 fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, DaemonError> {
     let mut q = tx
-        .prepare("SELECT payload FROM agent_registrations WHERE task_id=?1")
+        .prepare("SELECT id,payload FROM agent_registrations WHERE task_id=?1")
         .map_err(sql)?;
     let rows = q
-        .query_map([task], |r| r.get::<_, String>(0))
+        .query_map([task], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .map_err(sql)?;
-    rows.map(|r| decode(&r.map_err(sql)?)).collect()
+    rows.map(|row| {
+        let (id, payload) = row.map_err(sql)?;
+        let registration: Registration = decode(&payload)?;
+        if registration.id != id
+            || registration.task_id != task
+            || registration.source_id.is_empty()
+        {
+            return Err(error(
+                "source registration identity corrupt; quarantine required",
+            ));
+        }
+        Ok(registration)
+    })
+    .collect()
 }
 fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if task.prompt_id != prompt

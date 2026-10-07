@@ -17,3 +17,19 @@ pub(super) fn task(id: String, room: String, agent: String, prompt: String) -> A
     t.reason="Task ledger is quarantined; owner must restore authoritative state or cancel. Obligation coverage is unknown".into();
     t
 }
+
+pub(super) fn registrations(tx: &Transaction<'_>, task: &str) -> Result<(), DaemonError> {
+    let mut q = tx
+        .prepare("SELECT id,payload FROM agent_registrations WHERE task_id=?1")
+        .map_err(sql)?;
+    let rows = q
+        .query_map([task], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(sql)?;
+    for row in rows {
+        let (id, raw) = row.map_err(sql)?;
+        retain(tx, "registration", &id, &raw)?;
+    }
+    Ok(())
+}

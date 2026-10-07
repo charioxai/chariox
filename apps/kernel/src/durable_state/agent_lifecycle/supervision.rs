@@ -47,6 +47,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if t.room_id != room {
                     continue;
                 }
+                let registrations = match registrations(tx, &t.task_id) {
+                    Ok(regs) => regs,
+                    Err(_) => {
+                        quarantine::registrations(tx, &t.task_id)?;
+                        t.state = ExecutionState::Blocked;
+                        t.blocked_revision = t.revision + 1;
+                        t.reason =
+                            "Source registration is corrupt; restore the exact receipt or cancel"
+                                .into();
+                        t.revision += 1;
+                        save(tx, &t)?;
+                        continue;
+                    }
+                };
                 let mut changed = false;
                 for o in &mut t.obligations {
                     if o.completion_source() == Some(&source) && o.status == "open" {
@@ -61,7 +75,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         changed = true;
                     }
                 }
-                for mut reg in registrations(tx, &t.task_id)? {
+                for mut reg in registrations {
                     if reg.source_id == source && reg.live {
                         reg.live = false;
                         tx.execute(
@@ -99,6 +113,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     let regs = match registrations(tx, &t.task_id) {
                         Ok(regs) => regs,
                         Err(_) => {
+                            quarantine::registrations(tx, &t.task_id)?;
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
                             t.reason="Source registration is corrupt; owner must restore the exact source receipt".into();
@@ -259,6 +274,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if resume && quarantined {
                 return Err(error("quarantined obligation coverage must be restored before resume; explicit cancellation remains available"));
             }
+            if resume {
+                registrations(tx, &t.task_id)?;
+            }
             let mut q = tx.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q
                 .query_map(params![t.room_id, t.agent_id], |r| r.get::<_, String>(0))
@@ -315,7 +333,21 @@ pub(super) fn cancel_intent(
             obligation.dispatch_state = "cancel_requested".into();
         }
     }
-    for mut registration in registrations(tx, &task.task_id)? {
+    let regs = match registrations(tx, &task.task_id) {
+        Ok(regs) => regs,
+        Err(_) => {
+            quarantine::registrations(tx, &task.task_id)?;
+            // Explicit cancellation invalidates subscriptions, while the task's
+            // resource obligations remain supervised until physical settlement.
+            tx.execute(
+                "DELETE FROM agent_registrations WHERE task_id=?1",
+                [&task.task_id],
+            )
+            .map_err(sql)?;
+            Vec::new()
+        }
+    };
+    for mut registration in regs {
         registration.live = false;
         tx.execute(
             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
