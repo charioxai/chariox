@@ -2,6 +2,78 @@ use super::*;
 
 mod lifecycle;
 
+#[test]
+fn a02_forwarded_task_answers_protect_recovered_room_history() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let root = TestRoot::new();
+    let mut room = TestRoom::new("am2-protected-task-answer");
+    room.runtime.owned.room_secret_observations =
+        RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new());
+    let mut prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &room.session_id,
+        "fixture-attachment",
+        &room.agent_id,
+        "task",
+    );
+    prompt.merge_key = Some("prompt:task-prompt".into());
+    let output = crate::history::SessionHistoryEntry::provider_output(
+        &room.session_id,
+        "run",
+        Some(&room.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "synthetic-only",
+    );
+    for entry in [prompt, output] {
+        room.runtime
+            .owned
+            .operational_history_store
+            .append_transcript(&entry, Default::default())
+            .unwrap();
+    }
+    // Recovered history must be protected even if it predates the observation fence.
+    room.runtime
+        .owned
+        .room_secret_observations
+        .register(&room.session_id, "synthetic-only")
+        .unwrap();
+    let store = &room.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "owner".into(),
+            room: room.session_id.clone(),
+            agent: room.agent_id.clone(),
+            prompt: "task-prompt".into(),
+            run: Some("run".into()),
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: room.session_id.clone(),
+            agent: room.agent_id.clone(),
+            prompt: "task-prompt".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let answer = room
+        .runtime
+        .owned
+        .public_agent_task_answer(&task)
+        .unwrap()
+        .unwrap();
+    let excerpt = answer["excerpt"].as_str().unwrap();
+    assert!(!excerpt.contains("synthetic-only"));
+    assert!(excerpt.contains("withheld"));
+}
+
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
 // futures. Keep relay delivery out of their inline state on kernel stacks.
 #[tokio::test]

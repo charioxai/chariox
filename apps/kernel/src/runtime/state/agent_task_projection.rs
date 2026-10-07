@@ -66,7 +66,13 @@ impl KernelRuntimeOwnedState {
         }
         let entries = self
             .operational_history_store
-            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?
+            .into_iter()
+            .map(|entry| {
+                self.room_secret_observations
+                    .protect_transcript_entry(entry)
+            })
+            .collect::<Vec<_>>();
         let excerpt =
             task_public_outputs(&entries, &task.prompt_id, task.provider_run_id.as_deref())
                 .join("\n")
