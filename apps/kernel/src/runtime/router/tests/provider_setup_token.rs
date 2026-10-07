@@ -69,6 +69,7 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         ("error", true, "failed"),
         ("missing", true, "failed"),
         ("cancel", true, "cancelled"),
+        ("observation-failure", true, "succeeded"),
     ] {
         let script = format!(
             r#"#!/bin/sh
@@ -76,6 +77,9 @@ if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
   printf probe >> '{probe_marker}'
   [ '{mode}' = probe-error ] && exit 3
+  if [ '{mode}' = observation-failure ]; then
+    mv '{registry_path}' '{registry_path}.backup'; mkdir '{registry_path}'
+  fi
   printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Current session: 17% used\nCurrent week (all models): 41% used"}}'
   exit 0
 fi
@@ -95,6 +99,7 @@ if [ '{mode}' = multiple ]; then printf 'sk-ant-oat01-'; i=0; while [ "$i" -lt 9
 exit 0
 "#,
             probe_marker = root.join("probe-marker").display(),
+            registry_path = config.account_profile_registry_path().display(),
         );
         std::fs::write(&binary, script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -222,7 +227,7 @@ exit 0
             .len();
         assert_eq!(
             probes_after > probes_before,
-            matches!(mode, "ok" | "probe-error"),
+            matches!(mode, "ok" | "probe-error" | "observation-failure"),
             "MP-08 complete successful captures must run the Claude credential verification turn"
         );
         assert_eq!(
@@ -230,6 +235,12 @@ exit 0
             serde_json::json!(expected),
             "MP-08 fixture mode {mode} replacement {replace}"
         );
+        if mode == "observation-failure" {
+            let path = config.account_profile_registry_path();
+            assert!(path.is_dir(), "the publication fault must actually fire");
+            std::fs::remove_dir(&path).unwrap();
+            std::fs::rename(format!("{}.backup", path.display()), &path).unwrap();
+        }
         if expected == "succeeded" {
             stored = true;
         }
@@ -285,6 +296,20 @@ exit 0
 /// nothing and says how to recover.
 #[tokio::test]
 async fn pasted_setup_token_is_verified_and_stays_authenticated() {
+    pasted_setup_token_fixture("normal").await;
+}
+
+#[tokio::test]
+async fn pasted_setup_token_succeeds_when_observation_write_fails() {
+    pasted_setup_token_fixture("observation-failure").await;
+}
+
+#[tokio::test]
+async fn legacy_setup_token_is_unknown_until_verified() {
+    pasted_setup_token_fixture("legacy").await;
+}
+
+async fn pasted_setup_token_fixture(scenario: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -327,6 +352,7 @@ if [ "$1" = -p ] && [ "$2" = /usage ]; then
   exit 0
 fi
 if [ "$1" = -p ]; then
+  echo turn >> "$(dirname "$0")/model-turns"
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{good}' ]; then
     echo '{{"type":"result","subtype":"success","is_error":false,"result":"OK"}}'; exit 0
   fi
@@ -401,13 +427,117 @@ exit 90
         crate::account_profile::ProviderAccountAuthState::Authenticated
     );
 
+    if scenario == "legacy" {
+        crate::provider::store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            &good,
+            false,
+        )
+        .unwrap();
+        for refresh in [false, true] {
+            if refresh {
+                let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+                    "RefreshProviderAccountProfile": { "provider": "claude", "account_profile": profile.profile_id }
+                })).unwrap();
+                let command =
+                    KernelCommand::from_local_request("legacy-refresh", None, None, &request);
+                router.dispatch(command, request).await.unwrap();
+                assert_eq!(
+                    auth_state(&router),
+                    crate::account_profile::ProviderAccountAuthState::Unknown
+                );
+            }
+            let request = LocalDaemonRequest::GetProviderAuthStatus(
+                crate::local::GetProviderAuthStatusRequest {
+                    provider: "claude".into(),
+                    account_profile: profile.profile_id.clone(),
+                },
+            );
+            let command = KernelCommand::from_local_request("legacy-status", None, None, &request);
+            let LocalDaemonResponse::ProviderAuthStatus { status } =
+                router.dispatch(command, request).await.unwrap()
+            else {
+                panic!("expected auth status");
+            };
+            assert_eq!(status.auth_state, "unknown");
+            let hint = status.login_hint.unwrap();
+            assert!(
+                hint.contains("not been verified") && hint.contains("--replace"),
+                "{hint}"
+            );
+        }
+    }
+    if scenario == "observation-failure" {
+        // The registry is cached in memory; force publication to fail only
+        // after CLI verification, independently of the credential registry.
+        let path = config.account_profile_registry_path();
+        let script = std::fs::read_to_string(&binary).unwrap();
+        let fault = format!(
+            "mv '{}' '{}'; mkdir '{}'\n",
+            path.display(),
+            path.with_extension("backup").display(),
+            path.display()
+        );
+        let script = script.replace("echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"OK\"}'", &format!("{fault}echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"OK\"}}'"));
+        std::fs::write(&binary, script).unwrap();
+    }
     let (command, request) = paste(&good);
-    router.dispatch(command, request).await.unwrap();
+    router
+        .dispatch(command, request)
+        .await
+        .expect("a stored token must succeed despite an observation write failure");
+    if scenario == "observation-failure" {
+        assert!(
+            config.account_profile_registry_path().is_dir(),
+            "fault must actually fire"
+        );
+        assert!(crate::provider::provider_account_credential_registered(
+            "local",
+            "claude",
+            &profile.profile_id
+        )
+        .unwrap());
+        return;
+    }
     assert_eq!(
         auth_state(&router),
         crate::account_profile::ProviderAccountAuthState::Authenticated,
         "a verified setup token must authenticate the account"
     );
+
+    // MP-08/MP-11: refusing replacement must precede any billed model turn.
+    let turns_before = std::fs::read_to_string(root.join("model-turns")).unwrap();
+    for run in [false, true] {
+        let request = LocalDaemonRequest::SetProviderAccountCredential(
+            crate::local::SetProviderAccountCredentialRequest {
+                provider: "claude".into(),
+                account_profile: profile.profile_id.clone(),
+                value: if run { String::new() } else { bad.clone() },
+                run,
+                overwrite: false,
+                session_id: None,
+                agent_id: None,
+            },
+        );
+        let command = KernelCommand::from_local_request("duplicate", None, None, &request);
+        let error = router
+            .dispatch(command, request)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("already exists") && error.contains("--replace"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("model-turns")).unwrap(),
+            turns_before,
+            "a denied replacement must never invoke Claude"
+        );
+    }
 
     for mode in ["claude", "claude-p", "claude-headless"] {
         assert!(

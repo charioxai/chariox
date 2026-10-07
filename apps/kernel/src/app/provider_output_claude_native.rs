@@ -36,7 +36,7 @@ use permission::{
     claude_headless_workspace_trust_interaction_id,
     claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
-    claude_workspace_trust_selection_started_at,
+    claude_workspace_trust_approval_input, claude_workspace_trust_selection_started_at,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
     extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
@@ -50,7 +50,6 @@ use permission::{
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
     write_claude_permission_response, write_claude_workspace_trust_selection_marker,
-    CLAUDE_WORKSPACE_TRUST_APPROVAL_INPUT,
 };
 #[cfg(test)]
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
@@ -932,6 +931,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             provider_run,
                             context_file,
                             bridge,
+                            &recent,
                         )?;
                     }
                 }
@@ -1727,12 +1727,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         };
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
-        if input == CLAUDE_WORKSPACE_TRUST_APPROVAL_INPUT {
+        if input == b"\x1b[B" || input == b"\x1b[A" {
             // Like prompt submission, let the provider register the selection
             // before Enter, between short app-lock holds.
             write_claude_workspace_trust_selection_marker(context_file);
             clear_claude_permission_recent(context_file);
             Ok(None)
+        } else if input == b"\r" {
+            write_claude_headless_startup_wait_marker(context_file);
+            clear_claude_permission_recent(context_file);
+            Ok(Some(ClaudeWorkspaceTrustResolution::Approved))
         } else {
             write_claude_headless_workspace_trust_denied_marker(context_file, &interaction_id);
             clear_claude_permission_recent(context_file);
@@ -1747,7 +1751,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run: &RuntimeProviderRun,
         context_file: &str,
         bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+        rendered: &str,
     ) -> Result<(), DaemonError> {
+        // PTY output can split the header from its choices. Wait for a
+        // recognized selector instead of guessing or failing on a partial frame.
+        let Some(approval_input) = claude_workspace_trust_approval_input(rendered) else {
+            return Ok(());
+        };
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(());
         };
@@ -1795,7 +1805,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     if resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once") =>
                 {
-                    CLAUDE_WORKSPACE_TRUST_APPROVAL_INPUT.to_vec()
+                    approval_input.to_vec()
                 }
                 Ok(_) => vec![0x03],
                 Err(error) => {

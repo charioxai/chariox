@@ -37,20 +37,7 @@ pub(super) async fn start(
         "claude",
         &request.account_profile,
     )?;
-    if !request.overwrite {
-        let credential_id =
-            crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
-        let exists = tokio::task::spawn_blocking(move || {
-            crate::credential::CharioxCredentialRegistry::user()?
-                .get(&credential_id)
-                .map(|value| value.is_some())
-        })
-        .await
-        .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
-        if exists {
-            return Err(login_error("A setup token already exists for this profile; use --replace to authorize replacement"));
-        }
-    }
+    ensure_replacement_allowed(&owner, &profile.profile_id, request.overwrite).await?;
     super::provider_auth_control::execute_start_provider_login_with_overwrite(
         runtime_state,
         &owner,
@@ -62,6 +49,33 @@ pub(super) async fn start(
         request.overwrite,
     )
     .await
+}
+
+/// Check the public credential handle before unlock prompts or a billed turn.
+/// Storage still rechecks replacement policy when publishing the credential.
+pub(super) async fn ensure_replacement_allowed(
+    owner_user_id: &str,
+    account_profile: &str,
+    overwrite: bool,
+) -> Result<(), DaemonError> {
+    if overwrite {
+        return Ok(());
+    }
+    let credential_id =
+        crate::provider::provider_account_credential_id(owner_user_id, "claude", account_profile);
+    let exists = tokio::task::spawn_blocking(move || {
+        crate::credential::CharioxCredentialRegistry::user()?
+            .get(&credential_id)
+            .map(|value| value.is_some())
+    })
+    .await
+    .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
+    if exists {
+        return Err(login_error(
+            "A setup token already exists for this profile; use --replace to authorize replacement",
+        ));
+    }
+    Ok(())
 }
 
 /// Finishes the login after a successful CLI exit and the reader's final
@@ -266,8 +280,10 @@ pub(super) async fn record_verified_token(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     account_profile: &str,
-) -> Result<(), DaemonError> {
-    runtime_state
+) {
+    // Vault storage is already committed. Observation publication must not
+    // turn that successful operation into a failed login or refused retry.
+    if let Err(error) = runtime_state
         .provider_account_profile_registry()
         .update_observation(
             owner_user_id,
@@ -278,12 +294,18 @@ pub(super) async fn record_verified_token(
             None,
             None,
             None,
-        )?;
+        )
+    {
+        crate::logging::warn_with_fields(
+            "daemon.provider_auth",
+            "Claude setup token stored; account observation could not be updated",
+            serde_json::json!({"account_profile": account_profile, "error": error.to_string()}),
+        );
+    }
     runtime_state
         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
         .await;
     runtime_state.record_waiting_room_change();
-    Ok(())
 }
 
 async fn store_token(
@@ -343,7 +365,7 @@ async fn store_token(
                 "Claude setup token verified and stored in the Chariox Vault. Unattended agents can now use this account.",
                 now_ms,
             )?;
-            record_verified_token(runtime_state, owner_user_id, &record.account_profile).await?;
+            record_verified_token(runtime_state, owner_user_id, &record.account_profile).await;
             finish(runtime_state, owner_user_id, record, ProviderLoginProcessState::Succeeded)
         }
     }
