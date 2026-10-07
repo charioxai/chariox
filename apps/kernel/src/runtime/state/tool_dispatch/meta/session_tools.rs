@@ -158,6 +158,9 @@ impl KernelRuntimeState {
         metaagent: &crate::agent::AgentInstance,
         args: MetaTurnOverviewArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        if self.room_agent_tools_enabled() {
+            return self.room_public_turn(session, metaagent, args).await;
+        }
         let target = match args.agent_ref.as_deref() {
             Some(reference) => {
                 match self.meta_owned_regular_agent(session.id(), metaagent, reference) {
@@ -271,6 +274,11 @@ impl KernelRuntimeState {
         metaagent: &crate::agent::AgentInstance,
         args: MetaTurnBlobArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        if self.room_agent_tools_enabled() {
+            return self
+                .read_room_history(session, metaagent, args.blob_id, args.session_id)
+                .await;
+        }
         for target in self.meta_owned_regular_agents(session.id(), metaagent) {
             let request = crate::local::GetSessionHistoryBlobContentRequest {
                 session_id: session.id().to_string(),

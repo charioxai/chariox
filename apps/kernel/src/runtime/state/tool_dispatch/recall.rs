@@ -21,6 +21,13 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        // MP-08 / MP-11 A09: do not let legacy raw/semantic recall bypass the
+        // protected projection. Legacy sessions retain their pre-transition path.
+        if self.room_agent_tools_enabled() {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Use chariox.history.search and chariox.history.read for protected public history",
+            ));
+        }
         match tool_name {
             SEARCH_RECALL_TOOL => {
                 let args =

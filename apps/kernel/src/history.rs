@@ -20,6 +20,7 @@ mod operational_legacy_import;
 mod operational_query;
 mod operational_retention;
 mod operational_session;
+pub(crate) mod public_history;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
@@ -99,6 +100,10 @@ pub enum HistoryAttributionConfidence {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEventTurnContext {
+    /// MP-08 / MP-11: trusted producer provenance, never accepted from JSON.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub public_history_owner_user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,6 +140,10 @@ pub struct HistoryEventTurnContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEvent {
+    /// MP-08 / MP-11: trusted producer provenance, never accepted from JSON.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub public_history_owner_user_id: Option<String>,
     pub event_id: String,
     pub sequence: u64,
     pub timestamp_ms: u64,
@@ -283,6 +292,7 @@ impl HistoryEvent {
             event_id,
             sequence,
             timestamp_ms,
+            public_history_owner_user_id: context.public_history_owner_user_id,
             workspace_id: context.workspace_id,
             session_id: context
                 .session_id
@@ -401,6 +411,7 @@ impl HistoryEvent {
             event_id: history_event_id(sequence, timestamp_ms),
             sequence,
             timestamp_ms,
+            public_history_owner_user_id: context.public_history_owner_user_id,
             workspace_id: context.workspace_id,
             session_id: context.session_id,
             agent_id: context.agent_id,
@@ -487,6 +498,7 @@ struct OperationalHistoryWriteRecord {
     event_json: String,
     metadata_text: String,
     merge_key: Option<String>,
+    public_document: Option<public_history::PublicHistoryDocument>,
 }
 
 #[derive(Debug)]
@@ -552,6 +564,8 @@ pub struct OperationalHistoryStore {
     connection: Arc<Mutex<Connection>>,
     legacy_import_lock: Arc<Mutex<()>>,
     projection_schema_initialized: Arc<AtomicBool>,
+    public_history_projector: Arc<public_history::ProjectorSlot>,
+    public_history_lock: Arc<Mutex<()>>,
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
@@ -590,6 +604,17 @@ impl OperationalHistoryStore {
         }
         let mut connection =
             Connection::open(&path).map_err(|error| operational_history_error("open", error))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "protect history file",
+                    message: error.to_string(),
+                }
+            })?;
+        }
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| operational_history_error("enable WAL mode", error))?;
@@ -600,6 +625,7 @@ impl OperationalHistoryStore {
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
+        public_history::initialize_public_history(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",
@@ -632,15 +658,26 @@ impl OperationalHistoryStore {
         writer_connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| operational_history_error("configure writer timeout", error))?;
+        writer_connection
+            .execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")
+            .map_err(|error| operational_history_error("protect writer", error))?;
         let (writer_sender, writer_receiver) =
             mpsc::sync_channel(OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT);
         let writer_health = Arc::new(OperationalHistoryWriterHealth::default());
         let worker_health = Arc::clone(&writer_health);
+        let public_history_projector = Arc::<public_history::ProjectorSlot>::default();
+        let worker_projector = Arc::clone(&public_history_projector);
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
-            .stack_size(512 * 1024)
+            // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
+            .stack_size(2 * 1024 * 1024)
             .spawn(move || {
-                run_operational_history_writer(writer_connection, writer_receiver, worker_health)
+                run_operational_history_writer(
+                    writer_connection,
+                    writer_receiver,
+                    worker_health,
+                    worker_projector,
+                )
             })
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: None,
@@ -652,6 +689,8 @@ impl OperationalHistoryStore {
             connection: Arc::new(Mutex::new(connection)),
             legacy_import_lock: Arc::new(Mutex::new(())),
             projection_schema_initialized: Arc::new(AtomicBool::new(false)),
+            public_history_projector,
+            public_history_lock: Default::default(),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
@@ -744,7 +783,9 @@ impl OperationalHistoryStore {
             return Ok(None);
         }
         entry.validate_for_history_append("replace operational history transcript")?;
-        let connection =
+        let _public_guard = self.lock_public_history()?;
+        self.flush_public_history_appends_locked()?;
+        let mut connection =
             self.connection
                 .lock()
                 .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -792,7 +833,11 @@ impl OperationalHistoryStore {
             }
         })?;
         let metadata_text = searchable_metadata(&replacement);
-        connection
+        let document = self.project_public_history(&replacement);
+        let transaction = connection
+            .transaction()
+            .map_err(|error| operational_history_error("replace public history", error))?;
+        transaction
             .execute(
                 "UPDATE history_events
                  SET timestamp_ms = ?2,
@@ -845,6 +890,16 @@ impl OperationalHistoryStore {
                 operation: "replace operational history event",
                 message: error.to_string(),
             })?;
+        public_history::write_public_document(
+            &transaction,
+            &replacement,
+            document.as_ref(),
+            &|event| self.project_public_history(event),
+        )
+        .map_err(|error| operational_history_error("replace public history", error))?;
+        transaction
+            .commit()
+            .map_err(|error| operational_history_error("replace public history", error))?;
         Ok(Some(replacement))
     }
 
@@ -948,6 +1003,7 @@ impl OperationalHistoryStore {
         if events.is_empty() || !self.capture_enabled() {
             return Ok(());
         }
+        let _public_guard = self.lock_public_history()?;
         let mut encoded_events = Vec::with_capacity(events.len());
         let mut estimated_append_bytes = 0_u64;
         for event in events {
@@ -965,49 +1021,60 @@ impl OperationalHistoryStore {
             let merge_key = history_event_merge_key(event).map(str::to_string);
             encoded_events.push(OperationalHistoryWriteRecord {
                 event: event.clone(),
+                public_document: self.project_public_history(event),
                 event_json,
                 metadata_text,
                 merge_key,
             });
         }
-        let (response, response_receiver) = mpsc::channel();
+        let response = self.enqueue_history_records(encoded_events)?;
+        // Enqueue while provenance is fenced, then release before the writer ACK
+        // so concurrent producers retain the existing grouped-write behavior.
+        drop(_public_guard);
+        self.await_history_write(response)?;
+        self.enforce_size_budget_after_append(estimated_append_bytes)?;
+        Ok(())
+    }
+
+    fn enqueue_history_records(
+        &self,
+        records: Vec<OperationalHistoryWriteRecord>,
+    ) -> Result<Receiver<Result<(), String>>, DaemonError> {
+        let (response, receiver) = mpsc::channel();
         self.writer
             .sender
             .lock()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "lock operational history writer",
-                message: error.to_string(),
-            })?
+            .map_err(|error| history_writer_error(error.to_string()))?
             .as_ref()
-            .ok_or_else(|| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "append operational history event",
-                message: "operational history writer stopped".to_string(),
-            })?
-            .send(OperationalHistoryWriteRequest {
-                records: encoded_events,
-                response,
-            })
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "enqueue operational history append",
-                message: error.to_string(),
-            })?;
-        response_receiver
+            .ok_or_else(|| history_writer_error("operational history writer stopped".into()))?
+            .send(OperationalHistoryWriteRequest { records, response })
+            .map_err(|error| history_writer_error(error.to_string()))?;
+        Ok(receiver)
+    }
+
+    fn await_history_write(
+        &self,
+        response: Receiver<Result<(), String>>,
+    ) -> Result<(), DaemonError> {
+        response
             .recv()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "receive operational history append acknowledgement",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::SessionHistoryFailed {
-                session_id: events.first().and_then(|event| event.session_id.clone()),
-                operation: "append operational history event",
-                message,
-            })?;
-        self.enforce_size_budget_after_append(estimated_append_bytes)?;
-        Ok(())
+            .map_err(|error| history_writer_error(error.to_string()))?
+            .map_err(history_writer_error)
+    }
+
+    // Caller holds the projection mutex. Every previously projected record is
+    // committed before invalidation, and no new projection can enqueue until
+    // the protected mutation releases that mutex. No writer takes this mutex.
+    pub(crate) fn flush_public_history_appends_locked(&self) -> Result<(), DaemonError> {
+        self.await_history_write(self.enqueue_history_records(Vec::new())?)
+    }
+}
+
+fn history_writer_error(message: String) -> DaemonError {
+    DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation: "write operational history",
+        message,
     }
 }
 
@@ -1015,6 +1082,7 @@ fn run_operational_history_writer(
     mut connection: Connection,
     receiver: Receiver<OperationalHistoryWriteRequest>,
     health: Arc<OperationalHistoryWriterHealth>,
+    projector: Arc<public_history::ProjectorSlot>,
 ) {
     while let Ok(first) = receiver.recv() {
         let mut record_count = first.records.len();
@@ -1033,7 +1101,7 @@ fn run_operational_history_writer(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        commit_operational_history_batch(&mut connection, batch, &health);
+        commit_operational_history_batch(&mut connection, batch, &health, &projector);
     }
 }
 
@@ -1041,6 +1109,7 @@ fn commit_operational_history_batch(
     connection: &mut Connection,
     batch: Vec<OperationalHistoryWriteRequest>,
     health: &OperationalHistoryWriterHealth,
+    projector: &public_history::ProjectorSlot,
 ) {
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
@@ -1053,7 +1122,7 @@ fn commit_operational_history_batch(
         let mut statement = transaction.prepare(OPERATIONAL_HISTORY_INSERT_SQL)?;
         for record in batch.iter().flat_map(|request| request.records.iter()) {
             let event = &record.event;
-            statement.execute(params![
+            let inserted = statement.execute(params![
                 event.event_id.as_str(),
                 event.sequence as i64,
                 event.timestamp_ms as i64,
@@ -1077,6 +1146,14 @@ fn commit_operational_history_batch(
                 record.merge_key.as_deref(),
                 record.event_json.as_str(),
             ])?;
+            if inserted > 0 {
+                public_history::write_public_document(
+                    &transaction,
+                    event,
+                    record.public_document.as_ref(),
+                    &|event| projector.project(event),
+                )?;
+            }
         }
         drop(statement);
         transaction.commit()

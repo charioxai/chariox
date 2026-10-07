@@ -253,6 +253,7 @@ mod tests {
     fn candidate(event_id: &str, chunk_text: &str) -> SemanticRecallMatch {
         SemanticRecallMatch {
             event: HistoryEvent {
+                public_history_owner_user_id: None,
                 event_id: event_id.to_string(),
                 sequence: 1,
                 timestamp_ms: 100,
