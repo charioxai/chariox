@@ -59,42 +59,48 @@ fn linux_compiler_runtime_reader_supports_elf_widths_and_byte_orders() {
     fs::create_dir(asset.parent().unwrap()).unwrap();
     fs::write(&asset, "").unwrap();
     let binary = worktree.path().join("runtime");
-    for wide in [false, true] {
-        for little in [false, true] {
-            let mut bytes = vec![0u8; 256];
-            bytes[..4].copy_from_slice(b"\x7fELF");
-            bytes[4] = if wide { 2 } else { 1 };
-            bytes[5] = if little { 1 } else { 2 };
-            let mut write = |at: usize, value: u64, width: usize| {
-                let data = if little {
-                    value.to_le_bytes()
-                } else {
-                    value.to_be_bytes()
+    // Read-only and read+execute segments are scanned: outside x86 separate-code
+    // layouts, .rodata lives in the executable text segment. Writable ones are not.
+    for (flags, scanned) in [(6, false), (5, true), (4, true)] {
+        for wide in [false, true] {
+            for little in [false, true] {
+                let mut bytes = vec![0u8; 256];
+                bytes[..4].copy_from_slice(b"\x7fELF");
+                bytes[4] = if wide { 2 } else { 1 };
+                bytes[5] = if little { 1 } else { 2 };
+                let mut write = |at: usize, value: u64, width: usize| {
+                    let data = if little {
+                        value.to_le_bytes()
+                    } else {
+                        value.to_be_bytes()
+                    };
+                    bytes[at..at + width].copy_from_slice(if little {
+                        &data[..width]
+                    } else {
+                        &data[8 - width..]
+                    });
                 };
-                bytes[at..at + width].copy_from_slice(if little {
-                    &data[..width]
+                write(if wide { 32 } else { 28 }, 64, if wide { 8 } else { 4 });
+                write(if wide { 54 } else { 42 }, if wide { 56 } else { 32 }, 2);
+                write(if wide { 56 } else { 44 }, 1, 2);
+                write(64, 1, 4);
+                write(64 + if wide { 4 } else { 24 }, flags, 4);
+                write(64 + if wide { 8 } else { 4 }, 256, if wide { 8 } else { 4 });
+                write(
+                    64 + if wide { 32 } else { 16 },
+                    asset.as_os_str().len() as u64 + 1,
+                    if wide { 8 } else { 4 },
+                );
+                bytes.extend_from_slice(asset.to_str().unwrap().as_bytes());
+                bytes.push(0);
+                fs::write(&binary, bytes).unwrap();
+                let expected = if scanned {
+                    BTreeSet::from([asset.clone()])
                 } else {
-                    &data[8 - width..]
-                });
-            };
-            write(if wide { 32 } else { 28 }, 64, if wide { 8 } else { 4 });
-            write(if wide { 54 } else { 42 }, if wide { 56 } else { 32 }, 2);
-            write(if wide { 56 } else { 44 }, 1, 2);
-            write(64, 1, 4);
-            write(64 + if wide { 4 } else { 24 }, 4, 4);
-            write(64 + if wide { 8 } else { 4 }, 256, if wide { 8 } else { 4 });
-            write(
-                64 + if wide { 32 } else { 16 },
-                asset.as_os_str().len() as u64 + 1,
-                if wide { 8 } else { 4 },
-            );
-            bytes.extend_from_slice(asset.to_str().unwrap().as_bytes());
-            bytes.push(0);
-            fs::write(&binary, bytes).unwrap();
-            assert_eq!(
-                external_data_files(&binary).unwrap(),
-                BTreeSet::from([asset.clone()])
-            );
+                    BTreeSet::new()
+                };
+                assert_eq!(external_data_files(&binary).unwrap(), expected);
+            }
         }
     }
     fs::remove_file(&asset).unwrap();
