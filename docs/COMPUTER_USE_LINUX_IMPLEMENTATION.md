@@ -89,10 +89,10 @@ text copy. Pixels stay under the existing protection barrier.
 
 ## MP-08 shared contract and MP-11 desktop arbitration
 
-The coordinator-reserved versions are local daemon **446**, relay peer **89**.
+The coordinator-reserved versions are local daemon **461**, relay peer **92**.
 `KernelBrowser { command: { op: "computer", command: ... } }` carries the typed
 native command through the existing terminal authority and host service.
-MP-08 / MP-11: the TUI exposes `/computer start|state|takeover|release|type <text>` through this shared contract and `/access revoke` through existing grant authority. Commands pin the selected transport and acquire fresh desktop identity before mutations. Computer clients require 446; unchanged Browser/UserDomain clients keep 443.
+MP-08 / MP-11: the TUI exposes `/computer start|state|takeover|release|type <text>` through this shared contract and `/access revoke` through existing grant authority. Commands pin the selected transport and acquire fresh desktop identity before mutations. Native Computer clients require 446, per-agent Room Computer grants require 449, and bulk Room Computer restore (`/access grant all`) requires 461; unchanged Browser/UserDomain clients keep 443. Room Computer denials and explicit restores are durable across kernel restart. Both bulk revoke and restore publish visible TUI notices.
 Protocol snapshot/hash tests cover all native commands/input variants and the
 new `Desktop` user-domain resource. Existing historical shape fixtures retain
 their filenames and data; current version pins advance once in PR4.

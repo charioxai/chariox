@@ -1,11 +1,11 @@
-//! MP-08/MP-11: allocated449/92 grant and reachability shape guard.
+//! MP-08/MP-11: allocated 461/92 grant and reachability shape guard.
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn mdaccess_protocol_449_grant_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 449);
+fn mdaccess_protocol_461_grant_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         92
@@ -22,8 +22,9 @@ fn mdaccess_protocol_449_grant_shapes_and_hash() {
         },
         KernelBrowserCommand::RevokeGrants { agent_id: None },
         KernelBrowserCommand::GrantRoomComputer {
-            agent_id: "a".into(),
+            agent_id: Some("a".into()),
         },
+        KernelBrowserCommand::GrantRoomComputer { agent_id: None },
     ] {
         let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command });
         let value = serde_json::to_value(&request).unwrap();
@@ -75,14 +76,14 @@ fn mdaccess_protocol_449_grant_shapes_and_hash() {
         .unwrap(),
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("user-domain-access-449.json")).unwrap();
+        serde_json::from_str(include_str!("user-domain-access-461.json")).unwrap();
     assert_eq!(serde_json::Value::Array(values), expected);
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "1037eeb4924dbc21b31b8289e12dc6881d805327c3b50086018d622527857e4b"
+        "e4016ed77b6b7523dab82a10cf486fe6f546f46e4a4ad535d5e0b722857eda3e"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})

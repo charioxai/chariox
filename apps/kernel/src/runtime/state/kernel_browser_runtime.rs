@@ -186,7 +186,7 @@ impl KernelRuntimeState {
                     | KernelBrowserCommand::RevokeGrants { .. }
                     | KernelBrowserCommand::SubscribeGrants { .. } => {
                         if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
-                            self.set_room_computer_access(&user, Some(agent_id), true)?;
+                            self.set_room_computer_access(&user, agent_id.as_deref(), true)?;
                         }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
                             self.set_room_computer_access(&user, agent_id.as_deref(), false)?;

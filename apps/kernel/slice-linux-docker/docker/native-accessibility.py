@@ -65,9 +65,20 @@ def visible_table_children(node, bounds):
     return result
 
 
+def frame_rect(root, window):
+    """MP-08: the whole window-manager frame (title included) of a client window."""
+    for _ in range(16):
+        parent=window.query_tree().parent
+        if parent.id==root.id:
+            geometry=window.get_geometry()
+            return [geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width]
+        window=parent
+    raise ValueError('window frame unavailable')
+
+
 def snapshot(processes):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
-    nodes=[];complete=True;protected=False;seen=set();pending=deque()
+    nodes=[];complete=True;protected=False;seen=set();pending=deque();uncovered=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -142,17 +153,20 @@ def snapshot(processes):
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
                 pid=window.get_full_property(connection.intern_atom('_NET_WM_PID'),X.AnyPropertyType)
-                if pid is None or not len(pid.value) or int(pid.value[0]) not in seen:complete=False
+                pid=int(pid.value[0]) if pid is not None and len(pid.value) else None
+                # MP-08: an owned window without AT-SPI (e.g. xterm) has unknown
+                # contents; capture blacks out its frame instead of the desktop.
+                if pid in allowed and pid not in seen:uncovered.append(frame_rect(root,window))
+                elif pid not in seen:complete=False
                 elif int(window_id)==active_id:
-                    owned_pid=int(pid.value[0])
                     title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
                     name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
-                    frames=[node for node in nodes if node['pid']==owned_pid and node['role'] in ('frame','window','dialog') and node['name']==name]
+                    frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and node['name']==name]
                     if len(frames)==1:
                         frame=frames[0]
                         active_window={key:frame[key] for key in ('pid','started','path')}
         finally:connection.close()
-        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window}
+        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}

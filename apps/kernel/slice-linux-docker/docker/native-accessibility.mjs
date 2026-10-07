@@ -47,7 +47,7 @@ export class NativeAccessibility {
       if(bytes+size>3072)continue;
       bytes+=size;nodes.push(projected);handles.set(target_id,{...node,protected:protectedNode});
     }
-    const complete=Boolean(tree.complete && nodes.length===(tree.nodes??[]).length);
+    const complete=Boolean(tree.complete && !tree.uncovered?.length && nodes.length===(tree.nodes??[]).length);
     const result={surface_id:binding.surface_id,generation:binding.generation,tree_revision:revision,nodes,complete,fallback:complete?'none':'ocr'};
     this.observers.set(observer,{digest,revision,handles,public:result});return result;
   }

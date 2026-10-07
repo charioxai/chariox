@@ -182,4 +182,33 @@ class TraversalTest(unittest.TestCase):
             self.assertFalse(tree['complete'])
 
 
+    def terminal(self, pid):
+        # An owned xterm: visible, reparented into a WM frame, without an AT-SPI app.
+        root = types.SimpleNamespace(id=1, get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]))
+        frame = types.SimpleNamespace(id=8, query_tree=lambda: types.SimpleNamespace(parent=root),
+            get_geometry=lambda: types.SimpleNamespace(x=20, y=30, width=244, height=150, border_width=1))
+        window = types.SimpleNamespace(id=9, query_tree=lambda: types.SimpleNamespace(parent=frame),
+            get_attributes=lambda: types.SimpleNamespace(map_state=2),
+            get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else b'xterm'))
+        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.create_resource_object = lambda kind, value: window
+
+    def test_mp08_owned_window_without_accessibility_masks_only_its_frame(self):
+        self.terminal(201)
+        tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
+        self.assertTrue(tree['available'])
+        self.assertTrue(tree['complete'])
+        self.assertFalse(tree['protected'])
+        self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
+
+    def test_mp11_foreign_or_unattributed_window_still_masks_the_desktop(self):
+        for pid in [999, None]:
+            self.terminal(pid)
+            if pid is None:
+                window = self.connection.create_resource_object('window', 9)
+                window.get_full_property = lambda atom, kind: None
+            tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
+            self.assertFalse(tree['complete'])
+
+
 if __name__ == '__main__': unittest.main()

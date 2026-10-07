@@ -129,3 +129,13 @@ test("Room Computer grant is version gated and uses the existing Access transpor
   assert.deepEqual(h.requests.at(-1).KernelBrowser.command, { op: "grant_room_computer", agent_id: "a" })
   assert.equal(h.controller.snapshot!.room_computer![0]!.allowed, true); h.controller.stop()
 })
+
+// MP-08 / MP-11: bulk restore (null agent) alone requires 461; older kernels receive nothing.
+test("Room Computer bulk restore is explicit null and version gated", async () => {
+  const old = fixture(460); old.controller.sync(); await tick()
+  await assert.rejects(old.controller.grantRoomComputer(null), /461/)
+  assert(!old.requests.some(r => r.KernelBrowser.command.op === "grant_room_computer")); old.controller.stop()
+  const h = fixture(461); h.controller.sync(); await tick()
+  await h.controller.grantRoomComputer(null)
+  assert.deepEqual(h.requests.at(-1).KernelBrowser.command, { op: "grant_room_computer", agent_id: null }); h.controller.stop()
+})

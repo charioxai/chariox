@@ -31,14 +31,16 @@ keyboard = load('slice-keyboard')
 finder = load('slice-text-finder')
 
 
-def capture(mask):
+def capture(mask, uncovered=()):
     connection = display.Display()
     try:
         screen = connection.screen()
         if mask: return Image.new('RGB', (screen.width_in_pixels, screen.height_in_pixels), 'black')
         raw = screen.root.get_image(0, 0, screen.width_in_pixels, screen.height_in_pixels, X.ZPixmap, 0xffffffff)
         if raw.depth != 24: raise ValueError('unsupported display depth')
-        return Image.frombytes('RGB', (screen.width_in_pixels, screen.height_in_pixels), raw.data, 'raw', 'BGRX')
+        image = Image.frombytes('RGB', (screen.width_in_pixels, screen.height_in_pixels), raw.data, 'raw', 'BGRX')
+        for x, y, width, height in uncovered: image.paste((0, 0, 0), (x, y, x+width, y+height))
+        return image
     finally: connection.close()
 
 
@@ -101,7 +103,7 @@ def main(request):
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
         coverage=accessibility.snapshot(request.get('processes',[]))
-        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected']: return {'text':'[protected]'}
+        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected'] or coverage.get('uncovered'): return {'text':'[protected]'}
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
         after=accessibility.snapshot(request.get('processes',[]))
         if coverage!=after:raise ValueError('native protection changed during clipboard read')
@@ -110,7 +112,7 @@ def main(request):
     accessibility=load('native-accessibility')
     before=accessibility.snapshot(request.get('processes',[]))
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
-    image=capture(mask)
+    image=capture(mask,before.get('uncovered',()))
     after=accessibility.snapshot(request.get('processes',[]))
     if before!=after:
         image.close()

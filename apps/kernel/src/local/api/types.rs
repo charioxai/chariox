@@ -265,4 +265,5 @@ pub use workspace::*;
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
 /// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 449;
+/// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 461;

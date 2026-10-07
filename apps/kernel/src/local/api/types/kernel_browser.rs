@@ -7,8 +7,9 @@ pub enum KernelBrowserCommand {
     Computer {
         command: KernelComputerCommand,
     },
+    /// MP-08 / MP-11 (local 461): `None` restores every owned agent after "revoke all".
     GrantRoomComputer {
-        agent_id: String,
+        agent_id: Option<String>,
     },
     ListGrants,
     SubscribeGrants {

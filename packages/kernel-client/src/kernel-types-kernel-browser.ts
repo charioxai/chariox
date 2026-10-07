@@ -6,7 +6,7 @@ export type KernelBrowserInput =
   | { kind: "key"; key: string }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
 export type KernelBrowserCommand =
-  | { op: "grant_room_computer"; agent_id: string }
+  | { op: "grant_room_computer"; agent_id: string | null }
   | { op: "computer"; command: KernelComputerCommand }
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
