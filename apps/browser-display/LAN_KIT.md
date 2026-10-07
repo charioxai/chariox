@@ -71,6 +71,14 @@ No services are managed. Campaign functional success can coexist with a RED
 performance aggregate (exit 1). rAF is a software presentation proxy, not photons.
 These local tests do not close MP-10 managed acceptance or MP-11 security review.
 
+MP-08/MP-10 phase25 reports require click **and type** P95 at most measured RTT
+plus 50 ms, pipeline CPU at most 0.6 cores (DPR1) or 1.2 (DPR2), and exact
+presentation below 300 ms after motion stops. Scroll60/wheel60 require at least
+59 measured fps at DPR1 (a 60 Hz source with measurement overhead) or 50 fps at
+DPR2. The local component kit does not establish these results on the hosted
+relay, real public-site list or real desktop browser; those need separate live
+receipts. Successful functional teardown alone cannot produce a performance PASS.
+
 The bundled `baseline-campaign.mjs`, `baseline-drill.mjs` and both baseline viewers
 use identical fixtures, input-to-pixel probes and Linux CPU accounting. Install
 upstream baselines into operator-owned development venvs; no provider state is

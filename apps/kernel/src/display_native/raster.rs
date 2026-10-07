@@ -1,7 +1,6 @@
 //! MP-08/MP-10/MP-11: immutable slot leases, intersected masks and exact PNG.
 use super::ffi::{self, Rect};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -12,6 +11,7 @@ pub(super) struct Slot {
     pub serial: Option<u64>,
     pub bounds: [i32; 4],
     pub tiles: Option<Vec<[i32; 4]>>,
+    pub adjacent: Option<Vec<[i32; 4]>>,
     file: File,
     path: PathBuf,
 }
@@ -48,6 +48,7 @@ impl Slot {
             serial: None,
             bounds: [0; 4],
             tiles: None,
+            adjacent: None,
             file,
             path,
         })
@@ -116,22 +117,36 @@ pub(super) fn png(pixels: &[u8], w: u32, h: u32, stride: usize) -> Result<Vec<u8
     // Exact indexed PNG often makes scrolling text fit one negotiated repair
     // batch. The palette is proved per RGB value; no quantization is allowed.
     let mut palette = Vec::new();
-    let mut colors = HashMap::new();
+    // MP-08/MP-10: a bounded exact RGB dictionary avoids a keyed hash per
+    // viewport pixel. Collision probing checks the full RGB; no quantization.
+    let mut colors = [0u32; 512];
+    let mut indices = [0u8; 512];
+    let mut count = 0;
+    let mut last = (0u32, 0u8);
     let mut indexed = Vec::with_capacity(w as usize * h as usize);
     let mut fits = true;
     'rows: for row in pixels.chunks(stride).take(h as usize) {
         for p in row[..w as usize * 4].chunks_exact(4) {
-            let color = [p[2], p[1], p[0]];
-            let index = if let Some(index) = colors.get(&color) {
-                *index
+            let color = ((p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32) + 1;
+            let index = if color == last.0 {
+                last.1
             } else {
-                if colors.len() == 256 {
-                    fits = false;
-                    break 'rows;
+                let mut entry = (color.wrapping_mul(0x9e3779b1) >> 23) as usize;
+                while colors[entry] != 0 && colors[entry] != color {
+                    entry = (entry + 1) & 511;
                 }
-                let index = colors.len() as u8;
-                colors.insert(color, index);
-                palette.extend_from_slice(&color);
+                if colors[entry] == 0 {
+                    if count == 256 {
+                        fits = false;
+                        break 'rows;
+                    }
+                    colors[entry] = color;
+                    indices[entry] = count as u8;
+                    count += 1;
+                    palette.extend_from_slice(&[p[2], p[1], p[0]]);
+                }
+                let index = indices[entry];
+                last = (color, index);
                 index
             };
             indexed.push(index);

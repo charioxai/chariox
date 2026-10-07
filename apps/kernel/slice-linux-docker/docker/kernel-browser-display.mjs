@@ -173,8 +173,11 @@ export class DisplayStream {
     this.encoder.timing = timing;
   }
   canPatchNative(sample) {
-    return Boolean(this.previous) && !this.repair && (Number.isSafeInteger(sample.raw?.base_serial)?this.exact&&sample.raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1) &&
-      nativeDamageTiles(sample.raw, true) !== null;
+    if(!this.previous||this.repair)return false;
+    const raw=sample.raw;
+    if(raw?.nativeExact&&sample.serial===this.compositorSerial+1&&
+       this.compositorMasks===JSON.stringify(raw[displayMaskRegions]??[])&&nativeDamageTiles(raw,true,true)!==null)return true;
+    return (Number.isSafeInteger(raw?.base_serial)?this.exact&&raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1)&&nativeDamageTiles(raw,true)!==null;
   }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
   invalidate() { this.motionActive=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
@@ -190,6 +193,9 @@ export class DisplayStream {
     // Already-admitted 419 credits may lag the delivered sequence. Eight
     // frames is the hard recovery window; clients still validate every base.
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
+    // MP-11: tile-only native work belongs to an existing compositor base.
+    // Its serial is a scheduling hint and can never become a full PNG.
+    if(source.native_repair&&(!bound||!this.previous)){this.invalidate();return null;}
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
@@ -218,8 +224,8 @@ export class DisplayStream {
     let payload, repair = null;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
     else if (bound && (same || source.settled_verified) && (!this.exact || !this.previous?.pixels) && !source.motion) {
-      const exact = full();
-      if (JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
+      const exact = source.native_repair?null:full();
+      if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
         // A verified capture may supersede the immutable RGB snapshot while
         // repair batches are still queued. Never mark its older tiles exact.

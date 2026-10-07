@@ -20,7 +20,7 @@ export class NativeRefiner {
     try{
      source=await this.capture(binding);
      if(raw?.nativeExact){
-      const exact=await raw.nativeExact({encoder:binding.encoder,regions:raw[displayMaskRegions]??[],limit:binding.repairLimit,patch:false});
+      const exact=await raw.nativeExact({encoder:binding.encoder,regions:raw[displayMaskRegions]??[],limit:binding.repairLimit,patch:false,repair_only:true});
       source={...source,...exact,motion:false};pixels={width:raw.width,height:raw.height,pixels:null,signature:source.signature};
      }else if(raw){
       if(source.raw!==raw)throw Error('MP-11: native refinement binding changed');

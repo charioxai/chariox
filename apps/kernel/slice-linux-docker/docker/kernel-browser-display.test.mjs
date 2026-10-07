@@ -8,6 +8,25 @@ function fixture(value = 255) {
   return { generation: 1, data_base64: encodePng(256, 256, pixels) };
 }
 const binding = { subscription_id: 's', tab_id: 't', device_scale_factor: 2, bitrate: 2_000_000, codec: 'vp09.00.10.08', dependencies:true };
+test('MP-08/MP-10/MP-11 contiguous small input patches a lossy canvas without certifying the whole viewport',async()=>{
+ const stream=new DisplayStream(binding,{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ const raw={nativeExact:async()=>{},format:'bgr0',width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4),damage:[0,0,1280,800],base_serial:1,serial:11,adjacent_damage_tiles:[[0,0,32,32]]};
+ stream.sequence=7;stream.document_id='d';stream.previous={signature:'lossy'};stream.compositorSerial=10;stream.compositorMasks='[]';
+ try{
+  assert.equal(stream.canPatchNative({serial:11,raw}),true,'a delivered contiguous lossy source supports opaque small damage');
+  assert.equal(stream.canPatchNative({serial:12,raw:{...raw,serial:12}}),false,'dropped capture cannot authorize adjacent reuse');
+  assert.equal(stream.canPatchNative({serial:11,raw:{...raw,adjacent_damage_tiles:[[0,0,1280,800]]}}),false,'dense motion still uses video');
+  stream.compositorMasks='changed';assert.equal(stream.canPatchNative({serial:11,raw}),false,'changed protection cannot reuse the canvas');stream.compositorMasks='[]';
+  const frame=await stream.frame({generation:1,width:1280,height:800,data_base64:'new',native_tiles:[{x:0,y:0,width:1,height:1,data_base64:encodePng(1,1,Buffer.from([1,2,3,255]))}]},'d',7);
+  assert.equal(frame.kind,'tiles');assert.equal(stream.exact,false,'an opaque input echo does not make untouched lossy pixels exact');
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10/MP-11 tile-only refinement never treats its source serial as a full PNG',async()=>{
+ const stream=new DisplayStream(binding,{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ stream.sequence=1;stream.document_id='d';stream.previous={signature:'motion'};
+ const source={generation:1,width:1280,height:800,native_exact:true,native_repair:true,data_base64:'serial',settled_verified:true,refinement_serial:3,repair_tiles:[{x:0,y:0,width:1,height:1,data_base64:encodePng(1,1,Buffer.from([1,2,3,255]))}]};
+ try{assert.equal((await stream.frame(source,'d',1)).kind,'tiles');assert.equal(stream.exact,true);assert.equal(await stream.frame(source,'other',2),null,'a tile-only repair cannot bootstrap a different document');}finally{await stream.close()}
+});
 test('MD-DISPLAY unsafe process IDs rejected without signals', () => {
   for (const pid of [undefined, NaN, 0, 1, -1, -50, 2.5]) assert.throws(() => safeChildPid({ pid }));
   assert.equal(safeChildPid({ pid: 42 }), 42);

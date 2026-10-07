@@ -2,6 +2,11 @@
 // Capture/encode never await a viewer credit. Dropped dependencies force a key.
 import {displayMaskRegions,encodePng} from './kernel-browser-pixels.mjs';
 const frameBytes=frame=>JSON.stringify(frame.encoded??{}).length+(frame.encoded?.packet?.length??0)+(frame.force_lossless?frame.data_base64.length:0);
+// MP-08/MP-10: full viewport motion benefits from vertical reference reuse
+// across stripe boundaries. Existing negotiated full-video packets provide
+// that path; sparse rows still keep their independent bounded references.
+const denseNative=raw=>raw?.nativeEncode&&Array.isArray(raw.damage)&&raw.damage.length===4&&
+ (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2;
 export class MotionEncoder {
  constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
   Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
@@ -19,9 +24,9 @@ export class MotionEncoder {
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
-   const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw);if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
+   const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
-   const encoded=this.stripes&&sample.raw?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);this.timing('motion_encode',at);
+   const encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);this.timing('motion_encode',at);
    if(encoded.dropped){
     // MP-11: discard every lossy byte, retire its references, and present only
     // this already-protected exact raster. Never freeze a newly masked field.

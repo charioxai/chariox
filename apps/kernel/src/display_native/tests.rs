@@ -91,6 +91,38 @@ fn mp08_native_palette_and_rgb_fallback_preserve_every_rgb_value() {
     }
 }
 #[test]
+fn mp11_native_tile_only_plan_retains_exact_rgb_and_opaque_fallback_keeps_full_png() {
+    use super::exact::ExactPlan;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    for repair_only in [true, false] {
+        let plan = ExactPlan {
+            pixels: vec![29; 128 * 128 * 4],
+            rectangles: vec![[4, 5, 8, 9]],
+            w: 128,
+            h: 128,
+            patch: false,
+            repair_only,
+            revision: Some(17),
+            started: 0.,
+        };
+        let value = plan.finish().unwrap();
+        assert_eq!(value.get("data_base64").is_none(), repair_only);
+        assert_eq!(value.get("native_repair").is_some(), repair_only);
+        let tile = &value["repair_tiles"][0];
+        let data = STANDARD
+            .decode(tile["data_base64"].as_str().unwrap())
+            .unwrap();
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (4, 4));
+        assert_eq!(&pixels[..info.buffer_size()], &[29; 4 * 4 * 3]);
+        assert_eq!(value["native_revision"], 17);
+    }
+}
+#[test]
 fn mp11_native_codec_masks_before_conversion_and_guards_motion_settle_and_idr() {
     let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, 8) });
     assert!(!codec.0.is_null());

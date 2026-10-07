@@ -7,6 +7,14 @@ test('MD-DISPLAY linear raw framing across arbitrary chunks and multiple frames'
  for(const n of [1,2,3,5,64]){seen.length=0;for(let frame=0;frame<2;frame++)for(let at=0;at<wire.length;at+=n)pipe.push(wire.subarray(at,at+n));assert.equal(seen.length,2);assert.deepEqual(seen[0],Buffer.from(Array.from({length:16},(_,i)=>i)));assert.notEqual(seen[0],seen[1]);}
 });
 test('MD-DISPLAY bounded raw framing rejects malformed header before pixel allocation',()=>{
- for(const size of [0,2049,0xffffffff]){const b=Buffer.alloc(4);b.writeUInt32BE(size);assert.throws(()=>new NativePipe(()=>{},()=>{}).push(b),/header/)}
+ for(const size of [0,4097,0xffffffff]){const b=Buffer.alloc(4);b.writeUInt32BE(size);assert.throws(()=>new NativePipe(()=>{},()=>{}).push(b),/header/)}
  assert.throws(()=>new NativePipe(()=>{},()=>{}).push(packet({length:2560*1600*4+1},Buffer.alloc(0))),/frame/);
+});
+test('MP-08/MP-10/MP-11 bounded dual native damage sets survive fragmented headers',()=>{
+ const tiles=Array.from({length:32},(_,n)=>[2528,1024+n*16,2560,1056+n*16]);
+ const header={length:1,damage_tiles:tiles,adjacent_damage_tiles:tiles,signature:'f'.repeat(16),serial:17,base_serial:3,native_cpu:[1,2,3],captured_ms:1900000000000,damage:[0,0,2560,1600]};
+ let seen;const wire=packet(header,Buffer.from([0]));
+ const pipe=new NativePipe(()=>{},h=>seen=h);
+ for(let at=0;at<wire.length;at+=7)pipe.push(wire.subarray(at,at+7));
+ assert.deepEqual(seen,header);
 });

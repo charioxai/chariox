@@ -7,7 +7,7 @@ export class NativePipe {
    const n=Math.min(bytes.length-at,this.buffer.length-this.offset);bytes.copy(this.buffer,this.offset,at,at+n);this.offset+=n;at+=n;
    if(this.offset!==this.buffer.length)continue;
    if(this.stage==='length'){
-    const size=this.buffer.readUInt32BE(0);if(size<1||size>2048)throw Error('MD-DISPLAY: native header bound');this.buffer=Buffer.alloc(size);this.stage='header';
+    const size=this.buffer.readUInt32BE(0);if(size<1||size>4096)throw Error('MD-DISPLAY: native header bound');this.buffer=Buffer.alloc(size);this.stage='header';
    }else if(this.stage==='header'){
     const header=JSON.parse(this.buffer);this.validate(header);
     if(!Number.isSafeInteger(header.length)||header.length<1||header.length>2560*1600*4)throw Error('MD-DISPLAY: native frame bound');

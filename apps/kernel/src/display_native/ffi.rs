@@ -49,6 +49,7 @@ extern "C" {
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
+    pub(super) fn cx_capture_adjacent_tiles(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;

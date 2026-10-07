@@ -26,7 +26,7 @@ struct Capture {
     uint8_t *previous,*captured;
     int initialized,captured_initialized;
     double cpu[3];
-    int tile_count,tiles[32][4];
+    int tile_count,tiles[32][4],adjacent_count,adjacent[32][4];
 };
 static unsigned long window_pid(Display *d, Window w) {
     Atom actual; int format; unsigned long count, remaining; unsigned char *data = NULL;
@@ -135,17 +135,24 @@ int cx_capture_difference(const uint8_t *raw,const uint8_t *previous,int width,i
 /* Return -1 on retirement, 0 for byte-identical, 1 for new immutable snapshot.
  * A sparse bound is proved from every row; XDamage bounds never authorize it. */
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
-    c->tile_count=-1;
+    c->tile_count=c->adjacent_count=-1;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
     unsigned w,h;
     if (window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
-    if(c->captured_initialized&&!memcmp(raw,c->captured,size)){
+    int adjacent_bounds[4];
+    c->adjacent_count=cx_capture_difference(raw,c->captured_initialized?c->captured:NULL,c->width,c->height,adjacent_bounds,(int*)c->adjacent);
+    if(c->adjacent_count==0){
         c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;return 0;
     }
-    c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles);
+    /* MP-08/MP-10/MP-11: dense motion needs no second full-frame comparison.
+     * Sparse cumulative damage alone checks the complete delivered exact base.
+     * Adjacent tiles can echo input over a contiguous LOSSY canvas; they never
+     * certify its untouched pixels. Dropped captures still use cumulative tiles. */
+    if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles);
+    else {bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;}
     if(c->tile_count==0){/* Pixels returned to the exact base; ship a conservative full update. */bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;c->tile_count=-1;}
     memcpy(c->captured,raw,size);c->captured_initialized=1;
     c->cpu[1]=capture_cpu()-at;at=capture_cpu();
@@ -155,4 +162,5 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
 
 /* MP-08/MP-10/MP-11: exact sparse damage, not the union's collateral pixels. */
 int cx_capture_tiles(struct Capture *c,int *out){if(c->tile_count>0)memcpy(out,c->tiles,c->tile_count*4*sizeof(int));return c->tile_count;}
+int cx_capture_adjacent_tiles(struct Capture *c,int *out){if(c->adjacent_count>0)memcpy(out,c->adjacent,c->adjacent_count*4*sizeof(int));return c->adjacent_count;}
 void cx_capture_admit(struct Capture *c,const uint8_t *pixels){memcpy(c->previous,pixels,(size_t)c->width*c->height*4);c->initialized=1;}

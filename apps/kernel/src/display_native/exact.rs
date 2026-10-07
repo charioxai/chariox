@@ -15,13 +15,17 @@ pub(super) struct ExactPlan {
     pub w: i32,
     pub h: i32,
     pub patch: bool,
+    pub repair_only: bool,
     pub revision: Option<u64>,
     pub started: f64,
 }
 impl ExactPlan {
-    fn finish(self) -> Result<Value, String> {
+    pub(super) fn finish(self) -> Result<Value, String> {
         let mut value = json!({"width":self.w,"height":self.h,"native_exact":true});
-        if !self.patch {
+        if self.repair_only && !self.patch {
+            value["native_repair"] = true.into();
+        }
+        if !self.patch && !self.repair_only {
             value["data_base64"] = STANDARD
                 .encode(raster::png(
                     &self.pixels,

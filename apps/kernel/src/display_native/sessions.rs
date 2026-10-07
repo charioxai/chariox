@@ -35,6 +35,10 @@ pub(super) struct Exact {
     pub regions: Vec<Region>,
     pub limit: usize,
     pub patch: bool,
+    #[serde(default)]
+    pub adjacent: bool,
+    #[serde(default)]
+    pub repair_only: bool,
 }
 struct Session {
     codec: Codec,
@@ -317,11 +321,18 @@ impl Sessions {
         let pixels = raster::masked(slot.bytes(), w, h, &regions);
         let mut rectangles = Vec::new();
         if q.patch {
-            if let Some(rects) = &slot.tiles {
+            if let Some(rects) = if q.adjacent {
+                &slot.adjacent
+            } else {
+                &slot.tiles
+            } {
                 for rect in rects {
                     rectangles.extend(clips(&pixels, w, h, *rect, 32, 255, None));
                 }
             } else {
+                if q.adjacent {
+                    return Err("MP-11: adjacent patch unavailable".into());
+                }
                 if (slot.bounds[2] - slot.bounds[0]) * (slot.bounds[3] - slot.bounds[1]) > 32768 {
                     return Err("MP-11: native patch bound".into());
                 }
@@ -345,6 +356,7 @@ impl Sessions {
             w,
             h,
             patch: q.patch,
+            repair_only: q.repair_only,
             revision,
             started,
         })

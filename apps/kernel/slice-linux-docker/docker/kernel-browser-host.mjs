@@ -420,7 +420,10 @@ export class KernelBrowserHost {
         }, stream.device_scale_factor, this.timing);
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
       const layoutAt = timestamp();
-      const { cssVisualViewport: viewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+      // MP-08/MP-10: an attested window supplies the complete viewport. Layout
+      // is needed only to select safe CDP crops; a retired native source falls
+      // back to full protected capture when no layout was read.
+      const viewport = cachedSource?.attested ? null : (await connection.send("Page.getLayoutMetrics", {}, sessionId)).cssVisualViewport;
       this.timing('capture_layout_metrics', layoutAt);
       // Native CDP clips are page rectangles. Our private damage hints are
       // viewport rectangles; use full protected capture for scroll/zoom/unknown
@@ -471,7 +474,8 @@ export class KernelBrowserHost {
         const encoded=patchable ? null : stream.producer.take();
         if(patchable){
           stream.producer.retireUnsent();
-          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],limit:exactPatchLimit(stream.bitrate),patch:true}):{native_tiles:nativeDamageTiles(sample.raw)};
+          const adjacent=sample.serial===stream.compositorSerial+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
+          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],limit:exactPatchLimit(stream.bitrate),patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
           source={...sample,...patch,motion:false,generation:this.generation};
         }
         else if(encoded){source={...encoded,generation:this.generation};}
