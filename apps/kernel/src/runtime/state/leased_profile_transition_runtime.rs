@@ -21,38 +21,43 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
+        let session_id = prepared.leased_agent.backing_session_id.clone();
+        let agent_id = prepared.leased_agent.backing_agent_id.clone();
         let claim = if prepared.changed {
-            let lease = &prepared.leased_agent;
-            let session = self
+            let session = self.owned.session_store.get_session(&session_id)?;
+            let claim = self
                 .owned
-                .session_store
-                .get_session(&lease.backing_session_id)?;
-            Some(
-                self.owned
-                    .prompt_state_owner
-                    .claim_idle_agent_profile_transition(&session, &lease.backing_agent_id)?,
-            )
-        } else {
-            None
-        };
-        if prepared.changed {
-            let lease = &prepared.leased_agent;
-            let agent = self.owned.agent_store.get_agent(&lease.backing_agent_id)?;
+                .prompt_state_owner
+                .claim_idle_agent_profile_transition(&session, &agent_id)?;
+            let agent = self.owned.agent_store.get_agent(&agent_id)?;
             self.compact_before_window_downshift(
-                &lease.backing_session_id,
+                &session_id,
                 &agent,
                 Some(&prepared.profile.provider),
                 Some(&prepared.profile.account_profile),
                 prepared.profile.model.as_deref(),
             )
             .await;
-        }
+            Some(claim)
+        } else {
+            None
+        };
+        let resume_queue = claim.is_some();
         let result = self
             .with_app_side_effect(move |app| {
                 crate::app::RemoteLeaseRuntime::new(app).commit_leased_agent_profile(prepared)
             })
             .await;
         drop(claim);
+        if resume_queue {
+            // Commit/rejection precedes promotion. Project/provider preparation
+            // runs off the acknowledgement path, as it does for local updates.
+            let promotion =
+                self.spawn_project_queued_prompt_after_profile_transition(&session_id, &agent_id);
+            if result.is_ok() {
+                promotion?;
+            }
+        }
         result
     }
 }

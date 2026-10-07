@@ -1082,22 +1082,7 @@ impl KernelRuntimeState {
             // The profile is committed (or rejected) before admission resumes.
             // Reuse the normal Project/provider activation and queue dispatch path.
             drop(profile_transition);
-            let session = self.owned.session_store.get_session(session_id)?;
-            if self
-                .owned
-                .prompt_state_owner
-                .peek_next_queued_prompt(&session, agent_id)
-                .is_some()
-            {
-                let state = self.clone();
-                let session_id = session_id.to_string();
-                let agent_id = agent_id.to_string();
-                tokio::spawn(async move {
-                    state
-                        .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
-                        .await;
-                });
-            }
+            self.spawn_project_queued_prompt_after_profile_transition(session_id, agent_id)?;
         }
         result
     }

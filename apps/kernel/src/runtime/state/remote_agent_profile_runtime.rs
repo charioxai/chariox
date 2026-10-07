@@ -96,9 +96,7 @@ fn remote_profile_response_timeout(
 ) -> std::time::Duration {
     let normal = std::time::Duration::from_millis(config.relay_request_timeout_ms);
     match request {
-        RelayPeerRequest::UpdateLeasedAgentProfile { provider, .. }
-            if crate::provider::canonical_provider_family(provider) == Some("claude") =>
-        {
+        RelayPeerRequest::UpdateLeasedAgentProfile { provider, .. } => {
             super::leased_profile_transition_runtime::worker_profile_response_timeout(
                 normal, provider,
             )
