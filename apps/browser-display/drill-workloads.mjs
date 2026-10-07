@@ -1,5 +1,5 @@
 // MD-DISPLAY-02: live presentation cadence and independently labelled fidelity.
-import {verifySettled,verifyContinuousSettled} from './drill-settle.mjs';
+import {verifySettled,verifyContinuousSettled,waitQuiet} from './drill-settle.mjs';
 import {cpuSpan} from './drill-cpu.mjs';
 import { distribution } from './drill-metrics.mjs';
 export async function measureWorkload({page,workload,pair,pause,resource,durationMs}) {
@@ -23,16 +23,20 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
   await resource();
  }
  const cpuAfter=(await resource()).cpu;
- const freezeRequestedMs=performance.timeOrigin+performance.now();
+ let freezeRequestedMs=performance.timeOrigin+performance.now();
  if(wheel&&continuous)wheelStats=await page.evaluate(async()=>{clearInterval(mdWheel.timer);await Promise.allSettled([...mdWheel.pending]);if(mdWheel.error)throw Error(mdWheel.error);return {sent:mdWheel.sent,dropped:mdWheel.dropped,target_hz:mdWheel.hz,max_in_flight:4}});
  const motionEnd=performance.now(),after=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.slice(),presentations:mdPresentations?.slice()??[]}));
  if(continuous){for(const p of after.presentations.slice(before.presentations)){samples.push({sequence:p.sequence,presented_ms:p.drawn_ms});}for(let i=1;i<samples.length;i++)cadence.push(samples[i].presented_ms-samples[i-1].presented_ms);}
- if(workload!=='scroll'&&!wheel)await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
+ // MP-08/MP-10: clicked fixtures keep moving until this stop input arrives.
+ if(workload!=='scroll'&&!wheel){freezeRequestedMs=performance.timeOrigin+performance.now();await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));}
  const settleStart=performance.now();let first,frozen,repair;
  if(continuous){
   // Credits stay active through the freeze. Readbacks prove exact pixels and
   // carry the canvas presentation snapshot taken atomically with its PNG.
-  frozen=await pair('motion-frozen-first');first={kind:frozen.presentation_kind??'unchanged'};
+  // The first post-stop presentation is read from the client log; a harness
+  // readback here would hold the capture gate in front of exact repair.
+  await waitQuiet(()=>page.evaluate(()=>({count:mdPresentations.length,kind:mdPresentations.at(-1)?.kind})));
+  first=await page.evaluate(stop=>({kind:mdPresentations.find(p=>p.drawn_ms>stop)?.kind??'unchanged'}),freezeRequestedMs);
   repair=await verifyContinuousSettled(()=>pair('motion-continuous-settled'));
   await page.evaluate(()=>mdStream.stop());
  }else{

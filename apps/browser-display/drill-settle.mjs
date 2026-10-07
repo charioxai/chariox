@@ -35,3 +35,17 @@ export async function verifyContinuousSettled(pair,{timeoutMs=90000,now=()=>perf
  }
  throw Error('MD-DISPLAY: continuous exact repair did not converge');
 }
+
+// MP-08/MP-10: a verification readback holds the kernel capture gate. Watch
+// client presentations passively until the stream goes quiet on a lossless
+// kind (longer than one paced repair batch), so the measured repair never
+// queues behind the harness itself.
+export async function waitQuiet(latest,{quietMs=600,timeoutMs=30000,now=()=>performance.now(),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
+ const started=now();let seen=null,since=started;
+ while(now()-started<timeoutMs){
+  const {count,kind}=await latest();
+  if(count!==seen){seen=count;since=now();}
+  else if(now()-since>=quietMs&&!['video','stripes'].includes(kind))return;
+  await wait(25);
+ }
+}
