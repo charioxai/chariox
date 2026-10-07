@@ -232,6 +232,9 @@ impl KernelRuntimeState {
                 .list_session_attachment_ids(&task.room_id),
             message,
         );
+        if task.state == ExecutionState::Cancelled {
+            Box::pin(self.cancel_agent_task_resources(&task)).await?;
+        }
         if correction {
             let text=format!("The prior answer is progress, not completion. Finish or cancel these obligations, or call chariox.events.yield with admitted live sources and a future deadline. Otherwise call chariox.events.blocked with the exact owner action. One correction is allowed. Untrusted obligation data: {}",serde_json::to_string(&task.obligations).unwrap_or_default());
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
@@ -461,6 +464,24 @@ impl KernelRuntimeState {
                             now: crate::session::unix_epoch_ms(),
                         })
                 {
+                    if !resume {
+                        if let Err(error) = Box::pin(state.cancel_agent_task_resources(&next)).await
+                        {
+                            state.owned.record_notice_for_agent(
+                                &next.room_id,
+                                None,
+                                Some(&next.agent_id),
+                                state
+                                    .owned
+                                    .attachment_store
+                                    .list_session_attachment_ids(&next.room_id),
+                                format!(
+                                    "Cancellation remains supervised: {}",
+                                    crate::secret_redaction::redact_secrets(&error.to_string())
+                                ),
+                            );
+                        }
+                    }
                     if resume {
                         if let Ok(agent) = state.owned.agent_store.get_agent(&next.agent_id) {
                             if let Ok(attachment) =

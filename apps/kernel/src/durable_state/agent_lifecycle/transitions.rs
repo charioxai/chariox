@@ -19,6 +19,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         && t.pending_prompt_id.as_deref() == Some(&prompt)
                 });
                 if let Some(mut t) = resumed {
+                    if t.state != ExecutionState::Working {
+                        return Err(error(
+                            "cancelled or blocked continuation cannot resume automatically",
+                        ));
+                    }
                     t.prompt_id = prompt;
                     t.pending_prompt_id = None;
                     t.state = ExecutionState::Working;
@@ -277,7 +282,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("stale provider settlement"));
             }
             if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                || t.pending_prompt_id.is_some()
+                || (!cancelled && t.pending_prompt_id.is_some())
             {
                 return Ok(Outcome::Settled {
                     task: t,
@@ -286,9 +291,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             let mut correction = false;
             if cancelled {
-                t.state = ExecutionState::Cancelled;
-                t.wait = None;
-                t.reason = "owner cancelled; resource settlement remains supervised".into();
+                cancel_intent(tx, &mut t)?;
             } else if t.state != ExecutionState::Blocked {
                 let open = t
                     .obligations
@@ -365,7 +368,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let mut changed = false;
                 for o in &mut t.obligations {
                     if o.completion_source() == Some(&source) && o.status == "open" {
-                        o.status = if success { "settling" } else { "failed" }.into();
+                        o.status = if t.state == ExecutionState::Cancelled {
+                            "cancelled"
+                        } else if success {
+                            "settling"
+                        } else {
+                            "failed"
+                        }
+                        .into();
                         changed = true;
                     }
                 }
@@ -531,6 +541,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Swept(changed))
         }
+        Operation::CancelTask {
+            task,
+            owner,
+            revision,
+        } => {
+            let mut t = load(tx, &task)?;
+            if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
+                return Err(error("stale or foreign owner cancellation"));
+            }
+            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+                cancel_intent(tx, &mut t)?;
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+            Ok(Outcome::Task(t))
+        }
         Operation::OwnerResponse {
             task,
             revision,
@@ -563,6 +589,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             } else {
                 ExecutionState::Cancelled
             };
+            if !resume {
+                cancel_intent(tx, &mut t)?;
+            }
             t.no_progress_wakes = 0;
             t.wait = None;
             t.revision += 1;
@@ -659,6 +688,30 @@ fn bind_first_delegate_task(
             parent.revision += 1;
             save(tx, &parent)?;
         }
+    }
+    Ok(())
+}
+
+fn cancel_intent(tx: &Transaction<'_>, task: &mut AgentTaskExecution) -> Result<(), DaemonError> {
+    task.state = ExecutionState::Cancelled;
+    task.wait = None;
+    task.reason =
+        "Owner cancelled; owned resource cancellation remains supervised until physical settlement"
+            .into();
+    for obligation in &mut task.obligations {
+        if obligation.status == "failed" {
+            obligation.status = "cancelled".into();
+        } else if matches!(obligation.status.as_str(), "open" | "settling") {
+            obligation.dispatch_state = "cancel_requested".into();
+        }
+    }
+    for mut registration in registrations(tx, &task.task_id)? {
+        registration.live = false;
+        tx.execute(
+            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+            params![registration.id, encode(&registration)?],
+        )
+        .map_err(sql)?;
     }
     Ok(())
 }

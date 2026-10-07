@@ -212,6 +212,11 @@ pub(crate) enum Operation {
     Sweep {
         now: u64,
     },
+    CancelTask {
+        task: String,
+        owner: String,
+        revision: u64,
+    },
     OwnerResponse {
         task: String,
         revision: u64,
