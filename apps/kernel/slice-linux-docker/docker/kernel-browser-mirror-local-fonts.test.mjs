@@ -36,4 +36,8 @@ test('native ascent/descent are size-specific, with valid sfnt checksums and unc
  let sum=0;for(let i=0;i<after.length;i+=4)sum=(sum+after.readUInt32BE(i))>>>0;assert.equal(sum,0xb1b0afba);
  assert.equal(normalizeFontMetrics(bytes,{size:0,ascent:30,descent:8}),bytes);assert.equal(normalizeFontMetrics(bytes,{size:32,ascent:999,descent:8}),bytes);
  assert.notEqual(mirrorFontKey({'font-size':'16px'}),mirrorFontKey({'font-size':'32px'}));
+ const fitted=normalizeFontMetrics(bytes,{size:32,ascent:30,descent:8,height:37});
+ assert.equal(fitted.readInt16BE(offsets[3]+4),1920);
+ assert.equal(fitted.readInt16BE(offsets[3]+6),-448,'Use the actual native DOM text box, not the rounded Canvas metric sum');
+ assert.deepEqual(fitted.subarray(offsets[1],offsets[1]+entries[1][1].length),entries[1][1]);
 });
