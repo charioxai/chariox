@@ -64,11 +64,11 @@ export class MirrorService {
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    if(this.host.chromium?.display){
+    if(!scale&&this.host.chromium?.display){
       const {windowId}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});
       await connection.send('Browser.setWindowBounds',{windowId,bounds:{width:1280*command.device_scale_factor/geometry.dpr,height:800*command.device_scale_factor/geometry.dpr+87}});
     }
-    await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,...(this.host.chromium?.display?{scale:command.device_scale_factor/geometry.dpr}:{}),mobile:false},sessionId);
+    if(!scale)await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,...(this.host.chromium?.display?{scale:command.device_scale_factor/geometry.dpr}:{}),mobile:false},sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],inputCustomFingerprint:'[]',previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});

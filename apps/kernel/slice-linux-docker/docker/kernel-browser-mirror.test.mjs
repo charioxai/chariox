@@ -28,6 +28,15 @@ function fixture() {
   return {host,state,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
+test('MP-11: an additional mirror observer does not reset canonical headed geometry',async()=>{
+ const {service,host}=fixture();host.chromium={display:{}};
+ const {connection}=await host.browser.resolvePageTarget('target'),send=connection.send;let changes=0;
+ connection.send=async(method,...args)=>{if(['Browser.setWindowBounds','Emulation.setDeviceMetricsOverride'].includes(method))changes++;return send.call(connection,method,...args)};
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ assert.equal(changes,2);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'b');
+ assert.equal(changes,2,'Read-only subscription must not resize the page or invalidate another observer');
+});
 test('MP-11: headed tile capture keeps the native viewport unchanged',async()=>{
  const {service,state,host}=fixture();host.chromium={display:{}};
  const control=state.snapshot.nodes[0];Object.assign(control,{parent:'n0',kind:'tile',tag:'button',reason:'native_control'});

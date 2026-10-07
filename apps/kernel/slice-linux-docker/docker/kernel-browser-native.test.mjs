@@ -1,5 +1,14 @@
 // MD-DISPLAY-02/04: native admission fails before opening any foreign display.
 import test from 'node:test';
+import {nativeReferenceMatches} from './kernel-browser-native.mjs';
+test('MP-11 native attestation matches an exact retained paint and refuses device-pixel differences',()=>{
+ const reference={width:1,height:1,pixels:Buffer.from([10,20,30,255])};
+ const captured={width:1,height:1,pixels:Buffer.from([30,20,10,255])},newer={width:1,height:1,pixels:Buffer.from([31,20,10,255])};
+ assert.equal(nativeReferenceMatches(reference,newer),false);
+ assert([captured,newer].some(raw=>nativeReferenceMatches(reference,raw)));
+ assert.equal(nativeReferenceMatches({...reference,width:2},captured),false);
+ assert.equal(nativeReferenceMatches(reference,{...captured,pixels:Buffer.alloc(8)}),false);
+});
 import assert from 'node:assert/strict';
 import { OwnedDisplay, ownsDisplay } from './kernel-browser-owned-display.mjs';
 import { selectNativeCapture } from './kernel-browser-native.mjs';

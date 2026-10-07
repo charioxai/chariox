@@ -19,9 +19,14 @@ export async function selectNativeCapture({platform=process.platform,display,cre
  if(platform!=='linux'||!ownsDisplay(display))return null;
  try{return await create()}catch{return null}
 }
+export function nativeReferenceMatches(reference,raw){
+ if(reference.width!==raw.width||reference.height!==raw.height||reference.pixels.length!==raw.pixels.length||raw.pixels.length!==raw.width*raw.height*4)return false;
+ for(let n=0;n<raw.pixels.length;n+=4)if(reference.pixels[n]!==raw.pixels[n+2]||reference.pixels[n+1]!==raw.pixels[n+1]||reference.pixels[n+2]!==raw.pixels[n])return false;
+ return true;
+}
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.attestationRasters=[];this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
@@ -96,16 +101,16 @@ export class LinuxCapture {
     // exact post-capture readback instead of racing a fixed50ms delay.
     for(let observation=0;observation<20&&!matched&&this.valid();observation++){
      await delay(10);
-     const raw=this.latest?.raw;if(!raw)continue;
-     matched=reference.width===raw.width&&reference.height===raw.height;
-     const nativePixels=raw.pixels;
-     for(let n=0;matched&&n<nativePixels.length;n+=4)matched=reference.pixels[n]===nativePixels[n+2]&&reference.pixels[n+1]===nativePixels[n+1]&&reference.pixels[n+2]===nativePixels[n];
+     // The screenshot can refer to a paint preceding the newest XShm readback.
+     // Four immutable, already-masked rasters bound startup memory to64MiB;
+     // each still requires exact device-pixel RGB, document and policy fences.
+     matched=this.attestationRasters.some(raw=>nativeReferenceMatches(reference,raw));
     }
    }
    if(!matched)throw Error('native attestation RGB differed');
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    if(!this.valid())throw Error('native attestation retired');
-   this.attested=true;this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
+   this.attested=true;this.attestationRasters=[];this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
   }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host'),performance.timeOrigin+performance.now());await this.close();throw error}
  }
  async publish(){
@@ -132,6 +137,7 @@ export class LinuxCapture {
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
+   if(!this.attested){this.attestationRasters.push({width:raw.width,height:raw.height,pixels:Buffer.from(raw.pixels)});if(this.attestationRasters.length>4)this.attestationRasters.shift();}
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
@@ -144,7 +150,7 @@ export class LinuxCapture {
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
  wake(refresh=false){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify(refresh?{refresh:true}:{wake:true})+'\n')}
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.closed=true;this.attested=false;this.attestationRasters=[];this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){
