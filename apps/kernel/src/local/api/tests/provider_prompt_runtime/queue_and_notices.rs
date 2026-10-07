@@ -203,7 +203,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
                 .started_next
                 .expect("queued prompt should start after completion");
             assert_eq!(started_next.prompt(), "second");
-            if queued_prompt.durable_operation().is_some() {
+            if queued_prompt.durable_operation_id().is_some() {
                 assert_eq!(started_next.id(), queued_prompt.id());
             } else {
                 assert_ne!(started_next.id(), queued_prompt.id());
