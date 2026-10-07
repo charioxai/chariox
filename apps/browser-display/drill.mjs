@@ -108,6 +108,11 @@ try {
   const digest=createHash('sha256');for await(const bytes of createReadStream(executable))digest.update(bytes);
   receipt.native_worker={source_path:process.env.MD_NATIVE_WORKER,copied_sha256:digest.digest('hex')};
   nativeWorker=executable;
+  if(process.env.MD_BINARY_LOADER){
+   if(!path.isAbsolute(process.env.MD_BINARY_LOADER)||!path.isAbsolute(process.env.MD_BINARY_LIBS||''))throw Error('MP-10: absolute worker loader/library paths required');
+   nativeWorker=path.join(root,'native-worker');await writeFile(nativeWorker,`#!/bin/sh\nexec ${quote(process.env.MD_BINARY_LOADER)} --library-path ${quote(process.env.MD_BINARY_LIBS)} ${quote(executable)} "$@"\n`,{mode:0o755});
+   receipt.native_worker.loader=process.env.MD_BINARY_LOADER;receipt.native_worker.library_path=process.env.MD_BINARY_LIBS;
+  }
   if(process.env.MD_NATIVE_LIBYUV){
    const directory=path.join(root,'native-libs');await mkdir(directory);await cp(process.env.MD_NATIVE_LIBYUV,path.join(directory,'libyuv.so.0'));
    nativeWorker=path.join(root,'native-worker');await writeFile(nativeWorker,`#!/bin/sh\nLD_LIBRARY_PATH=${quote(directory)} exec ${quote(executable)} "$@"\n`,{mode:0o755});
