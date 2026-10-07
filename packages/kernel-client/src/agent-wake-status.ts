@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11 A03: shared wake projection for TUI and web.
 import type { AgentWake, RuntimeSession } from "./kernel-types-session.js"
 
-const ARMED = new Set(["scheduled", "starting", "running"])
+const ARMED = new Set(["scheduled", "starting", "running", "cancelling"])
 
 function clock(ms: number | null | undefined): string {
   return ms && Number.isFinite(ms) && ms < 8.64e15 ? new Date(ms).toISOString().slice(11, 19) + "Z" : "-"

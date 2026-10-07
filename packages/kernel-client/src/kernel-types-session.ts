@@ -368,7 +368,7 @@ export type AgentTaskExecution = {
 export type AgentWake = {
   id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
   kind: "timer" | "process"; label: string
-  state: "scheduled" | "starting" | "running" | "fired" | "exited" | "lost" | "cancelled"
+  state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
   created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
   command: string[]; match_text: string | null; matched_at_ms: number | null; pid: number | null; exit_code: number | null
   fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null

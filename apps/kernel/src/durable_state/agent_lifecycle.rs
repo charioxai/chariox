@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
 pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
+mod wake_receipts;
 pub(crate) use types::{InboxEvent, Operation, Outcome, Registration};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;

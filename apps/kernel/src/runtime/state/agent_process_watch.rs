@@ -2,6 +2,8 @@
 //! The kernel starts argv (no shell) in the agent's workspace, owns the
 //! process group, drains bounded sanitized output and reports exit or one
 //! output match. It never attaches to an arbitrary PID.
+use super::agent_process_group::signal_group;
+use super::agent_process_output::{drain, room_protector, Output, Signal};
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
 use std::collections::HashMap;
@@ -9,8 +11,6 @@ use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 
-const TAIL_BYTES: usize = 4_096;
-const LINE_BYTES: usize = 1_024;
 const ENV_ALLOW: &[&str] = &[
     "PATH",
     "HOME",
@@ -30,7 +30,29 @@ const ENV_ALLOW: &[&str] = &[
     "GH_CONFIG_DIR",
 ];
 
-type Owned = Arc<std::sync::Mutex<Child>>;
+struct OwnedChild {
+    child: Child,
+    birth: u64,
+}
+
+impl OwnedChild {
+    fn new(mut child: Child) -> std::io::Result<Self> {
+        match super::agent_process_group::birth(child.id()) {
+            Ok(birth) => Ok(Self { child, birth }),
+            Err(error) => {
+                // The freshly spawned positive child handle is owned even
+                // when group inspection failed. Do not signal a group.
+                if child.id() > 1 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+type Owned = Arc<std::sync::Mutex<OwnedChild>>;
 
 #[derive(Default)]
 pub(crate) struct WatchedProcesses {
@@ -62,24 +84,18 @@ impl WatchedProcesses {
 }
 
 fn signal_owned_group(child: &Owned, signal: libc::c_int) -> bool {
-    let Ok(mut child) = child.lock() else {
+    let Ok(child) = child.lock() else {
         return false;
     };
-    if !matches!(child.try_wait(), Ok(None)) {
-        return false;
-    }
-    signal_group(child.id(), signal)
+    signal_group(child.child.id(), child.birth, signal)
 }
 
-/// Rejects 0, 1, -1 and out-of-range ids before any signal is sent.
-fn signal_group(pid: u32, signal: libc::c_int) -> bool {
-    match libc::pid_t::try_from(pid) {
-        Ok(group) if group > 1 => unsafe { libc::kill(-group, signal) == 0 },
-        _ => false,
-    }
-}
-
-fn spawn(argv: &[String], cwd: &Path) -> std::io::Result<Child> {
+fn spawn(
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    removed: &[String],
+) -> std::io::Result<Child> {
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
@@ -89,115 +105,29 @@ fn spawn(argv: &[String], cwd: &Path) -> std::io::Result<Child> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for key in ENV_ALLOW {
-        if let Some(value) = std::env::var_os(key) {
+        if removed.iter().any(|r| r == key) {
+            continue;
+        }
+        if let Some(value) = env
+            .get(*key)
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os(key))
+        {
             command.env(key, value);
         }
     }
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe; the child dies with the kernel.
     unsafe {
         command.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+            if libc::setsid() < 0 || libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
     }
     crate::process_spawn::spawn_command(command)
-}
-
-/// Strips terminal escapes/control bytes and redacts secrets before any
-/// output is matched, retained or shown to the model.
-fn sanitize(raw: &[u8]) -> String {
-    let text = String::from_utf8_lossy(raw);
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(n) = chars.next() {
-                    if ('@'..='~').contains(&n) {
-                        break;
-                    }
-                }
-            } else {
-                chars.next();
-            }
-        } else if c == '\t' || !c.is_control() {
-            out.push(c);
-        }
-    }
-    crate::secret_redaction::redact_secrets(&out).into_owned()
-}
-
-enum Signal {
-    Matched(String),
-    Exited(i32, String),
-}
-
-struct Output {
-    tail: std::sync::Mutex<std::collections::VecDeque<String>>,
-    matched: std::sync::atomic::AtomicBool,
-}
-
-impl Output {
-    fn push(&self, line: String) {
-        let Ok(mut tail) = self.tail.lock() else {
-            return;
-        };
-        tail.push_back(line);
-        while tail.iter().map(|l| l.len() + 1).sum::<usize>() > TAIL_BYTES {
-            tail.pop_front();
-        }
-    }
-    fn text(&self) -> String {
-        self.tail
-            .lock()
-            .map(|t| t.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
-    }
-}
-
-fn drain(
-    mut stream: impl Read,
-    output: Arc<Output>,
-    pattern: Option<String>,
-    sender: tokio::sync::mpsc::UnboundedSender<Signal>,
-) {
-    let mut buffer = [0u8; 4096];
-    let mut line = Vec::new();
-    let emit = |line: &mut Vec<u8>| {
-        let text = sanitize(line);
-        line.clear();
-        if let Some(pattern) = &pattern {
-            if text.contains(pattern.as_str())
-                && !output
-                    .matched
-                    .swap(true, std::sync::atomic::Ordering::AcqRel)
-            {
-                let _ = sender.send(Signal::Matched(text.clone()));
-            }
-        }
-        output.push(text);
-    };
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
-        for byte in &buffer[..n] {
-            if *byte == b'\n' {
-                emit(&mut line);
-            } else if line.len() < LINE_BYTES {
-                line.push(*byte);
-            }
-        }
-    }
-    if !line.is_empty() {
-        emit(&mut line);
-    }
 }
 
 impl KernelRuntimeState {
@@ -210,32 +140,36 @@ impl KernelRuntimeState {
         cwd: PathBuf,
         task: &str,
         prompt: &str,
+        run: &crate::provider::RuntimeProviderRun,
     ) -> Result<AgentWake, DaemonError> {
+        let _admission = self.owned.begin_managed_activity_admission()?;
         let store = &self.owned.durable_state_store;
         store.agent_lifecycle(Operation::CreateWake {
             task: task.into(),
             prompt: prompt.into(),
             wake: wake.clone(),
         })?;
-        let mut child = match spawn(&argv, &cwd) {
+        if let Err(error) = self.authorize_current_external_command() {
+            self.settle_failed_process_launch(
+                &wake,
+                "process launch authority ended before execution".into(),
+            );
+            return Err(error);
+        }
+        let mut child = match spawn(&argv, &cwd, run.pty_env(), run.pty_env_remove()) {
             Ok(child) => child,
             Err(e) => {
-                store.agent_lifecycle(Operation::ProcessExited {
-                    id: wake.id.clone(),
-                    exit_code: None,
-                    tail: format!("launch failed: {e}"),
-                    now: crate::session::unix_epoch_ms(),
-                })?;
+                self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
                 return Err(crate::durable_state::agent_lifecycle::error(format!(
                     "process launch failed: {e}"
                 )));
             }
         };
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let output = Arc::new(Output {
-            tail: Default::default(),
-            matched: Default::default(),
-        });
+        let output = Arc::new(Output::default());
+        let protection = self.owned.room_secret_observations.clone();
+        let room = wake.room_id.clone();
+        let protect = room_protector(protection, room);
         let readers = [
             child
                 .stdout
@@ -251,27 +185,43 @@ impl KernelRuntimeState {
         .map(|stream| {
             let (output, pattern, sender) =
                 (output.clone(), wake.match_text.clone(), sender.clone());
-            std::thread::spawn(move || drain(stream, output, pattern, sender))
+            let protect = protect.clone();
+            std::thread::spawn(move || drain(stream, output, pattern, sender, protect))
         })
         .collect::<Vec<_>>();
         let pid = child.id();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(child));
+        let owned: Owned = Arc::new(std::sync::Mutex::new(match OwnedChild::new(child) {
+            Ok(child) => child,
+            Err(_) => {
+                self.settle_failed_process_launch(
+                    &wake,
+                    "process ownership could not be verified; the new child was stopped".into(),
+                );
+                return Err(crate::durable_state::agent_lifecycle::error(
+                    "new process ownership could not be verified",
+                ));
+            }
+        }));
         let started = store.agent_lifecycle(Operation::ProcessStarted {
             id: wake.id.clone(),
             pid,
             now: crate::session::unix_epoch_ms(),
         });
+        let activity = self.owned.begin_managed_activity_mutation();
         if let Ok(mut live) = self.owned.agent_wakes.processes.live.lock() {
             live.insert(wake.id.clone(), owned.clone());
         }
-        if let Err(error) = started {
+        activity.record();
+        if started.is_err() {
             self.owned.agent_wakes.processes.terminate(&wake.id);
-            return Err(error);
         }
-        self.owned.record_managed_activity_transition();
         std::thread::spawn(move || {
+            let mut alerted = false;
             let code = loop {
-                match owned.lock().map(|mut c| c.try_wait()) {
+                match owned.lock().map(|mut c| {
+                    let birth = c.birth;
+                    super::agent_process_group::poll_exit(&mut c.child, birth)
+                }) {
                     Ok(Ok(Some(status))) => {
                         break status
                             .code()
@@ -279,7 +229,15 @@ impl KernelRuntimeState {
                             .unwrap_or(-1);
                     }
                     Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
-                    _ => break -1,
+                    // A failed ownership check cannot establish physical
+                    // settlement. Keep supervision and the obligation live.
+                    _ => {
+                        if !alerted {
+                            let _ = sender.send(Signal::SupervisionFailed);
+                            alerted = true;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
                 }
             };
             // A detached grandchild may keep a pipe open; bound the drain.
@@ -293,8 +251,16 @@ impl KernelRuntimeState {
         });
         let state = self.clone();
         let id = wake.id.clone();
+        let notice_room = wake.room_id.clone();
+        let notice_agent = wake.agent_id.clone();
         tokio::spawn(async move {
             while let Some(signal) = receiver.recv().await {
+                if matches!(signal, Signal::SupervisionFailed) {
+                    state.owned.record_notice_for_agent(&notice_room,None,Some(&notice_agent),
+                        state.owned.attachment_store.list_session_attachment_ids(&notice_room),
+                        "Wake alert: process ownership could not be verified; physical settlement is unconfirmed, supervision is retrying");
+                    continue;
+                }
                 let now = crate::session::unix_epoch_ms();
                 let (op, exited) = match signal {
                     Signal::Matched(line) => (
@@ -314,9 +280,13 @@ impl KernelRuntimeState {
                         },
                         true,
                     ),
+                    Signal::SupervisionFailed => unreachable!(),
                 };
-                match state.owned.durable_state_store.agent_lifecycle(op) {
-                    Ok(crate::durable_state::agent_lifecycle::Outcome::Wakes(wakes)) => {
+                let outcome = state
+                    .retain_process_outcome(op, &notice_room, &notice_agent)
+                    .await;
+                match outcome {
+                    crate::durable_state::agent_lifecycle::Outcome::Wakes(wakes) => {
                         for wake in wakes {
                             let text = match (exited, wake.exit_code) {
                                 (true, Some(code)) => format!(
@@ -329,20 +299,19 @@ impl KernelRuntimeState {
                             state.schedule_wake_delivery(&wake);
                         }
                     }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: process outcome retained for recovery")
-                    }
+                    _ => {}
                 }
                 if exited {
+                    let activity = state.owned.begin_managed_activity_mutation();
                     if let Ok(mut live) = state.owned.agent_wakes.processes.live.lock() {
                         live.remove(&id);
                     }
-                    state.owned.record_managed_activity_transition();
+                    activity.record_prompt_finish_at(None);
                     break;
                 }
             }
         });
+        started?;
         let started = self
             .owned
             .durable_state_store
@@ -352,57 +321,198 @@ impl KernelRuntimeState {
             .unwrap_or(wake);
         Ok(started)
     }
+    fn settle_failed_process_launch(&self, wake: &AgentWake, tail: String) {
+        let state = self.clone();
+        let wake = wake.clone();
+        tokio::spawn(async move {
+            state
+                .retain_process_outcome(
+                    Operation::ProcessExited {
+                        id: wake.id.clone(),
+                        exit_code: None,
+                        tail,
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                    &wake.room_id,
+                    &wake.agent_id,
+                )
+                .await;
+            state.wake_notice(&wake,format!("Wake alert: watched process '{}' could not be launched or supervised; it is not relaunched",wake.label));
+            state.schedule_wake_delivery(&wake);
+        });
+    }
+
+    async fn retain_process_outcome(
+        &self,
+        op: Operation,
+        room: &str,
+        agent: &str,
+    ) -> crate::durable_state::agent_lifecycle::Outcome {
+        let mut alerted = false;
+        loop {
+            match self.owned.durable_state_store.agent_lifecycle(op.clone()) {
+                Ok(outcome) => return outcome,
+                Err(_) => {
+                    if !alerted {
+                        self.owned.record_notice_for_agent(room,None,Some(agent),self.owned.attachment_store.list_session_attachment_ids(room),"Wake alert: watched process outcome could not be committed; retaining it and retrying");
+                        alerted = true;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
-        for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
-            assert!(!signal_group(pid, 0), "pid {pid} must be rejected");
-        }
+    fn a03_signal_guard_rejects_a_group_outside_the_owned_session() {
+        use std::os::unix::process::CommandExt;
+        let child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        let refused = !signal_owned_group(&owned, 0);
+        let mut child = owned.lock().unwrap();
+        assert!(child.child.id() > 1);
+        child.child.kill().unwrap();
+        child.child.wait().unwrap();
+        assert!(
+            refused,
+            "a handle without an isolated owned session cannot authorize a group signal"
+        );
     }
 
     #[test]
-    fn a03_output_is_sanitized_bounded_and_matches_once() {
-        assert_eq!(sanitize(b"\x1b[31mred\x1b[0m ok\x07"), "red ok");
-        let output = Arc::new(Output {
-            tail: Default::default(),
-            matched: Default::default(),
-        });
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let mut input = b"boot\nready one\nready two\n".to_vec();
-        input.extend(std::iter::repeat_n(b'x', 10_000));
-        drain(&input[..], output.clone(), Some("ready".into()), sender);
-        let mut matches = vec![];
-        while let Ok(Signal::Matched(line)) = receiver.try_recv() {
-            matches.push(line);
+    fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
+        for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
+            assert!(!signal_group(pid, 1, 0), "pid {pid} must be rejected");
         }
-        assert_eq!(matches, vec!["ready one".to_string()]);
-        let tail = output.text();
-        assert!(tail.len() <= TAIL_BYTES && tail.ends_with(&"x".repeat(LINE_BYTES)));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn a03_terminate_settles_the_owned_group_only_while_unreaped() {
         let processes = WatchedProcesses::default();
-        let child = spawn(&["sleep".into(), "30".into()], Path::new("/")).unwrap();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(child));
+        let child = spawn(
+            &["sleep".into(), "30".into()],
+            Path::new("/"),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
         processes
             .live
             .lock()
             .unwrap()
             .insert("w".into(), owned.clone());
         assert!(processes.terminate("w"));
-        let status = owned.lock().unwrap().wait().unwrap();
+        let status = owned.lock().unwrap().child.wait().unwrap();
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(
             !processes.terminate("w"),
             "a reaped leader is never signalled"
         );
         assert!(!processes.terminate("unknown"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_signal_guard_rejects_a_stale_birth_identity() {
+        let child = spawn(
+            &["sleep".into(), "30".into()],
+            Path::new("/"),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        owned.lock().unwrap().birth += 1;
+        assert!(
+            !signal_owned_group(&owned, 0),
+            "a reused or stale process identity must never authorize a signal"
+        );
+        let mut child = owned.lock().unwrap();
+        assert!(child.child.id() > 1);
+        child.child.kill().unwrap();
+        child.child.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a03_termination_settles_a_resisting_descendant_after_its_leader_exits() {
+        use std::io::BufRead;
+        let script = "import os, signal\nr,w=os.pipe()\np=os.fork()\nif p==0:\n os.close(r)\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n os.write(w,b'r')\n os.close(w)\n while True: signal.pause()\nos.close(w)\nos.read(r,1)\nprint(p,flush=True)\nwhile True: signal.pause()";
+        let mut child = spawn(
+            &["python3".into(), "-c".into(), script.into()],
+            Path::new("/"),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let descendant: libc::pid_t = line.trim().parse().unwrap();
+        assert!(descendant > 1);
+        // A pidfd pins this test-created descendant for cleanup even if the
+        // assertion fails; never use an unverified PID or group fallback.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, descendant, 0) as libc::c_int };
+        assert!(fd >= 0);
+        let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child).unwrap()));
+        assert!(signal_owned_group(&owned, libc::SIGTERM));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut status = None;
+        while Instant::now() < deadline {
+            let mut child = owned.lock().unwrap();
+            let birth = child.birth;
+            status = super::super::agent_process_group::poll_exit(&mut child.child, birth)
+                .ok()
+                .flatten();
+            if status.is_some() {
+                break;
+            }
+            drop(child);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let settled = unsafe { libc::poll(&mut pfd, 1, 1_000) > 0 };
+        if !settled {
+            // fd came from the reserved-target-checked child above.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd,
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        }
+        unsafe {
+            libc::close(fd);
+        }
+        if status.is_none() {
+            let mut child = owned.lock().unwrap();
+            assert!(child.child.id() > 1);
+            let _ = child.child.kill();
+            let _ = child.child.wait();
+        }
+        assert!(
+            status.is_some() && settled,
+            "leader exit is not settlement while an owned descendant still executes"
+        );
     }
 }

@@ -110,6 +110,67 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn a03_interval_keeps_receipts_when_an_earlier_fire_is_acknowledged_late() {
+    let f = Fixture::new();
+    f.create("interval", "timer", Some(1_000), Some(60_000));
+    f.wait_on(&["interval"]);
+    f.apply(Operation::FireWakes { now: 1_000 });
+    let first = f.inbox()[0].sequence;
+    f.apply(Operation::FireWakes { now: 61_000 });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: first,
+        handled: true,
+        now: 62_000,
+    });
+    let db = f.store.lock_connection("test.wake.receipts").unwrap();
+    let receipts: Result<(i64, bool), _> = db.query_row(
+        "SELECT count(*),max(CASE WHEN sequence=?1 THEN json_extract(payload,'$.acknowledged_at_ms') IS NOT NULL ELSE 0 END) FROM agent_wake_receipts WHERE wake_id='interval'",
+        [first as i64], |r| Ok((r.get(0)?, r.get(1)?)));
+    assert_eq!(
+        receipts.unwrap(),
+        (2, true),
+        "each fire retains its own receipt across later fires"
+    );
+    drop(db);
+    assert!(
+        f.wake("interval").last_acknowledged_at_ms.is_none(),
+        "the earlier ACK must not acknowledge the later fire"
+    );
+}
+
+#[test]
+fn a03_process_cancel_waits_for_physical_exit_receipt() {
+    let f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "process".into(),
+        pid: 42,
+        now: 20,
+    });
+    f.apply(Operation::CancelWake {
+        id: "process".into(),
+        task: "p".into(),
+        prompt: Some("p".into()),
+    });
+    assert_eq!(f.wake("process").state, "cancelling");
+    assert_ne!(
+        f.task().obligations[0].status,
+        "cancelled",
+        "a signal request is not physical settlement"
+    );
+    f.apply(Operation::ProcessExited {
+        id: "process".into(),
+        exit_code: Some(143),
+        tail: String::new(),
+        now: 30,
+    });
+    assert_eq!(f.wake("process").state, "cancelled");
+    assert_eq!(f.task().obligations[0].status, "cancelled");
+}
+
+#[test]
 fn a03_timer_is_an_obligation_that_needs_scheduler_proof_of_life() {
     let f = Fixture::new();
     let wake = f.create("t1", "timer", Some(1_000), None);

@@ -122,6 +122,7 @@ pub struct AgentWake {
     pub last_acknowledged_at_ms: Option<u64>,
     pub alerted_sequence: Option<u64>,
 }
+#[derive(Clone)]
 pub(crate) enum Operation {
     Begin {
         owner: String,

@@ -8,6 +8,7 @@ use types::AgentWake;
 pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
+    super::wake_receipts::initialize(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);")
         .map_err(sql)
@@ -93,6 +94,7 @@ fn record_fire(
     wake.last_delivery = Some(event.state.clone());
     wake.last_delivered_at_ms = None;
     wake.last_acknowledged_at_ms = None;
+    super::wake_receipts::fire(tx, wake, event, now)?;
     save_wake(tx, wake)
 }
 
@@ -172,7 +174,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error("timer requires a finite future due time"));
             }
-            let active: i64 = tx.query_row("SELECT count(*) FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('scheduled','starting','running')",params![t.room_id,t.agent_id],|r|r.get(0)).map_err(sql)?;
+            let active: i64 = tx.query_row("SELECT count(*) FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')",params![t.room_id,t.agent_id],|r|r.get(0)).map_err(sql)?;
             if active >= MAX_ACTIVE_WAKES {
                 return Err(error("wake limit reached; cancel an armed wake first"));
             }
@@ -286,6 +288,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("process start receipt does not match its intent"));
             }
             let mut t = load(tx, &wake.task_id)?;
+            if t.state != ExecutionState::Working {
+                return Err(error(
+                    "process start authority ended; physical cancellation must settle",
+                ));
+            }
             if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
                 o.dispatch_state = "accepted".into();
             }
@@ -328,6 +335,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if terminal(&wake) {
                 return Ok(Outcome::Wakes(vec![]));
             }
+            if wake.state == "cancelling" && exit_code.is_some() {
+                let mut t = load(tx, &wake.task_id)?;
+                if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
+                    o.status = "cancelled".into();
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+                wake.exit_code = exit_code;
+                cancel_settle(tx, &mut wake, now)?;
+                return Ok(Outcome::Wakes(vec![wake]));
+            }
             wake.state = if exit_code.is_some() {
                 "exited"
             } else {
@@ -355,6 +373,24 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Ok(Outcome::Wakes(vec![wake]));
             }
             let mut t = load(tx, &task)?;
+            if let Some(prompt) = &prompt {
+                current(&t, prompt)?;
+            } else if t.state != ExecutionState::Cancelled {
+                return Err(error(
+                    "only the owning turn or task cancellation cancels a wake",
+                ));
+            }
+            if wake.kind == "process" {
+                // A signal request cannot settle an executing resource.
+                wake.state = "cancelling".into();
+                if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
+                    o.dispatch_state = "cancel_requested".into();
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+                save_wake(tx, &wake)?;
+                return Ok(Outcome::Wakes(vec![wake]));
+            }
             wake.state = "cancelled".into();
             wake.next_due_ms = None;
             match prompt {
@@ -391,7 +427,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         }
         Operation::WakeAlerted { id, sequence } => {
             let mut wake = load_wake(tx, &id)?;
-            wake.alerted_sequence = Some(sequence);
+            super::wake_receipts::alerted(tx, &id, sequence)?;
+            if wake.last_sequence == Some(sequence) {
+                wake.alerted_sequence = Some(sequence);
+            }
             save_wake(tx, &wake)?;
             Ok(Outcome::Wakes(vec![wake]))
         }
@@ -401,12 +440,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
 
 /// Mirrors the inbox receipt of a wake's latest occurrence onto the wake.
 pub(super) fn record_delivery(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
+    let now = crate::session::unix_epoch_ms();
+    super::wake_receipts::delivery(tx, e, now)?;
     let payload:Option<String>=tx.query_row("SELECT payload FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND id=?3 AND json_extract(payload,'$.last_sequence')=?4",params![e.room_id,e.agent_id,e.source_id,sql_integer(e.sequence)?],|r|r.get(0)).optional().map_err(sql)?;
     let Some(payload) = payload else {
         return Ok(());
     };
     let mut wake: AgentWake = decode(&payload)?;
-    let now = crate::session::unix_epoch_ms();
     wake.last_delivery = Some(e.state.clone());
     if matches!(e.state.as_str(), "accepted" | "acknowledged" | "handled") {
         wake.last_delivered_at_ms.get_or_insert(now);

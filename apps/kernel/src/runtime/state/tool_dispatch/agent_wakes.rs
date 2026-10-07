@@ -61,7 +61,9 @@ impl KernelRuntimeState {
                     store.agent_wakes(Some(&task.room_id), Some(&task.agent_id))?,
                     now,
                 );
-                serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes})
+                let receipts =
+                    store.agent_wake_receipts(Some(&task.room_id), Some(&task.agent_id))?;
+                serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes,"receipts":receipts})
             }
             "chariox.events.timer" => {
                 let delay = args["delay_ms"]
@@ -95,6 +97,9 @@ impl KernelRuntimeState {
                 serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"first_fire_at_ms":wake.next_due_ms,"interval_ms":interval,"scheduler_confirmed":verified.is_some(),"verified_at_ms":verified})
             }
             "chariox.events.process" => {
+                if !cfg!(target_os = "linux") {
+                    return Err(ledger::error("watched processes require Linux process-group ownership verification on this release"));
+                }
                 // Only an agent that may already run any command unattended,
                 // locally, can ask the kernel to run one for it.
                 let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
@@ -143,7 +148,7 @@ impl KernelRuntimeState {
                     .collect();
                 wake.match_text = match_text;
                 let wake = self
-                    .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id)
+                    .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, run)
                     .await?;
                 self.refresh_wake_projection(&task.room_id);
                 serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"pid":wake.pid,"verified_at_ms":wake.verified_at_ms})
@@ -159,7 +164,11 @@ impl KernelRuntimeState {
                 })?;
                 let terminated = self.owned.agent_wakes.processes.terminate(id);
                 self.refresh_wake_projection(&task.room_id);
-                serde_json::json!({"cancelled":id,"process_signalled":terminated})
+                let wake = store
+                    .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
+                    .into_iter()
+                    .find(|w| w.id == id);
+                serde_json::json!({"cancel_requested":id,"process_signalled":terminated,"settled":wake.is_some_and(|w| w.state == "cancelled")})
             }
             _ => return Err(ledger::error("unknown wake tool")),
         })

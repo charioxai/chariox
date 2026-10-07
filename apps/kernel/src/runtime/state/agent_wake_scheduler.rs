@@ -21,8 +21,42 @@ pub(crate) struct AgentWakeMonitor {
     sweep_ms: AtomicU64,
     scheduler_stall_alerted: AtomicBool,
     sweep_stall_alerted: AtomicBool,
+    tick_failure_alerted: AtomicBool,
     stall_fault: Option<PathBuf>,
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a03_projection_keeps_every_armed_wake_when_finished_history_is_bounded() {
+        let template: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":"wake", "task_id":"task", "room_id":"room", "agent_id":"agent",
+            "registration_id":"registration", "kind":"timer", "label":"check-in",
+            "state":"scheduled", "created_at_ms":1, "verified_at_ms":1,
+            "next_due_ms":100_000, "interval_ms":null, "command":[], "match_text":null,
+            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
+            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
+            "last_delivery":null, "last_delivered_at_ms":null,
+            "last_acknowledged_at_ms":null, "alerted_sequence":null
+        }))
+        .unwrap();
+        // Several agents may each own up to 32 wakes in one Room.
+        let mut wakes = vec![template.clone(); 65];
+        let mut finished = template;
+        finished.state = "fired".into();
+        finished.last_fired_at_ms = Some(2);
+        wakes.extend(vec![finished; 100]);
+        let projected = visible_wakes(wakes, 3);
+        assert_eq!(
+            projected.iter().filter(|w| armed(w)).count(),
+            65,
+            "finished history must not evict pending wakes from any client"
+        );
+        assert_eq!(projected.iter().filter(|w| !armed(w)).count(), 64);
+    }
 }
 
 impl AgentWakeMonitor {
@@ -33,6 +67,7 @@ impl AgentWakeMonitor {
             sweep_ms: AtomicU64::new(0),
             scheduler_stall_alerted: AtomicBool::new(false),
             sweep_stall_alerted: AtomicBool::new(false),
+            tick_failure_alerted: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             processes: Default::default(),
         }
@@ -40,14 +75,36 @@ impl AgentWakeMonitor {
 }
 
 fn armed(w: &AgentWake) -> bool {
-    matches!(w.state.as_str(), "scheduled" | "starting" | "running")
+    matches!(
+        w.state.as_str(),
+        "scheduled" | "starting" | "running" | "cancelling"
+    )
 }
 
 /// Armed wakes plus the 64 most recent finished ones with their receipts.
-pub(super) fn visible_wakes(mut wakes: Vec<AgentWake>, now: u64) -> Vec<AgentWake> {
-    wakes.retain(|w| armed(w) || w.last_fired_at_ms.unwrap_or(w.created_at_ms) + 86_400_000 > now);
-    let skip = wakes.len().saturating_sub(64);
-    wakes.split_off(skip)
+pub(super) fn visible_wakes(wakes: Vec<AgentWake>, now: u64) -> Vec<AgentWake> {
+    let mut finished = 0;
+    let mut visible: Vec<_> = wakes
+        .into_iter()
+        .rev()
+        .filter(|w| {
+            if armed(w) {
+                return true;
+            }
+            if finished < 64
+                && w.last_fired_at_ms
+                    .unwrap_or(w.created_at_ms)
+                    .saturating_add(86_400_000)
+                    > now
+            {
+                finished += 1;
+                return true;
+            }
+            false
+        })
+        .collect();
+    visible.reverse();
+    visible
 }
 
 fn iso(ms: u64) -> String {
@@ -79,8 +136,20 @@ impl KernelRuntimeState {
                 if !recovered {
                     recovered = self.recover_lost_agent_processes(now).is_ok();
                 }
-                if let Err(error) = self.tick_agent_wakes(now, true).await {
-                    tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake tick retained for the dead-man sweep");
+                match self.tick_agent_wakes(now, true).await {
+                    Err(error) => {
+                        tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake tick retained for the dead-man sweep");
+                        if !monitor.tick_failure_alerted.swap(true, Ordering::AcqRel) {
+                            self.notify_wake_owners(None, |_| "Wake alert: durable wake supervision failed; timers and receipts are not assumed successful. Retrying; restore durable state if this persists".into());
+                        }
+                    }
+                    Ok(()) => {
+                        if monitor.tick_failure_alerted.swap(false, Ordering::AcqRel) {
+                            self.notify_wake_owners(None, |_| {
+                                "Durable wake supervision recovered".into()
+                            });
+                        }
+                    }
                 }
                 let sweep = monitor.sweep_ms.load(Ordering::Acquire);
                 if sweep != 0
@@ -166,20 +235,28 @@ impl KernelRuntimeState {
         }) {
             self.tick_agent_wakes(now, false).await?;
         }
-        for wake in store.agent_wakes(None, None)? {
-            let (Some(seq), Some(fired)) = (wake.last_sequence, wake.last_fired_at_ms) else {
+        let wakes: BTreeMap<_, _> = store
+            .agent_wakes(None, None)?
+            .into_iter()
+            .map(|w| (w.id.clone(), w))
+            .collect();
+        for receipt in store.agent_wake_receipts(None, None)? {
+            let Some(wake) = wakes.get(&receipt.wake_id) else {
                 continue;
             };
-            if wake.last_delivered_at_ms.is_none()
-                && fired + WAKE_DELIVERY_TOLERANCE_MS < now
-                && wake.alerted_sequence != Some(seq)
-                && !matches!(wake.last_delivery.as_deref(), Some("expired" | "failed"))
+            if receipt.delivered_at_ms.is_none()
+                && receipt
+                    .fired_at_ms
+                    .saturating_add(WAKE_DELIVERY_TOLERANCE_MS)
+                    < now
+                && !receipt.alerted
+                && !matches!(receipt.delivery.as_str(), "expired" | "failed")
             {
                 store.agent_lifecycle(Operation::WakeAlerted {
                     id: wake.id.clone(),
-                    sequence: seq,
+                    sequence: receipt.sequence,
                 })?;
-                self.wake_notice(&wake, format!("Wake alert: '{}' fired at {} but is not delivered after {} s (delivery {}); retrying", wake.label, iso(fired), (now - fired) / 1000, wake.last_delivery.as_deref().unwrap_or("pending")));
+                self.wake_notice(wake, format!("Wake alert: '{}' fire {} at {} is not delivered after {} s (delivery {}); retrying", wake.label, receipt.sequence, iso(receipt.fired_at_ms), (now - receipt.fired_at_ms) / 1000, receipt.delivery));
             }
         }
         Ok(())
@@ -220,7 +297,7 @@ impl KernelRuntimeState {
         let monitor = &self.owned.agent_wakes;
         for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
             if wake.kind == "process"
-                && matches!(wake.state.as_str(), "starting" | "running")
+                && matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
                 && wake.created_at_ms < monitor.started_at_ms
                 && !monitor.processes.contains(&wake.id)
             {
@@ -264,14 +341,22 @@ impl KernelRuntimeState {
         let wakes = match wakes {
             Some(w) => w,
             None => {
-                all = self
-                    .owned
-                    .durable_state_store
-                    .agent_wakes(None, None)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(armed)
-                    .collect::<Vec<_>>();
+                let stored = match self.owned.durable_state_store.agent_wakes(None, None) {
+                    Ok(wakes) => wakes,
+                    Err(_) => {
+                        for session in self
+                            .owned
+                            .session_store
+                            .list_non_ended_sessions_including_hidden()
+                        {
+                            self.owned.record_notice_for_agent(session.id(),None,None,
+                                self.owned.attachment_store.list_session_attachment_ids(session.id()),
+                                "Wake alert: durable wake state is unavailable; supervision is degraded and retrying");
+                        }
+                        return;
+                    }
+                };
+                all = stored.into_iter().filter(armed).collect::<Vec<_>>();
                 &all
             }
         };
