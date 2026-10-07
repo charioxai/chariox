@@ -292,7 +292,7 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let envelope = if policy.is_metadata_only() {
+        let envelope = if policy.sends_bare_prompt() {
             crate::prompt_assembly::PromptEnvelope::new(
                 visible_user_prompt,
                 hidden_system_context,

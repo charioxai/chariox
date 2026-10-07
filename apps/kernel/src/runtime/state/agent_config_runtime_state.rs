@@ -1016,6 +1016,16 @@ impl KernelRuntimeState {
             None
         };
         let result = async {
+            if original.remote_execution().is_none() {
+                self.compact_before_window_downshift(
+                    session_id,
+                    &original,
+                    provider.as_deref(),
+                    account_profile.as_deref(),
+                    model.as_deref(),
+                )
+                .await;
+            }
             let update = self.owned.update_agent_profile(
                 session_id,
                 agent_id,

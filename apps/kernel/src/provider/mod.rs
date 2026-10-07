@@ -324,6 +324,9 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     ReadOnlyDiscovery,
     /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
     MetadataOnlyDiscovery,
+    /// A provider command on the run's own session, such as Claude's
+    /// `/compact`: sent bare, and it answers with no assistant text.
+    SessionCommand,
 }
 
 impl ProviderUtilityExecutionPolicy {
@@ -333,6 +336,11 @@ impl ProviderUtilityExecutionPolicy {
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
         matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+    }
+
+    /// The prompt goes out as given, without the kernel's turn context.
+    pub(crate) fn sends_bare_prompt(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery | Self::SessionCommand)
     }
 }
 
