@@ -91,6 +91,18 @@ impl KernelRuntimeState {
         if args.message.trim().is_empty() && args.attachments.is_empty() {
             return Err(ledger::error("message is empty"));
         }
+        let (actor, origin_run) = self.room_provider_origin.as_ref().ok_or_else(|| {
+            ledger::error("durable messages require authenticated provider origin")
+        })?;
+        if actor != sender.id()
+            || self
+                .owned
+                .provider_store
+                .get_run_for_agent(session.id(), sender.id())
+                .is_none_or(|run| run.id() != origin_run)
+        {
+            return Err(ledger::error("stale provider message authority"));
+        }
         let current = self
             .owned
             .prompt_state_owner
@@ -610,6 +622,10 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let id = format!("task-blocked-{}", task.task_id);
         let session = self.owned.session_store.get_session(&task.room_id)?;
+        // Owner responses bind the settled revision; native turn settlement must
+        // not invalidate an interaction that was answered exactly once.
+        if self.owned.prompt_state_owner.active_prompt_for_agent(&session, &task.agent_id).is_some() { return Ok(()); }
+
         if session.active_interactions().iter().any(|i| i.id() == id) {
             return Ok(());
         }
