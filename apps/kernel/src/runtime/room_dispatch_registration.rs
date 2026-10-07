@@ -10,11 +10,21 @@ pub(crate) fn register(
     resource: Option<&str>,
 ) -> Result<String, DaemonError> {
     let id = format!("obligation-{:032x}", rand::random::<u128>());
-    store.append_event("room.obligation.registered", Some(id.clone()), serde_json::json!({
-        "schema_version": 1, "id": id, "room_id": actor.session_id(), "creating_agent_id": actor.id(),
-        "creating_provider_run_id": run, "creating_prompt_id": prompt, "kind": kind,
-        "resource_ref": resource, "status": "open", "dispatch_state": "intent", "created_at_ms": crate::session::unix_epoch_ms(),
-    }))?;
+    let prompt = prompt
+        .ok_or_else(|| crate::durable_state::agent_lifecycle::error("no live creating turn"))?;
+    store.agent_lifecycle(
+        crate::durable_state::agent_lifecycle::Operation::RegisterObligation {
+            owner: actor.owner_user_id().into(),
+            room: actor.session_id().into(),
+            agent: actor.id().into(),
+            prompt: prompt.into(),
+            run: run.map(str::to_owned),
+            id: id.clone(),
+            kind: kind.into(),
+            resource: resource.map(str::to_owned),
+            now: crate::session::unix_epoch_ms(),
+        },
+    )?;
     Ok(id)
 }
 
@@ -25,10 +35,15 @@ pub(crate) fn receipt(
     resource: Option<&str>,
 ) -> Result<(), DaemonError> {
     if let Some(id) = id {
-        store.append_event("room.obligation.dispatch_receipt", Some(id.to_string()), serde_json::json!({
-            "schema_version": 1, "id": id, "dispatch_state": if accepted {"accepted"} else {"rejected"},
-            "status": if accepted {"open"} else {"failed"}, "resource_id": resource, "recorded_at_ms": crate::session::unix_epoch_ms(),
-        })).map_err(|error| dispatch_error(Some(id), Some(accepted), resource, error))?;
+        store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::DispatchReceipt {
+                    id: id.into(),
+                    accepted,
+                    resource: resource.map(str::to_owned),
+                },
+            )
+            .map_err(|error| dispatch_error(Some(id), Some(accepted), resource, error))?;
     }
     Ok(())
 }
