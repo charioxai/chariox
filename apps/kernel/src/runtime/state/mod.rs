@@ -1166,4 +1166,5 @@ mod room_agent_admission;
 mod agent_lifecycle_runtime;
 mod agent_inbox_delivery;
 mod agent_task_cancellation;
+mod agent_task_projection;
 mod room_dispatch_obligation;

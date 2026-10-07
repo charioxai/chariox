@@ -375,6 +375,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             tx.execute("INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success,public_answer) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",params![room,source,id,success,public_answer.as_ref().map(encode).transpose()?]).map_err(sql)?;
+            let stored:(bool,Option<String>)=tx.query_row("SELECT success,public_answer FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3",params![room,source,id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+            if stored.0 != success {
+                return Err(error("conflicting terminal source occurrence"));
+            }
+            public_answer = stored
+                .1
+                .map(|v| decode::<serde_json::Value>(&v))
+                .transpose()?;
             for mut t in tasks(tx)? {
                 if t.room_id != room {
                     continue;

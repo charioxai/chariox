@@ -75,6 +75,12 @@ impl KernelRuntimeState {
                     .ok_or_else(|| ledger::error("source_id required"))?;
                 let agents = self.session_agents(run.session_id());
                 let delegate = agents.iter().any(|a| a.id() == source && a.id() != actor);
+                let peer_task = self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(run.session_id()), None)?
+                    .iter()
+                    .any(|t| t.task_id == source && t.agent_id != actor);
                 let workflow = session.workflow_runs().iter().any(|w| {
                     w.id() == source
                         && !matches!(
@@ -84,7 +90,7 @@ impl KernelRuntimeState {
                                 | crate::session::WorkflowRunStatus::Stopped
                         )
                 });
-                if !delegate && !workflow {
+                if !delegate && !workflow && !peer_task {
                     return Err(ledger::error(
                         "source unavailable or no longer live in this room",
                     ));
