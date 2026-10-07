@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { DisplayStream, PortableEncoder, safeChildPid, dirtyTiles } from './kernel-browser-display.mjs';
 import { encodePng, decodePng, maskPng, displayMaskRegions } from './kernel-browser-pixels.mjs';
+import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
 function fixture(value = 255) {
   const pixels = Buffer.alloc(256 * 256 * 4, 255); pixels[0] = value;
   return { generation: 1, data_base64: encodePng(256, 256, pixels) };
@@ -363,7 +364,10 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
  for(let n=3;n<pixels.length;n+=4)pixels[n]=255;
  const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels),repair_tiles:[]};
  let retired=0,refinements=0;
- const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:{nativeSession:'fixture',nativeRevision:17,nativeDeliveredRevision:17,nativeRetire:()=>retired++,close:async()=>{}}});
+ // Production wraps the native PortableEncoder in BrowserEncoder.
+ const fallback=new PortableEncoder();
+ Object.assign(fallback,{nativeRevision:17,nativeDeliveredRevision:17,nativeRetire:name=>{assert.equal(name,fallback.nativeSession);retired++;}});
+ const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:new BrowserEncoder(null,'target',fallback)});
  stream.refiner={invalidate:()=>refinements++,close:async()=>{}};
  try{
   const first=await stream.frame(source,'d',0);
@@ -372,7 +376,7 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
   const black=Buffer.alloc(restored.length);for(let n=3;n<black.length;n+=4)black[n]=255;
   assert.deepEqual(restored,black,'bootstrap exposes only opaque black');
   assert.equal(restored[0],0);assert.equal(restored[3],255);assert.equal(stream.exact,false);
-  assert.ok(stream.repair?.length);assert.equal(retired,1,'bootstrap retires video certificates');assert.ok(refinements>0,'pending repairs of the replaced canvas retire');assert.equal(stream.encoder.nativeRevision,undefined);
+  assert.ok(stream.repair?.length);assert.equal(retired,1,'bootstrap retires video certificates');assert.ok(refinements>0,'pending repairs of the replaced canvas retire');assert.equal(stream.encoder.nativeRevision,undefined);assert.equal(stream.encoder.nativeDeliveredRevision,undefined);
   for(let n=0;!stream.exact&&n<100;n++){
    const frame=await stream.frame(source,'d',stream.sequence);
    assert.equal(frame.kind,'tiles');assert.ok(JSON.stringify(frame).length<1024*1024);
@@ -380,5 +384,17 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
   }
   assert.equal(stream.exact,true);assert.deepEqual(restored,pixels);
   stream.invalidate();assert.equal((await stream.frame(source,'other',stream.sequence)).kind,'png');assert.equal(stream.exact,false);
+ }finally{await stream.close()}
+});
+
+test('MP-11 opaque bootstrap triggers only when the exact PNG exceeds bounded egress',async()=>{
+ const width=400,height=400,pixels=randomBytes(width*height*4);
+ for(let n=3;n<pixels.length;n+=4)pixels[n]=255;
+ const source={generation:1,force_lossless:true,data_base64:encodePng(width,height,pixels),repair_tiles:[]};
+ assert.ok(source.data_base64.length>700_000);
+ const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:new BrowserEncoder(null,'target',new PortableEncoder())});
+ try{
+  const frame=await stream.frame(source,'d',0);
+  assert.equal(frame.kind,'png');assert.ok(Buffer.from(decodePng(frame.data_base64).pixels).equals(pixels),'exact PNG ships unchanged');assert.equal(stream.exact,true);
  }finally{await stream.close()}
 });

@@ -228,7 +228,7 @@ open. Native secrets/masking source tests are narrower than those live gates.
 
 Clean implementation source `836e64630bc53d42e488dc97142416fdb0c92271`, rebased
 onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
-`/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
+`<lane evidence>/phase3/final-typed-relay-2mbps/results.json`.
 `phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
 file hashes, 28 exact embedded controller assets, commands, exits and receipt.
 This is historical Phase-3 coverage; Phase-4 execution files differ and the

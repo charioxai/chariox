@@ -71,7 +71,7 @@ Shared Cargo target metadata from another lane twice supplied an incompatible Ap
 
 ## MP-08/MP-10/MP-11 — coordinator kits and commands
 
-MP-08/MP-10/MP-11 evidence root: `/root/.codex/evidence/browser-resume-20260930/display-perf/phase20`. `FINAL20.json` indexes commands/exits, source/build identities, stage traces, screenshots, integrity and cleanup; `SUMMARY20.json` contains all 23 diagnostic/final condition summaries.
+MP-08/MP-10/MP-11 evidence root: `<lane evidence>/phase20`. `FINAL20.json` indexes commands/exits, source/build identities, stage traces, screenshots, integrity and cleanup; `SUMMARY20.json` contains all 23 diagnostic/final condition summaries.
 
 - Product archive: `product-kit-final.tar.gz`, SHA256 `2802d1dd7e9eebc49d27cafb7b42cbf26e9c5e1b0f6118eb2898757598e9feb3`. Source eeda; real kernel/relay, self-contained TUI and public Node/Python/PyAV/libyuv runtime dependencies, 962 manifest files verified. TUI build remains 0aca (`apps/cli` and `packages/kernel-client` trees unchanged through eeda), with its original version `0.1.0-phase19` recorded. The developer Rust `chariox-cli` requires its build checkout; use compiled `chariox` for portable TUI runs. Help startup is verified, not real-user acceptance.
 - Component archive: `component-kit-final/display-lan-kit.tar.gz`, SHA256 `2b880d643e66a945fe42ac9e715743e57d68f5e15291ef42d66762f980d39d23`. Harness and kernel build source eeda. Its test ELF is transformed by `strip --strip-debug`; original SHA `74f5907ac3f1068613895fc73abff145ef4770073349b2cfc457940c9fa6dafa`, packaged SHA `f848904eac7be80172df16c6f2b646f38230b52591da35425ad3ff49c2719a24`. All manifest files verify.

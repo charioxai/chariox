@@ -157,7 +157,7 @@ input round trip P95 is 11.40ms, native capture 6.54ms, encode 4.44ms,
 queued-event-to-viewer 1.30ms, decode 0.80ms, input-to-draw 39.30ms and draw-to-rAF
 14.20ms. Spans overlap; summing their P95 values would be invalid.
 
-Evidence root: `/root/.codex/evidence/browser-resume-20260930/display/phase16/`.
+Evidence root: `<lane evidence>/phase16/`.
 `final-{x264,openh264,vp8}/` contain per-step screenshots, kernel/client logs,
 resource samples, identities, command/exit receipts and cleanup.
 `baselines-clean/` is the final ten-row baseline. Earlier failed/dirty campaigns

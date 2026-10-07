@@ -9,7 +9,7 @@ stripe prototype, or post-change acceptance are included in this handoff.
 
 ## MP-08/MP-10 measured scope and identities
 
-Evidence: `/root/.codex/evidence/browser-resume-20260930/display/phase15/`.
+Evidence: `<lane evidence>/phase15/`.
 `profile-summary.json` and `summarize.py` retain the stage aggregation; original
 receipts, screenshots, console/kernel logs, Python cProfile, V8 CPU profiles,
 perf records and pidstat captures remain beside it. All samples use software,

@@ -151,7 +151,7 @@ kit includes both upstream baseline viewers and exact software/VAAPI invocations
 plus the owner-authorized Arch system-plugin package list in `LAN_KIT.md`.
 
 Evidence root:
-`/root/.codex/evidence/browser-resume-20260930/display/phase14/`:
+`<lane evidence>/phase14/`:
 `comparison-final/`, `ours-final3/`, `baselines-final2/`, `binary.json`,
 `critical-path.json`, `encoder-tuning.json`, failure/green logs and resource/cleanup
 inventories. Portable kit/manifest/SHA/revision/README/KIT_READY remain under the

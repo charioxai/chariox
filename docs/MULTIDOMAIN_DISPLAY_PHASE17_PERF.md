@@ -6,7 +6,7 @@ Assigned base `f5d3b1da96e06a57a6f4b7b590abbbd2bb958885`, branch
 No MP acceptance item closes. The requested CPU, typing and all-row Selkies win
 remain RED; the required real-app drill is blocked by the paired Cloud source
 and shared e2e harness. This report does not turn component passes into acceptance.
-Evidence: `/root/.codex/evidence/browser-resume-20260930/display/phase17/`.
+Evidence: `<lane evidence>/phase17/`.
 
 ## MP-08/MP-10: cadence result and source identity
 
