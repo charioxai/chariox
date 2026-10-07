@@ -160,6 +160,42 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Saved)
         }
+        Operation::Unsubscribe {
+            task,
+            prompt,
+            registration,
+        } => {
+            let t = load(tx, &task)?;
+            current(&t, &prompt)?;
+            let mut reg = registrations(tx, &task)?
+                .into_iter()
+                .find(|r| r.id == registration)
+                .ok_or_else(|| error("registration unavailable in this task"))?;
+            reg.live = false;
+            tx.execute(
+                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                params![reg.id, encode(&reg)?],
+            )
+            .map_err(sql)?;
+            // An invalidated wait must wake, rather than sleep on a dead registration.
+            if t.wait
+                .as_ref()
+                .is_some_and(|w| w.registration_ids.contains(&reg.id))
+            {
+                event(
+                    tx,
+                    occurrence(
+                        &t.room_id,
+                        &t.agent_id,
+                        &reg.source_id,
+                        &format!("unsubscribe-{}-{}", reg.id, t.revision),
+                        "source_lost",
+                        serde_json::json!({"task_id":t.task_id,"registration_id":reg.id}),
+                    ),
+                )?;
+            }
+            Ok(Outcome::Saved)
+        }
         Operation::Yield {
             task,
             prompt,
@@ -210,6 +246,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 started_at_ms: now,
                 inbox_cursor: cursor,
                 long_wait_notified: false,
+                last_checked_at_ms: now,
             });
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
             t.revision += 1;
@@ -288,15 +325,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
-                if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
+                if !open && has_answer && t.wait.is_none() {
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
+                } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
                     t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
-                } else if !open && has_answer && t.wait.is_none() {
-                    t.state = ExecutionState::Done;
-                    t.reason.clear();
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
@@ -386,7 +423,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             save_event(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
-                if t.room_id == room && t.agent_id == agent && t.state == ExecutionState::Waiting {
+                if t.room_id == room
+                    && t.agent_id == agent
+                    && t.state == ExecutionState::Waiting
+                    && e.payload
+                        .get("task_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|id| id == t.task_id)
+                {
                     t.no_progress_wakes += 1;
                     if t.no_progress_wakes > NO_PROGRESS_LIMIT {
                         t.state = ExecutionState::Blocked;
@@ -445,7 +489,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("invalid delivery receipt"));
             }
             let mut e = get_event(tx, &room, &agent, sequence)?;
-            if !matches!(e.state.as_str(), "submitting" | "uncertain") {
+            if !matches!(e.state.as_str(), "submitting" | "uncertain" | "blocked") {
                 return Err(error("receipt does not match a pending delivery"));
             }
             e.state = if state == "rejected" {
@@ -581,12 +625,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             t.revision += 1;
                             changed.push(t.clone());
                         }
-                        let w = t.wait.as_ref().unwrap();
+                        let w = t.wait.as_mut().unwrap();
+                        let clock_rollback = now < w.last_checked_at_ms;
+                        w.last_checked_at_ms = w.last_checked_at_ms.max(now);
                         let dead = w
                             .registration_ids
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
-                        if dead || w.deadline_ms <= now || now < w.started_at_ms {
+                        if dead || w.deadline_ms <= now || now < w.started_at_ms || clock_rollback {
                             let kind = if dead {
                                 "source_lost"
                             } else {
@@ -653,15 +699,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             for mut e in events {
                 if e.attempted_at_ms
-                    .is_some_and(|at| now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
+                    .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
                 {
                     e.state = "blocked".into();
                     save_event(tx, &e)?;
+                    let mut matched = false;
                     for mut t in tasks(tx)? {
                         if t.room_id == e.room_id
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                         {
+                            matched = true;
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
                             t.reason=format!("Unconfirmed delivery {}: owner must reconcile the original attempt",e.sequence);
@@ -669,6 +717,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             save(tx, &t)?;
                             changed.push(t);
                         }
+                    }
+                    if !matched {
+                        let id = format!("delivery-{}", e.sequence);
+                        let mut task = new_task(e.room_id, e.agent_id, id, e.provider_run_id, now);
+                        task.state = ExecutionState::Blocked;
+                        task.blocked_revision = task.revision;
+                        task.reason = format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel",e.sequence);
+                        save(tx, &task)?;
+                        changed.push(task);
                     }
                 }
             }
@@ -683,6 +740,23 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             if t.state != ExecutionState::Blocked || t.blocked_revision != revision {
                 return Err(error("owner response is stale"));
+            }
+            let mut q = tx.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
+            let deliveries = q
+                .query_map(params![t.room_id, t.agent_id], |r| r.get::<_, String>(0))
+                .map_err(sql)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
+            drop(q);
+            if resume && !deliveries.is_empty() {
+                return Err(error("unconfirmed delivery must receive its exact provider receipt or be explicitly cancelled before resume"));
+            }
+            if !resume {
+                for payload in deliveries {
+                    let mut event: InboxEvent = decode(&payload)?;
+                    event.state = "failed".into();
+                    save_event(tx, &event)?;
+                }
             }
             t.state = if resume {
                 ExecutionState::Working

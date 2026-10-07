@@ -54,7 +54,20 @@ impl KernelRuntimeState {
                 .map_err(|_| ledger::error("inbox encoding failed"))?
             }
             "chariox.events.subscriptions" => {
-                serde_json::json!({"task":task,"completion_sources":task.obligations.iter().filter(|o|o.status=="open").map(|o|serde_json::json!({"registration_id":format!("completion-{}",o.id),"source_id":o.resource_id,"obligation_id":o.id})).collect::<Vec<_>>()})
+                serde_json::json!({"task":task,"registrations":self.owned.durable_state_store.agent_registrations(task_id)?})
+            }
+            "chariox.events.unsubscribe" => {
+                let id = args["registration_id"]
+                    .as_str()
+                    .ok_or_else(|| ledger::error("registration_id required"))?;
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::Unsubscribe {
+                        task: task_id.into(),
+                        prompt: prompt.id().into(),
+                        registration: id.into(),
+                    })?;
+                serde_json::json!({"unsubscribed":id})
             }
             "chariox.events.subscribe" => {
                 let source = args["source_id"]

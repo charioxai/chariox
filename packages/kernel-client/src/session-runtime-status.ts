@@ -340,7 +340,11 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
     ?? unfinished[0] ?? tasks[tasks.length - 1]!
   const open = tasks.flatMap((task) => task.obligations).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
   const suffix = open ? ` (${open} obligations)` : ""
-  if (task.state === "waiting") return { label: `WAITING ON ${task.reason} UNTIL ${new Date(task.wait!.deadline_ms).toISOString()}${suffix}`, tone: "idle" }
+  if (task.state === "waiting") {
+    const deadline = task.wait?.deadline_ms
+    if (!deadline || !Number.isFinite(deadline) || deadline > 8.64e15) return { label: `BLOCKED: Invalid wait deadline${suffix}`, tone: "error" }
+    return { label: `WAITING ON ${task.reason} UNTIL ${new Date(deadline).toISOString()}${suffix}`, tone: "idle" }
+  }
   if (task.state === "blocked") return { label: `BLOCKED: ${task.reason}${suffix}`, tone: "error" }
   return { label: `${task.state.toUpperCase()}${suffix}`, tone: task.state === "working" ? "working" : "idle" }
 }

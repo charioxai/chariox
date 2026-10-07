@@ -62,6 +62,8 @@ pub struct AgentWait {
     pub started_at_ms: u64,
     pub inbox_cursor: u64,
     pub long_wait_notified: bool,
+    #[serde(default)]
+    pub last_checked_at_ms: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Registration {
@@ -120,6 +122,11 @@ pub(crate) enum Operation {
         task: String,
         prompt: String,
         registration: Registration,
+    },
+    Unsubscribe {
+        task: String,
+        prompt: String,
+        registration: String,
     },
     Yield {
         task: String,
@@ -279,6 +286,10 @@ impl DurableKernelStateStore {
         })
         .collect()
     }
+    pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.subscriptions")?;
+        registrations(&db, task)
+    }
     pub(crate) fn agent_delivery_front(
         &self,
         room: &str,
@@ -398,7 +409,7 @@ fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     Ok(result)
 }
 
-fn registrations(tx: &Transaction<'_>, task: &str) -> Result<Vec<Registration>, DaemonError> {
+fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, DaemonError> {
     let mut q = tx
         .prepare("SELECT payload FROM agent_registrations WHERE task_id=?1")
         .map_err(sql)?;
@@ -540,7 +551,7 @@ pub(crate) fn finish_provider_event_submit(
             "provider event receipt has a stale run or submit epoch",
         ));
     }
-    if matches!(event.state.as_str(), "submitting" | "uncertain") {
+    if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
         let state = match &finished.result {
             Ok(_) => "accepted",
             Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",

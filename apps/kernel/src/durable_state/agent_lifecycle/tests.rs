@@ -435,3 +435,149 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
         "source_completed"
     );
 }
+
+#[test]
+fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_replay() {
+    for resume in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "peer",
+            "one",
+            "message",
+            serde_json::json!({}),
+        ))) else {
+            panic!()
+        };
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: "event".into(),
+            target: Some("p".into()),
+            run: Some("run".into()),
+            now: 1,
+        });
+        f.apply(Operation::Sweep {
+            now: DELIVERY_TIMEOUT_MS + 1,
+        });
+        let blocked = f.task();
+        assert_eq!(blocked.state, ExecutionState::Blocked);
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::OwnerResponse {
+                task: "p".into(),
+                revision: blocked.blocked_revision,
+                resume: true,
+                now: DELIVERY_TIMEOUT_MS + 2
+            })
+            .is_err());
+        if resume {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "parent".into(),
+                sequence: e.sequence,
+                state: "accepted".into(),
+            });
+        }
+        f.apply(Operation::OwnerResponse {
+            task: "p".into(),
+            revision: blocked.blocked_revision,
+            resume,
+            now: DELIVERY_TIMEOUT_MS + 3,
+        });
+        assert!(f
+            .store
+            .agent_delivery_front("room", "parent")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+            if resume { "accepted" } else { "failed" }
+        );
+    }
+}
+#[test]
+fn a02_named_wake_keeps_independent_waits_separate() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    f.begin("other");
+    f.apply(Operation::Subscribe {
+        task: "other".into(),
+        prompt: "other".into(),
+        registration: Registration {
+            id: "other-reg".into(),
+            task_id: "other".into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    f.apply(Operation::Yield {
+        task: "other".into(),
+        prompt: "other".into(),
+        registrations: vec!["other-reg".into()],
+        cursor: 0,
+        deadline: 60_000,
+        reason: "peer".into(),
+        now: 2,
+    });
+    f.settle("other", true);
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "peer",
+        "result",
+        "source_completed",
+        serde_json::json!({"task_id":"other"}),
+    ))) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        prompt: "wake".into(),
+        target: None,
+        run: None,
+        now: 3,
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    assert_eq!(tasks[0].state, ExecutionState::Waiting);
+    assert_eq!(tasks[0].no_progress_wakes, 0);
+    assert_eq!(tasks[1].pending_prompt_id.as_deref(), Some("wake"));
+    assert_eq!(tasks[1].no_progress_wakes, 1);
+}
+#[test]
+fn a02_unsubscribe_wakes_retained_wait_and_stale_turn_is_denied() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Unsubscribe {
+            task: "p".into(),
+            prompt: "stale".into(),
+            registration: "reg".into()
+        })
+        .is_err());
+    f.apply(Operation::Unsubscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: "reg".into(),
+    });
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].kind,
+        "source_lost"
+    );
+}

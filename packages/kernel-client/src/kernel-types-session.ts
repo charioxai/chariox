@@ -359,7 +359,7 @@ export type AgentTaskExecution = {
   state: "working" | "waiting" | "blocked" | "done" | "cancelled"
   reason: string
   obligations: { id: string; kind: string; resource_id: string | null; status: string; dispatch_state: string }[]
-  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean } | null
+  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
   last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
   correction_used: boolean; pending_prompt_id: string | null
 }
