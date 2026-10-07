@@ -75,6 +75,9 @@ type Owned = Arc<std::sync::Mutex<OwnedChild>>;
 #[derive(Default)]
 pub(crate) struct WatchedProcesses {
     live: std::sync::Mutex<HashMap<String, Owned>>,
+    /// Kernel shutdown: outcomes are left to restart recovery so no provider
+    /// delivery starts while the kernel is going away.
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 impl WatchedProcesses {
@@ -111,7 +114,11 @@ impl WatchedProcesses {
         true
     }
     /// Kernel shutdown: no watched session outlives its supervisor.
+    pub(super) fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
     pub(super) fn shutdown(&self) {
+        self.stopping.store(true, Ordering::Release);
         let owned: Vec<_> = match self.live.lock() {
             Ok(live) => live.keys().cloned().collect(),
             Err(_) => return,
@@ -347,6 +354,9 @@ impl KernelRuntimeState {
         let notice_agent = wake.agent_id.clone();
         tokio::spawn(async move {
             while let Some(signal) = receiver.recv().await {
+                if state.owned.agent_wakes.processes.stopping() {
+                    break;
+                }
                 if matches!(signal, Signal::SupervisionFailed) {
                     state.owned.record_notice_for_agent(&notice_room,None,Some(&notice_agent),
                         state.owned.attachment_store.list_session_attachment_ids(&notice_room),
@@ -660,6 +670,10 @@ mod tests {
             .insert(wake.clone(), owned.clone());
         assert_eq!(marked_count_for_test(&wake), 2);
         processes.shutdown();
+        assert!(
+            processes.stopping(),
+            "outcomes are left to restart recovery"
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         while marked_count_for_test(&wake) != 0 {
             assert!(
