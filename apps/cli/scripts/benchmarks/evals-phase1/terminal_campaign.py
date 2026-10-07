@@ -80,6 +80,25 @@ def resume_admission_campaign(campaign, identity):
         and measurement.get('usage') is None and 'prompt_id' not in measurement)
 
 
+def resume_interrupted_campaign(campaign, identity, output):
+    """MP-08 / MP-10 / MP-11: resume a runner interruption that left no unrecorded Harbor job."""
+    if (any(campaign.get(k) != v for k, v in identity.items()) or campaign.get('status') != 'blocked'
+            or not campaign.get('failure_kind') or 'first_failing_task' in campaign):
+        raise ValueError('MP-08 / MP-10: interrupted campaign identity/status differs')
+    recorded = {Path(item['official_result']).relative_to(output / 'jobs').parts[0]
+                for kind in ['tasks', 'admission_attempts', 'quota_attempts', 'setup_attempts'] for item in campaign.get(kind, [])}
+    if any(job.name not in recorded for job in (output / 'jobs').iterdir()):
+        raise ValueError('MP-08 / MP-10 / MP-11: unrecorded Harbor job requires review')
+    campaign.setdefault('interruptions', []).append({'failure_kind': campaign.pop('failure_kind'), 'finished_at': campaign.pop('finished_at', None)})
+    campaign['status'] = 'running'
+    return campaign
+
+
+def reserve_reached(sample, started):
+    """MP-11: stop only our started Harbor job; before it starts, waiting is the safe action."""
+    return started and (sample['mem_available_bytes'] < 10 * 1024**3 or sample['root_free_bytes'] < 15 * 1024**3)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--phase',choices=['smoke','full','admission'],required=True)
@@ -94,12 +113,13 @@ def main():
     resume.add_argument('--resume',action='store_true')
     resume.add_argument('--resume-setup',action='store_true')
     resume.add_argument('--resume-admission',action='store_true')
+    resume.add_argument('--resume-interrupted',action='store_true')
     args=p.parse_args()
     scripts=Path(__file__).resolve().parent
     lock=json.loads((scripts/'inputs.lock.json').read_text());validate_lock(lock)
     if command_output(['git','-C',str(args.tasks),'rev-parse','HEAD']) != lock['terminal_bench_2']['revision'] or command_output(['git','-C',str(args.tasks),'status','--porcelain']):
         raise ValueError('MP-08 / MP-10: exact clean official task checkout required')
-    resuming = args.resume or args.resume_setup or args.resume_admission
+    resuming = args.resume or args.resume_setup or args.resume_admission or args.resume_interrupted
     if not args.output.is_absolute() or (args.output.exists() and not resuming) or args.output.resolve().is_relative_to(scripts.parents[4]):
         raise ValueError('MP-11: new absolute external evidence directory required')
     preflight(str(args.runtime_root),args.source_commit,args.kernel_sha256,args.local_protocol)
@@ -113,9 +133,10 @@ def main():
     if resuming:
         identity={key:campaign[key] for key in ['benchmark','phase','task_ids','source_commit','kernel_sha256','model','harness_revision','task_revision']}
         saved = json.loads((args.output/'campaign.json').read_text())
-        campaign = (resume_setup_campaign if args.resume_setup else resume_admission_campaign if args.resume_admission else resume_quota_campaign)(saved, identity)
+        campaign = (resume_interrupted_campaign(saved, identity, args.output) if args.resume_interrupted else
+                    (resume_setup_campaign if args.resume_setup else resume_admission_campaign if args.resume_admission else resume_quota_campaign)(saved, identity))
     attempts=args.output/'campaign-attempts';attempts.mkdir(mode=0o700,exist_ok=True)
-    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':resuming,'resume_kind':'setup' if args.resume_setup else 'admission' if args.resume_admission else 'quota' if args.resume else None},indent=2)+'\n')
+    (attempts/(uuid4().hex+'.json')).write_text(json.dumps({'mp_items':['MP-08','MP-10','MP-11'],'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'started_at':time.time(),'resume':resuming,'resume_kind':'setup' if args.resume_setup else 'admission' if args.resume_admission else 'interrupted' if args.resume_interrupted else 'quota' if args.resume else None},indent=2)+'\n')
     def save(): (args.output/'campaign.json').write_text(json.dumps(campaign,indent=2)+'\n')
     save()
     env={**os.environ,'PYTHONPATH':str(scripts),'PYTHONDONTWRITEBYTECODE':'1','HARBOR_DISABLE_TELEMETRY':'1'}
@@ -142,11 +163,12 @@ def main():
             start=time.monotonic();samples=[]
             cleanup=[]
             with (args.output/(task+'-'+nonce+'.log')).open('w') as log:
-                process=subprocess.Popen(invocation,env=env,stdout=log,stderr=log)
+                # A slot-holding launcher may wait for this headroom before starting Harbor.
+                process=subprocess.Popen(invocation,env={**env,'CHARIOX_EVALS_REQUIRED_MEM_BYTES':str(required)},stdout=log,stderr=log)
                 try:
                     while process.poll() is None:
                         sample=resource_sample();samples.append({'time':time.time(),**sample})
-                        if sample['mem_available_bytes']<10*1024**3 or sample['root_free_bytes']<15*1024**3:
+                        if reserve_reached(sample,job_dir.exists()):
                             raise RuntimeError('MP-11: measured safety reserve reached')
                         time.sleep(2)
                 finally:

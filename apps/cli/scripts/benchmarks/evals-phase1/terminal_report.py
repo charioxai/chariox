@@ -52,6 +52,7 @@ def report(campaign_dir, output):
         rows.append(row)
     complete=campaign['status']=='completed' and len(entries)==len(expected) and all(r['reward']!='' and not r['official_exception'] and r['cleanup_complete'] for r in rows)
     successes=sum(r['reward']==1 for r in rows)
+    attempts=['admission_attempts','quota_attempts','setup_attempts']
     summary={'mp_items':['MP-08','MP-10','MP-11'],'benchmark':'terminal_bench_2','phase':campaign['phase'],
              'source_commit':campaign['source_commit'],'kernel_sha256':campaign['kernel_sha256'],
              'harness_revision':campaign['harness_revision'],'task_revision':campaign['task_revision'],
@@ -59,6 +60,9 @@ def report(campaign_dir, output):
              'successes':successes,'complete':complete,'accuracy_percent':100*successes/len(expected) if complete else None,
              'harness_errors':sum(bool(r['official_exception']) for r in rows),'cleanup_complete':all(r['cleanup_complete'] for r in rows),
              'wall_time_seconds':campaign['finished_at']-campaign['started_at'],
+             # Harbor job wall per retained task and archived attempt; excludes idle resume pauses.
+             'harbor_job_wall_time_seconds':sum(item['wall_time_seconds'] for kind in ['tasks',*attempts] for item in campaign.get(kind,[])),
+             'archived_attempts':{kind[:-len('_attempts')]:len(campaign.get(kind,[])) for kind in attempts},
              'solver_wall_time_seconds':sum(solver_walls) if all(type(w) in [int,float] for w in solver_walls) else None,
              'tokens':{key:sum(r[key] for r in rows) if all(type(r[key]) is int for r in rows) else None for key in tokens},
              'known_token_subtotal':{key:sum(r[key] for r in rows if type(r[key]) is int) for key in tokens},

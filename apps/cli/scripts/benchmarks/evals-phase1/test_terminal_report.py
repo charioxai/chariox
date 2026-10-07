@@ -76,3 +76,14 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(s['scored'],1)
             self.assertEqual(s['solver_wall_time_seconds'],7)
             self.assertIsNone(s['accuracy_percent'])
+
+    def test_job_wall_counts_archived_attempts_but_not_idle_resume_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);campaign=self.setup_campaign(root)
+            campaign.update(finished_at=10_000,admission_attempts=[{'task_id':campaign['task_ids'][-1],'wall_time_seconds':4}],
+                            setup_attempts=[{'task_id':campaign['task_ids'][0],'wall_time_seconds':3}])
+            (root/'campaign.json').write_text(json.dumps(campaign))
+            s=report(root,root/'report')
+            self.assertEqual(s['wall_time_seconds'],10_000)
+            self.assertEqual(s['harbor_job_wall_time_seconds'],17)
+            self.assertEqual(s['archived_attempts'],{'admission':1,'quota':0,'setup':1})
