@@ -91,6 +91,7 @@ impl KernelRuntimeState {
                             task_id: task_id.into(),
                             source_id: source.into(),
                             obligation_id: obligation,
+                            source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
                             live: true,
                         },
                     })?;

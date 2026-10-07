@@ -2,6 +2,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { AgentTaskExecution, RuntimeSession } from "./kernel-types-session.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { sessionAgentTaskStatus } from "./session-runtime-status.js"
 function task(state: AgentTaskExecution["state"]): AgentTaskExecution {
   return { task_id: state, room_id: "room", owner_user_id: "owner", agent_id: "agent", prompt_id: state,
@@ -19,3 +20,5 @@ test("MP-08/MP-10/MP-11 A02 blocked takes priority and retained obligations rema
   assert.deepEqual(sessionAgentTaskStatus(session, "agent"), { label: "BLOCKED: delegate result (2 obligations)", tone: "error" })
   assert.equal(sessionAgentTaskStatus(session, "foreign"), null)
 })
+
+test("MP-08/MP-10/MP-11 A02 task DTO requires protocol452",()=>{ assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,452) })

@@ -1,5 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+mod migration;
+mod quarantine;
 #[cfg(test)]
 mod tests;
 mod transitions;
@@ -65,6 +67,8 @@ pub(crate) struct Registration {
     pub task_id: String,
     pub source_id: String,
     pub obligation_id: Option<String>,
+    #[serde(default)]
+    pub source_cursor: u64,
     pub live: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,8 +235,11 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_tasks(task_id TEXT PRIMARY KEY,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,prompt_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_tasks_room ON agent_tasks(room_id,agent_id);
     CREATE TABLE IF NOT EXISTS agent_registrations(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
+    CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
-    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)
+    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
+    migration::migrate(db)
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
@@ -252,11 +259,23 @@ impl DurableKernelStateStore {
         agent: Option<&str>,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.tasks")?;
-        let mut q=db.prepare("SELECT payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        let mut q=db.prepare("SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| r.get::<_, String>(0))
+            .query_map(params![room, agent], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
             .map_err(sql)?;
-        rows.map(|r| decode(&r.map_err(sql)?)).collect()
+        rows.map(|row| {
+            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+            Ok(decode(&payload).unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+        })
+        .collect()
     }
     pub(crate) fn agent_delivery_front(
         &self,
@@ -344,11 +363,39 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
 }
 fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     let mut q = tx
-        .prepare("SELECT payload FROM agent_tasks ORDER BY rowid")
+        .prepare(
+            "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks ORDER BY rowid",
+        )
         .map_err(sql)?;
-    let rows = q.query_map([], |r| r.get::<_, String>(0)).map_err(sql)?;
-    rows.map(|r| decode(&r.map_err(sql)?)).collect()
+    let rows = q
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    drop(q);
+    let mut result = vec![];
+    for (id, room, agent, prompt, payload) in rows {
+        match decode(&payload) {
+            Ok(t) => result.push(t),
+            Err(_) => {
+                quarantine::retain(tx, "task", &id, &payload)?;
+                let t = quarantine::task(id, room, agent, prompt);
+                save(tx, &t)?;
+                result.push(t);
+            }
+        }
+    }
+    Ok(result)
 }
+
 fn registrations(tx: &Transaction<'_>, task: &str) -> Result<Vec<Registration>, DaemonError> {
     let mut q = tx
         .prepare("SELECT payload FROM agent_registrations WHERE task_id=?1")

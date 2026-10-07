@@ -3187,3 +3187,37 @@ App automation and workflow binding has `delivery_mode:queue|inject` (default qu
 Injection retains the original durable admission until steering acceptance, joins
 ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
 or multiple active workflow runs. Subscribers always belong to workflows.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
+
+Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
+from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+`chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
+current task and prompt IDs; hidden turn context supplies both. Independent
+user prompts retain separate task records. Work can be working, waiting on
+admitted named sources with a future deadline, blocked on an explicit owner
+action, done, or owner-cancelled. Cancellation is never successful completion.
+
+Obligation/registration, wait intent, event admission and delivery intent commit
+through the shared SQLite writer. Native provider settlement commits the wait;
+a result racing it remains in the inbox. Done requires public output and no
+unresolved obligation. One persisted correction is permitted; another invalid
+end blocks on one kernel-owned interaction. Provider failures also block.
+The kernel sweeps every30 seconds; three consecutive wakes without handling a
+real result block;15 minutes without progress notifies attached/reconnecting
+clients; uncertain submission escalates after2 minutes without replay.
+
+`send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
+messages wait behind busy turns in the event inbox. Urgent delivery targets the
+exact running turn and rechecks after acquiring its provider lane. Rejected or
+unsupported steering defers to a later wake; uncertain attempts remain pinned
+and preserve recipient FIFO. Explicitly stopped receivers retain pending items.
+Structured delivery is accepted only by the existing exact finished-submit
+receipt; enqueue and inbox ACK never substitute for provider acceptance.
+Reply opt-in registers one correlated result obligation; ordinary messages
+request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
+as blocked obligations requiring exact reconciliation, without guessing success.
+
+PR10 must supply leased event execution and receipt parity before those cells
+are accepted. PR3 supplies process/timer watcher sources. These dependencies
+and the real-provider/hosted validation matrix remain acceptance gates.

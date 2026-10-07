@@ -54,6 +54,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
             }
+            migration::audit(
+                tx,
+                "room.obligation.registered",
+                &id,
+                serde_json::json!({"schema_version":1,"id":id,"room_id":task.room_id,"creating_agent_id":task.agent_id,"creating_provider_run_id":task.provider_run_id,"creating_prompt_id":task.prompt_id,"kind":kind,"resource_ref":resource,"status":"open","dispatch_state":"intent","created_at_ms":now}),
+            )?;
             task.obligations.push(AgentObligation {
                 id,
                 kind,
@@ -72,6 +78,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             for mut task in tasks(tx)? {
                 if let Some(o) = task.obligations.iter_mut().find(|o| o.id == id) {
+                    migration::audit(
+                        tx,
+                        "room.obligation.dispatch_receipt",
+                        &id,
+                        serde_json::json!({"schema_version":1,"id":id,"dispatch_state":if accepted{"accepted"}else{"rejected"},"status":if accepted{"open"}else{"failed"},"resource_id":resource,"recorded_at_ms":crate::session::unix_epoch_ms()}),
+                    )?;
                     o.dispatch_state = if accepted { "accepted" } else { "rejected" }.into();
                     if resource.is_some() {
                         o.resource_id = resource;
@@ -89,6 +101,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 task_id: task.task_id.clone(),
                                 source_id: source,
                                 obligation_id: Some(o.id.clone()),
+                                source_cursor: 0,
                                 live: true,
                             };
                             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![reg.id,reg.task_id,encode(&reg)?]).map_err(sql)?;
@@ -121,6 +134,30 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![registration.id,task,encode(&registration)?]).map_err(sql)?;
+            let source:Option<(u64,String,bool)>=tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![t.room_id,registration.source_id,registration.source_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
+            if let Some((seq, id, success)) = source {
+                let e = occurrence(
+                    &t.room_id,
+                    &t.agent_id,
+                    &registration.source_id,
+                    &id,
+                    if success {
+                        "source_completed"
+                    } else {
+                        "source_lost"
+                    },
+                    serde_json::json!({"task_id":t.task_id,"source_id":registration.source_id,"success":success}),
+                );
+                event(tx, e)?;
+                let mut registration = registration;
+                registration.live = false;
+                registration.source_cursor = seq;
+                tx.execute(
+                    "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                    params![registration.id, encode(&registration)?],
+                )
+                .map_err(sql)?;
+            }
             Ok(Outcome::Saved)
         }
         Operation::Yield {
@@ -144,10 +181,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let regs = registrations(tx, &task)?;
-            let selected: Vec<_> = regs
-                .iter()
-                .filter(|r| ids.contains(&r.id) && r.live)
-                .collect();
+            let mut selected = vec![];
+            for r in regs.iter().filter(|r| ids.contains(&r.id)) {
+                let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost')",params![t.room_id,t.agent_id,r.source_id,cursor],|row|row.get(0)).map_err(sql)?;
+                if r.live || pending > 0 {
+                    selected.push(r);
+                }
+            }
             if selected.len() != ids.len()
                 || t.obligations
                     .iter()
@@ -171,7 +211,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 inbox_cursor: cursor,
                 long_wait_notified: false,
             });
-            t.reason = reason;
+            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
             t.revision += 1;
             // State stays working until the native turn settlement, including racing events.
             save(tx, &t)?;
@@ -190,7 +230,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             t.state = ExecutionState::Blocked;
-            t.reason = reason;
+            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
             t.revision += 1;
             save(tx, &t)?;
             Ok(Outcome::Task(t))
@@ -301,6 +341,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         task_id: t.task_id.clone(),
                         source_id: source,
                         obligation_id: Some(id),
+                        source_cursor: 0,
                         live: true,
                     };
                     tx.execute(
@@ -469,6 +510,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             success,
             now: _,
         } => {
+            tx.execute("INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success) VALUES(?1,?2,?3,?4) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",params![room,source,id,success]).map_err(sql)?;
             for mut t in tasks(tx)? {
                 if t.room_id != room {
                     continue;
@@ -502,7 +544,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         } else {
                             "source_lost"
                         },
-                        serde_json::json!({"task_id":t.task_id,"source_id":source,"success":success}),
+                        serde_json::json!({"task_id":t.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":id,"success":success}),
                     );
                     event(tx, e)?;
                     t.revision += 1;
@@ -515,7 +557,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut changed = vec![];
             for mut t in tasks(tx)? {
                 if t.state == ExecutionState::Waiting {
-                    let regs = registrations(tx, &t.task_id)?;
+                    let regs = match registrations(tx, &t.task_id) {
+                        Ok(regs) => regs,
+                        Err(_) => {
+                            t.state = ExecutionState::Blocked;
+                            t.reason="Source registration is corrupt; owner must restore the exact source receipt".into();
+                            t.revision += 1;
+                            save(tx, &t)?;
+                            changed.push(t);
+                            continue;
+                        }
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         if !w.long_wait_notified
                             && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
@@ -549,13 +601,51 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            let mut q=tx.prepare("SELECT payload FROM agent_inbox WHERE json_extract(payload,'$.state') IN ('submitting','uncertain')").map_err(sql)?;
-            let events = q
-                .query_map([], |r| r.get::<_, String>(0))
+            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE json_valid(payload)=0 OR json_extract(payload,'$.state') IN ('submitting','uncertain')").map_err(sql)?;
+            let rows = q
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, u64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                })
                 .map_err(sql)?
-                .map(|r| decode::<InboxEvent>(&r.map_err(sql)?))
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
             drop(q);
+            let mut events = vec![];
+            for (sequence, room, agent, source, id, payload) in rows {
+                match decode::<InboxEvent>(&payload) {
+                    Ok(e) => events.push(e),
+                    Err(_) => {
+                        quarantine::retain(tx, "delivery", &sequence.to_string(), &payload)?;
+                        let mut e = occurrence(
+                            &room,
+                            &agent,
+                            &source,
+                            &id,
+                            "delivery_corrupt",
+                            serde_json::json!({"diagnostic":"receipt quarantined; owner reconciliation required"}),
+                        );
+                        e.sequence = sequence;
+                        e.state = "blocked".into();
+                        save_event(tx, &e)?;
+                        let mut t = quarantine::task(
+                            format!("delivery-{sequence}"),
+                            room,
+                            agent,
+                            format!("delivery-{sequence}"),
+                        );
+                        t.reason="Delivery receipt is quarantined; never replay it without exact reconciliation".into();
+                        save(tx, &t)?;
+                        changed.push(t);
+                    }
+                }
+            }
             for mut e in events {
                 if e.attempted_at_ms
                     .is_some_and(|at| now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)

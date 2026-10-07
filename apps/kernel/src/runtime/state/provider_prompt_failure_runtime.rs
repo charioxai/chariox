@@ -216,6 +216,15 @@ impl KernelRuntimeState {
             Some(provider_run_id),
             &safe_message,
         );
+        let task_settlement = if owned.config_projection.snapshot().room_agent_tools {
+            // Provider EOF/error cannot promote a partial answer to done.
+            let prepared=crate::app::KernelPreparedPromptSubmission{session_id:session_id.into(),prompt:active_prompt.clone(),force_queue:false,refresh_projection:false};
+            owned.admit_agent_task(&prepared)?;
+            let task=owned.durable_state_store.agent_tasks(Some(session_id),Some(&agent_id))?.into_iter().find(|t|t.prompt_id==active_prompt.id()).ok_or_else(||crate::durable_state::agent_lifecycle::error("failed turn has no task"))?;
+            owned.durable_state_store.agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Block{task:task.task_id.clone(),prompt:active_prompt.id().into(),reason:format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel")})?;
+            let current=owned.durable_state_store.agent_tasks(Some(session_id),Some(&agent_id))?.into_iter().find(|t|t.task_id==task.task_id).unwrap();
+            Some((current,false))
+        } else {None};
         let workflow_failed = active_prompt.workflow_run_id().is_some();
         if workflow_failed {
             owned.workflow_fail_provider_prompt_without_queue_advance(
@@ -239,6 +248,7 @@ impl KernelRuntimeState {
         if completion.is_none() {
             return Ok(false);
         }
+        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
         owned.record_failed_request(

@@ -53,6 +53,7 @@ impl Fixture {
                 task_id: "p".into(),
                 source_id: "child".into(),
                 obligation_id: Some("obligation".into()),
+                source_cursor: 0,
                 live: true,
             },
         });
@@ -307,4 +308,130 @@ fn a02_stale_owner_and_foreign_ack_are_denied() {
             now: 3
         })
         .is_err());
+}
+#[test]
+fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    for n in 1..=3 {
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "timer",
+            &format!("tick-{n}"),
+            "deadline_reached",
+            serde_json::json!({"task_id":"p"}),
+        ))) else {
+            panic!()
+        };
+        let prompt = format!("wake-{n}");
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: prompt.clone(),
+            target: None,
+            run: None,
+            now: 10 + n,
+        });
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            state: "accepted".into(),
+        });
+        f.begin(&prompt);
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: prompt.clone(),
+            registrations: vec!["reg".into()],
+            cursor: e.sequence,
+            deadline: 60_000,
+            reason: "same child wait".into(),
+            now: 20 + n,
+        });
+        f.settle(&prompt, true);
+        if n < 3 {
+            assert_eq!(f.task().state, ExecutionState::Waiting);
+        } else {
+            assert_eq!(f.task().state, ExecutionState::Blocked);
+        }
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(
+            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0].no_progress_wakes,
+            n as u32
+        );
+    }
+}
+#[test]
+fn a02_corrupt_delivery_is_quarantined_without_replay() {
+    let f = Fixture::new();
+    f.begin("p");
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "peer",
+        "one",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_inbox SET payload='broken' WHERE sequence=?1",
+        [e.sequence],
+    )
+    .unwrap();
+    f.apply(Operation::Sweep { now: 10 });
+    let row = f
+        .store
+        .agent_delivery_front("room", "parent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "blocked");
+    assert!(f
+        .store
+        .agent_tasks(Some("room"), Some("parent"))
+        .unwrap()
+        .iter()
+        .any(|t| t.state == ExecutionState::Blocked));
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM agent_lifecycle_quarantine", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}
+#[test]
+fn a02_source_occurrence_preceding_subscription_is_recovered() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "peer".into(),
+        occurrence: "answer".into(),
+        success: true,
+        now: 2,
+    });
+    f.apply(Operation::Subscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: Registration {
+            id: "reg".into(),
+            task_id: "p".into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].kind,
+        "source_completed"
+    );
 }

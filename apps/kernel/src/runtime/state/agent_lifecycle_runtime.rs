@@ -237,6 +237,19 @@ impl KernelRuntimeState {
                     now: crate::session::unix_epoch_ms(),
                 })?;
         }
+        if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+            && task.task_id != task.prompt_id
+        {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::SourceOutcome {
+                    room: task.room_id.clone(),
+                    source: task.task_id.clone(),
+                    occurrence: format!("{}:{}", task.task_id, task.revision),
+                    success: task.state == ExecutionState::Done,
+                    now: crate::session::unix_epoch_ms(),
+                })?;
+        }
         Box::pin(self.sweep_agent_lifecycle()).await?;
         Ok(())
     }

@@ -1,0 +1,18 @@
+//! MP-08 / MP-10 / MP-11 A02: preserve damaged bytes, project a safe owner block.
+use super::*;
+pub(super) fn retain(
+    tx: &Transaction<'_>,
+    kind: &str,
+    id: &str,
+    bytes: &str,
+) -> Result<(), DaemonError> {
+    tx.execute("INSERT INTO agent_lifecycle_quarantine(kind,id,payload,at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO NOTHING",params![kind,id,bytes,crate::session::unix_epoch_ms()]).map_err(sql)?;
+    Ok(())
+}
+pub(super) fn task(id: String, room: String, agent: String, prompt: String) -> AgentTaskExecution {
+    let mut t = new_task(room, agent, prompt, None, crate::session::unix_epoch_ms());
+    t.task_id = id;
+    t.state = ExecutionState::Blocked;
+    t.reason="Task ledger is quarantined; owner must restore authoritative state or cancel. Obligation coverage is unknown".into();
+    t
+}

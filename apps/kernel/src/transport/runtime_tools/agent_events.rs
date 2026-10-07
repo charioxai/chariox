@@ -17,7 +17,7 @@ pub(crate) fn agent_event_tool_specs() -> Vec<RuntimeToolSpec> {
     let common =
         serde_json::json!({"task_id":{"type":"string"},"origin_prompt_id":{"type":"string"}});
     let specs=[
-        ("subscribe","Register an admitted live delegate/workflow source for this task; source identity never grants authority.",serde_json::json!({"source_id":{"type":"string"},"obligation_id":{"type":"string"}}),vec!["source_id"]),
+        ("subscribe","Register an admitted live delegate/workflow source for this task; source identity never grants authority.",serde_json::json!({"source_id":{"type":"string"},"obligation_id":{"type":"string"},"source_cursor":{"type":"integer","minimum":0}}),vec!["source_id"]),
         ("subscriptions","List the current task's admitted completion sources.",serde_json::json!({}),vec![]),
         ("inbox","Read attributed, untrusted durable events; keep provider acceptance separate from inbox acknowledgement.",serde_json::json!({"after":{"type":"integer","minimum":0}}),vec![]),
         ("ack","Acknowledge an inbox item. Set handled only after handling its real result/failure; uncertain delivery cannot be acknowledged away.",serde_json::json!({"sequence":{"type":"integer","minimum":1},"handled":{"type":"boolean","default":false}}),vec!["sequence"]),
