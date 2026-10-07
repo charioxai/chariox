@@ -1,19 +1,23 @@
-# MP-11 phase23 supervisor cleanup follow-up
+# MP-08/MP-10/MP-11 display phase23 FINAL — RED / real live BLOCKED
 
-2026-10-06: coordinator 22:45 P2 mapped to kernel-owned native capture pool and Xauthority reclamation. Native display uses the existing private kernel packet directory; durable Chromium profile remains separate. Fixed-slot cleanup validates owner/private mode/type/link count/size through retained directory FDs, never recurses or reads authority contents. Fail-first Rust check reproduced pool/authority leak; extended real-binary component crash drill inspects persistent and transient paths before harness removal. Not real live acceptance.
+2026-10-07: native COW handoff removes full Node motion copies/spool; native PNG CRC; 50 ms quiet prevents refinement during 30 Hz motion. Kernel-owned capture-pool/Xauthority crash cleanup preserves the durable profile. Exact kernel `ab4459858`, client/harness `f4e52111e`; local 447 / relay 90 unchanged. Local `[skip ci]` commits only.
 
-MP-11 allocation audit: SysV capture uses IPC_RMID after attach; X resources die with owned X server; COW encoder mappings close on every request; encoder handoffs and stripe packets already kernel-owned; native pool + display.xauth now kernel-owned too. Durable profile/tabs remain intentional persistence. Current security-anchor review is still coordinator-owned.
+MP-11: final 210 cycles, 7,614 protected presentations, zero violations. Base crash leaked 49 MB plus authority; final kernel reclaims both before harness cleanup. Node 123, Python 20, Rust 15 checks pass. Audit: 110 disposable roots / 62 namespaces absent; temporary checkouts removed. Current COW/lease/FD cleanup/browser observation security-anchor review remains coordinator-owned.
 
-# MP-08/MP-10/MP-11 — phase23 IN PROGRESS
+MP-08/MP-10: protected DPR 2 improved from 46.57 fps / 2.34 cores to 54.90 / 1.73. Sampled Node reads 2.754→0.143 s; writes 1.716→0.071 s. Scroll60: 54.50 fps / 1.30 cores; wheel60: 7.50 fps / ~1 core. Canvas/video exact presentation: 249/239 ms. Scroll/wheel/DPR 2 settling and input P95 remain RED. Fresh Selkies scroll60: 61.90 fps / 0.53 cores; wheel60: 61.96 / 0.55. Details in [phase23 report](docs/MP_DISPLAY_PHASE23_RESULTS.md).
 
-2026-10-06: required base7d09b7ae761f4cfe0912ca61eb957be35fb59db0; md/display-perf. Native protected motion now uses a leased private COW transform in Python; no Node full raster read/write per frame. PNG CRC stays checked with native zlib. Native exact quiet30ms; exact contiguous patches avoid full re-verification; small PNG avoids redundant tiles. Supplemental60Hz wheel instrument and opt-in existing whole-video capability for owner VAAPI comparison. Serialized client/protocol shapes unchanged447/90.
+## MP-08/MP-10 Coordinator asks
 
-MP-11 fail-first masked-handoff/deadline/exact-reuse checks; immutable source/native decoded-mask tests; owned fallback lease retained through materialization. Component preview failures exposed wrapper ownership and capability spread, fixed before commit. Previews are not final ELF or acceptance. Resource monitor external, floor12GiB memory/10GiB disk.
+Exact public owner kit and SHA256 are recorded in the report and external `final50/kit-finalized.json`; included OWNER_VAAPI.md gives Intel laptop commands. Coordinator runs that comparison.
 
-## MP-08/MP-10 Coordinator asks — real live BLOCKED
+Real live BLOCKED: authorized Cloud app entry/revision/flags, real CLI/TUI, scoped hosted wss at ~8 Mbit/s and ≥60 ms RTT, official linked provider accounts, desktop DPR 1/2, fixed public-site coverage/screenshots/timings and multi-hour stability. This lane cannot contact Cloud staging or hosted relay/Apps. Not ready for staging acceptance. No protocol allocation requested.
 
-Run/supply actual authorized Cloud app entry/flags + hostedwss at8Mbps and RTT>=60ms + real desktopDPR1/2, public sites/services/official provider accounts/TUI and multi-hour stability. This lane is prohibited from Cloud/hosted relay/Apps contact. Owner Intel UHD620/iHD GPU comparison stays coordinator-run. Component fixtures never close acceptance. No protocol number requested.
+## MP-11 review mapping
 
-## MP-11 Review
+Inbox 22:45 #893 native capture leak → `3b60b0798`, extended crash drill, six cleanup checks and allocation audit. Self-found 30 Hz false quiet → `ab4459858`; finite wheel benchmark → `f4e52111e`. Metadata output-path error and mistaken diagnosis were corrected; actual new ELF and embedded-source checks were valid. Interrupted video and skipped wheel legs reran successfully.
 
-Actual inbox /root/.chariox/dev/browser-resume-20260930/agents/display/REVIEW_INBOX.md; historical #893 masking/reclaim findings fixed on base phase22. Check after each batch and map any new entries. Protection/COW/lease changes require current security-anchor semantic review. Non-security exact-blob audit is outside narrowed MP-11.
+Latest inbox SHA `70362e76f769dbb57251599bad48b16f7c33b99aff86704d7cb482f72495cef2`; no unhandled new entry. Narrowed MP-11 excludes non-security exact-blob audits.
+
+## MP-08/MP-10 Owner questions
+
+Only the acceptance resources and coordinator-run laptop/live validation above remain owner actions. Authorized local work is reported; lane stops after final handoff.
