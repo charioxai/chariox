@@ -225,6 +225,15 @@ pub(super) struct Request {
     operation: Operation,
     response: mpsc::Sender<Result<Outcome, DaemonError>>,
 }
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentLifecycleRequest")
+            .finish_non_exhaustive()
+    }
+}
+fn sql_integer(value: u64) -> Result<i64, DaemonError> {
+    i64::try_from(value).map_err(|_| error("integer exceeds durable storage bound"))
+}
 pub(crate) fn error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "agent.lifecycle",
@@ -319,7 +328,9 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.inbox")?;
         let mut q=db.prepare("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 ORDER BY sequence LIMIT 128").map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent, after], |r| r.get::<_, String>(0))
+            .query_map(params![room, agent, sql_integer(after)?], |r| {
+                r.get::<_, String>(0)
+            })
             .map_err(sql)?;
         rows.map(|r| decode(&r.map_err(sql)?)).collect()
     }
@@ -504,7 +515,7 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
 fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
     tx.execute(
         "UPDATE agent_inbox SET payload=?2 WHERE sequence=?1",
-        params![e.sequence, encode(e)?],
+        params![sql_integer(e.sequence)?, encode(e)?],
     )
     .map_err(sql)?;
     Ok(())
@@ -518,7 +529,7 @@ fn get_event(
     let s: String = tx
         .query_row(
             "SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
-            params![room, agent, seq],
+            params![room, agent, sql_integer(seq)?],
             |r| r.get(0),
         )
         .map_err(sql)?;

@@ -6,7 +6,7 @@ pub(super) fn retain(
     id: &str,
     bytes: &str,
 ) -> Result<(), DaemonError> {
-    tx.execute("INSERT INTO agent_lifecycle_quarantine(kind,id,payload,at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO NOTHING",params![kind,id,bytes,crate::session::unix_epoch_ms()]).map_err(sql)?;
+    tx.execute("INSERT INTO agent_lifecycle_quarantine(kind,id,payload,at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO NOTHING",params![kind,id,bytes,sql_integer(crate::session::unix_epoch_ms())?]).map_err(sql)?;
     Ok(())
 }
 pub(super) fn task(id: String, room: String, agent: String, prompt: String) -> AgentTaskExecution {

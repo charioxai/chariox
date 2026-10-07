@@ -384,7 +384,7 @@ fn a02_corrupt_delivery_is_quarantined_without_replay() {
     let db = Connection::open(f.root.join("state.sqlite")).unwrap();
     db.execute(
         "UPDATE agent_inbox SET payload='broken' WHERE sequence=?1",
-        [e.sequence],
+        [sql_integer(e.sequence).unwrap()],
     )
     .unwrap();
     f.apply(Operation::Sweep { now: 10 });

@@ -136,7 +136,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![registration.id,task,encode(&registration)?]).map_err(sql)?;
-            let source:Option<(u64,String,bool)>=tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![t.room_id,registration.source_id,registration.source_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
+            let source:Option<(i64,String,bool)>=tx.query_row("SELECT sequence,occurrence_id,success FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![t.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
             if let Some((seq, id, success)) = source {
                 let e = occurrence(
                     &t.room_id,
@@ -153,7 +153,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 event(tx, e)?;
                 let mut registration = registration;
                 registration.live = false;
-                registration.source_cursor = seq;
+                registration.source_cursor =
+                    u64::try_from(seq).map_err(|_| error("corrupt source sequence"))?;
                 tx.execute(
                     "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
                     params![registration.id, encode(&registration)?],
@@ -221,7 +222,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let regs = registrations(tx, &task)?;
             let mut selected = vec![];
             for r in regs.iter().filter(|r| ids.contains(&r.id)) {
-                let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost')",params![t.room_id,t.agent_id,r.source_id,cursor],|row|row.get(0)).map_err(sql)?;
+                let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost')",params![t.room_id,t.agent_id,r.source_id,sql_integer(cursor)?],|row|row.get(0)).map_err(sql)?;
                 if r.live || pending > 0 {
                     selected.push(r);
                 }
@@ -311,7 +312,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
                 let valid_wait = if let Some(w) = &t.wait {
                     let regs = registrations(tx, &t.task_id)?;
-                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.payload.task_id')=?4",params![t.room_id,t.agent_id,w.inbox_cursor,t.task_id],|r|r.get(0)).map_err(sql)?;
+                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.payload.task_id')=?4",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                     w.deadline_ms > now
                         && !w.registration_ids.is_empty()
                         && w.registration_ids
@@ -470,7 +471,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let rows = q
                 .query_map([], |r| {
                     Ok((
-                        r.get::<_, u64>(0)?,
+                        r.get::<_, i64>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
@@ -496,7 +497,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             "delivery_corrupt",
                             serde_json::json!({"diagnostic":"receipt quarantined; owner reconciliation required"}),
                         );
-                        e.sequence = sequence;
+                        e.sequence =
+                            u64::try_from(sequence).map_err(|_| error("corrupt inbox sequence"))?;
                         e.state = "blocked".into();
                         save_event(tx, &e)?;
                         let mut t = quarantine::task(
