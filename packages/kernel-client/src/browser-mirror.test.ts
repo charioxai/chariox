@@ -120,3 +120,10 @@ test('MD-454: visible initial paint forwards its exact renderer epoch before nex
   assert.deepEqual(sent.at(-1).KernelBrowser.command,{op:'mirror_input',tab_id:'t',generation:1,device_scale_factor:1,document_id:'d',subscription_id:'s',sequence:1,action:{kind:'click',node_id:'n1'}});
  }finally{await attachment.close()}
 });
+
+test('MD-454: static Retina resources use chunked bounds while animated media and fonts keep small caps',()=>{
+ const data_base64='A'.repeat(700004);
+ for(const mime_type of ['image/png','image/jpeg'])validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64}]},new Map());
+ for(const mime_type of ['image/gif','image/webp','font/woff','font/woff2'])assert.throws(()=>validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64}]},new Map()));
+ for(const mime_type of ['image/png','image/jpeg'])assert.throws(()=>validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64:'A'.repeat(4194305)}]},new Map()));
+});

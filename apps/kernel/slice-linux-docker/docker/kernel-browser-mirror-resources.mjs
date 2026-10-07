@@ -1,6 +1,7 @@
 // MP-08/MP-11: origin resources remain inside Chromium/kernel. No fetch, cookies,
 // external URL, executable CSS/SVG or profile path is sent to a mirror client.
 import { createHash } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 export function mirrorCanonicalJson(value,objects=new WeakMap()) {return JSON.stringify(value,(_,v)=>{if(!v||typeof v!=='object'||Array.isArray(v))return v;let sorted=objects.get(v);if(!sorted){sorted=Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0));objects.set(v,sorted)}return sorted});}
 export const mirrorHash = value => createHash('sha256').update(mirrorCanonicalJson(value)).digest('hex');
 // Bounds decoded memory as well as wire bytes before a client decoder sees it.
@@ -25,6 +26,21 @@ function resourceType(bytes) {
   }
   return type&&w>0&&h>0&&w<=8192&&h<=8192&&w*h<=8*1024*1024?{mime_type:type,decoded_bytes:w*h*4}:null;
 }
+// Large static PNGs travel in bounded 454 chunks. Check the complete encoded
+// container before admitting the larger budget; animated containers stay refused.
+function staticPng(bytes) {
+  let at=8,header=false,data=false,end=false;
+  while(at+12<=bytes.length) {
+    const size=bytes.readUInt32BE(at),type=bytes.toString('ascii',at+4,at+8),next=at+size+12;
+    if(next>bytes.length||crc32(bytes.subarray(at+4,next-4))!==bytes.readUInt32BE(next-4)||['acTL','fcTL','fdAT'].includes(type))return false;
+    if(!header){if(type!=='IHDR'||size!==13||bytes[at+16]>8)return false;header=true;}
+    else if(type==='IHDR')return false;
+    if(type==='IDAT')data=true;
+    if(type==='IEND'){if(size!==0||!data||next!==bytes.length)return false;end=true;break;}
+    at=next;
+  }
+  return header&&data&&end;
+}
 export async function materializeMirrorResources(connection,sessionId,descriptors,protectedValues,cache=new Map(),{loadedFontBody}={}) {
   if(protectedValues.length && descriptors.length) throw new Error('MP-11: protected resources refused');
   if(!Array.isArray(descriptors)||descriptors.length>100000)throw Error('MP-11: mirror descriptor working set exceeds memory budget');
@@ -46,9 +62,10 @@ export async function materializeMirrorResources(connection,sessionId,descriptor
       if(item.kind==='font'&&loadedFontBody)try{body=await loadedFontBody(item.url)}catch{}
       if(!body){mapped.set(item.key,null);continue;}
     }
-    if(!body.base64Encoded || typeof body.content!=='string' || body.content.length>700000) {mapped.set(item.key,null);continue;}
+    if(!body.base64Encoded || typeof body.content!=='string' || body.content.length>4194304) {mapped.set(item.key,null);continue;}
     const bytes=Buffer.from(body.content,'base64'),metadata=resourceType(bytes);
     if(!metadata || !metadata.mime_type.startsWith(item.kind==='font'?'font/':'image/')) {mapped.set(item.key,null);continue;}
+    if(body.content.length>700000 && (!['image/png','image/jpeg'].includes(metadata.mime_type) || metadata.mime_type==='image/png'&&!staticPng(bytes))) {mapped.set(item.key,null);continue;}
     const resource_id=createHash('sha256').update(bytes).digest('hex');
     if(!resources.has(resource_id)) {
       // Rasterize only the unavailable region if its decoder working set would

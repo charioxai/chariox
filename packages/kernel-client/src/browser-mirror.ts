@@ -25,6 +25,7 @@ export class BrowserMirrorRenderer {
   private resources=new Map<string,string>()
   private inlineProjections=new WeakMap<HTMLElement,string[]>()
   private fontMetrics=new Map<string,{ascent:string;descent:string}>()
+  private tilePlaceholderUrl:string|null=null
   private tileUrls:string[]=[]
   private tileCache=new Map<string,TileRaster>()
   private overlays:HTMLElement[]=[]
@@ -151,6 +152,12 @@ export class BrowserMirrorRenderer {
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
       element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
+    }
+    // A source-less IMG renders alternate text rather than a replaced box.
+    // The opaque local pixel preserves native image flow; verified tiles paint
+    // over it separately. It cannot fetch origin bytes or reveal masked pixels.
+    if(record.tag==='img'&&(record.kind==='tile'||record.kind==='mask')){
+      this.tilePlaceholderUrl??=blobUrl('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==','image/png');(element as HTMLImageElement).src=this.tilePlaceholderUrl
     }
     if(record.tag==='img'&&record.resource){const url=this.resources.get(record.resource);if(url)(element as HTMLImageElement).src=url}
     if(record.form) {
@@ -351,7 +358,7 @@ export class BrowserMirrorRenderer {
     }
     this.timed('drift_scan',started);return [...drift]
   }
-  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();this.fontMetrics.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
+  private clearResources():void {if(this.tilePlaceholderUrl)URL.revokeObjectURL(this.tilePlaceholderUrl);this.tilePlaceholderUrl=null;for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();this.fontMetrics.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
   close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {

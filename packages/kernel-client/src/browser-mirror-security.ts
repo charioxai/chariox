@@ -37,7 +37,7 @@ export function validateMirrorPacket(packet: MirrorPacket, previous: ReadonlyMap
   }
   visit(packet.root,null,0);if(seen.size!==next.size)throw Error('MP-11: unreachable mirror nodes')
   if(packet.selection){const s=packet.selection,a=next.get(s.anchor_id),b=next.get(s.focus_id);if(a?.kind!=='text'||b?.kind!=='text'||!Number.isInteger(s.anchor_offset)||!Number.isInteger(s.focus_offset)||s.anchor_offset<0||s.focus_offset<0||s.anchor_offset>(a.text?.length??0)||s.focus_offset>(b.text?.length??0))throw Error('MP-11: unsafe mirror selection')}
-  for(const resource of packet.resources) if(!/^[a-f0-9]{64}$/.test(resource.resource_id)||!['image/png','image/jpeg','image/gif','image/webp','font/woff','font/woff2'].includes(resource.mime_type)||typeof resource.data_base64!=='string'||resource.data_base64.length>700000) throw Error('MP-11: executable/oversized mirror resource')
+  for(const resource of packet.resources) if(!/^[a-f0-9]{64}$/.test(resource.resource_id)||!['image/png','image/jpeg','image/gif','image/webp','font/woff','font/woff2'].includes(resource.mime_type)||typeof resource.data_base64!=='string'||resource.data_base64.length>(['image/png','image/jpeg'].includes(resource.mime_type)?4194304:700000)) throw Error('MP-11: executable/oversized mirror resource')
   for(const tile of packet.tiles) if(next.get(tile.node_id)?.kind!=='tile'||[tile.x,tile.y,tile.width,tile.height].some(n=>!Number.isFinite(n))||tile.width<=0||tile.height<=0||tile.data_base64.length>4194304)throw Error('MP-11: invalid mirror tile')
   return next
 }

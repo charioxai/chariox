@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: service epochs, privacy, bounded streams and resource admission.
 import test from 'node:test';
 import {randomBytes} from 'node:crypto';
-import {gunzipSync} from 'node:zlib';
+import {gunzipSync,crc32} from 'node:zlib';
 import assert from 'node:assert/strict';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-resources.mjs';
@@ -473,4 +473,13 @@ for(const variant of ['adjacent','overlap','mask','unknown'])test('MD-454: wheel
  if(variant==='adjacent'){const input=await admit();await input.guard();assert.deepEqual(paths.map(p=>p[0].id),['n2','n3']);assert(paths.every(p=>p.at(-1).id==='n1'))}
  else if(variant==='unknown'){const input=await admit();await assert.rejects(input.guard(),/changed live mirror coordinate target/)}
  else await assert.rejects(admit(),/ambiguous|protected|stale mirror input epoch/);
+});
+
+test('MD-454: chunked Retina static resources exceed the old packet cap within decoded budgets',async()=>{
+ const pixels=randomBytes(500*647*4);for(let i=3;i<pixels.length;i+=4)pixels[i]=255;const data=encodePng(500,647,pixels);assert(data.length>700000&&data.length<4*1024*1024);
+ let body=data;const connection={async send(method){return method==='Page.getResourceTree'?{frameTree:{frame:{id:'f'},resources:[{url:'https://fixture/retina.png'}]}}:{base64Encoded:true,content:body}}};
+ const result=await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[]);assert.equal(result.resources.size,1);assert.equal(result.decodedBytes,500*647*4);
+ await assert.rejects(materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],['protected']),/protected resources/);
+ const corrupt=Buffer.from(data,'base64');corrupt[50]^=1;body=corrupt.toString('base64');assert.equal((await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[])).resources.size,0);
+ const animation=Buffer.alloc(20);animation.writeUInt32BE(8);animation.write('acTL',4);animation.writeUInt32BE(1,8);animation.writeUInt32BE(crc32(animation.subarray(4,16)),16);const bytes=Buffer.from(data,'base64');body=Buffer.concat([bytes.subarray(0,33),animation,bytes.subarray(33)]).toString('base64');assert.equal((await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[])).resources.size,0);
 });
