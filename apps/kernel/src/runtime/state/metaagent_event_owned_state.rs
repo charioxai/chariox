@@ -317,6 +317,7 @@ impl KernelRuntimeState {
         allow_steer: bool,
         force_queue: bool,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.authorize_current_external_command()?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
         let prompt = crate::session::PromptQueueItem::new(
             prompt_id.clone(),

@@ -1,6 +1,110 @@
 // MP-08 / MP-10 / MP-11, A01: supplementary red-capable admission checks.
 use super::*;
 
+// MP-08 / MP-11, P1: retain the caller epoch while a cold peer waits on the app.
+#[test]
+fn room_admission_delegated_prompt_rechecks_caller_after_app_wait() {
+    run_large_stack_async_test("room-stale-delegated-prompt", stale_delegated_prompt);
+}
+
+async fn stale_delegated_prompt() {
+    let env = TestMetaRuntimeEnv::new("room-stale-delegated-prompt");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("cold-peer"))
+        .unwrap();
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            format!("metaagent:{}:commands", actor.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    assert!(router
+        .runtime_state
+        .client_attachment_for_session(&format!("metaagent:{}:commands", actor.id()), session.id())
+        .is_some());
+    // The MCP bridge first checks remote forwarding under the app mutex. Start
+    // after that preflight, with the exact local caller it retains for dispatch.
+    let mut bound = router.clone();
+    bound.runtime_state = router
+        .runtime_state
+        .with_room_provider_origin(Some(actor.id()), Some(run.id()));
+    let mut guard = app.lock().await;
+    let call = bound.dispatch_meta_run_command(
+        &auth,
+        serde_json::json!({"command":"prompt cold-peer never admitted"}),
+    );
+    tokio::pin!(call);
+    assert!(
+        futures_util::poll!(call.as_mut()).is_pending(),
+        "cold peer launch must wait on the held app mutex"
+    );
+    assert_eq!(
+        guard
+            .durable_state_store()
+            .load_events_by_kind("room.obligation.registered")
+            .unwrap()
+            .len(),
+        1,
+        "the wait must be inside delegated prompt admission, after registration"
+    );
+    guard
+        .providers_mut()
+        .terminate_run_provider_only(session.id(), run.id())
+        .unwrap();
+    launch_test_provider(
+        &mut guard,
+        session.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "replacement-model",
+    );
+    drop(guard);
+    let result = call.await;
+    let guard = app.lock().await;
+    assert!(
+        guard
+            .providers()
+            .get_run_for_agent(session.id(), peer.id())
+            .is_none(),
+        "stale invocation must not launch the cold peer: {result:?}"
+    );
+    assert!(
+        !result.as_ref().is_ok_and(|result| result.ok),
+        "replaced room caller must not delegate: {result:?}"
+    );
+    let session = guard.sessions().get_session(session.id()).unwrap();
+    assert!(
+        !serde_json::to_string(&session)
+            .unwrap()
+            .contains("never admitted"),
+        "stale invocation must not admit a queued or active peer prompt"
+    );
+}
+
 #[test]
 fn room_admission_named_source_lookup_stays_in_room() {
     run_large_stack_async_test("room-inline-source-history", inline_source_history);
