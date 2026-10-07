@@ -518,7 +518,22 @@ mod admission_tests {
                 let peer=crate::app::KernelSessionService::new(&mut app).spawn_agent(crate::agent::CreateAgentRequest::new(room.id(),"dev-stub")).unwrap();
                 let (foreign,foreign_actor)=crate::app::KernelSessionService::new(&mut app).create_session(crate::session::CreateSessionRequest::new(root.to_string_lossy(),root.to_string_lossy())).unwrap();
                 let state=crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)),1).runtime_state();
-                let append=|session:&str,agent:&str,text:&str|state.owned.operational_history_store.append_operational_event(HistoryEventKind::UserPrompt,Some(crate::history::HistoryEventRole::User),Some(text.into()),Default::default(),crate::history::HistoryEventTurnContext {session_id:Some(session.into()),agent_id:Some(agent.into()),..Default::default()}).unwrap();
+                let append=|session:&str,agent:&str,text:&str|state.owned.operational_history_store.append_operational_event(HistoryEventKind::UserPrompt,Some(crate::history::HistoryEventRole::User),Some(text.into()),Default::default(),crate::history::HistoryEventTurnContext {session_id:Some(session.into()),agent_id:Some(agent.into()),public_history_owner_user_id:state.owned.session_store.get_session(session).ok().map(|s|s.owner_user_id().to_owned()),..Default::default()}).unwrap();
+                // No canonical session lock may be acquired by the projector.
+                let locked_sessions = state.owned.session_store.write();
+                let history = state.owned.operational_history_store.clone();
+                let session_id = room.id().to_owned();
+                let agent_id = actor.id().to_owned();
+                let owner = room.owner_user_id().to_owned();
+                let (sent, received) = std::sync::mpsc::channel();
+                let writer = std::thread::spawn(move || {
+                    let result = history.append_operational_event(HistoryEventKind::UserPrompt,Some(crate::history::HistoryEventRole::User),Some("writer_lock_public_task".into()),Default::default(),crate::history::HistoryEventTurnContext {session_id:Some(session_id),agent_id:Some(agent_id),public_history_owner_user_id:Some(owner),..Default::default()});
+                    sent.send(result.is_ok()).unwrap();
+                });
+                let completed_while_locked = received.recv_timeout(Duration::from_secs(1)).unwrap_or(false);
+                drop(locked_sessions);
+                writer.join().unwrap();
+                assert!(completed_while_locked,"public history producer inverted the session/history lock order");
                 append(room.id(),peer.id(),"authorized_peer_task");
                 let foreign_event=append(foreign.id(),foreign_actor.id(),"foreign_private_marker");
                 let invoke=|args|state.dispatch_meta_runtime_tool_call_for_agent(room.id(),actor.id(),"chariox.history.search",args);

@@ -100,6 +100,10 @@ pub enum HistoryAttributionConfidence {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEventTurnContext {
+    /// MP-08 / MP-11: trusted producer provenance, never accepted from JSON.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub public_history_owner_user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +140,10 @@ pub struct HistoryEventTurnContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEvent {
+    /// MP-08 / MP-11: trusted producer provenance, never accepted from JSON.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub public_history_owner_user_id: Option<String>,
     pub event_id: String,
     pub sequence: u64,
     pub timestamp_ms: u64,
@@ -284,6 +292,7 @@ impl HistoryEvent {
             event_id,
             sequence,
             timestamp_ms,
+            public_history_owner_user_id: context.public_history_owner_user_id,
             workspace_id: context.workspace_id,
             session_id: context
                 .session_id
@@ -402,6 +411,7 @@ impl HistoryEvent {
             event_id: history_event_id(sequence, timestamp_ms),
             sequence,
             timestamp_ms,
+            public_history_owner_user_id: context.public_history_owner_user_id,
             workspace_id: context.workspace_id,
             session_id: context.session_id,
             agent_id: context.agent_id,
