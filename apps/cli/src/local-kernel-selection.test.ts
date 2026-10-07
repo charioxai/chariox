@@ -39,11 +39,14 @@ test("MP-08 selects the local endpoint only after the kernel proves its identity
   assert.equal(local.closed(), false)
 })
 
-test("MP-08 alias targets resolve through presence and a stale presence falls back", async () => {
-  const impostor = statusClient(async () => ({ RelayStatus: { status: { daemon_id: "other-kernel" } } }))
-  assert.equal(await selectLocalKernelClient({ kernelAlias: "home" }, () => impostor.client, () => [presence]), null)
-  assert.equal(impostor.closed(), true)
+test("MP-08 alias-only targets never select a same-named kernel from another realm", async () => {
+  let probes = 0
+  const local = statusClient(async () => ({ RelayStatus: { status: { daemon_id: "home-1" } } }))
+  assert.equal(await selectLocalKernelClient({ kernelAlias: "home" }, () => { probes++; return local.client }, () => [presence]), null)
+  assert.equal(probes, 0)
+})
 
+test("MP-08 stale local presence falls back", async () => {
   const unreachable = statusClient(async () => {
     throw new Error("connect ECONNREFUSED")
   })

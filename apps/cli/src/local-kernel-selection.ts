@@ -31,9 +31,10 @@ export async function selectLocalKernelClient(
   presences: () => LocalKernelPresence[] = loadLocalKernelPresences,
 ): Promise<LocalKernelSelection | null> {
   const kernelId = target.kernelId?.trim()
-  const kernelAlias = target.kernelAlias?.trim()
+  // MP-08/MP-11: aliases are not unique across relay realms.
+  if (!kernelId) return null
   const presence = presences().find((candidate) => (
-    kernelId ? candidate.kernelId === kernelId : Boolean(kernelAlias) && candidate.kernelAlias === kernelAlias
+    candidate.kernelId === kernelId
   ))
   if (!presence) {
     return null
