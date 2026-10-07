@@ -106,9 +106,9 @@ async function diagnostics(result) {
     const lines=(await readFile(path.join(state,'logs',name),'utf8')).trim().split('\n').slice(-100)
     for(const line of lines) {
       let entry;try{entry=JSON.parse(line)}catch{continue}
-      if(!['warn','error'].includes(entry.level) && entry.component!=='daemon.app_events')continue
+      if(!['warn','error'].includes(entry.level) && !['daemon.app_events','daemon.prompt_queue'].includes(entry.component))continue
       const error=String(entry.error??'')
-      records.push({component:entry.component,message:entry.message,error:error.includes('is not authenticated;')?'provider account lacks successful product auth observation':/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
+      records.push({component:entry.component,message:entry.message,...(entry.component==='daemon.prompt_queue'?{sessionId:entry.session_id,agentId:entry.agent_id,promptId:entry.prompt_id,providerRunId:entry.provider_run_id,startingObserved:entry.starting_observed,currentProviderState:entry.current_provider_state}:{}),error:error.includes('is not authenticated;')?'provider account lacks successful product auth observation':/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
     }
   }
   await writeFile(path.join(args.output,'runtime-pump.json'),JSON.stringify({mpItems:['MP-08','MP-11'],messages:records,
@@ -194,7 +194,7 @@ try {
       await capture(label+'-queued',text=>text.includes('Queued request'))
       await raceKey('\x13')
       const nextDeadline=Date.now()+90000
-      while(!(await readFile(followup,'utf8').catch(()=>''))) {assert.ok(Date.now()<nextDeadline,'MP-08 queued follow-up must run after Stop');await diagnostics(await stateUntil(()=>true));await sleep(250)}
+      while(!(await readFile(followup,'utf8').catch(()=>''))) {assert.ok(Date.now()<nextDeadline,'MP-08 queued follow-up must run after Stop');await sleep(250)}
       await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].queued_count===0,90000)
       await capture(label+'-followup-completed',text=>text.includes('0 running')&&text.includes('[Start · Enter]'))
       await key('\t')
