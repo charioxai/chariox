@@ -73,16 +73,24 @@ impl KernelRuntimeOwnedState {
                     .protect_transcript_entry(entry)
             })
             .collect::<Vec<_>>();
-        let excerpt =
+        // Output entries are streamed deltas; the conclusion is at the end.
+        let output =
             task_public_outputs(&entries, &task.prompt_id, task.provider_run_id.as_deref())
-                .join("\n")
-                .chars()
-                .take(1_024)
-                .collect::<String>();
+                .concat();
+        let excerpt = answer_tail(output.trim(), 1_024);
         let mut answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         crate::secret_redaction::redact_json_secrets(&mut answer);
         Ok(Some(answer))
     }
+}
+
+fn answer_tail(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return text.into();
+    }
+    let tail = text.chars().skip(count - limit + 1).collect::<String>();
+    format!("…{tail}")
 }
 
 // Steering belongs to the current turn; an independent prompt closes its answer boundary.
@@ -154,5 +162,16 @@ mod tests {
         );
         assert!(task_public_outputs(&entries, "absent", Some("run")).is_empty());
         assert!(task_public_outputs(&entries, "current", None).is_empty());
+    }
+    #[test]
+    fn a02_public_answer_keeps_streamed_conclusion() {
+        let streamed = ["I", "’ll", " check.", " Done: all tools exist."].concat();
+        assert_eq!(
+            answer_tail(&streamed, 64),
+            "I’ll check. Done: all tools exist."
+        );
+        let tail = answer_tail(&streamed, 12);
+        assert_eq!(tail, "…ools exist.");
+        assert_eq!(tail.chars().count(), 12);
     }
 }
