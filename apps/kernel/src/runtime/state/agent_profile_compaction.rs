@@ -13,7 +13,7 @@ use super::KernelRuntimeState;
 
 /// The share of the new window above which the session is compacted first.
 const COMPACT_ABOVE_WINDOW_PERCENT: u64 = 75;
-const COMPACT_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) const COMPACT_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl KernelRuntimeState {
     /// Compacts the agent's live Claude session with its current model when
