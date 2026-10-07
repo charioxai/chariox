@@ -2273,7 +2273,7 @@ Workflow trigger and deployment direction:
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
 - protocol 365: direct workflow event bindings are retired. Initially events reached
-  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
+  workflows only through Apps (protocol 452 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3209,7 +3209,7 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
-### Workflow completion notifications — local 437 / relay peer 82 (MP-08 / MP-10 / MP-11)
+### Workflow completion notifications — local 452 / relay peer 82 (MP-08 / MP-10 / MP-11)
 
 Private same-user workflows are a second notification source kind beside Apps.
 The kernel emits successful final output or failure bare status once per run, with

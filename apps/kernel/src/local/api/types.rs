@@ -257,6 +257,6 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
-/// Version 437 adds kernel-emitted workflow notifications.
-/// Version 452 adds durable agent events and enforced turn dispositions (MP-08/09/10/11 A02).
+/// Version 452 adds durable agent events, enforced turn dispositions and
+/// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 452;
