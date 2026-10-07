@@ -2,6 +2,24 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::Progress {
+            task,
+            prompt,
+            receipt,
+            now,
+        } => {
+            let mut t = load(tx, &task)?;
+            current(&t, &prompt)?;
+            let inserted=tx.execute("INSERT INTO agent_progress_receipts VALUES(?1,?2,?3) ON CONFLICT(task_id,receipt_id) DO NOTHING",params![task,receipt,sql_integer(now)?]).map_err(sql)?;
+            if inserted != 0 {
+                t.no_progress_wakes = 0;
+                t.last_progress_at_ms = now;
+                t.progress_sequence += 1;
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+            Ok(Outcome::Task(t))
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,

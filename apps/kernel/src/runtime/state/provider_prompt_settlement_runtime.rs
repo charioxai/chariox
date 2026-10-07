@@ -336,7 +336,13 @@ impl KernelRuntimeState {
                     started_next_prompt: false,
                 });
             }
-            let task_settlement = owned.settle_agent_task(session_id, &agent_id, &active_prompt, provider_run_id, true)?;
+            let task_settlement = owned.settle_agent_task(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                provider_run_id,
+                true,
+            )?;
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
@@ -397,7 +403,23 @@ impl KernelRuntimeState {
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
-        let task_settlement = owned.settle_agent_task(session_id, &agent_id, &active_prompt, provider_run_id, false)?;
+        if owned.config_projection.snapshot().room_agent_tools {
+            self.observe_git_after_prompt_completion(provider_run_id, &active_prompt)
+                .await;
+            owned.record_agent_artifact_progress(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                provider_run_id,
+            )?;
+        }
+        let task_settlement = owned.settle_agent_task(
+            session_id,
+            &agent_id,
+            &active_prompt,
+            provider_run_id,
+            false,
+        )?;
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
         let next_queued_prompt_candidate = if provider_run_was_running {

@@ -2,6 +2,60 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 impl KernelRuntimeOwnedState {
+    pub(super) fn record_agent_artifact_progress(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+        run: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(snapshot) = self
+            .completed_git_turn_snapshots
+            .resolve(room, agent, Some(prompt.id()))
+            .filter(|s| s.before.prompt_id == prompt.id() && s.before.provider_run_id == run)
+        else {
+            return Ok(());
+        };
+        if snapshot.before.head_sha == snapshot.after.head_sha
+            && snapshot.before.status_fingerprint == snapshot.after.status_fingerprint
+            && snapshot.before.workspace_live_sync_file_snapshots
+                == snapshot.after.workspace_live_sync_file_snapshots
+        {
+            return Ok(());
+        }
+        let Some(task) = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .find(|t| {
+                t.prompt_id == prompt.id()
+                    && t.state == ExecutionState::Working
+                    && t.pending_prompt_id.is_none()
+            })
+        else {
+            return Ok(());
+        };
+        use sha2::{Digest, Sha256};
+        let normalized = serde_json::to_vec(&(
+            &snapshot.after.head_sha,
+            &snapshot.after.status_fingerprint,
+            &snapshot.after.workspace_live_sync_file_snapshots,
+        ))
+        .map_err(|_| {
+            crate::durable_state::agent_lifecycle::error("artifact receipt normalization failed")
+        })?;
+        let receipt = format!("git-artifact:{:x}", Sha256::digest(normalized));
+        self.durable_state_store.agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::Progress {
+                task: task.task_id,
+                prompt: prompt.id().into(),
+                receipt,
+                now: crate::session::unix_epoch_ms(),
+            },
+        )?;
+        Ok(())
+    }
+
     pub(super) fn public_agent_task_answer(
         &self,
         task: &AgentTaskExecution,

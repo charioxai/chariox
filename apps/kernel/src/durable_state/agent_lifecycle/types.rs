@@ -192,6 +192,12 @@ pub(crate) enum Operation {
         handled: bool,
         now: u64,
     },
+    Progress {
+        task: String,
+        prompt: String,
+        receipt: String,
+        now: u64,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,

@@ -360,7 +360,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::BindAttempt { .. }
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
-        op @ (Operation::SourceOutcome { .. }
+        op @ (Operation::Progress { .. }
+        | Operation::SourceOutcome { .. }
         | Operation::Sweep { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
