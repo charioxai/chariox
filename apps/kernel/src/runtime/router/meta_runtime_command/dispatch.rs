@@ -9,6 +9,21 @@ impl CommandRouter {
         auth_token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        self.runtime_state.authorize_current_external_command()?;
+        let result = self
+            .dispatch_meta_run_command_inner(auth_token, arguments)
+            .await?;
+        // MP-08 / MP-11: every result, including prompt delegation, is released
+        // only to the retained caller that still owns the admitted provider run.
+        self.runtime_state.authorize_current_external_command()?;
+        Ok(result)
+    }
+
+    async fn dispatch_meta_run_command_inner(
+        &self,
+        auth_token: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         let (provider_run, session, metaagent) = self
             .runtime_state
             .metaagent_context_for_auth_token(auth_token)?;
