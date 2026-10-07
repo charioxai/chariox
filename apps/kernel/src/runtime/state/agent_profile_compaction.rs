@@ -39,17 +39,8 @@ impl KernelRuntimeState {
         let Some(target_model) = model.or(agent.model()) else {
             return;
         };
-        let idle = self
-            .owned
-            .session_store
-            .get_session(session_id)
-            .is_ok_and(|session| {
-                self.owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent.id())
-                    .is_none()
-            });
-        if !idle || !needs_compaction(&run, target_provider, target_account, target_model) {
+        // Both local and leased callers hold the idle profile-transition claim.
+        if !needs_compaction(&run, target_provider, target_account, target_model) {
             return;
         }
         self.owned.record_notice(
@@ -123,25 +114,11 @@ fn needs_compaction(
 // Source and target share this account's launch environment. Honor Claude's
 // documented cap instead of compacting between two effectively equal windows.
 fn effective_window(run: &RuntimeProviderRun, provider: &str, model: &str) -> u64 {
-    let window = crate::provider::model_context_window_tokens(provider, model);
-    let disabled = run
-        .pty_env()
-        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
-        .map(String::as_str)
-        .map(str::to_string)
-        .or_else(|| {
-            (!run
-                .pty_env_remove()
-                .iter()
-                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
-            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
-            .flatten()
-        });
-    if disabled.as_deref() == Some("1") {
-        window.min(200_000)
-    } else {
-        window
-    }
+    crate::provider::effective_model_context_window_tokens(
+        provider,
+        model,
+        crate::provider::claude_1m_context_disabled(run),
+    )
 }
 
 #[cfg(test)]
