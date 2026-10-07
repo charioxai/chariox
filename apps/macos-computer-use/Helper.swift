@@ -18,6 +18,7 @@ func launchIdentity() throws -> [String: Any] {
     @MainActor static func main() async {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.count == 2, arguments[0] == "--pair" { try runPairing(arguments[1]) }
             print(String(data: try JSONSerialization.data(withJSONObject: launchIdentity(), options: [.sortedKeys]), encoding: .utf8)!)
             if arguments == ["--identity"] { return }
             if arguments == ["--enable-owner-window", "--list-windows"] {

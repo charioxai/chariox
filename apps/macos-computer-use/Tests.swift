@@ -244,5 +244,24 @@ final class FakeSource: NativeSource {
             precondition(emoji == [55357, 56425, 8205, 55357, 56507])
         } catch { print("FAIL joined emoji refused"); exit(1) }
         print("PASS joined emoji preserved")
+        let epoch = "00000000000000e1"
+        let state = pairedReply(["id": 1, "epoch": epoch, "method": "host.computer", "params": ["op": "state"]], epoch: epoch)
+        let paired = state.reply["result"] as? [String: Any] ?? [:]
+        let generation = paired["generation"] as? String, capture = paired["capture"] as? String
+        precondition(state.reply["ok"] as? Bool == true && !state.stop)
+        precondition(generation == epoch && capture == "unavailable")
+        for request: [String: Any] in [["id": 2, "epoch": "stale", "method": "heartbeat"],
+                                       ["id": 3, "epoch": epoch, "method": "host.computer", "params": ["op": "input"]]] {
+            let refused = pairedReply(request, epoch: epoch)
+            precondition(refused.reply["ok"] as? Bool == false && !refused.stop)
+        }
+        precondition(pairedReply(["id": 4, "epoch": epoch, "method": "stop"], epoch: epoch).stop)
+        print("PASS paired identity mode: kernel epoch, stale/unsupported refusal, stop")
+        for info: [String: Any] in [[:], ["CharioxDrillKernelCDHash": "abc"]] {
+            do { _ = try kernelRequirement(info); print("FAIL unpinned kernel admitted"); exit(1) } catch Refusal.disabled { }
+        }
+        let pinned = try kernelRequirement(["CharioxDrillKernelCDHash": String(repeating: "A", count: 40)])
+        precondition(pinned == "cdhash H\"" + String(repeating: "a", count: 40) + "\"")
+        print("PASS pairing requires an allowlisted kernel identity")
     }
 }

@@ -1,6 +1,8 @@
 # Computer mode on a macOS kernel host
 
-Status: M0 implemented but unattended, 2026-10-07. Lane `cu/macos-m0`, based on
+Status: M1 implemented on `cu/macos-m1` (base `computer/linux-host` `abff544fd`
+plus M0 `94311782d`), 2026-10-07; see "M1 shared seat and helper lifecycle".
+M0 implemented but unattended, 2026-10-07. Lane `cu/macos-m0`, based on
 `e325afa58`. The disabled standalone helper and regression fixture compile and
 pass fake-source checks. M0 includes an explicit owner-selected real-window
 path. No live capture, AX or CGEvent drill has run; owner evidence remains
@@ -472,6 +474,29 @@ cleanup. Allocate protocol changes in the shared contract PR rather than one
 number per OS module. Local `[skip ci]` checkpoints precede final-head review/CI
 when the feature is fully ready. M0 and its round-2 review-fix checkpoint are
 published as draft PR #920, with GitHub CI skipped.
+
+## M1 shared seat and helper lifecycle
+
+The shared Computer adapter (`kernel_browser_host/computer.rs`) now calls a
+`ComputerBackend` seat. Linux keeps its browser-host Xvfb desktop; macOS
+registers one personal seat per kernel, backed by `MacComputerHelper`, only when
+`CHARIOX_MACOS_COMPUTER_HELPER` names the installed app. Grants, actors, focus,
+takeover and generation checks stay in the adapter. Agents cannot start the
+personal seat; observation never restarts it. The kernel launches the helper
+through LaunchServices with only a 0700 rendezvous path in argv (Darwin user temp
+dir, as socket paths are limited to 104 bytes). The helper dials the kernel and
+checks the peer audit token's UID, PID and code requirement before it echoes the
+one-use 0600 token. The kernel checks the helper the same way. Helper pairing
+requires an explicit drill cdhash on both sides until M5 pins the Developer ID
+team. Each pairing has a random epoch, which is the desktop generation. A stale
+reply or generation fences the seat. A one-second heartbeat holds the helper's
+two-second lease. Revoke all is the kernel Stop route for this seat, and no wire
+shape changes. Kernel stop, helper crash, local helper termination and kernel
+exit all fence the seat. Cleanup kills only the paired PID with the recorded
+start time, then removes the rendezvous. The helper runs identity/no-op mode
+only. `apps/macos-computer-use/pairing-drill.mjs` runs the real kernel binary
+and installed ad-hoc helper with no TCC calls. Capture, input, AX, local
+Stop UI, crash-time owned-press recovery and Developer ID admission remain M2-M5.
 
 ## Minimal feasibility prototype, implemented M0 and owner-attended gates
 

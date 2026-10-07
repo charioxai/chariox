@@ -128,6 +128,11 @@ impl KernelBrowserHost {
             .retain(|(owner, id, _)| owner != user || agent.is_some_and(|agent| id != agent));
         let model = state.actors.get(user).cloned();
         let backend = state.browsers.get(user).cloned();
+        // macOS M1: Revoke all is the kernel Stop route for a personal seat.
+        let seat = agent
+            .is_none()
+            .then(|| state.seats.get(user).cloned())
+            .flatten();
         let retired = holders
             .into_iter()
             .filter(|(owner, id)| owner == user && agent.is_none_or(|agent| id == agent))
@@ -136,6 +141,7 @@ impl KernelBrowserHost {
         drop(state);
         self.retire_actors(user, &retired, model);
         Self::cancel_subscriptions(backend, subscriptions, scopes);
+        Self::stop_seat(seat);
         crate::transport::mcp_server::catalog_changed();
     }
     fn retire_actors(

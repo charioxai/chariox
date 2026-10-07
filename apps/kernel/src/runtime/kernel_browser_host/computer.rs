@@ -44,7 +44,7 @@ impl KernelBrowserHost {
                 drop(model);
                 // The cancellation token interrupts in-flight native holds while this
                 // backend lock waits. Reset old persistent keys before acknowledging.
-                let backend = self.backend(user)?;
+                let backend = self.computer_backend(user)?;
                 let mut backend = backend
                     .lock()
                     .map_err(|_| "MP-11: desktop backend lock unavailable")?;
@@ -57,7 +57,7 @@ impl KernelBrowserHost {
                 {
                     return Err("MP-11: not_granted: desktop takeover superseded".into());
                 }
-                backend.host_request_classified("host.computer.reset", serde_json::json!({}))?;
+                backend.request("host.computer.reset", serde_json::json!({}), None)?;
                 self.check_admission(admission)?;
                 return serde_json::to_value(result)
                     .map_err(|_| "MP-11: invalid takeover outcome".into());
@@ -66,7 +66,7 @@ impl KernelBrowserHost {
             // begin input while the release waits for in-flight controller work.
             model.check_desktop_release(&actor.actor_id, surface, generation)?;
             drop(model);
-            let backend = self.backend(user)?;
+            let backend = self.computer_backend(user)?;
             let mut backend = backend
                 .lock()
                 .map_err(|_| "MP-11: desktop backend lock unavailable")?;
@@ -76,7 +76,7 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
             model.check_desktop_release(&actor.actor_id, surface, generation)?;
-            backend.host_request_classified("host.computer.reset", serde_json::json!({}))?;
+            backend.request("host.computer.reset", serde_json::json!({}), None)?;
             model.release_desktop(&actor.actor_id, surface, generation)?;
             return Ok(serde_json::json!({"released":true}));
         }
@@ -97,14 +97,20 @@ impl KernelBrowserHost {
                 params["generation"].as_str().unwrap_or_default(),
             )?;
         }
-        let backend = self.backend(user)?;
+        let backend = self.computer_backend(user)?;
         let mut backend = backend
             .lock()
             .map_err(|_| "MP-11: desktop operation lock unavailable")?;
         self.check_admission(admission)?;
         self.require_running()?;
-        let ready =
-            matches!(backend.health(),Ok(h) if h.state==BrowserControllerProcessState::Ready);
+        let ready = backend.ready();
+        if !ready
+            && params["op"] == "start"
+            && admission.is_some_and(|a| a.agent.is_some())
+            && !backend.agent_may_start()
+        {
+            return Err("MP-11: not_granted: the owner starts this Computer seat".into());
+        }
         if params["op"] == "start"
             && admission
                 .and_then(|a| a.agent.as_deref())
@@ -113,8 +119,8 @@ impl KernelBrowserHost {
             if !ready {
                 return Err("MP-08: not_focused_agent: a new desktop requires focus".into());
             }
-            let current = backend
-                .host_request_classified("host.computer", serde_json::json!({"op":"state"}))?;
+            let current =
+                backend.request("host.computer", serde_json::json!({"op":"state"}), None)?;
             self.claim_resource(
                 admission,
                 UserDomainResource::Desktop {
@@ -149,10 +155,10 @@ impl KernelBrowserHost {
                 .into();
             params["observed_by"] = format!("agent:{}", a.agent.as_deref().unwrap()).into();
         }
-        backend.host_request_classified("host.protect", policy)?;
+        backend.request("host.protect", policy, None)?;
         self.check_admission(admission)?;
         if params["op"] == "start" {
-            let state = backend.host_request_cancellable(
+            let state = backend.request(
                 "host.computer",
                 params.clone(),
                 admission.map(|a| a.cancellation.clone()),
@@ -168,17 +174,18 @@ impl KernelBrowserHost {
                 },
                 false,
             )?;
-            let browser_state = backend
-                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
+            let browser_state = backend.browser_state()?;
             let model = self.actor_model(user)?;
             let mut model = model
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
-            model.reconcile(&browser_state)?;
+            if let Some(browser_state) = &browser_state {
+                model.reconcile(browser_state)?;
+            }
             model.reconcile_desktop(&state)?;
             return Ok(state);
         }
-        let state = backend.host_request_cancellable(
+        let state = backend.request(
             "host.computer",
             serde_json::json!({"op":"state"}),
             admission.map(|a| a.cancellation.clone()),
@@ -196,12 +203,13 @@ impl KernelBrowserHost {
         )?;
         let model = self.actor_model(user)?;
         {
-            let browser_state = backend
-                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
+            let browser_state = backend.browser_state()?;
             let mut model = model
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
-            model.reconcile(&browser_state)?;
+            if let Some(browser_state) = &browser_state {
+                model.reconcile(browser_state)?;
+            }
             model.reconcile_desktop(&state)?;
         }
         if params["op"] == "state" {
@@ -243,8 +251,7 @@ impl KernelBrowserHost {
             (None, Some(a)) => Some(a.cancellation.clone()),
             _ => None,
         };
-        let result =
-            backend.host_request_cancellable("host.computer", params, cancellation.clone());
+        let result = backend.request("host.computer", params, cancellation.clone());
         if let Some(action) = action {
             let terminal = if cancellation.as_ref().is_some_and(|c| c.requested()) {
                 EnvironmentActionTerminal::Cancelled
@@ -257,7 +264,7 @@ impl KernelBrowserHost {
             // input releases its shared Desktop target. Never replay a mutation.
             if terminal != EnvironmentActionTerminal::Completed
                 && backend
-                    .host_request_classified("host.computer.reset", serde_json::json!({}))
+                    .request("host.computer.reset", serde_json::json!({}), None)
                     .is_err()
             {
                 let _ = backend.stop();

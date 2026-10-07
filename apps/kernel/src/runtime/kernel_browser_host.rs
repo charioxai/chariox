@@ -25,6 +25,7 @@ pub(crate) struct KernelBrowserHost {
 #[derive(Default)]
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
+    seats: BTreeMap<String, Arc<Mutex<dyn computer_backend::ComputerBackend>>>,
     stopped: bool,
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -673,7 +674,7 @@ impl KernelBrowserHost {
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), String> {
-        let browsers = {
+        let (browsers, seats) = {
             let mut state = self
                 .inner
                 .lock()
@@ -689,8 +690,15 @@ impl KernelBrowserHost {
                 state.access.revoke(&owner, None);
             }
             state.loaded.clear();
-            std::mem::take(&mut state.browsers)
+            (
+                std::mem::take(&mut state.browsers),
+                std::mem::take(&mut state.seats),
+            )
         };
+        // Seat requests check admission under the host lock; stop them outside it.
+        for (_, seat) in seats {
+            let _ = seat.lock().unwrap_or_else(|e| e.into_inner()).stop();
+        }
         let mut first = None;
         for (_, browser) in browsers {
             let mut backend = browser
@@ -926,3 +934,6 @@ mod access;
 mod computer_tests;
 
 mod computer;
+mod computer_backend;
+#[cfg(target_os = "macos")]
+mod mac_helper;

@@ -5,7 +5,7 @@ build=${CUMAC_BUILD_DIR:-"$HOME/.chariox/dev/cumac/build"}
 mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
-swiftc "${flags[@]}" Policy.swift Signing.swift Tests.swift -o "$build/policy-tests"
+swiftc "${flags[@]}" Policy.swift Signing.swift Pairing.swift Tests.swift -o "$build/policy-tests"
 "$build/policy-tests"
 for kind in Helper Fixture; do
   bundle="$build/Chariox Computer $kind.app"
@@ -24,8 +24,12 @@ for kind in Helper Fixture; do
 </dict></plist>
 EOF
   if [[ $kind == Helper ]]; then /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$bundle/Contents/Info.plist"; fi
+  # M1 drill only: allowlist one kernel build for pairing, sealed by the helper signature.
+  if [[ $kind == Helper && -n ${CHARIOX_DRILL_KERNEL_CDHASH:-} ]]; then
+    /usr/libexec/PlistBuddy -c "Add :CharioxDrillKernelCDHash string $CHARIOX_DRILL_KERNEL_CDHASH" "$bundle/Contents/Info.plist"
+  fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift Native.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Native.swift Pairing.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
     swiftc "${flags[@]}" Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi
