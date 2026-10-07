@@ -786,6 +786,88 @@ async fn sudo_scope_cannot_be_widened_by_results_or_extension() {
     assert!(f.state.owned.sudo_scopes.lock().unwrap().is_empty());
 }
 
+// MP-08/MP-10/MP-11: scope approval is not authority to finish an effect
+// after revocation while waiting for the app mutex.
+#[tokio::test]
+async fn sudo_config_effect_rechecks_authority_after_app_lock_wait() {
+    config_effect_after_app_lock_wait(false).await;
+}
+
+#[tokio::test]
+async fn sudo_config_effect_rechecks_expiry_after_app_lock_wait() {
+    config_effect_after_app_lock_wait(true).await;
+}
+
+async fn config_effect_after_app_lock_wait(expired: bool) {
+    let f = fixture_with_options(None, true);
+    let window = running(&f);
+    let request = LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
+        path: "workflow.session_default_max_agents".into(),
+        value: "16".into(),
+    });
+    let confirmation = tokio::spawn({
+        let state = f.state.clone();
+        let window = window.clone();
+        let request = request.clone();
+        async move { state.confirm_sudo_scope(&window, &request).await }
+    });
+    let prompt = popup(&f.state).await;
+    approve(&f, &prompt, None).await.unwrap();
+    confirmation.await.unwrap().unwrap();
+    let probe = Arc::new(tokio::sync::Notify::new());
+    let mut admitted = f
+        .state
+        .with_external_command_authority(Some((&window.entry_id, &request)));
+    admitted.observe_app_lock_wait_for_test(probe.clone());
+    admitted.authorize_current_external_command().unwrap();
+    let app = f.app.lock().await;
+    let before = app.config().user_config.workflow.session_default_max_agents;
+    let task = tokio::spawn(async move {
+        admitted
+            .set_user_config_value("workflow.session_default_max_agents".into(), "16".into())
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), probe.notified())
+        .await
+        .unwrap();
+    if expired {
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .get_mut(&window.entry_id)
+            .unwrap()
+            .deadline = Some(std::time::Instant::now() - Duration::from_secs(1));
+    } else {
+        f.state
+            .revoke_sudo(Some("local"), Some(&window.entry_id), "explicit_revoke")
+            .unwrap();
+    }
+    drop(app);
+    let result = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "a revoked command must not mutate configuration"
+    );
+    assert_eq!(
+        f.app
+            .lock()
+            .await
+            .config()
+            .user_config
+            .workflow
+            .session_default_max_agents,
+        before
+    );
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sudo_timer_proof_exercises_the_scheduled_wake_path() {
     let f = fixture_with_options(None, true);
