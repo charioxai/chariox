@@ -23,6 +23,8 @@ use crate::session::{
 mod artifact_registry;
 mod common;
 mod compiler;
+mod compiler_isolation;
+mod compiler_process;
 mod compiler_runtime;
 mod definition;
 mod model;

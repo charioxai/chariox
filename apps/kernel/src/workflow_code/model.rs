@@ -149,15 +149,17 @@ pub(super) struct WorkflowCodeCompilerInput<'a> {
     pub(super) source: &'a str,
     pub(super) language: &'static str,
     pub(super) timeout_ms: u64,
-    pub(super) max_schema_bytes: u32,
     pub(super) parameters: &'a BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) schema_import_root: Option<&'a Path>,
+    pub(super) schema_files: Option<&'a BTreeMap<String, String>>,
+    pub(super) schema_errors: &'a BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(super) struct WorkflowCodeCompilerOutput {
     pub(super) ok: bool,
+    #[serde(default)]
+    pub(super) schema_requests: Vec<String>,
     #[serde(default)]
     pub(super) definition: Option<WorkflowCodeDefinition>,
     #[serde(default)]
