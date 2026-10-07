@@ -25,9 +25,9 @@ impl KernelRuntimeOwnedState {
                     .skip(index + 1)
                     .take_while(|e| {
                         e.kind != crate::history::SessionHistoryEntryKind::UserPrompt
-                            || e.merge_key
-                                .as_deref()
-                                .is_some_and(|k| k.starts_with("steer:"))
+                            || e.merge_key.as_deref().is_some_and(|k| {
+                                k.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
+                            })
                     })
                     .filter(|e| {
                         e.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
