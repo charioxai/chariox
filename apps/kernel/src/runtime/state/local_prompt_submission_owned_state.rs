@@ -128,7 +128,8 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
         if let crate::session::PromptSubmissionOutcome::Queued { prompt } = &outcome {
-            let current_state = provider_run_id.as_deref()
+            let current_state = provider_run_id
+                .as_deref()
                 .and_then(|id| self.provider_store.get_run(id).ok())
                 .map(|run| format!("{:?}", run.state()));
             crate::logging::debug_with_fields(

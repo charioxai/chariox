@@ -1979,15 +1979,29 @@ fn workflow_queue_admission_wakes_a_provider_that_became_ready() {
             providers.mark_run_running(id).unwrap();
         }));
     });
-    let (_, dispatches) = runtime.owned.workflow_enqueue_prompt_and_maybe_start(
-        &session, &workflow, &endpoint, Some("ready while admitting".into()), None, None,
-    ).unwrap();
+    let (_, dispatches) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("ready while admitting".into()),
+            None,
+            None,
+        )
+        .unwrap();
     assert!(dispatches.starting_provider_runs.is_empty());
     let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
     let agent = snapshot.workflow_runs()[0].node_runs()[0].agent_id();
-    let (active, queued) = runtime.owned.prompt_state_owner.state_parts(&snapshot, agent);
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&snapshot, agent);
     assert!(active.is_none());
     assert_eq!(queued.len(), 1);
-    assert_eq!(dispatches.project_queue_promotions, vec![(session, agent.to_string())],
-        "ready queue must carry a wakeup even though the launch-completion wakeup was missed");
+    assert_eq!(
+        dispatches.project_queue_promotions,
+        vec![(session, agent.to_string())],
+        "ready queue must carry a wakeup even though the launch-completion wakeup was missed"
+    );
 }

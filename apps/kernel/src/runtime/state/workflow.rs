@@ -10,7 +10,6 @@ thread_local! {
     pub(super) static AFTER_WORKFLOW_QUEUE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&str)>>> = std::cell::RefCell::new(None);
 }
 
-
 impl KernelRuntimeOwnedState {
     pub(super) fn retain_pending_provider_launch_credentials(
         &self,
@@ -359,7 +358,10 @@ impl KernelRuntimeOwnedState {
             },
         };
         #[cfg(test)]
-        if matches!(&submission.outcome, crate::session::PromptSubmissionOutcome::Queued { .. }) {
+        if matches!(
+            &submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ) {
             AFTER_WORKFLOW_QUEUE_ADMISSION.with(|hook| {
                 if let Some(hook) = hook.borrow_mut().take() {
                     hook(workflow_provider_run_id.as_deref().unwrap_or_default());
