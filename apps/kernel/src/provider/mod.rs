@@ -184,15 +184,39 @@ pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> 
     }
 }
 
-/// The model's context window in tokens. Neither the Claude nor the Codex
-/// catalog reports one, so this is each harness's documented window: Codex's
-/// effective window (it reports 258,400 at turn start) and Claude's 200k, or
-/// 1M for a `[1m]` model.
+/// First-party harness windows: Codex's effective 258,400-token window and
+/// current Claude Code defaults. Claude `/context` and the official model
+/// configuration docs verify the alias and explicit-ID table below.
 pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
     match canonical_provider_family(provider) {
         Some("codex") => 258_400,
-        Some("claude") if model.to_ascii_lowercase().ends_with("[1m]") => 1_000_000,
-        Some("claude") => 200_000,
+        Some("claude") => {
+            let model = model
+                .trim()
+                .trim_start_matches("claude/")
+                .to_ascii_lowercase();
+            // Current first-party Claude Code defaults, verified with `/context`.
+            // Older explicit IDs stay 200k unless extended context is selected.
+            if model.ends_with("[1m]")
+                || matches!(
+                    model.as_str(),
+                    "default" | "sonnet" | "opus" | "opusplan" | "fable"
+                )
+                || [
+                    "claude-sonnet-5",
+                    "claude-opus-4-7",
+                    "claude-opus-4-8",
+                    "claude-opus-5",
+                    "claude-fable-5",
+                ]
+                .iter()
+                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
+            {
+                1_000_000
+            } else {
+                200_000
+            }
+        }
         _ => 128_000,
     }
 }
@@ -396,6 +420,36 @@ mod tests {
         ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
         RuntimeProviderRun,
     };
+
+    #[test]
+    fn claude_context_windows_match_official_cli_context_probes() {
+        for model in [
+            "sonnet",
+            "opus",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-opus-4-7",
+            "claude/sonnet[1m]",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                1_000_000,
+                "{model}"
+            );
+        }
+        for model in [
+            "haiku",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                200_000,
+                "{model}"
+            );
+        }
+    }
 
     #[test]
     fn claude_headless_provider_mode_is_provider_policy() {
