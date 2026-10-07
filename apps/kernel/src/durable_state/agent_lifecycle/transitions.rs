@@ -35,6 +35,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     new_admitted_task(tx, room, agent, prompt, run.clone(), now)?
                 }
             };
+            // Queue recovery can race an owner cancellation/block. Provider
+            // dispatch revalidates the durable task immediately before I/O;
+            // admission alone is not authority to run it later.
+            if run.is_some() && task.state != ExecutionState::Working {
+                return Err(error("non-working task cannot dispatch a provider turn"));
+            }
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
             }
