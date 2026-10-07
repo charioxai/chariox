@@ -99,6 +99,18 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
 }
 #[test]
 fn outbound_credential_mutations_and_unknown_payloads_fail_closed() {
+    let safe = crate::runtime::kernel_access::error("sudo request refused").to_string();
+    let frame = serde_json::json!({"type":"response","request_id":"sudo","response":null,
+        "error":{"code":CANARY,"message":safe,"retryable":false}});
+    let projected = project_payload(frame.clone()).unwrap();
+    assert_eq!(projected["error"]["message"], safe);
+    assert!(!projected.to_string().contains(CANARY));
+    let mut tainted = frame;
+    tainted["error"]["message"] = format!("{safe}: {CANARY}").into();
+    assert!(!project_payload(tainted)
+        .unwrap()
+        .to_string()
+        .contains(CANARY));
     for name in [
         "CredentialRegistered",
         "CredentialUpserted",

@@ -46,7 +46,12 @@ fn kernel_access_child_server() {
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
             let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
-            for id in [SESSION, "other-session", "credential-session"] {
+            let credential_session =
+                std::env::var("CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION").as_deref() == Ok("1");
+            for id in [SESSION, "other-session"]
+                .into_iter()
+                .chain(credential_session.then_some("credential-session"))
+            {
                 let mut session = crate::session::RuntimeSession::new(
                     id,
                     // A valid alias can collide with another session's ID.
@@ -88,28 +93,30 @@ fn kernel_access_child_server() {
                     ));
             }
             // MP-11: a different owner session holds a worker admission credential.
-            let mut remote = crate::agent::AgentInstance::new(
-                "remote-canary",
-                "remote-canary",
-                "credential-session",
-                None,
-                "codex",
-                None,
-                None,
-                None,
-                crate::agent::GridPosition::new(0, 0, 1, 1),
-            );
-            remote.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
-                worker_kernel_id: "worker".into(),
-                worker_machine_id: "worker-machine".into(),
-                execution_lease_id: "lease".into(),
-                leased_agent_id: "leased".into(),
-                active_worker_provider_run_id: None,
-                relay_url: None,
-                relay_token: Some(outbound_credentials::CANARY.into()),
-                relay_peer_protocol_version: None,
-            }));
-            app.agents_mut().restore_agent(remote);
+            if credential_session {
+                let mut remote = crate::agent::AgentInstance::new(
+                    "remote-canary",
+                    "remote-canary",
+                    "credential-session",
+                    None,
+                    "codex",
+                    None,
+                    None,
+                    None,
+                    crate::agent::GridPosition::new(0, 0, 1, 1),
+                );
+                remote.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker".into(),
+                    worker_machine_id: "worker-machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "leased".into(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: Some(outbound_credentials::CANARY.into()),
+                    relay_peer_protocol_version: None,
+                }));
+                app.agents_mut().restore_agent(remote);
+            }
             let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
                 Arc::new(Mutex::new(app)),
                 32,
@@ -486,6 +493,12 @@ impl Kernel {
         Self::start_with_options(false).await
     }
     async fn start_with_options(sudo: bool) -> Self {
+        Self::start_with_fixture(sudo, false).await
+    }
+    async fn start_with_credentials() -> Self {
+        Self::start_with_fixture(false, true).await
+    }
+    async fn start_with_fixture(sudo: bool, credential_session: bool) -> Self {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
@@ -493,6 +506,10 @@ impl Kernel {
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
             .env("CHARIOX_ACCESS_TEST_SUDO", if sudo { "1" } else { "0" })
+            .env(
+                "CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION",
+                if credential_session { "1" } else { "0" },
+            )
             .env("CHARIOX_HOME", root.join("state"))
             .env("HOME", root.join("home"))
             .env_remove("CLAUDE_CONFIG_DIR")

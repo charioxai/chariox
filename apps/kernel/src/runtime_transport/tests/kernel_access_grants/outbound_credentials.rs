@@ -113,7 +113,7 @@ pub(super) async fn check_subscription(root: &str) {
 
 #[tokio::test]
 async fn kernel_access_subscription_initial_updated_replay_hide_worker_credentials() {
-    let mut kernel = Kernel::start().await;
+    let mut kernel = Kernel::start_with_credentials().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
     kernel.control("credential-check").await;

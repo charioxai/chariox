@@ -30,17 +30,23 @@ fn protect_error(error: DaemonError) -> DaemonError {
 }
 
 pub(crate) fn public_error_message(message: &str) -> bool {
-    matches!(
-        message,
-        "grant revoked or expired"
-            | "sudo request refused"
-            | "sudo request revoked"
-            | "sudo request cancelled"
-            | "sudo request expired; answer the popup in a Chariox terminal"
-            | "queued sudo was revoked"
-            | "sudo authorization revoked before dispatch"
-            | "Unix peer has no live authority for this request"
-    )
+    // MP-11: accept only exact lifecycle constants, including the canonical
+    // transport Display wrapper. Never accept a prefix with arbitrary suffixes.
+    [
+        "grant revoked or expired",
+        "sudo request refused",
+        "sudo request revoked",
+        "sudo request cancelled",
+        "sudo request expired; answer the popup in a Chariox terminal",
+        "queued sudo was revoked",
+        "sudo authorization revoked before dispatch",
+        "Unix peer has no live authority for this request",
+        "access request refused or expired; answer the popup in a Chariox terminal",
+    ]
+    .into_iter()
+    .any(|known| {
+        message == known || message == crate::runtime::kernel_access::error(known).to_string()
+    })
 }
 
 fn denied() -> DaemonError {
