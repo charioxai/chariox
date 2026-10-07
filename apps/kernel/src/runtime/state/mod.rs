@@ -1164,4 +1164,5 @@ impl KernelRuntimeState {
 mod room_agent_admission;
 
 mod agent_lifecycle_runtime;
+mod agent_inbox_delivery;
 mod room_dispatch_obligation;

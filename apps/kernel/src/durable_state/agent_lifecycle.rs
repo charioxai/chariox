@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+mod delivery;
 mod migration;
 mod quarantine;
 #[cfg(test)]
