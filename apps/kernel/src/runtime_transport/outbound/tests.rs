@@ -32,6 +32,9 @@ fn snake(name: &str) -> String {
 }
 fn tainted_body() -> Value {
     serde_json::json!({"nested":[{"remote_execution":{"relay_token":CANARY,"worker_kernel_id":"worker"}}],
+        "interaction":{"provider_login":{"kernel_id":"home","login":{"auth_url":CANARY,"user_code":CANARY},
+            "terminal_output_base64":CANARY},"title":CANARY,"message":CANARY,"choices":[{"label":CANARY}],
+            "custom_choice":{"label":CANARY},"native_origin":{"opaque":CANARY}},
         "credential":{"injection":{"kind":"header","name":"Authorization","value":CANARY}},
         "credentials":[{"injection":{"kind":"header","name":"Authorization","value":CANARY}}]})
 }
@@ -74,6 +77,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
             "session":{"agents":[{"remote_execution":{"relay_token":CANARY}}]},
             "workflow_run":{"nodes":[{"remote_execution":{"relay_token":CANARY}}]}});
         event["credential"] = tainted_body()["credential"].clone();
+        event["interaction"] = tainted_body()["interaction"].clone();
         event["public_text"] = "MP-11 unmodified terminal/history text".into();
         let input = serde_json::json!({"type":"event","event_id":42,"event":event});
         if let Ok(output) = project_payload(input) {

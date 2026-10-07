@@ -505,6 +505,20 @@ fn project_response_body(
 pub(crate) fn redact_secret_values(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(fields) => {
+            // MP-11: provider login challenges are ephemeral human UI. A
+            // session/interaction event must not bypass the opaque login reply
+            // policy, including a title/message that repeats its auth URL.
+            if fields.get("provider_login").is_some_and(|v| !v.is_null()) {
+                fields.remove("provider_login");
+                fields.remove("title");
+                fields.remove("custom_choice");
+                fields.remove("native_origin");
+                fields.insert(
+                    "message".into(),
+                    "Provider login requires the host terminal".into(),
+                );
+                fields.insert("choices".into(), serde_json::json!([]));
+            }
             if let Some(binding) = fields
                 .get_mut("remote_execution")
                 .and_then(|v| v.as_object_mut())

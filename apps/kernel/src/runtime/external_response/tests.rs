@@ -194,13 +194,16 @@ fn external_response_redacts_nested_remote_bindings_without_scanning_history() {
     let mut value = serde_json::json!({"sessions":[{"agents":[{"remote_execution":{
         "worker_kernel_id":"worker", "relay_token":CANARY
     }}]}],"nested_credential":{"injection":{"kind":"header","name":"Authorization","value":CANARY}},
-    "history_text":CANARY});
+    "interaction":{"provider_login":{"login":{"auth_url":CANARY},"terminal_output_base64":CANARY},
+        "message":CANARY,"title":CANARY,"choices":[{"label":CANARY}]},"history_text":CANARY});
     // MP-11: exercise the common structured-secret projection used at delivery.
     redact_secret_values(&mut value);
     assert!(value["sessions"][0]["agents"][0]["remote_execution"]
         .get("relay_token")
         .is_none());
     assert_eq!(value["history_text"], CANARY);
+    assert!(value["interaction"].get("provider_login").is_none());
+    assert!(!value["interaction"].to_string().contains(CANARY));
     assert_eq!(
         value["nested_credential"]["injection"]["value"],
         "[REDACTED]"
