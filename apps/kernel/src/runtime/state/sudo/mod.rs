@@ -29,6 +29,27 @@ mod window_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 
+/// MP-08/MP-10/MP-11: read-only projection access for App snapshots. Only
+/// kernel runtime modules can obtain the store that mutates window authority.
+#[derive(Clone, Default)]
+pub(crate) struct SudoWindowProjection(SudoStore);
+
+impl SudoWindowProjection {
+    pub(super) fn store(&self) -> SudoStore {
+        self.0.clone()
+    }
+
+    pub(crate) fn windows_for_session(&self, session_id: &str) -> Vec<KernelSudoTurn> {
+        self.0
+            .lock()
+            .expect("access state poisoned")
+            .values()
+            .filter(|turn| turn.session_id == session_id && turn.deadline.is_some())
+            .cloned()
+            .collect()
+    }
+}
+
 /// Ratified owner constants: default window, selectable durations (maximum
 /// eight hours per fresh passkey verification) and the expiry warning.
 pub(crate) const SUDO_DEFAULT_MINUTES: u32 = 60;

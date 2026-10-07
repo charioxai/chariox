@@ -101,6 +101,33 @@ async fn sudo_window_projection_keeps_deadline_and_warning_after_mutation() {
     assert!(projected.sudo_windows().is_empty());
 }
 
+// MP-08/MP-10/MP-11: App read/publish paths must project the same kernel window.
+#[tokio::test]
+async fn app_session_snapshots_keep_the_current_kernel_sudo_window() {
+    let f = fixture_with_options(None, true);
+    let window = running(&f);
+    let _ = f.state.owned.session_snapshot(&window.session_id).unwrap();
+    let app = f.app.lock().await;
+    let snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(&window.session_id)
+        .unwrap();
+    assert_eq!(
+        snapshot.sudo_windows(),
+        &[window.clone()],
+        "App snapshots must carry the kernel window on late attach"
+    );
+    app.update_session_projection(session(&f));
+    let projected = app
+        .session_state_projection_store()
+        .get(&window.session_id)
+        .unwrap();
+    assert_eq!(
+        projected.sudo_windows(),
+        &[window],
+        "App refreshes must not erase a current kernel window"
+    );
+}
+
 #[tokio::test]
 async fn sudo_popup_defaults_to_one_hour_and_refuses_more_than_eight() {
     let f = fixture_with_options(None, true);

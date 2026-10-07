@@ -82,6 +82,7 @@ mod kernel_access;
 mod sudo;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+pub(crate) use sudo::SudoWindowProjection;
 pub(crate) use sudo::{is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
@@ -630,6 +631,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            sudo_windows,
         ) = {
             let started = Instant::now();
             loop {
@@ -645,6 +647,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.sudo_window_projection(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -787,7 +790,7 @@ impl KernelRuntimeState {
                     ),
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
-                sudo_turns: Default::default(),
+                sudo_turns: sudo_windows.store(),
                 sudo_process_cutoffs: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_scopes: Default::default(),
