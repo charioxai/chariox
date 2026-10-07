@@ -1596,6 +1596,21 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(approved, "explicit approval should reach startup wait");
+    for _ in 0..100 {
+        if fs::read_to_string(&capture_file)
+            .unwrap_or_default()
+            .contains("\x1b[B\n")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        fs::read_to_string(&capture_file)
+            .expect("PTY should capture workspace approval")
+            .contains("\x1b[B\n"),
+        "approval must move off Claude's default No before pressing Enter"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(4_100));
     fs::write(

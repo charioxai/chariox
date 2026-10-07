@@ -223,7 +223,7 @@ exit 0
         assert_eq!(
             probes_after > probes_before,
             matches!(mode, "ok" | "probe-error"),
-            "MP-08 complete successful captures must use the existing Claude usage probe"
+            "MP-08 complete successful captures must run the Claude credential verification turn"
         );
         assert_eq!(
             serde_json::to_value(status.state).unwrap(),
@@ -277,4 +277,216 @@ exit 0
     scan(&root, token.as_bytes());
     drop(router);
     drop(app);
+}
+
+/// A pasted setup token must reach a provider API turn before it is stored,
+/// mark the account authenticated, and stay authenticated across auth
+/// status checks, refreshes and a kernel restart. A rejected token stores
+/// nothing and says how to recover.
+#[tokio::test]
+async fn pasted_setup_token_is_verified_and_stays_authenticated() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-pastetok-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_CLAUDE_BIN",
+        "CHARIOX_LOG_DIR",
+        "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
+    ];
+    let old: Vec<_> = names.iter().map(std::env::var_os).collect();
+    let _cleanup = FixtureCleanup {
+        root: root.clone(),
+        environment: names.iter().copied().zip(old).collect(),
+    };
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("CHARIOX_HOME", root.join("state"));
+    std::env::set_var("CHARIOX_LOG_DIR", root.join("logs"));
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let good = format!("sk-ant-oat01-{}", "G".repeat(96));
+    let bad = format!("sk-ant-oat01-{}", "B".repeat(96));
+    let expired = format!("sk-ant-oat01-{}", "E".repeat(96));
+    let unavailable = format!("sk-ant-oat01-{}", "U".repeat(96));
+    // Like the real CLI: `auth status` cannot see an environment token here,
+    // and `/usage` answers locally for any token. Only a model turn checks it.
+    let binary = root.join("claude");
+    std::fs::write(
+        &binary,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ "$1" = auth ] && [ "$2" = status ]; then echo '{{"loggedIn":false,"authMethod":"none"}}'; exit 1; fi
+if [ "$1" = -p ] && [ "$2" = /usage ]; then
+  echo '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Total cost: $0.0000"}}'
+  exit 0
+fi
+if [ "$1" = -p ]; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{good}' ]; then
+    echo '{{"type":"result","subtype":"success","is_error":false,"result":"OK"}}'; exit 0
+  fi
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{unavailable}' ]; then exit 3; fi
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{expired}' ]; then
+    echo '{{"type":"result","is_error":true,"api_error_status":403}}'; exit 1
+  fi
+  echo '{{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid."}}'
+  exit 1
+fi
+exit 90
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_CLAUDE_BIN", &binary);
+    let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    let mut router = CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(DaemonApp::bootstrap(config.clone()).unwrap())),
+        1,
+    );
+    let profile = router
+        .provider_account_profiles
+        .create_managed("local", "claude", "headless")
+        .unwrap();
+    let paste = |value: &str| {
+        let request = LocalDaemonRequest::SetProviderAccountCredential(
+            crate::local::SetProviderAccountCredentialRequest {
+                provider: "claude".into(),
+                account_profile: profile.profile_id.clone(),
+                value: format!("{value}\n"),
+                run: false,
+                overwrite: true,
+                session_id: None,
+                agent_id: None,
+            },
+        );
+        (
+            KernelCommand::from_local_request("paste".to_string(), None, None, &request),
+            request,
+        )
+    };
+    let auth_state = |router: &CommandRouter| {
+        router
+            .provider_account_profiles
+            .get("local", "claude", &profile.profile_id)
+            .unwrap()
+            .auth_state
+    };
+
+    let (command, request) = paste(&bad);
+    let error = router
+        .dispatch(command, request)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("rejected the setup token") && error.contains("claude setup-token"),
+        "an invalid token needs an actionable error: {error}"
+    );
+    assert!(!crate::provider::provider_account_credential_registered(
+        "local",
+        "claude",
+        &profile.profile_id
+    )
+    .unwrap());
+    assert_ne!(
+        auth_state(&router),
+        crate::account_profile::ProviderAccountAuthState::Authenticated
+    );
+
+    let (command, request) = paste(&good);
+    router.dispatch(command, request).await.unwrap();
+    assert_eq!(
+        auth_state(&router),
+        crate::account_profile::ProviderAccountAuthState::Authenticated,
+        "a verified setup token must authenticate the account"
+    );
+
+    for mode in ["claude", "claude-p", "claude-headless"] {
+        assert!(
+            crate::provider::provider_account_credential_registered(
+                "local",
+                mode,
+                &profile.profile_id
+            )
+            .unwrap(),
+            "the credential must be registered for {mode}"
+        );
+        let environment = crate::provider::resolve_provider_account_credentials(
+            &config,
+            "local",
+            mode,
+            &profile.profile_id,
+        )
+        .unwrap();
+        assert!(
+            !environment.is_empty(),
+            "{mode} must resolve the account token"
+        );
+    }
+    for (value, message) in [
+        (expired.as_str(), "rejected the setup token"),
+        (unavailable.as_str(), "Check the network and the Claude CLI"),
+    ] {
+        let (command, request) = paste(value);
+        let error = router
+            .dispatch(command, request)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(message),
+            "actionable credential failure: {error}"
+        );
+        assert_eq!(
+            auth_state(&router),
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "a failed replacement must preserve the working account"
+        );
+    }
+
+    for restart in [false, true] {
+        if restart {
+            drop(router);
+            router = CommandRouter::with_interactive_capacity(
+                Arc::new(Mutex::new(
+                    crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await,
+                )),
+                1,
+            );
+        }
+        let request =
+            LocalDaemonRequest::GetProviderAuthStatus(crate::local::GetProviderAuthStatusRequest {
+                provider: "claude".into(),
+                account_profile: profile.profile_id.clone(),
+            });
+        let command = KernelCommand::from_local_request("status", None, None, &request);
+        let LocalDaemonResponse::ProviderAuthStatus { status } =
+            router.dispatch(command, request).await.unwrap()
+        else {
+            panic!("expected auth status")
+        };
+        assert_eq!(status.auth_state, "authenticated", "restart {restart}");
+        let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+            "RefreshProviderAccountProfile": {
+                "provider": "claude",
+                "account_profile": profile.profile_id,
+            }
+        }))
+        .unwrap();
+        let command = KernelCommand::from_local_request("refresh", None, None, &request);
+        router.dispatch(command, request).await.unwrap();
+        assert_eq!(
+            auth_state(&router),
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "status checks must not downgrade a setup-token account (restart {restart})"
+        );
+    }
 }

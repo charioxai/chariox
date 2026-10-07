@@ -94,8 +94,14 @@ export async function handleProviderSlashCommand(
     if (resolved === null) return
     const value = (await deps.readSecret("Claude setup token: ")).trim()
     if (!value) { deps.flashFooter("Claude setup token must not be empty", "error"); return }
-    const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
-    deps.flashFooter(`Claude setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    try {
+      const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
+      deps.flashFooter(`Claude setup token verified and ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replaceAll(value, "<redacted>")
+      deps.appendNotice(message)
+      deps.flashFooter("Claude setup token failed; see the notice above", "error")
+    }
     return
   }
   if (action === "setup-token") {

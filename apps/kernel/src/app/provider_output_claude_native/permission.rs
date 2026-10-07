@@ -7,6 +7,10 @@ use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
 const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
+// Claude defaults to "No, exit" on the startup trust selector. An approved
+// kernel interaction must explicitly select the second choice before Enter.
+pub(super) const CLAUDE_WORKSPACE_TRUST_APPROVAL_INPUT: &[u8] = b"\x1b[B";
+
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
@@ -133,6 +137,23 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
                 .map(ToOwned::to_owned)
         })
         .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+    write_claude_native_marker(
+        context_file,
+        &format!(
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            unix_epoch_ms()
+        ),
+    );
+}
+
+pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
+    claude_headless_workspace_trust_interaction_id(context_file)?
+        .strip_prefix("select-yes:")?
+        .parse()
+        .ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
