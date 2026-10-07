@@ -432,3 +432,77 @@ fn public_history_queued_append_is_drained_before_protection_invalidation() {
         .hits
         .is_empty());
 }
+
+
+#[test]
+fn public_history_leased_bookkeeping_preserves_search_and_read() {
+    use crate::history::leased_projection::{LeasedProjectionCursor, ProjectedHistoryKeys, ProjectedToolState};
+    let f = Fixture::new();
+    let prompt = f.append("room", "retained compiler prompt");
+    let tool = f.store.append_operational_event(
+        HistoryEventKind::ProviderTool, Some(HistoryEventRole::Tool),
+        Some(r#"{"id":"tool-id","output":"retained compiler tool"}"#.into()),
+        Default::default(), HistoryEventTurnContext {
+            session_id: Some("room".into()), agent_id: Some("peer".into()),
+            provider_run_id: Some("run".into()), ..Default::default()
+        },
+    ).unwrap();
+    let page = f.search("room", "compiler", 1, None).unwrap();
+    let assert_retained = || {
+        assert_eq!(f.search("room", "compiler", 50, None).unwrap().hits.len(), 2,
+            "leased bookkeeping must preserve both public documents and FTS hits");
+        let _guard = f.store.lock_public_history().unwrap();
+        for event in [&prompt, &tool] {
+            let doc = f.store.read_public_history_locked("owner", "room", &event.event_id).unwrap().unwrap();
+            assert_eq!(doc.text, event.content.as_ref().unwrap().as_str());
+        }
+    };
+    let cursor = f.store.load_leased_projection_cursor("room:peer:run").unwrap();
+    assert_retained(); // schema backfills committed sequence and tool identity
+    assert!(cursor == LeasedProjectionCursor::default());
+    let keys = ProjectedHistoryKeys { event_id: prompt.event_id.clone(),
+        stream_key: Some("prompt-stream".into()), snapshot_key: "prompt-snapshot".into() };
+    let mut state = f.store.load_leased_tool_state("tool-stream").unwrap();
+    assert!(state.record("tool-snapshot".into(), br#"{"output":"retained compiler tool"}"#, true));
+    let tool_state = ProjectedToolState { stream_key: "tool-stream".into(),
+        session_id: "room".into(), agent_id: "peer".into(), provider_run_id: "run".into(),
+        identity: Some("tool-id".into()), state };
+    f.store.commit_leased_projection_cursor("room:peer:run", &cursor, &[], &[keys], &[tool_state]).unwrap();
+    assert_retained(); // both ordinary key compaction and tool-state compaction
+    assert_eq!(f.search("room", "compiler", 1, page.next_cursor.as_deref()).unwrap().hits[0].event_ref, prompt.event_id);
+    let later = f.append("room", "retained compiler later"); // insert's commit-order trigger
+    assert_eq!(f.search("room", "compiler", 50, None).unwrap().hits.len(), 3);
+    let _guard = f.store.lock_public_history().unwrap();
+    assert!(f.store.read_public_history_locked("owner", "room", &later.event_id).unwrap().is_some());
+}
+
+#[test]
+fn public_history_late_lower_sequence_invalidates_pagination() {
+    let f = Fixture::new();
+    let first = f.append("room", "compiler first");
+    f.append("room", "unrelated second");
+    let third = f.append("room", "compiler third");
+    let late = HistoryEvent::operational(
+        f.store.reserve_sequence(), HistoryEventKind::UserPrompt,
+        Some(HistoryEventRole::User), Some("compiler delayed fourth".into()),
+        Default::default(), HistoryEventTurnContext {
+            session_id: Some("room".into()), agent_id: Some("peer".into()), ..Default::default()
+        },
+    );
+    f.append("room", "unrelated fifth");
+    let page = f.search("room", "compiler", 1, None).unwrap();
+    assert_eq!(page.hits[0].event_ref, third.event_id);
+    assert_eq!(page.coverage.through_sequence, 5);
+    f.store.append(&late).unwrap();
+    assert!(f.search("room", "compiler", 1, page.next_cursor.as_deref()).is_err(),
+        "a late insert below the ceiling must invalidate OFFSET pagination rather than repeat a hit");
+    let restart = f.search("room", "compiler", 1, None).unwrap();
+    assert_eq!(restart.hits[0].event_ref, late.event_id);
+    // Increasing sequence appends do not change the retained snapshot.
+    f.append("room", "compiler sixth");
+    let second = f.search("room", "compiler", 1, restart.next_cursor.as_deref()).unwrap();
+    assert_eq!(second.hits[0].event_ref, third.event_id);
+    let last = f.search("room", "compiler", 1, second.next_cursor.as_deref()).unwrap();
+    assert_eq!(last.hits[0].event_ref, first.event_id);
+    assert!(last.next_cursor.is_none());
+}
