@@ -1,7 +1,8 @@
 # MP-08 / MP-10 / MP-11 — A09 real history search replay
 
 This is a user-driven replay for PR9. It requires the exact built kernel/TUI and
-an authorized Chariox-linked official provider profile. Do not substitute a stub
+an authorized Chariox-linked official provider profile. Round 2 uses the
+coordinator-supplied dedicated drill profile. Do not substitute a stub
 provider, synthetic page or internal IPC call for a live acceptance step. Record
 source/binary hashes, exit codes and screenshots per step outside the checkout.
 
@@ -64,6 +65,25 @@ In a second terminal with the same environment:
    history after restart. Run A09 S04 retained/rebuild/legacy-provenance, S03
    protected invalidation and S02 forbidden global/foreign scope cases. Report any unavailable prerequisite as
    an exact coordinator blocker, never a fixture pass.
+
+## MP-08 / MP-10 / MP-11: round 2 retained-history regressions
+
+Use the real official provider and the authorized worker/relay resources. These
+steps remain BLOCKED until the coordinator supplies the dedicated drill profile.
+Source regressions do not substitute for them.
+
+- Search/read useful peer review findings before leased projection initialization,
+  then continue actual worker execution and search/read the same references after
+  projection acknowledgements and tool-state compaction. The retained sanitized
+  findings must remain available.
+- Run concurrent useful peer reviews while paging a repeated task term. If a
+  delayed lower-sequence append enters the room's retained window, the existing
+  cursor must report stale. Restart the query and page all retained hits once.
+  Later increasing-sequence appends must preserve the bounded cursor.
+- After a newer useful review emits more than 200 public events, request the
+  previous retained peer turn through `chariox.history.turn` using both
+  `turns_back: 1` and its returned `turn_id` as `turn_ref`. Bound the returned
+  events with `limit`; the newer turn must not hide the previous one.
 
 ## MP-10 / MP-11: full acceptance and cleanup
 

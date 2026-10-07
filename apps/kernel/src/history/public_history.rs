@@ -277,14 +277,42 @@ impl OperationalHistoryStore {
         owner: &str,
         room: &str,
         agent: &str,
+        turn_ref: Option<&str>,
+        turns_back: usize,
         limit: usize,
     ) -> Result<Vec<PublicHistoryDocument>, DaemonError> {
+        let offset = if turn_ref.is_some() {
+            0
+        } else {
+            i64::try_from(turns_back).map_err(|_| invalid_search())?
+        };
         let connection = self.lock_read_connection(Some(room))?;
-        let mut statement=connection.prepare("SELECT p.document_json FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
-            WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3 ORDER BY p.sequence DESC LIMIT ?4").map_err(public_error)?;
+        // Select from all retained, scoped public turns before limiting events.
+        // An empty selection returns no rows; a retained NULL turn is distinct.
+        let mut statement = connection.prepare(
+            "WITH selected_turn AS (
+                SELECT json_extract(p.document_json,'$.turn_id') AS turn_id
+                FROM public_history p JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+                WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
+                  AND (?4 IS NULL OR json_extract(p.document_json,'$.turn_id')=?4)
+                GROUP BY json_extract(p.document_json,'$.turn_id') ORDER BY max(p.sequence) DESC LIMIT 1 OFFSET ?5
+             )
+             SELECT p.document_json FROM public_history p
+             JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+             JOIN selected_turn t ON json_extract(p.document_json,'$.turn_id') IS t.turn_id
+             WHERE p.owner_user_id=?1 AND p.session_id=?2 AND p.agent_id=?3
+             ORDER BY p.sequence DESC LIMIT ?6"
+        ).map_err(public_error)?;
         let rows = statement
             .query_map(
-                params![owner, room, agent, limit.clamp(1, 200) as i64],
+                params![
+                    owner,
+                    room,
+                    agent,
+                    turn_ref,
+                    offset,
+                    limit.clamp(1, 200) as i64
+                ],
                 |r| r.get::<_, String>(0),
             )
             .map_err(public_error)?;
@@ -420,8 +448,14 @@ pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), D
         [], |r| r.get(0),
     ).map_err(public_error)?;
     connection
-        .execute_batch(include_str!("public_history.sql"))
+        .execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")
         .map_err(public_error)?;
+    let tx =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(public_error)?;
+    tx.execute_batch(include_str!("public_history.sql"))
+        .map_err(public_error)?;
+    tx.commit().map_err(public_error)?;
     if !index_existed {
         // A recreated derived index resumes from the existing sanitized source.
         // Persist the reset before admitting writes/searches; raw history is never

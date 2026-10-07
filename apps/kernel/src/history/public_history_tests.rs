@@ -433,47 +433,100 @@ fn public_history_queued_append_is_drained_before_protection_invalidation() {
         .is_empty());
 }
 
-
 #[test]
 fn public_history_leased_bookkeeping_preserves_search_and_read() {
-    use crate::history::leased_projection::{LeasedProjectionCursor, ProjectedHistoryKeys, ProjectedToolState};
+    use crate::history::leased_projection::{
+        LeasedProjectionCursor, ProjectedHistoryKeys, ProjectedToolState,
+    };
     let f = Fixture::new();
     let prompt = f.append("room", "retained compiler prompt");
-    let tool = f.store.append_operational_event(
-        HistoryEventKind::ProviderTool, Some(HistoryEventRole::Tool),
-        Some(r#"{"id":"tool-id","output":"retained compiler tool"}"#.into()),
-        Default::default(), HistoryEventTurnContext {
-            session_id: Some("room".into()), agent_id: Some("peer".into()),
-            provider_run_id: Some("run".into()), ..Default::default()
-        },
-    ).unwrap();
+    let tool = f
+        .store
+        .append_operational_event(
+            HistoryEventKind::ProviderTool,
+            Some(HistoryEventRole::Tool),
+            Some(r#"{"id":"tool-id","output":"retained compiler tool"}"#.into()),
+            Default::default(),
+            HistoryEventTurnContext {
+                session_id: Some("room".into()),
+                agent_id: Some("peer".into()),
+                provider_run_id: Some("run".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let page = f.search("room", "compiler", 1, None).unwrap();
     let assert_retained = || {
-        assert_eq!(f.search("room", "compiler", 50, None).unwrap().hits.len(), 2,
-            "leased bookkeeping must preserve both public documents and FTS hits");
+        assert_eq!(
+            f.search("room", "compiler", 50, None).unwrap().hits.len(),
+            2,
+            "leased bookkeeping must preserve both public documents and FTS hits"
+        );
         let _guard = f.store.lock_public_history().unwrap();
         for event in [&prompt, &tool] {
-            let doc = f.store.read_public_history_locked("owner", "room", &event.event_id).unwrap().unwrap();
+            let doc = f
+                .store
+                .read_public_history_locked("owner", "room", &event.event_id)
+                .unwrap()
+                .unwrap();
             assert_eq!(doc.text, event.content.as_ref().unwrap().as_str());
         }
     };
-    let cursor = f.store.load_leased_projection_cursor("room:peer:run").unwrap();
+    let cursor = f
+        .store
+        .load_leased_projection_cursor("room:peer:run")
+        .unwrap();
     assert_retained(); // schema backfills committed sequence and tool identity
     assert!(cursor == LeasedProjectionCursor::default());
-    let keys = ProjectedHistoryKeys { event_id: prompt.event_id.clone(),
-        stream_key: Some("prompt-stream".into()), snapshot_key: "prompt-snapshot".into() };
+    let keys = ProjectedHistoryKeys {
+        event_id: prompt.event_id.clone(),
+        stream_key: Some("prompt-stream".into()),
+        snapshot_key: "prompt-snapshot".into(),
+    };
     let mut state = f.store.load_leased_tool_state("tool-stream").unwrap();
-    assert!(state.record("tool-snapshot".into(), br#"{"output":"retained compiler tool"}"#, true));
-    let tool_state = ProjectedToolState { stream_key: "tool-stream".into(),
-        session_id: "room".into(), agent_id: "peer".into(), provider_run_id: "run".into(),
-        identity: Some("tool-id".into()), state };
-    f.store.commit_leased_projection_cursor("room:peer:run", &cursor, &[], &[keys], &[tool_state]).unwrap();
+    assert!(state.record(
+        "tool-snapshot".into(),
+        br#"{"output":"retained compiler tool"}"#,
+        true
+    ));
+    let tool_state = ProjectedToolState {
+        stream_key: "tool-stream".into(),
+        session_id: "room".into(),
+        agent_id: "peer".into(),
+        provider_run_id: "run".into(),
+        identity: Some("tool-id".into()),
+        state,
+    };
+    f.store
+        .commit_leased_projection_cursor("room:peer:run", &cursor, &[], &[keys], &[tool_state])
+        .unwrap();
     assert_retained(); // both ordinary key compaction and tool-state compaction
-    assert_eq!(f.search("room", "compiler", 1, page.next_cursor.as_deref()).unwrap().hits[0].event_ref, prompt.event_id);
+    assert_eq!(
+        f.search("room", "compiler", 1, page.next_cursor.as_deref())
+            .unwrap()
+            .hits[0]
+            .event_ref,
+        prompt.event_id
+    );
     let later = f.append("room", "retained compiler later"); // insert's commit-order trigger
-    assert_eq!(f.search("room", "compiler", 50, None).unwrap().hits.len(), 3);
+    assert_eq!(
+        f.search("room", "compiler", 1, page.next_cursor.as_deref())
+            .unwrap()
+            .hits[0]
+            .event_ref,
+        prompt.event_id,
+        "leased insert bookkeeping must preserve an existing bounded cursor"
+    );
+    assert_eq!(
+        f.search("room", "compiler", 50, None).unwrap().hits.len(),
+        3
+    );
     let _guard = f.store.lock_public_history().unwrap();
-    assert!(f.store.read_public_history_locked("owner", "room", &later.event_id).unwrap().is_some());
+    assert!(f
+        .store
+        .read_public_history_locked("owner", "room", &later.event_id)
+        .unwrap()
+        .is_some());
 }
 
 #[test]
@@ -483,10 +536,15 @@ fn public_history_late_lower_sequence_invalidates_pagination() {
     f.append("room", "unrelated second");
     let third = f.append("room", "compiler third");
     let late = HistoryEvent::operational(
-        f.store.reserve_sequence(), HistoryEventKind::UserPrompt,
-        Some(HistoryEventRole::User), Some("compiler delayed fourth".into()),
-        Default::default(), HistoryEventTurnContext {
-            session_id: Some("room".into()), agent_id: Some("peer".into()), ..Default::default()
+        f.store.reserve_sequence(),
+        HistoryEventKind::UserPrompt,
+        Some(HistoryEventRole::User),
+        Some("compiler delayed fourth".into()),
+        Default::default(),
+        HistoryEventTurnContext {
+            session_id: Some("room".into()),
+            agent_id: Some("peer".into()),
+            ..Default::default()
         },
     );
     f.append("room", "unrelated fifth");
@@ -500,9 +558,146 @@ fn public_history_late_lower_sequence_invalidates_pagination() {
     assert_eq!(restart.hits[0].event_ref, late.event_id);
     // Increasing sequence appends do not change the retained snapshot.
     f.append("room", "compiler sixth");
-    let second = f.search("room", "compiler", 1, restart.next_cursor.as_deref()).unwrap();
+    let second = f
+        .search("room", "compiler", 1, restart.next_cursor.as_deref())
+        .unwrap();
     assert_eq!(second.hits[0].event_ref, third.event_id);
-    let last = f.search("room", "compiler", 1, second.next_cursor.as_deref()).unwrap();
+    let last = f
+        .search("room", "compiler", 1, second.next_cursor.as_deref())
+        .unwrap();
     assert_eq!(last.hits[0].event_ref, first.event_id);
     assert!(last.next_cursor.is_none());
+}
+
+#[test]
+fn public_history_existing_database_refreshes_bookkeeping_trigger() {
+    let f = Fixture::new();
+    let event = f.append("room", "retained compiler");
+    // Simulate the installed pre-fix trigger, then run the ordinary open path.
+    f.store
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "DROP TRIGGER public_history_source_update;
+         CREATE TRIGGER public_history_source_update AFTER UPDATE ON history_events BEGIN
+           DELETE FROM public_history WHERE event_ref=old.event_id;
+         END;",
+        )
+        .unwrap();
+    let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf()).unwrap();
+    reopened
+        .load_leased_projection_cursor("room:peer:run")
+        .unwrap();
+    let _guard = reopened.lock_public_history().unwrap();
+    assert_eq!(
+        reopened
+            .search_public_history_locked("owner", "room", None, "compiler", 50, None)
+            .unwrap()
+            .hits
+            .len(),
+        1
+    );
+    assert!(reopened
+        .read_public_history_locked("owner", "room", &event.event_id)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn public_history_noop_source_update_preserves_documents_but_scope_and_json_changes_invalidate() {
+    for column in ["session_id", "agent_id", "event_json"] {
+        let f = Fixture::new();
+        let event = f.append("room", "compiler retained");
+        f.append("room", "compiler another");
+        let page = f.search("room", "compiler", 1, None).unwrap();
+        {
+            let connection = f.store.connection.lock().unwrap();
+            connection.execute("UPDATE history_events SET content=content,event_json=event_json,session_id=session_id WHERE event_id=?1", [&event.event_id]).unwrap();
+        }
+        assert!(f
+            .search("room", "compiler", 1, page.next_cursor.as_deref())
+            .is_ok());
+        {
+            let connection = f.store.connection.lock().unwrap();
+            let replacement = if column == "event_json" {
+                "{}"
+            } else {
+                "other"
+            };
+            connection
+                .execute(
+                    &format!("UPDATE history_events SET {column}=?2 WHERE event_id=?1"),
+                    params![event.event_id, replacement],
+                )
+                .unwrap();
+        }
+        assert!(f
+            .search("room", "compiler", 1, page.next_cursor.as_deref())
+            .is_err());
+        let _guard = f.store.lock_public_history().unwrap();
+        assert!(f
+            .store
+            .read_public_history_locked("owner", "room", &event.event_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[test]
+fn public_history_turn_selection_is_scoped_and_distinguishes_missing_from_null_turn() {
+    let f = Fixture::new();
+    let append = |room: &str, peer: &str, turn: Option<&str>, text: &str| {
+        f.store
+            .append_operational_event(
+                HistoryEventKind::UserPrompt,
+                Some(HistoryEventRole::User),
+                Some(text.into()),
+                Default::default(),
+                HistoryEventTurnContext {
+                    session_id: Some(room.into()),
+                    agent_id: Some(peer.into()),
+                    turn_id: turn.map(str::to_owned),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let previous = append("room", "peer", Some("shared-turn"), "public previous");
+    append("room", "peer", None, "unattributed newest");
+    append("foreign", "peer", Some("shared-turn"), "foreign marker");
+    append(
+        "room",
+        "other-peer",
+        Some("shared-turn"),
+        "other peer marker",
+    );
+    let _guard = f.store.lock_public_history().unwrap();
+    let selected = f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", Some("shared-turn"), 99, 1)
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].event_ref, previous.event_id);
+    let selected = f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", None, 1, 200)
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].event_ref, previous.event_id);
+    assert!(f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", None, 2, 200)
+        .unwrap()
+        .is_empty());
+    assert!(f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", Some("missing"), 0, 200)
+        .unwrap()
+        .is_empty());
+    assert!(f
+        .store
+        .public_history_turn_locked("another-owner", "room", "peer", Some("shared-turn"), 0, 200)
+        .unwrap()
+        .is_empty());
 }

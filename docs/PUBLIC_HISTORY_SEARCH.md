@@ -14,7 +14,8 @@ room finishes rebuilding; retry the initial query while `coverage.rebuilding=tru
 Rebuild progress and counts are restricted to that room. Results are newest first; ranking never
 uses another room's corpus statistics. Read a result with
 `chariox.history.read({"event_ref":"<returned reference>"})`. Room turn reads
-also use this public projection. Event references never resolve filesystem
+also use this public projection. The requested retained turn is selected within
+the authorized room/agent before bounding its returned events. Event references never resolve filesystem
 paths or arbitrary blobs. Missing, excluded and foreign references return the
 same unavailable result.
 
@@ -40,7 +41,10 @@ MP-08 / MP-10 / MP-11: only newly admitted sanitized records are indexed. Raw
 legacy imports have unknown provenance and are explicitly excluded. Rebuilds
 advance in bounded transactions from sanitized rows and resume after interruption.
 A redaction-version change excludes incompatible projections; it never imports
-raw history. Retention/source replacement invalidates rows and cursors. Changes
+raw history. Retention/source replacement invalidates rows and cursors. Leased commit-order
+and deduplication bookkeeping preserves public documents. Late lower-sequence
+appends invalidate this room's cursors: restart the initial query on a stale-cursor
+error. Later increasing-sequence appends preserve the bounded snapshot. Changes
 to secret provenance conservatively remove prior public rows for that Room
 (all worker-local rows for a home-bound slice), invalidate pagination and truncate
 the index WAL before the protected mutation proceeds. Safe earlier rows may

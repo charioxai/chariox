@@ -421,21 +421,29 @@ impl KernelRuntimeState {
         let state = self.clone();
         let session = session.clone();
         let agent = agent.clone();
-        tokio::task::spawn_blocking(move|| {
-            let room=state.authorize_public_history_room(&session,&agent,None)?;
-            let agents=state.owned.agent_store.get_session_agents(room.id());
-            let target=crate::runtime::room_tool_admission::resolve_agent(&agents,room.id(),args.agent_ref.as_deref().unwrap_or(agent.id()))?;
-            let _guard=state.owned.operational_history_store.lock_public_history()?;
-            state.owned.room_secret_observations.require(room.id(),false)?;
-            let revision=state.owned.operational_history_store.public_history_revision_locked(room.id())?;
-            let mut events=state.owned.operational_history_store.public_history_turn_locked(room.owner_user_id(),room.id(),target.id(),200)?;
-            drop(_guard);
-            let _guard=state.finish_public_history_snapshot(&session,&agent,&room,None,revision)?;
-            let mut turns=Vec::new();for event in &events {if !turns.contains(&event.turn_id) {turns.push(event.turn_id.clone());}}
-            let turn=args.turn_ref.or_else(||turns.get(args.turns_back.unwrap_or(0)).cloned().flatten());
-            events.retain(|event|event.turn_id==turn);events.truncate(args.limit.unwrap_or(200).clamp(1,200));events.reverse();
-            Ok(RuntimeToolResult {ok:true,payload:serde_json::json!({"agent_id":target.id(),"events":events,"redaction_version":crate::history::public_history::PUBLIC_HISTORY_VERSION})})
-        }).await.map_err(|_|crate::runtime::room_tool_admission::denied("history turn did not complete"))?
+        tokio::task::spawn_blocking(move || {
+                let room = state.authorize_public_history_room(&session, &agent, None)?;
+                let agents = state.owned.agent_store.get_session_agents(room.id());
+                let target = crate::runtime::room_tool_admission::resolve_agent(
+                    &agents, room.id(), args.agent_ref.as_deref().unwrap_or(agent.id()),
+                )?;
+                let _guard = state.owned.operational_history_store.lock_public_history()?;
+                state.owned.room_secret_observations.require(room.id(), false)?;
+                let revision = state.owned.operational_history_store.public_history_revision_locked(room.id())?;
+                let mut events = state.owned.operational_history_store.public_history_turn_locked(
+                    room.owner_user_id(), room.id(), target.id(), args.turn_ref.as_deref(),
+                    args.turns_back.unwrap_or(0), args.limit.unwrap_or(200),
+                )?;
+                drop(_guard);
+                let _guard = state.finish_public_history_snapshot(&session, &agent, &room, None, revision)?;
+                events.reverse();
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({"agent_id":target.id(),"events":events,"redaction_version":crate::history::public_history::PUBLIC_HISTORY_VERSION}),
+                })
+            })
+            .await
+            .map_err(|_| crate::runtime::room_tool_admission::denied("history turn did not complete"))?
     }
 }
 
@@ -587,50 +595,117 @@ mod admission_tests {
     use super::*;
     #[test]
     fn public_history_turn_selects_older_turn_before_event_limit() {
-        std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(|| {
-            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-                let root = std::env::temp_dir().join(format!("chariox-am9-turn-{:016x}", rand::random::<u64>()));
-                std::fs::create_dir(&root).unwrap();
-                let mut config = crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
-                config.room_agent_tools = true;
-                let mut app = crate::DaemonApp::bootstrap(config).unwrap();
-                let (room, actor) = crate::app::KernelSessionService::new(&mut app).create_session(
-                    crate::session::CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
-                ).unwrap();
-                let state = crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
-                let append = |turn: &str, text: &str| state.owned.operational_history_store.append_operational_event(
-                    HistoryEventKind::UserPrompt, Some(crate::history::HistoryEventRole::User), Some(text.into()),
-                    Default::default(), crate::history::HistoryEventTurnContext {
-                        session_id: Some(room.id().into()), agent_id: Some(actor.id().into()),
-                        turn_id: Some(turn.into()), public_history_owner_user_id: Some(room.owner_user_id().into()),
-                        ..Default::default()
-                    }
-                ).unwrap();
-                let first = append("previous", "previous first");
-                let second = append("previous", "previous second");
-                for index in 0..225 { append("newest", &format!("newest {index}")); }
-                for args in [serde_json::json!({"turns_back":1}), serde_json::json!({"turn_ref":"previous"})] {
-                    let result = state.dispatch_meta_runtime_tool_call_for_agent(room.id(), actor.id(), "chariox.history.turn", args).await.unwrap();
-                    assert!(result.ok);
-                    let events = result.payload["events"].as_array().unwrap();
-                    assert_eq!(events.len(), 2, "newest turn must not hide the requested retained turn");
-                    assert_eq!(events[0]["event_ref"], first.event_id);
-                    assert_eq!(events[1]["event_ref"], second.event_id);
-                }
-                let bounded = state.dispatch_meta_runtime_tool_call_for_agent(room.id(), actor.id(), "chariox.history.turn",
-                    serde_json::json!({"turn_ref":"previous", "limit":1})).await.unwrap();
-                assert_eq!(bounded.payload["events"].as_array().unwrap().len(), 1);
-                assert_eq!(bounded.payload["events"][0]["event_ref"], second.event_id);
-                let newest = state.dispatch_meta_runtime_tool_call_for_agent(room.id(), actor.id(), "chariox.history.turn",
-                    serde_json::json!({"turns_back":0})).await.unwrap();
-                assert_eq!(newest.payload["events"].as_array().unwrap().len(), 200);
-                let missing = state.dispatch_meta_runtime_tool_call_for_agent(room.id(), actor.id(), "chariox.history.turn",
-                    serde_json::json!({"turn_ref":"missing"})).await.unwrap();
-                assert!(missing.payload["events"].as_array().unwrap().is_empty());
-                drop(state);
-                std::fs::remove_dir_all(root).unwrap();
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let root = std::env::temp_dir()
+                            .join(format!("chariox-am9-turn-{:016x}", rand::random::<u64>()));
+                        std::fs::create_dir(&root).unwrap();
+                        let mut config = crate::config::DaemonConfig::for_tests()
+                            .with_session_history_root(root.join("history"));
+                        config.room_agent_tools = true;
+                        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+                        let (room, actor) = crate::app::KernelSessionService::new(&mut app)
+                            .create_session(crate::session::CreateSessionRequest::new(
+                                root.to_string_lossy(),
+                                root.to_string_lossy(),
+                            ))
+                            .unwrap();
+                        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                            Arc::new(Mutex::new(app)),
+                            1,
+                        )
+                        .runtime_state();
+                        let append = |turn: &str, text: &str| {
+                            state
+                                .owned
+                                .operational_history_store
+                                .append_operational_event(
+                                    HistoryEventKind::UserPrompt,
+                                    Some(crate::history::HistoryEventRole::User),
+                                    Some(text.into()),
+                                    Default::default(),
+                                    crate::history::HistoryEventTurnContext {
+                                        session_id: Some(room.id().into()),
+                                        agent_id: Some(actor.id().into()),
+                                        turn_id: Some(turn.into()),
+                                        public_history_owner_user_id: Some(room.owner_user_id().into()),
+                                        ..Default::default()
+                                    },
+                                )
+                                .unwrap()
+                        };
+                        let first = append("previous", "previous first");
+                        let second = append("previous", "previous second");
+                        for index in 0..225 {
+                            append("newest", &format!("newest {index}"));
+                        }
+                        for args in [
+                            serde_json::json!({"turns_back":1}),
+                            serde_json::json!({"turn_ref":"previous"}),
+                        ] {
+                            let result = state
+                                .dispatch_meta_runtime_tool_call_for_agent(
+                                    room.id(),
+                                    actor.id(),
+                                    "chariox.history.turn",
+                                    args,
+                                )
+                                .await
+                                .unwrap();
+                            assert!(result.ok);
+                            let events = result.payload["events"].as_array().unwrap();
+                            assert_eq!(
+                                events.len(),
+                                2,
+                                "newest turn must not hide the requested retained turn"
+                            );
+                            assert_eq!(events[0]["event_ref"], first.event_id);
+                            assert_eq!(events[1]["event_ref"], second.event_id);
+                        }
+                        let bounded = state
+                            .dispatch_meta_runtime_tool_call_for_agent(
+                                room.id(),
+                                actor.id(),
+                                "chariox.history.turn",
+                                serde_json::json!({"turn_ref":"previous", "limit":1}),
+                            )
+                            .await
+                            .unwrap();
+                        assert_eq!(bounded.payload["events"].as_array().unwrap().len(), 1);
+                        assert_eq!(bounded.payload["events"][0]["event_ref"], second.event_id);
+                        let newest = state
+                            .dispatch_meta_runtime_tool_call_for_agent(
+                                room.id(),
+                                actor.id(),
+                                "chariox.history.turn",
+                                serde_json::json!({"turns_back":0}),
+                            )
+                            .await
+                            .unwrap();
+                        assert_eq!(newest.payload["events"].as_array().unwrap().len(), 200);
+                        let missing = state
+                            .dispatch_meta_runtime_tool_call_for_agent(
+                                room.id(),
+                                actor.id(),
+                                "chariox.history.turn",
+                                serde_json::json!({"turn_ref":"missing"}),
+                            )
+                            .await
+                            .unwrap();
+                        assert!(missing.payload["events"].as_array().unwrap().is_empty());
+                        drop(state);
+                        std::fs::remove_dir_all(root).unwrap();
+                    })
             })
-        }).unwrap().join().unwrap();
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
