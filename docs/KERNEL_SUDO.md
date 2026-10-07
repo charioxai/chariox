@@ -20,8 +20,11 @@ check the access list and revoke any remaining entry before retrying.
 arrays. Scripts that previously consumed the grants array should select
 `.grants`. The terminal `/kernel access list` includes both kinds of entry.
 
-A sudo turn keeps ordinary provider tools and gains `chariox_kernel_request`
-through the existing runtime MCP. Its `request` argument is one serialized
+MP-08 / MP-10 / MP-11: provider discovery advertises `chariox_kernel_request`
+through the existing runtime MCP before the first turn, so official harnesses
+can cache its interface. Ordinary turns cannot call it. A sudo turn activates
+its authority while keeping ordinary provider tools. Its `request` argument
+is one serialized
 `LocalDaemonRequest`, for example:
 
 ```json
@@ -79,3 +82,12 @@ Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder. It uses Rust
 1.88.0 and the existing slot-run admission helper, covering queued revocation,
 rotation, session end, yield, interrupt, restart, critical receipts, external
 Unix requests, the Meta notice and protocol snapshots.
+
+MP-08 / MP-10 / MP-11: the shared router also filters every response to a
+local grant or sudo MCP caller. Credential read and mutation replies redact
+literal injection values. Raw MCP/connector configuration, native login
+output/codes, pairing/Cloud admission credentials and enrollment callbacks
+are withheld; inspect those through the host terminal. An operation can complete
+while its reply is withheld; check host-terminal state before retrying. Executor failures use
+a value-free error because parser/provider diagnostics can echo secrets.
+This preserves normal workspace/history authority and is not a file sandbox.

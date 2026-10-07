@@ -28,7 +28,11 @@ impl CommandRouter {
             crate::runtime::capability_executor::CapabilityRuntimeStore::new(
                 router.runtime_state.clone(),
             );
-        router.dispatch_authorized(command, request).await
+        let response_command = command.clone();
+        crate::runtime::external_response::finish_response(
+            &response_command,
+            router.dispatch_authorized(command, request).await,
+        )
     }
 
     async fn dispatch_authorized(
