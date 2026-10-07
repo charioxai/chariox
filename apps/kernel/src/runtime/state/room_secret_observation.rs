@@ -24,6 +24,7 @@ use crate::transport::room_browser_controller::{
 #[derive(Clone)]
 pub(super) struct RoomSecretObservations {
     root: PathBuf,
+    public_history: Option<crate::history::OperationalHistoryStore>,
     identity: Option<Arc<Zeroizing<String>>>,
     worker_room: Option<String>,
     migration_failed: bool,
@@ -48,9 +49,37 @@ struct Protection {
 }
 
 impl RoomSecretObservations {
+    pub(super) fn with_public_history(
+        mut self,
+        store: crate::history::OperationalHistoryStore,
+    ) -> Self {
+        self.public_history = Some(store);
+        self
+    }
+
+    // Lock order: public projection -> observation registry -> SQLite. Held
+    // through mutation, so pending sanitized writes cannot reinsert stale tokens.
+    fn invalidate_public_history(
+        &self,
+        room: &str,
+    ) -> Result<Option<std::sync::MutexGuard<'_, ()>>, DaemonError> {
+        if let Some(store) = &self.public_history {
+            let guard = store.lock_public_history()?;
+            store.invalidate_public_history_locked(if self.worker_room.is_some() {
+                None
+            } else {
+                Some(room)
+            })?;
+            Ok(Some(guard))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(super) fn new(root: PathBuf, recovered: BTreeSet<String>) -> Self {
         let mut store = Self {
             root,
+            public_history: None,
             identity: None,
             worker_room: None,
             migration_failed: false,
@@ -164,6 +193,7 @@ impl RoomSecretObservations {
 
     pub(super) fn register(&self, room: &str, value: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         if !rooms.contains_key(room) {
             rooms.insert(room.into(), self.initial(room)?);

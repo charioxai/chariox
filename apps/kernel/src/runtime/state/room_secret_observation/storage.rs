@@ -286,6 +286,7 @@ impl RoomSecretObservations {
     // resolve credentials or match Vault keys, but keep prior echoes scrubbed.
     pub(in crate::runtime::state) fn forget(&self, room: &str) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         self.blocked(room, false)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
@@ -320,6 +321,7 @@ impl RoomSecretObservations {
         room: &str,
     ) -> Result<(), DaemonError> {
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = rooms.entry(room.into()).or_insert_with(|| {
             self.initial(room).unwrap_or_else(|_| Protection {
@@ -357,6 +359,7 @@ impl RoomSecretObservations {
     pub(in crate::runtime::state) fn delete_room(&self, room: &str) -> Result<(), DaemonError> {
         // Keep an in-memory tombstone for already admitted late callbacks.
         let room = self.room_key(room);
+        let _history_guard = self.invalidate_public_history(room)?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         rooms.insert(
             room.into(),

@@ -9,6 +9,9 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
 
 pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        META_HISTORY_SEARCH_TOOL
+        | "chariox_meta_history_search"
+        | "mcp__chariox__chariox_meta_history_search" => Some(META_HISTORY_SEARCH_TOOL),
         META_SESSION_OVERVIEW_TOOL
         | "chariox_meta_session_overview"
         | "mcp__chariox__meta_session_overview"

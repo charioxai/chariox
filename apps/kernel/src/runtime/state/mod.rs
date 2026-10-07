@@ -127,6 +127,7 @@ mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
+mod public_history;
 mod publication_activation;
 mod room_browser_artifact;
 mod room_browser_controller;
@@ -754,6 +755,17 @@ impl KernelRuntimeState {
                 .as_ref()
                 .map(|binding| binding.session_id.clone()),
         );
+        // MP-08 / MP-11 A09: capture only newly admitted, sanitized public rows.
+        let projection_protection = room_secret_observations.clone();
+        let projection_sessions = session_store.clone();
+        operational_history_store.set_public_history_projector(Arc::new(move |event| {
+            let session = projection_sessions
+                .get_session(event.session_id.as_deref()?)
+                .ok()?;
+            projection_protection.public_history_document(event, session.owner_user_id())
+        }));
+        let room_secret_observations =
+            room_secret_observations.with_public_history(operational_history_store.clone());
         let runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,

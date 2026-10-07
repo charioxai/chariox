@@ -255,4 +255,4 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 450;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 453;

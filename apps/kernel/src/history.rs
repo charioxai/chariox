@@ -20,6 +20,7 @@ mod operational_legacy_import;
 mod operational_query;
 mod operational_retention;
 mod operational_session;
+pub(crate) mod public_history;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
@@ -487,6 +488,7 @@ struct OperationalHistoryWriteRecord {
     event_json: String,
     metadata_text: String,
     merge_key: Option<String>,
+    public_document: Option<public_history::PublicHistoryDocument>,
 }
 
 #[derive(Debug)]
@@ -552,6 +554,8 @@ pub struct OperationalHistoryStore {
     connection: Arc<Mutex<Connection>>,
     legacy_import_lock: Arc<Mutex<()>>,
     projection_schema_initialized: Arc<AtomicBool>,
+    public_history_projector: Arc<public_history::ProjectorSlot>,
+    public_history_lock: Arc<Mutex<()>>,
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
@@ -590,6 +594,17 @@ impl OperationalHistoryStore {
         }
         let mut connection =
             Connection::open(&path).map_err(|error| operational_history_error("open", error))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "protect history file",
+                    message: error.to_string(),
+                }
+            })?;
+        }
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| operational_history_error("enable WAL mode", error))?;
@@ -600,6 +615,7 @@ impl OperationalHistoryStore {
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
+        public_history::initialize_public_history(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",
@@ -632,6 +648,9 @@ impl OperationalHistoryStore {
         writer_connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| operational_history_error("configure writer timeout", error))?;
+        writer_connection
+            .execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")
+            .map_err(|error| operational_history_error("protect writer", error))?;
         let (writer_sender, writer_receiver) =
             mpsc::sync_channel(OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT);
         let writer_health = Arc::new(OperationalHistoryWriterHealth::default());
@@ -652,6 +671,8 @@ impl OperationalHistoryStore {
             connection: Arc::new(Mutex::new(connection)),
             legacy_import_lock: Arc::new(Mutex::new(())),
             projection_schema_initialized: Arc::new(AtomicBool::new(false)),
+            public_history_projector: Default::default(),
+            public_history_lock: Default::default(),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
@@ -744,7 +765,8 @@ impl OperationalHistoryStore {
             return Ok(None);
         }
         entry.validate_for_history_append("replace operational history transcript")?;
-        let connection =
+        let _public_guard = self.lock_public_history()?;
+        let mut connection =
             self.connection
                 .lock()
                 .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -792,7 +814,11 @@ impl OperationalHistoryStore {
             }
         })?;
         let metadata_text = searchable_metadata(&replacement);
-        connection
+        let document = self.project_public_history(&replacement);
+        let transaction = connection
+            .transaction()
+            .map_err(|error| operational_history_error("replace public history", error))?;
+        transaction
             .execute(
                 "UPDATE history_events
                  SET timestamp_ms = ?2,
@@ -845,6 +871,11 @@ impl OperationalHistoryStore {
                 operation: "replace operational history event",
                 message: error.to_string(),
             })?;
+        public_history::write_public_document(&transaction, &replacement, document.as_ref())
+            .map_err(|error| operational_history_error("replace public history", error))?;
+        transaction
+            .commit()
+            .map_err(|error| operational_history_error("replace public history", error))?;
         Ok(Some(replacement))
     }
 
@@ -948,6 +979,7 @@ impl OperationalHistoryStore {
         if events.is_empty() || !self.capture_enabled() {
             return Ok(());
         }
+        let _public_guard = self.lock_public_history()?;
         let mut encoded_events = Vec::with_capacity(events.len());
         let mut estimated_append_bytes = 0_u64;
         for event in events {
@@ -965,6 +997,7 @@ impl OperationalHistoryStore {
             let merge_key = history_event_merge_key(event).map(str::to_string);
             encoded_events.push(OperationalHistoryWriteRecord {
                 event: event.clone(),
+                public_document: self.project_public_history(event),
                 event_json,
                 metadata_text,
                 merge_key,
@@ -1006,6 +1039,7 @@ impl OperationalHistoryStore {
                 operation: "append operational history event",
                 message,
             })?;
+        drop(_public_guard);
         self.enforce_size_budget_after_append(estimated_append_bytes)?;
         Ok(())
     }
@@ -1053,7 +1087,7 @@ fn commit_operational_history_batch(
         let mut statement = transaction.prepare(OPERATIONAL_HISTORY_INSERT_SQL)?;
         for record in batch.iter().flat_map(|request| request.records.iter()) {
             let event = &record.event;
-            statement.execute(params![
+            let inserted = statement.execute(params![
                 event.event_id.as_str(),
                 event.sequence as i64,
                 event.timestamp_ms as i64,
@@ -1077,6 +1111,13 @@ fn commit_operational_history_batch(
                 record.merge_key.as_deref(),
                 record.event_json.as_str(),
             ])?;
+            if inserted > 0 {
+                public_history::write_public_document(
+                    &transaction,
+                    event,
+                    record.public_document.as_ref(),
+                )?;
+            }
         }
         drop(statement);
         transaction.commit()
