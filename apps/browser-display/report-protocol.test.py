@@ -42,4 +42,19 @@ class ProtocolReport(unittest.TestCase):
     verdict=json.loads((root/'report/report.json').read_text())
     self.assertEqual(verdict['status'],'PASS_PERFORMANCE_COMPONENT' if seam=='green' else 'RED_PERFORMANCE',seam)
 
+class DensitySettleReport(unittest.TestCase):
+ def test_mp10_density_settle_limits_are_strict(self):
+  source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=CHECKOUT,text=True).strip()
+  with tempfile.TemporaryDirectory(prefix='chariox-mp10-density-') as temporary:
+   root=Path(temporary);case=root/'local-scroll60-8000000';case.mkdir()
+   (root/'campaign.json').write_text(json.dumps({'source':source,'exit_code':0,'cases':[{'profile':'local','workload':'scroll60','bitrate':8000000,'code':0}]}))
+   base={'source':source,'source_dirty':False,'protocol':447,'status':'PASS_LOCAL_COMPONENT','network':{'rtt':0},'latency':{'p95_ms':20},'type_latency':{'p95_ms':20},'motion':{'samples':[],'effective_fps':60,'settled_fidelity':{'lossless':True},'cpu':{'cores':{'pipeline':.5}}},'samples':[{'mem_available_bytes':20*1024**3,'disk_free_bytes':30*1024**3}]}
+   for dpr,settle,code in [(1,299,0),(1,300,1),(2,499,0),(2,500,1)]:
+    receipt=json.loads(json.dumps(base));receipt['dpr']=dpr;receipt['motion']['settle_present_ms']=settle
+    (case/'results.json').write_text(json.dumps(receipt))
+    result=subprocess.run(['python3',str(CHECKOUT/'apps/browser-display/report.py'),str(root),str(root/'report'),str(CHECKOUT)],capture_output=True,text=True)
+    self.assertEqual(result.returncode,code,(dpr,settle,result.stderr))
+    verdict=json.loads((root/'report/report.json').read_text())
+    self.assertEqual(verdict['cases'][0]['motion']['settle_target_ms'],500 if dpr==2 else 300)
+
 if __name__=='__main__':unittest.main()

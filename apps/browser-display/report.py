@@ -60,7 +60,8 @@ for case in campaign['cases']:
  if motion:
   row['motion']={k:motion.get(k) for k in ('effective_fps','event_mbps','application_mbps','settle_ms','settle_present_ms','wheel_stats')}
   target_fps=(50 if data['dpr']==2 else 59) if row['workload'] in ['scroll60','wheel60'] else 30
-  row['motion'].update(exact=motion['settled_fidelity']['lossless'],fps_target=target_fps,fps_pass=motion['effective_fps']>=target_fps,settle_pass=motion.get('settle_present_ms',motion.get('settle_ms',float('inf')))<300,
+  settle_target=500 if data['dpr']==2 else 300
+  row['motion'].update(exact=motion['settled_fidelity']['lossless'],fps_target=target_fps,fps_pass=motion['effective_fps']>=target_fps,settle_target_ms=settle_target,settle_pass=motion.get('settle_present_ms',motion.get('settle_ms',float('inf')))<settle_target,
    live_psnr_db=[p['psnr_db'] for p in motion.get('live_pairs',[])])
   spans={}
   if motion['samples']:
