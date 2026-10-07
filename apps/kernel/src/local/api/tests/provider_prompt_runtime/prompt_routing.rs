@@ -1070,6 +1070,10 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
     {
         LocalDaemonResponse::PromptCancelled { cancellation } => {
             assert_eq!(cancellation.prompt.target_agent_id(), prompt_agent.id());
+            assert_eq!(
+                cancellation.prompt.status(),
+                crate::session::PromptStatus::Cancelling
+            );
             assert!(cancellation.started_next.is_none());
         }
         other => panic!("unexpected local response: {other:?}"),
@@ -1087,12 +1091,12 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
             .map(|prompt| prompt.status()),
         Some(crate::session::PromptStatus::Running)
     );
-    assert_eq!(
-        session_state
-            .active_prompt_for_agent(prompt_agent.id())
-            .map(|prompt| prompt.status()),
-        Some(crate::session::PromptStatus::Cancelling)
-    );
+    // A dropped pre-submit dispatch can finish cancellation in the output
+    // pump before this snapshot. The request above proves the transition;
+    // any still-active target must be cancelling, never running again.
+    assert!(session_state
+        .active_prompt_for_agent(prompt_agent.id())
+        .is_none_or(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling));
 }
 
 #[test]
