@@ -123,8 +123,9 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                 }
             }
             HistoryEventKind::ProviderOutput => {
-                if let (Some(turn), Some(content)) = (turns.last_mut(), non_empty_content(&event)) {
-                    turn.assistant_outputs.push(content);
+                // Answers stream as deltas whose spacing is part of the text.
+                if let (Some(turn), Some(content)) = (turns.last_mut(), event.content.as_ref()) {
+                    turn.assistant_outputs.push(content.clone());
                 }
             }
             HistoryEventKind::ProviderTool
@@ -184,7 +185,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
         .iter()
         .map(|turn| {
             let answer = single_line(&truncate_bytes(
-                &turn.assistant_outputs.join("\n"),
+                &turn.assistant_outputs.concat(),
                 MAX_PRIOR_ASSISTANT_BYTES,
             ));
             (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
@@ -228,10 +229,7 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
         "- User: {}",
         truncate_bytes(turn.user_prompt.trim(), MAX_LATEST_ITEM_BYTES)
     ));
-    let assistant = truncate_bytes(
-        &turn.assistant_outputs.join("\n"),
-        MAX_LATEST_ITEM_BYTES * 2,
-    );
+    let assistant = truncate_bytes(&turn.assistant_outputs.concat(), MAX_LATEST_ITEM_BYTES * 2);
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
     }
@@ -440,6 +438,28 @@ mod tests {
         assert!(AgentConversation::from_events(&events[4..])
             .before_prompt("prompt-active")
             .is_empty());
+    }
+
+    #[test]
+    fn streamed_answer_chunks_render_as_one_answer() {
+        let events = vec![
+            user_event(1, "session", "agent", "Invent a release name."),
+            output_event(2, "session", "agent", "run-1", "silver-l"),
+            output_event(3, "session", "agent", "run-1", "antern"),
+            user_event(4, "session", "agent", "Multiply."),
+            output_event(5, "session", "agent", "run-1", "410"),
+            output_event(6, "session", "agent", "run-1", "39518"),
+            output_event(7, "session", "agent", "run-1", " is the"),
+            output_event(8, "session", "agent", "run-1", " product."),
+        ];
+
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+
+        assert!(handoff.contains("Assistant: silver-lantern"), "{handoff}");
+        assert!(
+            handoff.contains("- Assistant output: 41039518 is the product."),
+            "{handoff}"
+        );
     }
 
     fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {
