@@ -265,14 +265,23 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
     let mut credential = browser_credential("creation", "creation-key");
     credential.metadata =
         Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
-    let service = crate::secret::RuntimeSecretService::with_vault_config(
-        Vec::new(),
-        &crate::config::UserCredentialVaultConfig {
-            backend: crate::config::CredentialVaultBackend::ProcessMemory,
-            ..Default::default()
-        },
+    let vault_config = crate::config::UserCredentialVaultConfig {
+        path: root.path().join("vault").display().to_string(),
+        ..Default::default()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
     )
     .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let service = crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config)
+        .unwrap();
     room.runtime
         .upsert_observed_vault_credential(
             &service,
