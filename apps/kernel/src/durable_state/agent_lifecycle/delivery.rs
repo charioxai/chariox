@@ -20,6 +20,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.obligations.push(AgentObligation {
                         id: id.clone(),
                         kind: "reply".into(),
+                        completion_task_id: None,
                         resource_id: Some(source.clone()),
                         status: "open".into(),
                         dispatch_state: "accepted".into(),
@@ -74,6 +75,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if t.room_id == room
                     && t.agent_id == agent
                     && t.state == ExecutionState::Waiting
+                    && e.kind != "message"
                     && e.payload
                         .get("task_id")
                         .and_then(serde_json::Value::as_str)
@@ -180,7 +182,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                     let mut changed = false;
                     for o in &mut t.obligations {
-                        if o.resource_id.as_deref() == Some(&e.source_id)
+                        if o.completion_source() == Some(&e.source_id)
                             && matches!(o.status.as_str(), "failed" | "settling")
                         {
                             o.status = "satisfied".into();

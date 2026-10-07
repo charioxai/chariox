@@ -53,8 +53,17 @@ pub struct AgentObligation {
     pub id: String,
     pub kind: String,
     pub resource_id: Option<String>,
+    #[serde(default)]
+    pub completion_task_id: Option<String>,
     pub status: String,
     pub dispatch_state: String,
+}
+impl AgentObligation {
+    pub(crate) fn completion_source(&self) -> Option<&str> {
+        self.completion_task_id
+            .as_deref()
+            .or(self.resource_id.as_deref())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWait {

@@ -58,6 +58,7 @@ pub(super) fn migrate(db: &mut Connection) -> Result<(), DaemonError> {
         task.obligations.push(AgentObligation {
             id: id.into(),
             kind: value["kind"].as_str().unwrap_or("unknown").into(),
+            completion_task_id: None,
             resource_id: receipt
                 .as_ref()
                 .and_then(|r| r["resource_id"].as_str())

@@ -35,6 +35,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             task.provider_run_id = run.or(task.provider_run_id);
             save(tx, &task)?;
+            bind_first_delegate_task(tx, &task)?;
             Ok(Outcome::Task(task))
         }
         Operation::RegisterObligation {
@@ -65,6 +66,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task.obligations.push(AgentObligation {
                 id,
                 kind,
+                completion_task_id: None,
                 resource_id: resource,
                 status: "open".into(),
                 dispatch_state: "intent".into(),
@@ -136,7 +138,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if !t.obligations.iter().any(|o| {
                     &o.id == id
                         && o.status == "open"
-                        && o.resource_id.as_deref() == Some(&registration.source_id)
+                        && o.completion_source() == Some(&registration.source_id)
                 }) {
                     return Err(error("source does not cover an open obligation"));
                 }
@@ -362,7 +364,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
                 let mut changed = false;
                 for o in &mut t.obligations {
-                    if o.resource_id.as_deref() == Some(&source) && o.status == "open" {
+                    if o.completion_source() == Some(&source) && o.status == "open" {
                         o.status = if success { "settling" } else { "failed" }.into();
                         changed = true;
                     }
@@ -612,6 +614,50 @@ fn recover_source(
             o.status = if success { "settling" } else { "failed" }.into();
             task.revision += 1;
             save(tx, task)?;
+        }
+    }
+    Ok(())
+}
+
+// Bind once: a later independent task on the same child cannot settle the first delegation.
+fn bind_first_delegate_task(
+    tx: &Transaction<'_>,
+    child: &AgentTaskExecution,
+) -> Result<(), DaemonError> {
+    for mut parent in tasks(tx)? {
+        if parent.room_id != child.room_id
+            || parent.owner_user_id.is_empty()
+            || parent.owner_user_id != child.owner_user_id
+        {
+            continue;
+        }
+        let mut changed = false;
+        for obligation in &mut parent.obligations {
+            if obligation.kind == "delegate"
+                && obligation.status == "open"
+                && obligation.dispatch_state == "accepted"
+                && obligation.resource_id.as_deref() == Some(&child.agent_id)
+                && obligation.completion_task_id.is_none()
+            {
+                obligation.completion_task_id = Some(child.task_id.clone());
+                let id = format!("completion-{}", obligation.id);
+                if let Some(mut registration) = registrations(tx, &parent.task_id)?
+                    .into_iter()
+                    .find(|r| r.id == id)
+                {
+                    registration.source_id = child.task_id.clone();
+                    tx.execute(
+                        "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                        params![id, encode(&registration)?],
+                    )
+                    .map_err(sql)?;
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            parent.revision += 1;
+            save(tx, &parent)?;
         }
     }
     Ok(())
