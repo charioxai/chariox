@@ -1,3 +1,4 @@
+import {nativeFontMetricOverrides} from './browser-mirror-fonts.js'
 import {readMirrorFrame,type MirrorChunk} from './browser-mirror-chunks.js'
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
 import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from './browser-mirror-security.js'
@@ -21,6 +22,7 @@ export class BrowserMirrorRenderer {
   private dom=new Map<string,Node>()
   private ids=new WeakMap<Node,string>()
   private resources=new Map<string,string>()
+  private fontMetrics=new Map<string,{ascent:string;descent:string}>()
   private tileUrls:string[]=[]
   private tileCache=new Map<string,TileRaster>()
   private overlays:HTMLElement[]=[]
@@ -231,7 +233,7 @@ export class BrowserMirrorRenderer {
       }
       this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())
       const fontStyle=this.doc.createElement('style');fontStyle.dataset.mirrorFonts='true'
-      for(const font of packet.fonts){const url=this.resources.get(font.resource);if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};}`}
+      for(const font of packet.fonts){const url=this.resources.get(font.resource),metrics=font.family===`cx-native-${font.resource}`?this.fontMetrics.get(font.resource):null;if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};${metrics?`ascent-override:${metrics.ascent};descent-override:${metrics.descent};`:''}}`}
       if(fontStyle.textContent)this.doc.head.append(fontStyle)
       const pseudoStyle=this.doc.createElement('style');pseudoStyle.dataset.mirrorPseudo='true'
       if([...next.values()].some(record=>Object.keys(record.pseudo??{}).length))this.doc.head.append(pseudoStyle)
@@ -274,7 +276,7 @@ export class BrowserMirrorRenderer {
       this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
       const retainedTileUrls=new Set(newTiles.map(t=>t.url));for(const url of this.tileUrls)if(!retainedTileUrls.has(url))URL.revokeObjectURL(url);this.tileUrls=[...retainedTileUrls]
       const usedResources=new Set(packet.fonts.map(f=>f.resource));for(const record of next.values()){if(record.resource)usedResources.add(record.resource);for(const value of Object.values(record.style??{}))if(value.startsWith('resource:'))usedResources.add(value.slice(9))}
-      for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id)}
+      for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id);this.fontMetrics.delete(id)}
       this.records=next;this.sequence=packet.sequence;this.documentId=packet.document_id
       if(!preserve){
         if(packet.selection){const selected=packet.selection,anchor=this.dom.get(selected.anchor_id)!,focus=this.dom.get(selected.focus_id)!,selection=anchor.ownerDocument!.getSelection()!;if(selection.anchorNode!==anchor||selection.anchorOffset!==selected.anchor_offset||selection.focusNode!==focus||selection.focusOffset!==selected.focus_offset)selection.setBaseAndExtent(anchor,selected.anchor_offset,focus,selected.focus_offset)}else for(const doc of new Set([...this.dom.values()].map(n=>n.ownerDocument).filter((d):d is Document=>d!==null))){const selection=doc.getSelection();if(selection&&!selection.isCollapsed)selection.removeAllRanges()}
@@ -291,7 +293,10 @@ export class BrowserMirrorRenderer {
   }
   private async addResource(resource:MirrorResource):Promise<void> {
     if(await digest(bytesOf(resource.data_base64))!==resource.resource_id)throw Error('MP-11: mirror resource digest')
-    if(!this.resources.has(resource.resource_id))this.resources.set(resource.resource_id,blobUrl(resource.data_base64,resource.mime_type))
+    if(!this.resources.has(resource.resource_id)){
+      if(resource.mime_type==='font/woff'){const metrics=await nativeFontMetricOverrides(bytesOf(resource.data_base64));if(metrics)this.fontMetrics.set(resource.resource_id,metrics)}
+      this.resources.set(resource.resource_id,blobUrl(resource.data_base64,resource.mime_type))
+    }
   }
   // MP-10: each line fragment is measured independently, including wrapped text.
   textRunGeometry():Array<{id:string;rects:Array<{x:number;y:number;width:number;height:number}>}> {
@@ -326,7 +331,7 @@ export class BrowserMirrorRenderer {
     }
     this.timed('drift_scan',started);return [...drift]
   }
-  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
+  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();this.fontMetrics.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
   close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
