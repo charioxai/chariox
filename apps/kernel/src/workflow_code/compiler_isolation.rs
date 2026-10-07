@@ -116,7 +116,7 @@ fn open_schema_root(path: &Path) -> Result<fs::File, crate::DaemonError> {
     open_schema_path(libc::AT_FDCWD, path, libc::O_DIRECTORY, false)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_schema_root(_path: &Path) -> Result<fs::File, crate::DaemonError> {
     Err(isolation_error(
         "safe schema import is unavailable on this host",
@@ -185,7 +185,7 @@ fn open_schema_path(
     Ok(unsafe { fs::File::from_raw_fd(fd as i32) })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_schema_file(
     _directory: &fs::File,
     _root: &Path,
@@ -194,6 +194,88 @@ fn open_schema_file(
     Err(isolation_error(
         "safe schema import is unavailable on this host",
     ))
+}
+
+#[cfg(target_os = "macos")]
+#[path = "compiler_seatbelt.rs"]
+mod seatbelt;
+#[cfg(target_os = "macos")]
+pub(super) use seatbelt::compiler_command;
+
+#[cfg(target_os = "macos")]
+fn open_schema_root(path: &Path) -> Result<fs::File, crate::DaemonError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(io_error("workflow_code.compile"))?;
+    open_schema_beneath(
+        &directory,
+        path.strip_prefix("/")
+            .map_err(|_| isolation_error("schema root must be absolute"))?,
+        true,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn open_schema_file(
+    directory: &fs::File,
+    root: &Path,
+    path: &Path,
+) -> Result<fs::File, crate::DaemonError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| isolation_error("schema outside approved import root"))?;
+    let file = open_schema_beneath(directory, relative, false)?;
+    if !file
+        .metadata()
+        .map_err(io_error("workflow_code.compile"))?
+        .is_file()
+    {
+        return Err(isolation_error("schema import must be a regular file"));
+    }
+    Ok(file)
+}
+
+#[cfg(target_os = "macos")]
+fn open_schema_beneath(
+    directory: &fs::File,
+    path: &Path,
+    is_directory: bool,
+) -> Result<fs::File, crate::DaemonError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let mut held = directory
+        .try_clone()
+        .map_err(io_error("workflow_code.compile"))?;
+    let mut parts = path.components().peekable();
+    while let Some(part) = parts.next() {
+        let std::path::Component::Normal(name) = part else {
+            return Err(isolation_error(
+                "schema path must stay beneath approved root",
+            ));
+        };
+        let name = std::ffi::CString::new(name.as_bytes())
+            .map_err(|_| isolation_error("invalid schema path"))?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | if parts.peek().is_some() || is_directory {
+                libc::O_DIRECTORY
+            } else {
+                0
+            };
+        let fd = unsafe { libc::openat(held.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io_error("workflow_code.compile")(
+                std::io::Error::last_os_error(),
+            ));
+        }
+        held = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(held)
 }
 
 #[cfg(target_os = "linux")]
@@ -280,13 +362,17 @@ pub(super) fn compiler_command(
     Ok(command)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn compiler_command(
     _node: &Path,
     _limits: &WorkflowCodeLimitsConfig,
 ) -> Result<Command, crate::DaemonError> {
     Err(isolation_error("isolated workflow compilation is unavailable on this host; a supported compiler isolation backend is required"))
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "compiler_seatbelt_tests.rs"]
+mod macos_tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

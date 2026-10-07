@@ -76,9 +76,19 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
     // Caller-selected paths are never executed on the home kernel.
     let _ = node_path;
     let node = discover_workflow_code_node_path()?;
+    let max_old_space_mb = u64::max(16, limits.script_memory_bytes.div_ceil(1024 * 1024));
+    let mut command = super::compiler_isolation::compiler_command(&node, limits)?;
+    command
+        .arg(format!("--max-old-space-size={max_old_space_mb}"))
+        .arg("--disable-wasm-trap-handler")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(NODE_WORKFLOW_CODE_COMPILER);
     // Declarative evaluation has no external effects. Resolve serialized schema
-    // requests and replay with that approved data, sharing one total deadline.
-    for _ in 0..32 {
+    // requests and replay with that approved data, sharing one total deadline
+    // and the prepared private runtime boundary.
+    const MAX_SCHEMA_RESOLUTION_ROUNDS: usize = 32;
+    for round in 0..=MAX_SCHEMA_RESOLUTION_ROUNDS {
         let remaining = total_timeout.saturating_sub(started.elapsed()).as_millis() as u64;
         if remaining == 0 {
             return Err(crate::DaemonError::LocalTransport {
@@ -102,59 +112,12 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
             operation: "workflow_code.compile",
             message: format!("failed to serialize workflow-code compiler input: {error}"),
         })?;
-        let max_old_space_mb = u64::max(16, limits.script_memory_bytes.div_ceil(1024 * 1024));
-        let mut command = super::compiler_isolation::compiler_command(&node, &run_limits)?;
-        let mut child = command
-            .arg(format!("--max-old-space-size={max_old_space_mb}"))
-            .arg("--disable-wasm-trap-handler")
-            .arg("--input-type=module")
-            .arg("-e")
-            .arg(NODE_WORKFLOW_CODE_COMPILER)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| crate::DaemonError::LocalTransport {
-                operation: "workflow_code.compile",
-                message: format!("failed to start Node workflow-code compiler: {error}"),
-            })?;
-
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| crate::DaemonError::LocalTransport {
-                operation: "workflow_code.compile",
-                message: "failed to open Node workflow-code compiler stdin".to_string(),
-            })?;
-        stdin
-            .write_all(&input)
-            .map_err(io_error("workflow_code.compile"))?;
-        drop(stdin);
-
-        let timeout = Duration::from_millis(run_limits.script_timeout_ms);
-        match child
-            .wait_timeout(timeout)
-            .map_err(io_error("workflow_code.compile"))?
-        {
-            Some(_) => {}
-            None => {
-                if child.id() > 1 {
-                    let _ = child.kill();
-                }
-                let _ = child.wait();
-                return Err(crate::DaemonError::LocalTransport {
-                    operation: "workflow_code.compile",
-                    message: format!(
-                        "workflow-code script exceeded configured timeout of {} ms",
-                        limits.script_timeout_ms
-                    ),
-                });
-            }
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(io_error("workflow_code.compile"))?;
+        let output = super::compiler_process::run(
+            &mut command,
+            input,
+            &run_limits,
+            started + total_timeout,
+        )?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() {
@@ -179,6 +142,9 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
                 message: format!("failed to parse Node workflow-code compiler output: {error}"),
             })?;
         if !compiler_output.schema_requests.is_empty() {
+            if round == MAX_SCHEMA_RESOLUTION_ROUNDS {
+                break;
+            }
             imports.load(compiler_output.schema_requests, limits)?;
             continue;
         }
