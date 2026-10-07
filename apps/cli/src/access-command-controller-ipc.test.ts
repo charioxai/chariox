@@ -26,6 +26,7 @@ async function peer(t: test.TestContext, cursor: number, agentId: string) {
   let connections = 0, revokes = 0, lists = 0
   let notice: unknown = null
   const snapshot = () => ({ event: "user_domain_grants_changed", cursor,
+    room_computer: [{ agent_id: agentId, session_id: "session", allowed: false }],
     grants: [{ agent_id: agentId, session_id: "session", kernel_id: agentId,
       resources: [{ kind: "note", note_id: "note" }], since_ms: 100,
       focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice })
@@ -78,7 +79,8 @@ test("idle grant feed and overlapping revocation share the real default-timeout 
   await until(() => kernel.polls.length === 1)
   // This mutation remains pending beyond the observation watchdog's default 5s.
   await controller.handle(["revoke", "holder"])
-  assert.match(lines.at(-1)!, /Revoked access for holder/)
+  assert.match(lines.at(-1)!, /Revoked access and Room Computer control for holder\./)
+  assert.match(lines.at(-1)!, /^holder · session session · Room Computer revoked$/m)
   assert.equal(kernel.revokes, 1)
   assert.equal(kernel.connections, 1, "idle observations must not reset the shared control socket")
   assert.ok(kernel.polls.length >= 5 && kernel.polls.length <= 8)

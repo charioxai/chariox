@@ -79,6 +79,15 @@ impl KernelRuntimeState {
         Ok(())
     }
 }
+impl KernelRuntimeOwnedState {
+    /// A removed agent id never returns, so its Room denial is dropped with it.
+    pub(super) fn forget_room_computer_access(&self, agent_id: &str) {
+        self.room_computer_revoked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent_id);
+    }
+}
 fn access_error() -> DaemonError {
     crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
         .into_daemon("room_computer")

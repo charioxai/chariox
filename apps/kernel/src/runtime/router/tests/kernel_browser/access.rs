@@ -507,3 +507,44 @@ fn terminal<'a>(
 ) -> futures_util::future::BoxFuture<'a, Result<LocalDaemonResponse, crate::DaemonError>> {
     Box::pin(router.dispatch(command, request))
 }
+
+#[test]
+fn mp11_room_computer_revoke_all_is_pruned_with_removed_agents() {
+    run_test(|| {
+        Box::pin(async {
+            let workspace = crate::test_support::TestWorktree::new("mp11-room-revoke-prune");
+            let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+            let (session, first) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            let second = spawn_test_agent(&mut app, session.id(), "second", "dev-stub");
+            let revoked = app.room_computer_revoked.clone();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            let ids = || revoked.lock().unwrap().iter().cloned().collect::<Vec<_>>();
+            human(
+                &router,
+                KernelBrowserCommand::RevokeGrants { agent_id: None },
+            )
+            .await;
+            let mut expected = vec![first.id().to_string(), second.id().to_string()];
+            expected.sort();
+            assert_eq!(ids(), expected);
+            for request in [
+                LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+                    session_id: session.id().into(),
+                    agent_id: second.id().into(),
+                }),
+                LocalDaemonRequest::EndSession(crate::local::EndSessionRequest {
+                    session_id: session.id().into(),
+                }),
+            ] {
+                Box::pin(router.dispatch(terminal_command("mp11-remove", &request), request))
+                    .await
+                    .unwrap();
+                assert!(!ids().contains(&second.id().to_string()));
+            }
+            assert!(ids().is_empty());
+            router.runtime_state().shutdown_cleanup().await.unwrap();
+        })
+    });
+}

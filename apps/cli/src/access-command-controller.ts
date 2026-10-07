@@ -52,8 +52,8 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
       const snapshot = response.KernelBrowser?.result
       if (!snapshot || snapshot.event !== "user_domain_grants_changed") throw new Error(response.Error?.message ?? "Access grants require kernel protocol 443.")
       deps.appendNotice([
-        args[0] === "revoke" ? `Revoked access for ${args[1]}.` : args[0] === "grant" ? `Granted Room Computer control for ${args[1]}.` : "User-domain access:",
-        ...(snapshot.room_computer ?? []).map(g => `${g.agent_id} · Room ${g.session_id} · Computer ${g.allowed ? "allowed" : "revoked"}`),
+        args[0] === "revoke" ? `Revoked access and Room Computer control for ${args[1]}.` : args[0] === "grant" ? `Granted Room Computer control for ${args[1]}.` : "User-domain access:",
+        ...(snapshot.room_computer ?? []).map(g => `${g.agent_id} · session ${g.session_id} · Room Computer ${g.allowed ? "allowed" : "revoked"}`),
         ...snapshot.grants.map(g => `${g.agent_id} · session ${g.session_id || "pending"} · kernel ${g.kernel_id} · ${g.focused ? "focused" : "retained"}\n  resources: ${g.resources.map(userDomainResourceLabel).join(", ") || "none touched"}\n  expiry: ${userDomainGrantExpiry(g)}`),
         ...(snapshot.grants.length ? [] : ["No current grants."]),
       ].join("\n"))
