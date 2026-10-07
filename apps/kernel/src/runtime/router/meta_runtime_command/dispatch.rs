@@ -205,7 +205,7 @@ impl CommandRouter {
         let response = match dispatched {
             Ok(response) => response,
             Err(error) => {
-                let result = meta_command_failure_result(&args.command, error);
+                let result = meta_command_failure_result(&args.command, &error);
                 self.audit_meta_run_command(
                     Some(provider_run.id()),
                     &session,
@@ -215,6 +215,11 @@ impl CommandRouter {
                     result.payload.clone(),
                 )
                 .await;
+                // MP-08/MP-11: keep the refusal typed for the MCP/client code
+                // projection after recording the normal failed-command audit.
+                if matches!(error, DaemonError::UserDomainRefused { .. }) {
+                    return Err(error);
+                }
                 return Ok(result);
             }
         };

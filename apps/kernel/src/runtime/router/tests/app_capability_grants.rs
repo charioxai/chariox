@@ -498,6 +498,58 @@ async fn capability_review_round3_app_deny_is_typed_not_requested() {
     room.router.runtime_state.shutdown_cleanup().await.unwrap();
 }
 
+/// MP-08/MP-11 (#922 round 4): command routing preserves the shared Deny code.
+#[tokio::test]
+async fn capability_review_round4_room_app_deny_is_typed_not_requested() {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    let (result, ()) = tokio::join!(
+        room.router.dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.room.run_command",
+            serde_json::json!({"command": format!("extension grant app {agent} installed")}),
+        ),
+        answer_app_decision(&room, "deny")
+    );
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotRequested
+            })
+        ),
+        "MP-11: command routing must retain user_domain_not_requested: {result:?}"
+    );
+    let events = room
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .unwrap();
+    assert!(
+        events.iter().any(|event| {
+            event.kind == "metaagent.command.executed"
+                && event.payload["metaagent_id"] == agent
+                && event.payload["command"] == format!("extension grant app {agent} installed")
+                && event.payload["status"] == "failed"
+        }),
+        "MP-11: typed refusals must still audit the failed command"
+    );
+    assert!(!bound(&room, &agent).await);
+    assert!(room
+        .router
+        .runtime_state
+        .session_snapshot(&room.session)
+        .await
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|item| item.title() != Some("Chariox resource access")));
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
 async fn answer_app_decision(room: &Room, choice: &str) {
     let interaction = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {

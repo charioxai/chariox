@@ -591,8 +591,7 @@ impl KernelRuntimeState {
                     host.acquisition_fence(&user, agent.id()) == fence
                 })
                 .await?
-                .as_deref()
-                != Some(prompt.as_str())
+                != prompt
             {
                 return Err(super::capability_grant_runtime::refused(
                     crate::error::UserDomainRefusalReason::NotRequested,

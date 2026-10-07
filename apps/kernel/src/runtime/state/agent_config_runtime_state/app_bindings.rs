@@ -559,8 +559,8 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .check_app_binding(agent.owner_user_id(), installation_id)
                 .map_err(|_| app_binding_error("App installation is not trusted and available"))?;
-            permit.prompt_id = self
-                .confirm_capability_request(
+            permit.prompt_id = Some(
+                self.confirm_capability_request(
                     &agent,
                     &format!("App installation `{installation_id}`"),
                     || {
@@ -568,8 +568,9 @@ impl KernelRuntimeState {
                             == permit.target_revision
                     },
                 )
-                .await?;
-            return Ok(permit.prompt_id.is_some().then_some(permit));
+                .await?,
+            );
+            return Ok(Some(permit));
         }
         if target.has_extension_grant(ExtensionKind::App, installation_id)
             || !crate::session::effective_agent_user_authority(&session, Some(&agent))

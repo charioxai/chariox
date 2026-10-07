@@ -242,7 +242,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         resource: &str,
         scope_live: impl Fn() -> bool + Send + Sync,
-    ) -> Result<Option<String>, DaemonError> {
+    ) -> Result<String, DaemonError> {
         let prompt = self
             .owner_requested_prompt(agent)
             .ok_or_else(|| refused(UserDomainRefusalReason::NotRequested))?;
@@ -299,7 +299,7 @@ impl KernelRuntimeState {
         if resolution.choice_id.as_deref() != Some("allow") {
             return Err(refused(UserDomainRefusalReason::NotRequested));
         }
-        Ok(Some(prompt))
+        Ok(prompt)
     }
 
     pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
