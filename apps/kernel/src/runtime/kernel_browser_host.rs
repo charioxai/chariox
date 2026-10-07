@@ -33,6 +33,7 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum KernelBrowserCapability {
@@ -642,6 +643,7 @@ impl KernelBrowserHost {
                 }
             }
         }
+        self.arm_expiry();
         // No grant lock across authority callbacks: they can read kernel state.
         self.check_admission(admission)?;
         result
@@ -749,6 +751,9 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MD-2: browser host lock poisoned")?;
             state.stopped = true;
+            if let Some(wake) = &state.expiry_wake {
+                wake.notify_one();
+            }
             let owners: BTreeSet<_> = state
                 .access
                 .holders()
@@ -842,6 +847,90 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// MP-08/MP-11 A05: absolute expiry is a live wake. With no further call,
+    /// the grant disappears, its epoch cancels in-flight work and clients see it.
+    #[tokio::test]
+    async fn capability_grant_expiry_is_a_live_wake() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-expiry"));
+        host.request_grant(
+            "owner",
+            "agent",
+            "prompt",
+            Duration::from_millis(200),
+            None,
+            "session",
+        )
+        .unwrap();
+        host.set_focus("owner", Some("focused"));
+        let admission = host.admit("owner", "agent").unwrap();
+        let cursor = host.grant_snapshot("owner", "kernel")["cursor"].as_u64();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host
+                .grant_holders()
+                .contains(&("owner".into(), "agent".into()))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the expiry wake revokes without any later request");
+        assert!(admission.cancellation.requested());
+        assert!(host.grant_snapshot("owner", "kernel")["cursor"].as_u64() > cursor);
+        assert!(
+            host.has_grant("owner", "focused"),
+            "unexpired grants remain"
+        );
+        assert!(KernelBrowserHost::grant_lifetime(Some(25)).is_err());
+        assert!(KernelBrowserHost::grant_lifetime(Some(0)).is_err());
+        assert_eq!(
+            KernelBrowserHost::grant_lifetime(Some(24)).unwrap(),
+            Duration::from_secs(24 * 3600)
+        );
+    }
+    #[tokio::test]
+    async fn capability_empty_revoke_invalidates_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-revoke"));
+        let fence = host.acquisition_fence("owner", "agent");
+        host.revoke_grants("owner", None);
+        assert!(
+            host.request_grant(
+                "owner",
+                "agent",
+                "request",
+                Duration::from_secs(60),
+                Some(fence),
+                "room"
+            )
+            .is_err(),
+            "MP-11: a revoke must fence pending acquisition before any holder exists"
+        );
+        assert!(host.grant_holders().is_empty());
+    }
+    /// MP-11 (#922 review 1): only a revoke that reaches this agent fences
+    /// its pending acquisition; other holders' grant changes do not.
+    #[tokio::test]
+    async fn capability_unrelated_grant_changes_keep_a_pending_browser_acquisition() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/capability-fence"));
+        let lifetime = Duration::from_secs(60);
+        host.request_grant("owner", "busy", "prompt", lifetime, None, "room")
+            .unwrap();
+        let fence = host.acquisition_fence("owner", "agent");
+        host.set_focus("owner", Some("focused"));
+        host.load("owner", "focused").unwrap();
+        host.bind_activity("owner", "busy", "room", false);
+        host.bind_activity("owner", "busy", "room", true);
+        host.revoke_grants("owner", Some("focused"));
+        host.request_grant("other-owner", "agent", "prompt", lifetime, None, "room")
+            .unwrap();
+        assert!(host
+            .request_grant("owner", "agent", "request", lifetime, Some(fence), "room")
+            .unwrap());
+        let fence = host.acquisition_fence("owner", "child");
+        host.revoke_grants("owner", Some("child"));
+        assert!(host
+            .request_grant("owner", "child", "request", lifetime, Some(fence), "room")
+            .is_err());
+    }
     #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/mdaccess"));

@@ -1,4 +1,4 @@
-//! MP-08/MP-11: reserved 447/78 grant and reachability shape guard.
+//! MP-08/MP-11: grant and reachability shape guard; A05 causes/expiry, Room Computer grants.
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};
@@ -55,8 +55,18 @@ fn mdaccess_protocol_443_grant_shapes_and_hash() {
         idle_since_ms: Some(2),
         idle_timeout_seconds: 1800,
         expiry_rule: "active turn or pending wake; then idle window".into(),
+        prompt_id: Some("p".into()),
+        delegated_by_agent_id: None,
+        expires_at_ms: Some(28_800_001),
     };
-    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}],"grants":[grant],"notice":UserDomainNotice {agent_id:"a".into(),resource:UserDomainResource::BrowserTab {tab_id:"t".into()},at_ms:3}}) }).unwrap());
+    let delegated = UserDomainGrant {
+        agent_id: "child".into(),
+        prompt_id: None,
+        delegated_by_agent_id: Some("a".into()),
+        resources: vec![UserDomainResource::BrowserTab { tab_id: "t".into() }],
+        ..grant.clone()
+    };
+    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}],"grants":[grant, delegated],"notice":UserDomainNotice {agent_id:"a".into(),resource:UserDomainResource::BrowserTab {tab_id:"t".into()},at_ms:3}}) }).unwrap());
     values.push(
         serde_json::to_value(LocalDaemonResponse::UserAppViewsListed {
             views: vec![UserAppView {
@@ -76,7 +86,7 @@ fn mdaccess_protocol_443_grant_shapes_and_hash() {
         .unwrap(),
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("user-domain-access-461.json")).unwrap();
+        serde_json::from_str(include_str!("user-domain-access-462.json")).unwrap();
     assert_eq!(serde_json::Value::Array(values), expected);
     assert_eq!(
         format!(

@@ -45,6 +45,7 @@ export type UserDomainGrant = {
   agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];
   since_ms: number; focused: boolean; idle_since_ms: number | null;
   idle_timeout_seconds: number; expiry_rule: string
+  prompt_id?: string | null; delegated_by_agent_id?: string | null; expires_at_ms?: number | null
 }
 export type UserDomainGrantEvent = {
   room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]

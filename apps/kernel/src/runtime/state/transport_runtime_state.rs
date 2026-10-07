@@ -442,6 +442,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.stop_app_grant_wakes();
         for id in self.app_control().user_views().shutdown() {
             self.app_control().views().forget_session(&id);
             self.app_control().views().keep_pumping(&id);

@@ -462,6 +462,7 @@ async fn handle_json_rpc_value(
     }
 }
 
+/// MP-08/MP-11: a typed user-domain refusal keeps its code for the provider.
 fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
     // MCP structuredContent is an object, while script results may be any JSON value.
     if !payload.is_object() {

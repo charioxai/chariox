@@ -197,6 +197,7 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     notes: crate::runtime::notes::NoteStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    app_grant_epochs: Arc<capability_grant_runtime::AppGrantEpochs>,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
@@ -478,6 +479,8 @@ mod terminal_runtime_state;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+
+mod capability_grant_runtime;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
@@ -836,6 +839,7 @@ impl KernelRuntimeState {
                 slice_store,
                 notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
                 kernel_browser_host,
+                app_grant_epochs: Arc::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
@@ -936,7 +940,16 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        runtime.recover_app_grant_expiries();
         runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_provider_reload_for_test(&self, agent_id: &str) -> bool {
+        self.owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent_id)
     }
 
     #[cfg(test)]
@@ -1048,13 +1061,20 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         capability_name: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let agent = agent.clone();
-        let capability_name = capability_name.map(str::to_string);
+        self.record_agent_durable_event(kind, agent, capability_name)
+    }
+
+    fn record_agent_durable_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        capability_name: Option<&str>,
+    ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             kind,
             Some(agent.id().to_string()),
             serde_json::json!({
-                "agent": &agent,
+                "agent": agent,
                 "capability_name": capability_name,
             }),
         )?;

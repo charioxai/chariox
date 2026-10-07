@@ -291,6 +291,22 @@ pub struct ExtensionGrant {
     pub credential: Option<String>,
     #[serde(default, alias = "maxSafety", skip_serializing_if = "Option::is_none")]
     pub max_safety: Option<String>,
+    /// MP-08/MP-11 A05: kernel-issued binding identity, scope and deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_grant: Option<AppCapabilityGrant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppCapabilityGrant {
+    pub grant_id: String,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_from_grant_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -455,6 +471,7 @@ impl ExtensionGrant {
             || self.environment.is_some()
             || self.credential.is_some()
             || self.max_safety.is_some()
+            || self.app_grant.is_some()
         {
             return Err(crate::error::DaemonError::LocalTransport {
                 operation: "agent.extension.grant",
@@ -471,6 +488,7 @@ impl ExtensionGrant {
             environment: None,
             credential: None,
             max_safety: None,
+            app_grant: None,
         }
     }
 
@@ -481,6 +499,7 @@ impl ExtensionGrant {
             environment: Some(environment.into()),
             credential: None,
             max_safety: None,
+            app_grant: None,
         }
     }
 
@@ -495,6 +514,7 @@ impl ExtensionGrant {
             environment: None,
             credential,
             max_safety: Some(max_safety.into()),
+            app_grant: None,
         }
     }
 
