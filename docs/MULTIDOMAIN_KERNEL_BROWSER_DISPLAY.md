@@ -14,6 +14,15 @@ and reduced software motion scale are implemented; exact settled pixels stay
 native DPR. Current results remain RED and the flag stays off. See the source-bound
 Phase 10 matrix and integration limits in the performance doc.
 
+MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
+1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
+Resizing precedes color conversion. Reduced video certifies no native pixels;
+lossless repair restores native resolution. Protected, striped and hardware
+frames retain native geometry. Capture manually redirects the owned window on
+its private X server, avoiding composition onto an unused root, and falls back
+to automatic redirection when another capture owns the manual redirect.
+These changes do not establish performance or live acceptance.
+
 The historical427/74 configuration, pipeline, client and Phase7 evidence are
 in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
 The sections below record earlier419-era implementation and receipts; their

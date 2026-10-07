@@ -10,7 +10,7 @@ static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME
 #include <x264.h>
 #include <libyuv/convert.h>
 #include <libyuv/convert_from.h>
-#include <libyuv/scale.h>
+#include <libyuv/scale_argb.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
@@ -123,7 +123,7 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     x264_param_t p;
     if (x264_param_default_preset(&p,"ultrafast","zerolatency")) return -1;
     int ew=c->row_count==1?c->enc_width:c->width,eh=c->row_count==1?c->enc_height:h;
-    if(ew!=c->width&&!c->full&&!(c->full=malloc((size_t)c->width*c->height*3/2)))return -1;
+    if(ew!=c->width&&!c->full&&!(c->full=malloc((size_t)ew*eh*4)))return -1;
     p.i_width=ew;p.i_height=eh;p.i_csp=X264_CSP_I420;
     p.i_threads=1;p.i_lookahead_threads=1;p.b_sliced_threads=0;
     p.b_full_recon=1; /* Exact certificates require the complete output raster. */
@@ -235,9 +235,8 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         at=cpu_ms();
         uint8_t **plane=row->picture.img.plane;int *stride=row->picture.img.i_stride;
         if (c->row_count==1&&c->enc_width!=c->width) {
-            uint8_t *u=c->full+(size_t)c->width*c->height,*v=u+(size_t)c->width*c->height/4;
-            if (ARGBToI420(data,c->width*4,c->full,c->width,u,c->width/2,v,c->width/2,c->width,h)||
-                I420Scale(c->full,c->width,u,c->width/2,v,c->width/2,c->width,h,plane[0],stride[0],plane[1],stride[1],plane[2],stride[2],c->enc_width,c->enc_height,kFilterBox))return -1;
+            if (ARGBScale(data,c->width*4,c->width,h,c->full,c->enc_width*4,c->enc_width,c->enc_height,kFilterBox)||
+                ARGBToI420(c->full,c->enc_width*4,plane[0],stride[0],plane[1],stride[1],plane[2],stride[2],c->enc_width,c->enc_height))return -1;
         } else if (ARGBToI420(data,c->width*4,plane[0],stride[0],plane[1],stride[1],plane[2],stride[2],c->width,h))return -1;
         c->cpu[2]+=cpu_ms()-at;
         row->picture.i_pts=(int64_t)row->sequence;row->picture.i_type=row->sequence?X264_TYPE_AUTO:X264_TYPE_IDR;

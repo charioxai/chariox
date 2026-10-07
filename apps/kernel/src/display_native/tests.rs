@@ -371,7 +371,10 @@ fn sps_size(packet: &[u8]) -> (u32, u32) {
         }
         rbsp.push(byte);
     }
-    struct Bits<'a> { bytes: &'a [u8], bit: usize }
+    struct Bits<'a> {
+        bytes: &'a [u8],
+        bit: usize,
+    }
     impl Bits<'_> {
         fn read(&mut self, n: usize) -> u32 {
             let mut value = 0;
@@ -383,14 +386,21 @@ fn sps_size(packet: &[u8]) -> (u32, u32) {
         }
         fn golomb(&mut self) -> u32 {
             let mut zeros = 0;
-            while self.read(1) == 0 { zeros += 1; }
+            while self.read(1) == 0 {
+                zeros += 1;
+            }
             (1 << zeros) - 1 + self.read(zeros)
         }
     }
-    let mut bits = Bits { bytes: &rbsp, bit: 24 };
+    let mut bits = Bits {
+        bytes: &rbsp,
+        bit: 24,
+    };
     bits.golomb(); // sps id
     bits.golomb(); // log2_max_frame_num
-    if bits.golomb() == 0 { bits.golomb(); } // log2_max_pic_order_cnt_lsb
+    if bits.golomb() == 0 {
+        bits.golomb();
+    } // log2_max_pic_order_cnt_lsb
     bits.golomb(); // max_num_ref_frames
     bits.read(1);
     let (width, height) = (bits.golomb() + 1, bits.golomb() + 1);
@@ -431,10 +441,24 @@ fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() 
         }
         if w > 1280 && regions.is_empty() && rows == 1 {
             let mut edge = [0; 4];
-            unsafe { ffi::cx_codec_repair_bounds(codec.0, source.as_ptr(), std::ptr::null(), 255,
-                w as i32 - 128, h as i32 - 128, 128, 128, edge.as_mut_ptr()); }
-            assert_eq!(edge, [w as i32 - 128, h as i32 - 128, w as i32, h as i32],
-                "scaled video cannot certify even the last native tile");
+            unsafe {
+                ffi::cx_codec_repair_bounds(
+                    codec.0,
+                    source.as_ptr(),
+                    std::ptr::null(),
+                    255,
+                    w as i32 - 128,
+                    h as i32 - 128,
+                    128,
+                    128,
+                    edge.as_mut_ptr(),
+                );
+            }
+            assert_eq!(
+                edge,
+                [w as i32 - 128, h as i32 - 128, w as i32, h as i32],
+                "scaled video cannot certify even the last native tile"
+            );
         }
         (sps_size(packet), bounds)
     };
@@ -445,7 +469,11 @@ fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() 
         [0, 0, 128, 128],
         "a client-scaled frame certifies nothing"
     );
-    assert_eq!(encode(2560, 1600, 1, &[]).0, (1280, 800), "Retina motion is CSS size");
+    assert_eq!(
+        encode(2560, 1600, 1, &[]).0,
+        (1280, 800),
+        "Retina motion is CSS size"
+    );
     let (size, bounds) = encode(1280, 800, 1, &[]);
     assert_eq!(size, (1280, 800));
     assert!(bounds[0] >= bounds[2], "native white remains certified");
@@ -455,6 +483,10 @@ fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() 
         right: 200,
         bottom: 200,
     }];
-    assert_eq!(encode(1920, 1080, 1, &protected).0, (1920, 1088), "protected motion stays native");
+    assert_eq!(
+        encode(1920, 1080, 1, &protected).0,
+        (1920, 1088),
+        "protected motion stays native"
+    );
     assert_eq!(encode(1920, 1080, 8, &[]).0 .0, 1920, "stripes stay native");
 }
