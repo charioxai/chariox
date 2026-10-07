@@ -15,8 +15,26 @@ pub(crate) fn finish_response(
     }
     // Parser/provider errors can echo stored values. Admission errors remain
     // specific because they are returned before executor dispatch.
-    let response = result.map_err(|_| denied())?;
+    let response = result.map_err(protect_error)?;
     project(response)
+}
+
+fn protect_error(error: DaemonError) -> DaemonError {
+    // These exact lifecycle messages are kernel constants, never provider or
+    // parser output. Preserve refusal/revocation so callers can react correctly.
+    if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }
+        if matches!(message.as_str(),
+            "grant revoked or expired"
+            | "sudo request refused"
+            | "sudo request revoked"
+            | "sudo request cancelled"
+            | "sudo request expired; answer the popup in a Chariox terminal"
+            | "queued sudo was revoked"
+            | "sudo authorization revoked before dispatch"))
+    {
+        return error;
+    }
+    denied()
 }
 
 fn denied() -> DaemonError {

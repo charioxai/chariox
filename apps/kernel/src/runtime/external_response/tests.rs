@@ -168,6 +168,28 @@ fn external_response_terminal_retains_owner_replies() {
 }
 
 #[test]
+fn external_response_retains_only_exact_public_authority_errors() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    for message in [
+        "grant revoked or expired",
+        "sudo request refused",
+        "sudo request expired; answer the popup in a Chariox terminal",
+    ] {
+        let error = finish_response(&caller, Err(crate::runtime::kernel_access::error(message)))
+            .unwrap_err();
+        assert!(error.to_string().contains(message));
+        let tainted = finish_response(
+            &caller,
+            Err(crate::runtime::kernel_access::error(format!(
+                "{message}: {CANARY}"
+            ))),
+        )
+        .unwrap_err();
+        assert!(!tainted.to_string().contains(CANARY));
+    }
+}
+
+#[test]
 fn external_response_redacts_nested_remote_bindings_without_scanning_history() {
     let mut value = serde_json::json!({"sessions":[{"agents":[{"remote_execution":{
         "worker_kernel_id":"worker", "relay_token":CANARY

@@ -89,5 +89,6 @@ literal injection values. Raw MCP/connector configuration, native login
 output/codes, pairing/Cloud admission credentials and enrollment callbacks
 are withheld; inspect those through the host terminal. An operation can complete
 while its reply is withheld; check host-terminal state before retrying. Executor failures use
-a value-free error because parser/provider diagnostics can echo secrets.
+a value-free error because parser/provider diagnostics can echo secrets. Exact
+constant refusal, expiry and revocation diagnostics remain available.
 This preserves normal workspace/history authority and is not a file sandbox.
