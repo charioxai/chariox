@@ -85,3 +85,11 @@ test('MP-08/MP-11: native navigation and editing keys carry their Chromium virtu
    assert.deepEqual(events.map(e=>e.windowsVirtualKeyCode),[code,code]);assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
  }
 });
+test('MD-454: batched wheel deltas use the live mirror fence; direct input keeps its bound',async()=>{
+ const {browser,sent}=fixture(),wheel={kind:'scroll',x:10,y:10,delta_x:0,delta_y:192000};let guarded=0;
+ await inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input:wheel,guard:async()=>guarded++})});
+ assert.equal(guarded,1);assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent')[0].params.deltaY,192000);
+ await assert.rejects(inputHostTab(browser,tab,wheel),/unsupported input/);
+ await assert.rejects(inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input:{...wheel,delta_y:1000001},guard:async()=>guarded++})}),/unsupported input/);
+ assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent').length,1);
+});

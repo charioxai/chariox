@@ -114,3 +114,16 @@ test('display:contents or unknown hidden protection geometry still refuses',asyn
   await assert.rejects(captureRegionMasks(connection,'s'));
  }
 });
+
+test('MP-11 concurrent native and exact mask reads preserve their CDP document handles',async()=>{
+ let root=0;
+ const connection={send:async(method,params)=>{
+  if(method==='DOM.getDocument')return {root:{nodeId:++root}};
+  if(method==='DOM.querySelectorAll'){await new Promise(r=>setImmediate(r));assert.equal(params.nodeId,root,'The other mask reader must not replace this document handle');return {nodeIds:[]};}
+  throw Error('Unexpected metadata call');
+ }};
+ const {captureRegionMasks}=await import('./kernel-browser-region-protection.mjs');
+ const captures=await Promise.all([captureRegionMasks(connection,'s'),captureRegionMasks(connection,'s')]);
+ const masks=await Promise.all(captures.map(c=>c.afterCapture({width:1280,height:800})));
+ assert.deepEqual(masks,[[],[]]);
+});

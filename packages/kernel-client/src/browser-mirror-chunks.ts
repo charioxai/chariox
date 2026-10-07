@@ -37,11 +37,11 @@ export class MirrorFrameAssembler {
 }
 
 // Observation-only: no partial frame may reach the renderer or input epoch.
-export async function readMirrorFrame(read:(cursor:number|null)=>Promise<MirrorPacket|MirrorChunk>,subscription:string,tab:string,generation:number):Promise<MirrorPacket>{
+export async function readMirrorFrame(read:(cursor:number|null,restarted:boolean)=>Promise<MirrorPacket|MirrorChunk>,subscription:string,tab:string,generation:number):Promise<MirrorPacket>{
  const assembler=new MirrorFrameAssembler();let cursor:number|null=null,restarted=false
  while(true){
   let value:MirrorPacket|MirrorChunk
-  try{value=await read(cursor)}catch(error){
+  try{value=await read(cursor,restarted)}catch(error){
    assembler.clear()
    if(!restarted&&error instanceof Error&&/\bMP-11: mirror frame changed before commit\b/.test(error.message)){
     restarted=true;cursor=null;await new Promise(resolve=>setTimeout(resolve,50));continue

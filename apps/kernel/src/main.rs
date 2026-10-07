@@ -14,6 +14,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    #[cfg(all(feature = "native-display", target_os = "linux"))]
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--display-native-worker") {
+        if chariox_kernel::display_native::run().is_err() {
+            eprintln!("MP-08/MP-10/MP-11: native display worker failed");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
         return Ok(());

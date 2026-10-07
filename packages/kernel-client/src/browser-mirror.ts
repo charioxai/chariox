@@ -37,6 +37,7 @@ export class BrowserMirrorRenderer {
   private nativeFocus:{document_id:string;through_sequence:number}|null=null
   private pendingInputs=0
   private inputChain:Promise<void>=Promise.resolve()
+  private pendingWheel:{action:KernelBrowserMirrorAction;document_id:string}|null=null
   constructor(private container:HTMLElement,private input:(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string})=>Promise<unknown>,private failure:(error:unknown)=>void) {
     this.frame=container.ownerDocument.createElement('iframe')
     this.frame.setAttribute('sandbox','allow-same-origin') // scripts NEVER enabled
@@ -59,12 +60,18 @@ export class BrowserMirrorRenderer {
   }
   private enqueue(action:KernelBrowserMirrorAction):void {
     if(this.applying||this.disposed)return
+    const wheel=action.kind==='coordinate'&&action.input.kind==='scroll'?action.input:null
+    const pending=this.pendingWheel?.action
+    if(wheel&&this.pendingWheel?.document_id===this.documentId&&pending?.kind==='coordinate'&&pending.input.kind==='scroll'&&pending.input.x===wheel.x&&pending.input.y===wheel.y&&Math.abs(pending.input.delta_x+wheel.delta_x)<=1000000&&Math.abs(pending.input.delta_y+wheel.delta_y)<=1000000){
+      pending.input.delta_x+=wheel.delta_x;pending.input.delta_y+=wheel.delta_y;return
+    }
+    const batch=wheel?{action,document_id:this.documentId}:null;this.pendingWheel=batch
     let focused=this.doc?.activeElement??null
     while(focused){const nested=focused.tagName==='IFRAME'?(focused as HTMLIFrameElement).contentDocument?.activeElement:focused.shadowRoot?.activeElement;if(!nested)break;focused=nested}
     if(!this.nativeFocus)this.rememberFocus(focused)
     const epoch={sequence:this.sequence,document_id:this.documentId}
     this.pendingInputs++
-    this.inputChain=this.inputChain.then(async()=>{try{if(!this.disposed)await this.input(action,epoch)}finally{
+    this.inputChain=this.inputChain.then(async()=>{if(this.pendingWheel===batch)this.pendingWheel=null;try{if(!this.disposed)await this.input(action,epoch)}finally{
       this.pendingInputs--
       // MP-08/MP-11: one credit can already be captured before this input
       // settles. Its successor is the first observation that may restore focus.
@@ -329,7 +336,7 @@ export async function attachBrowserMirror(transport:MirrorTransport,container:HT
       if(closed||busy)throw Error('MP-08: mirror credit unavailable')
       busy=true
       try {
-        const packet=await readMirrorFrame(cursor=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
+        const packet=await readMirrorFrame((cursor,restarted)=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null&&!restarted?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
         if(closed)throw Error('MP-08: mirror closed during transfer')
         await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet
       }catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
