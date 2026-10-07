@@ -98,7 +98,7 @@ export class HostChromium {
     this.connection = connection;
     child.once('error', () => { void connection.close(); });
     child.once('exit', () => { void connection.close(); });
-    try { await connection.send('Browser.getVersion'); return connection; }
+    try { await connection.send('Browser.getVersion'); await this.display?.parkPointer(); return connection; }
     catch {}
     await this.stop();
     if (sandboxFailed) {

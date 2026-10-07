@@ -26,11 +26,20 @@ export function normalizeFontMetrics(bytes,metrics){
  // taller than the native DOM run. Keep the native ascent and fit its descent
  // to that measured box. Glyph outlines and advances remain unchanged.
  const nativeDescent=Number.isFinite(metrics.height)&&metrics.height>=metrics.ascent&&metrics.height<=4*metrics.size?metrics.height-metrics.ascent:metrics.descent;
- const units=bytes.readUInt16BE(head.start+18),ascent=Math.round(metrics.ascent*units/metrics.size),descent=Math.round(nativeDescent*units/metrics.size);
+ // Never quantize above the observed metric: the viewer scaler rounds
+ // ascent/descent outward again, including on the DPR2 half-pixel grid.
+ const units=bytes.readUInt16BE(head.start+18),ascent=Math.floor(metrics.ascent*units/metrics.size),descent=Math.floor(nativeDescent*units/metrics.size);
  if(units<16||units>16384||ascent>32767||descent>32767)return bytes;
+ const lineGap=at=>Math.floor(Math.round(bytes.readInt16BE(at)*metrics.size/units)*units/metrics.size);
+ const gaps=[lineGap(hhea.start+8),...(os&&os.length>=78?[lineGap(os.start+72)]:[])];
+ if(gaps.some(value=>value<-32768||value>32767))return bytes;
  const out=Buffer.from(bytes);out.writeUInt32BE(0,head.start+8);out.writeUInt16BE(out.readUInt16BE(head.start+16)|4096,head.start+16);
  out.writeInt16BE(ascent,hhea.start+4);out.writeInt16BE(-descent,hhea.start+6);
- if(os&&os.length>=78){out.writeInt16BE(ascent,os.start+68);out.writeInt16BE(-descent,os.start+70);out.writeUInt16BE(ascent,os.start+74);out.writeUInt16BE(descent,os.start+76)}
+ // Native Linux fonts use the canonical physical-DPR1 scaler. Freeze its
+ // rounded line gap too; retaining fractional sfnt leading makes normal
+ // line-height grow by half a pixel per line in a DPR2 web font.
+ out.writeInt16BE(gaps[0],hhea.start+8);
+ if(os&&os.length>=78){out.writeInt16BE(ascent,os.start+68);out.writeInt16BE(-descent,os.start+70);out.writeInt16BE(gaps[1],os.start+72);out.writeUInt16BE(ascent,os.start+74);out.writeUInt16BE(descent,os.start+76)}
  for(const table of tables.values())out.writeUInt32BE(checksum(out.subarray(table.start,table.start+table.length)),table.at+4);
  out.writeUInt32BE((0xb1b0afba-checksum(out))>>>0,head.start+8);return out;
 }

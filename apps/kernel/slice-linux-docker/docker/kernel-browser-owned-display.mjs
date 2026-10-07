@@ -1,5 +1,22 @@
 // MD-DISPLAY-02/04: private kernel-created X server capability, never DISPLAY adoption.
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+const exec=promisify(execFile);
+// Xvfb starts its hardware pointer at the screen center. A CDP screenshot may
+// temporarily enlarge the page beneath it and synthesize hover mutations. Park
+// it outside every owned browser window as Chromium starts, never during
+// an input/capture operation and never on an adopted user display.
+const parkPointer=`import ctypes as c,ctypes.util
+x=c.CDLL(ctypes.util.find_library('X11'))
+x.XOpenDisplay.restype=c.c_void_p;x.XOpenDisplay.argtypes=[c.c_char_p]
+d=x.XOpenDisplay(None)
+if not d: raise RuntimeError('Owned display pointer unavailable')
+x.XDefaultRootWindow.restype=c.c_ulong;x.XDefaultRootWindow.argtypes=[c.c_void_p]
+x.XWarpPointer.argtypes=[c.c_void_p,c.c_ulong,c.c_ulong,c.c_int,c.c_int,c.c_uint,c.c_uint,c.c_int,c.c_int]
+x.XSync.argtypes=[c.c_void_p,c.c_int];x.XCloseDisplay.argtypes=[c.c_void_p]
+x.XWarpPointer(d,0,x.XDefaultRootWindow(d),0,0,0,0,2559,1799)
+x.XSync(d,0);x.XCloseDisplay(d)
+`;
 import {randomBytes} from 'node:crypto';
 import {writeFile,unlink} from 'node:fs/promises';
 import path from 'node:path';
@@ -24,6 +41,10 @@ export class OwnedDisplay {
    }
    throw Error('MD-DISPLAY: owned X server readiness timeout');
   }catch(error){await this.close();throw error}
+ }
+ async parkPointer(){
+  if(!ownsDisplay(this))throw Error('MD-DISPLAY: pointer requires an owned display');
+  await exec(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',['-c',parkPointer],{env:{...process.env,...this.environment},timeout:2000,maxBuffer:1024});
  }
  async close(){
   owned.delete(this);const child=this.child;this.child=null;

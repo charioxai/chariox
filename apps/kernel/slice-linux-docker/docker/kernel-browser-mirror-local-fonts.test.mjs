@@ -39,6 +39,12 @@ test('native ascent/descent are size-specific, with valid sfnt checksums and unc
  const fitted=normalizeFontMetrics(bytes,{size:32,ascent:30,descent:8,height:37});
  assert.equal(fitted.readInt16BE(offsets[3]+4),1920);
  assert.equal(fitted.readInt16BE(offsets[3]+6),-448,'Use the actual native DOM text box, not the rounded Canvas metric sum');
+ const fractionalSource=Buffer.from(bytes);fractionalSource.writeInt16BE(67,offsets[3]+8);fractionalSource.writeInt16BE(307,offsets[0]+72);
+ const fractional=normalizeFontMetrics(fractionalSource,{size:14.08,ascent:13,descent:3,height:16});
+ assert.equal(fractional.readInt16BE(offsets[3]+8),0,'Freeze the native scaler line gap: subpixel font units cannot accumulate half-pixel normal line-height drift');
+ assert(fractional.readInt16BE(offsets[0]+72)*14.08/2048<=2,'Freeze the native typo line gap without crossing its rounded value');
+ assert(fractional.readInt16BE(offsets[3]+4)*14.08/2048<=13,'Quantized ascent cannot cross the native grid and round up by half a pixel at DPR2');
+ assert(-fractional.readInt16BE(offsets[3]+6)*14.08/2048<=3,'Quantized descent cannot cross the native grid');
  assert.deepEqual(fitted.subarray(offsets[1],offsets[1]+entries[1][1].length),entries[1][1]);
 });
 

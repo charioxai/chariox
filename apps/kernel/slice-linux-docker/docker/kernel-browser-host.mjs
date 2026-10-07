@@ -15,11 +15,11 @@ import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureProtectedPage, wholeFrameMask, decodePng } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal, MirrorFrameChanged } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
-import { CompositorSource } from './kernel-browser-compositor.mjs';
+import { CompositorSource, jpegDimensions } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
 import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
@@ -272,6 +272,9 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
+    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
+    let captureDimensionError;
     const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
@@ -279,20 +282,25 @@ export class KernelBrowserHost {
         const sample = async () => {
           const compositor=this.compositors.get(tab.tab_id)?.source;
           if(clip)compositor?.pause();
-          // A headed full-frame surface read must not resize the emulated
-          // viewport and invalidate its exact mirror epoch. Explicit CDP crops
-          // retain their ordinary surface semantics and protection admission.
-          try{return await connection.send("Page.captureScreenshot", { format, ...(!clip&&this.chromium.display?{fromSurface:false}:{}), ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
+          // Always capture the page surface. Window snapshots include browser
+          // chrome and ignore emulation/clips, invalidating protection geometry.
+          try{return await connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
           finally{if(clip)compositor?.resume()}
         };
         const policy=this.protection;
         const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
         this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
+        try {
+          const encoded = Buffer.from(data, 'base64');
+          const dimensions = format === 'png' ? decodePng(data, scale) : format === 'jpeg' ? jpegDimensions(encoded) : null;
+          if (!dimensions || dimensions.width !== width || dimensions.height !== height) throw new Error('MD-2: capture dimensions changed; retry after the page settles');
+        } catch (error) { captureDimensionError = error; throw error; }
         return data;
       }, scale, clip);
+    // The generic protection masker may synthesize an opaque frame after a
+    // capture failure. A geometry mismatch must still refuse this screenshot.
+    if (captureDimensionError) throw captureDimensionError;
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
-    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
     const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");

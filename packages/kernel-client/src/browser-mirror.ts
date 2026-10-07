@@ -1,3 +1,4 @@
+import {mirrorViewportStyle,mirrorScrollbarSize,mirrorInlineBaselineOffset} from './browser-mirror-layout.js'
 import {nativeFontMetricOverrides} from './browser-mirror-fonts.js'
 import {readMirrorFrame,type MirrorChunk} from './browser-mirror-chunks.js'
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
@@ -22,6 +23,7 @@ export class BrowserMirrorRenderer {
   private dom=new Map<string,Node>()
   private ids=new WeakMap<Node,string>()
   private resources=new Map<string,string>()
+  private inlineProjections=new WeakMap<HTMLElement,string[]>()
   private fontMetrics=new Map<string,{ascent:string;descent:string}>()
   private tileUrls:string[]=[]
   private tileCache=new Map<string,TileRaster>()
@@ -44,7 +46,7 @@ export class BrowserMirrorRenderer {
     this.frame=container.ownerDocument.createElement('iframe')
     this.frame.setAttribute('sandbox','allow-same-origin') // scripts NEVER enabled
     this.frame.setAttribute('referrerpolicy','no-referrer')
-    this.frame.style.cssText='width:1280px;height:800px;border:0;display:block'
+    this.frame.style.cssText='width:1280px;height:800px;border:0;display:block;'+mirrorViewportStyle(container.ownerDocument.defaultView?.devicePixelRatio??1)
     this.frame.srcdoc=`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirrorSandboxCsp}"></head><body></body></html>`
     this.loaded=new Promise<void>(resolve=>this.frame.addEventListener('load',()=>resolve(),{once:true}))
     container.append(this.frame)
@@ -136,6 +138,7 @@ export class BrowserMirrorRenderer {
     if(record.kind==='text'){if(node.textContent!==(record.text??''))node.textContent=record.text??'';return}
     if(node.nodeType!==1)return
     const element=node as HTMLElement
+    this.restoreInlineProjection(element)
     if(!previous||JSON.stringify(previous.attributes??{})!==JSON.stringify(record.attributes??{})) {
       for(const attr of Array.from(element.attributes))if(attr.name!=='style')element.removeAttribute(attr.name)
       for(const [key,value]of Object.entries(record.attributes??{}))element.setAttribute(key,value)
@@ -233,6 +236,8 @@ export class BrowserMirrorRenderer {
       }
       this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())
       const fontStyle=this.doc.createElement('style');fontStyle.dataset.mirrorFonts='true'
+      const gutter=mirrorScrollbarSize(next.get(packet.root),packet.css_width)
+      if(gutter!==null)fontStyle.textContent=`::-webkit-scrollbar{width:${gutter}px;height:${gutter}px}`
       for(const font of packet.fonts){const url=this.resources.get(font.resource),metrics=font.family===`cx-native-${font.resource}`?this.fontMetrics.get(font.resource):null;if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};${metrics?`ascent-override:${metrics.ascent};descent-override:${metrics.descent};`:''}}`}
       if(fontStyle.textContent)this.doc.head.append(fontStyle)
       const pseudoStyle=this.doc.createElement('style');pseudoStyle.dataset.mirrorPseudo='true'
@@ -289,7 +294,22 @@ export class BrowserMirrorRenderer {
     const images=[...this.dom.values(),...this.overlays].filter((node):node is HTMLImageElement=>node.nodeType===1&&(node as Element).tagName==='IMG')
     await Promise.all(images.filter(image=>image.getAttribute('src')&&!(image.complete&&image.naturalWidth>0)).map(image=>image.decode()))
     if(!this.disposed&&this.doc)this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
+    if(!this.disposed&&this.doc){
+      for(const record of canonical.nodes){const node=this.dom.get(record.id);if(node?.nodeType===1)this.restoreInlineProjection(node as HTMLElement)}
+      for(const record of canonical.nodes){
+        const node=this.dom.get(record.id) as HTMLElement|undefined;if(!node||node.nodeType!==1)continue
+        const offset=mirrorInlineBaselineOffset(record,this.records,node.getBoundingClientRect(),node.ownerDocument.defaultView!.getComputedStyle(node),[...node.getClientRects()])
+        if(offset===null||Math.abs(offset)<.0078125)continue
+        const properties=['position','top','left','right','bottom'];this.inlineProjections.set(node,properties.map(key=>node.style.getPropertyValue(key)))
+        node.style.position='relative';node.style.top=`${offset}px`;node.style.left='0';node.style.right='auto';node.style.bottom='auto'
+      }
+    }
     this.timed('font_image_ready',at);this.timed('apply_total',started)
+  }
+  private restoreInlineProjection(node:HTMLElement):void {
+    const saved=this.inlineProjections.get(node);if(!saved)return
+    ;['position','top','left','right','bottom'].forEach((key,i)=>{if(saved[i])node.style.setProperty(key,saved[i]!);else node.style.removeProperty(key)})
+    this.inlineProjections.delete(node)
   }
   private async addResource(resource:MirrorResource):Promise<void> {
     if(await digest(bytesOf(resource.data_base64))!==resource.resource_id)throw Error('MP-11: mirror resource digest')

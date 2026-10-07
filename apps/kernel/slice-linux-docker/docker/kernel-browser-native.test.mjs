@@ -99,3 +99,28 @@ test('MP-08/MP-10/MP-11 protection changes retire pixels without re-attesting th
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});assert.equal(source.closed,true);
  await source.close();
 });
+
+// MD-454: park only the kernel-owned pointer before publishing browser readiness.
+test('owned pointer parking refuses foreign/retired displays and stays outside the browser window',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{execFile,spawn}=await import('node:child_process'),{promisify}=await import('node:util');
+ const root=await mkdtemp(tmpdir()+'/chariox-md-pointer-test-'),display=new OwnedDisplay(root);let keeper;
+ try{
+  await assert.rejects(display.parkPointer(),/owned display/);await display.start();
+  // Xvfb resets the pointer when its last client leaves. Chromium holds this
+  // connection in production; retain one here for the cross-process check.
+  keeper=spawn('python3',['-u','-c',`import ctypes as c,ctypes.util,time
+x=c.CDLL(ctypes.util.find_library('X11'));x.XOpenDisplay.restype=c.c_void_p;x.XOpenDisplay.argtypes=[c.c_char_p];d=x.XOpenDisplay(None)
+assert d;print('ready');time.sleep(10)`],{env:{...process.env,...display.environment},stdio:['ignore','pipe','ignore']});
+  await new Promise((resolve,reject)=>{keeper.stdout.once('data',resolve);keeper.once('error',reject);keeper.once('exit',()=>reject(Error('pointer test connection exited'))) });await display.parkPointer();
+  const probe=`import ctypes as c,ctypes.util
+x=c.CDLL(ctypes.util.find_library('X11'));x.XOpenDisplay.restype=c.c_void_p;x.XOpenDisplay.argtypes=[c.c_char_p];d=x.XOpenDisplay(None)
+x.XDefaultRootWindow.restype=c.c_ulong;x.XDefaultRootWindow.argtypes=[c.c_void_p]
+r=c.c_ulong();w=c.c_ulong();a=c.c_int();b=c.c_int();u=c.c_int();v=c.c_int();m=c.c_uint()
+x.XQueryPointer.argtypes=[c.c_void_p,c.c_ulong,c.POINTER(c.c_ulong),c.POINTER(c.c_ulong),c.POINTER(c.c_int),c.POINTER(c.c_int),c.POINTER(c.c_int),c.POINTER(c.c_int),c.POINTER(c.c_uint)]
+x.XQueryPointer(d,x.XDefaultRootWindow(d),c.byref(r),c.byref(w),c.byref(a),c.byref(b),c.byref(u),c.byref(v),c.byref(m));print(a.value,b.value)
+x.XCloseDisplay.argtypes=[c.c_void_p];x.XCloseDisplay(d)
+`;
+  const result=await promisify(execFile)('python3',['-c',probe],{env:{...process.env,...display.environment},timeout:2000});assert.equal(result.stdout.trim(),'2559 1799');
+  await display.close();await assert.rejects(display.parkPointer(),/owned display/);
+ }finally{if(keeper&&keeper.exitCode===null){keeper.kill('SIGTERM');await new Promise(r=>keeper.once('exit',r))}await display.close();await rm(root,{recursive:true,force:true})}
+});

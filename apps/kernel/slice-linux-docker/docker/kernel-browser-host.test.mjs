@@ -778,13 +778,30 @@ test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutat
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
 
-test('MD-454: headed full capture reads native viewport without a virtual resize, while clip semantics remain explicit',()=>using(async({host,chromium,sent})=>{
+test('MD-454: headed capture uses the page surface, never the native window',()=>using(async({host,chromium,sent})=>{
  const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id);
  chromium.display={};
  await host.screenshot(tab);
- assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,false);
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
  await host.screenshot(tab,{x:0,y:0,width:1280,height:800,scale:1});
  assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
  chromium.display=null;await host.screenshot(tab);
  assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+}));
+
+
+test('MD-454: captured PNG geometry must match declared device pixels even with an empty protection policy',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id),send=connection.send;
+ for(const [width,height] of [[1279,800],[1280,799],[2560,1687]]){
+  connection.send=async(method,...args)=>method==='Page.captureScreenshot'?{data:encodePng(width,height,Buffer.alloc(width*height*4,255))}:send(method,...args);
+  await assert.rejects(host.screenshot(tab),/capture.*dimensions|unsupported frame format/);
+ }
+}));
+
+test('MD-454: a wrong capture geometry is refused, not turned into a successful opaque screenshot',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id),send=connection.send;
+ host.protection={...host.protection,values:['synthetic-protected-value']};
+ delete host.browser.ensureConnection; // Empty, known fixture target set; no observation failure before capture.
+ connection.send=async(method,...args)=>method==='Page.captureScreenshot'?{data:encodePng(1279,800,Buffer.alloc(1279*800*4,255))}:send(method,...args);
+ await assert.rejects(host.screenshot(tab),/capture.*dimensions/);
 }));
