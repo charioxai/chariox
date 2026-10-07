@@ -112,7 +112,7 @@ def main(request):
     accessibility=load('native-accessibility')
     before=accessibility.snapshot(request.get('processes',[]))
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
-    image=capture(mask,before.get('uncovered',()))
+    image=capture(mask,before.get('masks',before.get('uncovered',())))
     after=accessibility.snapshot(request.get('processes',[]))
     if before!=after:
         image.close()

@@ -76,9 +76,21 @@ def frame_rect(root, window):
     raise ValueError('window frame unavailable')
 
 
+def subtract(rect, cover):
+    """MP-08: parts of rect [x,y,w,h] not hidden by an opaque cover rect."""
+    x,y,w,h=rect;cx,cy,cw,ch=cover
+    if cx>=x+w or cx+cw<=x or cy>=y+h or cy+ch<=y:return [rect]
+    top,bottom=max(y,cy),min(y+h,cy+ch)
+    parts=[[x,y,w,cy-y]] if cy>y else []
+    if cy+ch<y+h:parts.append([x,cy+ch,w,y+h-cy-ch])
+    if cx>x:parts.append([x,top,cx-x,bottom-top])
+    if cx+cw<x+w:parts.append([cx+cw,top,x+w-cx-cw,bottom-top])
+    return parts
+
+
 def snapshot(processes):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
-    nodes=[];complete=True;protected=False;seen=set();pending=deque();uncovered=[]
+    nodes=[];complete=True;protected=False;seen=set();pending=deque();uncovered=[];masks=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -148,7 +160,10 @@ def snapshot(processes):
             root=connection.screen().root
             active=root.get_full_property(connection.intern_atom('_NET_ACTIVE_WINDOW'),X.AnyPropertyType)
             active_id=int(active.value[0]) if active is not None and len(active.value) else None
-            clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
+            # MP-08: bottom-to-top order lets capture skip parts hidden by owned windows above.
+            clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST_STACKING'),X.AnyPropertyType)
+            stacked=clients is not None
+            if not stacked:clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
             for window_id in clients.value if clients is not None else []:
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
@@ -156,8 +171,10 @@ def snapshot(processes):
                 pid=int(pid.value[0]) if pid is not None and len(pid.value) else None
                 # MP-08: an owned window without AT-SPI (e.g. xterm) has unknown
                 # contents; capture blacks out its frame instead of the desktop.
-                if pid in allowed and pid not in seen:uncovered.append(frame_rect(root,window))
+                if pid in allowed and pid not in seen:
+                    uncovered.append(frame_rect(root,window));masks.append(uncovered[-1])
                 elif pid not in seen:complete=False
+                elif stacked and masks:masks=[part for rect in masks for part in subtract(rect,frame_rect(root,window))]
                 elif int(window_id)==active_id:
                     title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
                     name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
@@ -173,9 +190,9 @@ def snapshot(processes):
                     attributes=child.get_attributes()
                     if attributes.override_redirect and attributes.map_state==X.IsViewable:
                         geometry=child.get_geometry()
-                        uncovered.append([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width])
+                        uncovered.append([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width]);masks.append(uncovered[-1])
         finally:connection.close()
-        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered}
+        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}

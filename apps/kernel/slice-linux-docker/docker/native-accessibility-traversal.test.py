@@ -202,6 +202,7 @@ class TraversalTest(unittest.TestCase):
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
+        self.assertEqual(tree['masks'], [[20, 30, 246, 152]])
 
     def test_mp11_override_redirect_popups_are_masked_while_an_owned_window_is_uncovered(self):
         # Menus, completion lists and tooltips are outside _NET_CLIENT_LIST.
@@ -213,6 +214,41 @@ class TraversalTest(unittest.TestCase):
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152], [300, 40, 102, 62]])
+        self.assertEqual(tree['masks'], tree['uncovered'])
+
+    def stacked(self, order, stacking=True):
+        # MP-08: owned xterm (9, no AT-SPI) and owned Writer (10) frames in WM stacking order.
+        root = types.SimpleNamespace(id=1)
+        def client(window_id, pid, name, x, y, width, height):
+            frame = types.SimpleNamespace(id=window_id*10, query_tree=lambda: types.SimpleNamespace(parent=root),
+                get_attributes=lambda: types.SimpleNamespace(map_state=2, override_redirect=0),
+                get_geometry=lambda: types.SimpleNamespace(x=x, y=y, width=width, height=height, border_width=1))
+            return types.SimpleNamespace(id=window_id, query_tree=lambda: types.SimpleNamespace(parent=frame),
+                get_attributes=lambda: types.SimpleNamespace(map_state=2),
+                get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name))
+        windows = {9: client(9, 201, b'xterm', 20, 30, 244, 150), 10: client(10, 200, b'Writer', 100, 80, 298, 198)}
+        lists = {'_NET_ACTIVE_WINDOW': [10], '_NET_CLIENT_LIST': [9, 10]}
+        if stacking: lists['_NET_CLIENT_LIST_STACKING'] = order
+        root.get_full_property = lambda atom, kind: types.SimpleNamespace(value=lists[atom]) if atom in lists else None
+        root.query_tree = lambda: types.SimpleNamespace(children=[])
+        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.create_resource_object = lambda kind, value: windows[value]
+
+    def test_mp08_owned_window_below_an_owned_app_masks_only_its_exposed_part(self):
+        self.stacked([9, 10])
+        tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
+        self.assertTrue(tree['complete'])
+        self.assertFalse(tree['protected'])
+        # MP-11: unknown-content window still recorded (clipboard and completeness stay closed).
+        self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
+        # Writer frame 100,80 300x200 covers the xterm's lower right; only the rest is blacked out.
+        self.assertEqual(tree['masks'], [[20, 30, 246, 50], [20, 80, 80, 102]])
+
+    def test_mp11_owned_window_above_or_unknown_stacking_masks_its_whole_frame(self):
+        for order, stacking in [([10, 9], True), ([9, 10], False)]:
+            self.stacked(order, stacking)
+            tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
+            self.assertEqual(tree['masks'], [[20, 30, 246, 152]])
 
     def test_mp11_foreign_or_unattributed_window_still_masks_the_desktop(self):
         for pid in [999, None]:
