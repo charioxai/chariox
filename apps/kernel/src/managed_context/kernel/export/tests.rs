@@ -1,5 +1,254 @@
 use super::*;
 
+// MP-11: generated runtime identities live only in this owned disposable root.
+struct Mp11FixtureRoot(PathBuf);
+impl Drop for Mp11FixtureRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+// MP-08/MP-11: exercise real source snapshot capture and target publication,
+// including hostile snapshots composed without the source's admission guard.
+fn mp11_packaged_snapshot_case(
+    mcp: bool,
+    path: &str,
+    bytes: &[u8],
+    accepted: bool,
+    source_only: bool,
+) {
+    let root = test_root(format!(
+        "chariox-packaged-context-{:016x}",
+        rand::random::<u64>()
+    ));
+    let _cleanup = Mp11FixtureRoot(root.clone());
+    let isolation = root.join("capabilities");
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", root.join("home"));
+    let package_root = isolation.join(if mcp {
+        "user/mcps/local"
+    } else {
+        "user/skills/review"
+    });
+    fs::create_dir_all(&package_root).unwrap();
+    if mcp {
+        fs::write(package_root.join("run.sh"), "#!/bin/sh\necho ready\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                package_root.join("run.sh"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let config = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
+        fs::write(
+            isolation.join("user/mcps/local.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+    } else {
+        fs::write(
+            package_root.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nRead the diff.\n",
+        )
+        .unwrap();
+    }
+    fs::write(package_root.join(path), bytes).unwrap();
+    let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+    let target_public =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+            .unwrap();
+    let mut request = test_export_request();
+    request.vault = None;
+    request.target_key_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(&target_public);
+    let source = export_kernel_context_without_credentials(request.clone());
+    if source_only {
+        assert_eq!(
+            source.is_ok(),
+            accepted,
+            "MP-11 source mcp={mcp} path={path}"
+        );
+        fs::remove_dir_all(root).unwrap();
+        return;
+    }
+    // Bypass only source credential admission, retaining real capture/hash logic.
+    let snapshot = export_kernel_context_mode(request.clone(), false).unwrap();
+    let destination = root.join("target-capabilities");
+    let target =
+        crate::managed_context::kernel::import_kernel_context(KernelContextImportRequest {
+            publication_root: None,
+            snapshot,
+            expected_source: crate::secret::TransferredVaultSourceBinding {
+                context_id: request.context_id,
+                source_kernel_id: request.source_kernel_id,
+                source_key_thumbprint: request.source_key_thumbprint,
+            },
+            target_kernel_id: request.target_kernel_id,
+            target_private_key: target_private,
+            capability_root: destination.clone(),
+            vault_path: root.join("unused-vault"),
+        });
+    assert_eq!(
+        target.is_ok(),
+        accepted,
+        "MP-11 target mcp={mcp} path={path}"
+    );
+    if accepted {
+        let relative = if mcp {
+            "user/mcps/local"
+        } else {
+            "user/skills/review"
+        };
+        assert_eq!(
+            fs::read(destination.join(relative).join(path)).unwrap(),
+            bytes
+        );
+    } else {
+        assert!(
+            !destination.exists(),
+            "MP-11 refusal precedes target mutation"
+        );
+        assert!(target
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("credential-free context"));
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp11_packaged_kernel_snapshot_target_preserves_shell_path() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    for mcp in [false, true] {
+        mp11_packaged_snapshot_case(
+            mcp,
+            "bootstrap.sh",
+            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+            false,
+            false,
+        );
+    }
+}
+
+#[test]
+fn mp08_mp11_packaged_kernel_snapshot_target_preserves_package_role() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    for mcp in [false, true] {
+        mp11_packaged_snapshot_case(
+            mcp,
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+            true,
+            false,
+        );
+    }
+}
+
+#[test]
+fn mp11_packaged_kernel_snapshot_source_preserves_shell_path() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    for mcp in [false, true] {
+        mp11_packaged_snapshot_case(
+            mcp,
+            "bootstrap.sh",
+            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+            false,
+            true,
+        );
+    }
+}
+
+#[test]
+fn mp08_mp11_packaged_kernel_snapshot_source_preserves_package_role() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    for mcp in [false, true] {
+        mp11_packaged_snapshot_case(
+            mcp,
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+            true,
+            true,
+        );
+    }
+}
+
+#[test]
+fn mp11_credential_free_export_never_reads_provider_git_vault_or_credential_registry() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = test_root(format!(
+        "chariox-owner-context-{:016x}",
+        rand::random::<u64>()
+    ));
+    let isolation = root.join("capabilities");
+    let home = root.join("home");
+    fs::create_dir_all(isolation.join("user/skills/review")).unwrap();
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::create_dir_all(home.join("credentials")).unwrap();
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", &home);
+    // MP-11: malformed registry/Vault canaries prove these stores are not read.
+    for (path, bytes) in [
+        (home.join(".codex/auth.json"), "provider-credential-canary"),
+        (home.join(".git-credentials"), "git-credential-canary"),
+        (home.join("vault.json"), "vault-credential-canary"),
+        (
+            home.join("credentials/broken.json"),
+            "credential-dependency-canary",
+        ),
+    ] {
+        fs::write(path, bytes).unwrap();
+    }
+    fs::write(
+        isolation.join("user/skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nRead the diff.\n",
+    )
+    .unwrap();
+    let mut request = test_export_request();
+    request.vault = None;
+    let snapshot = export_kernel_context_without_credentials(request.clone()).unwrap();
+    assert!(snapshot.payload.vault.is_none());
+    assert!(snapshot
+        .payload
+        .dependencies
+        .iter()
+        .all(|dependency| !matches!(dependency, KernelExtensionDependency::Credential { .. })));
+    assert_eq!(snapshot.payload.extensions.len(), 1);
+    let bytes = serde_json::to_vec(&snapshot).unwrap();
+    for canary in [
+        "provider-credential-canary",
+        "git-credential-canary",
+        "vault-credential-canary",
+        "credential-dependency-canary",
+    ] {
+        assert!(!bytes
+            .windows(canary.len())
+            .any(|window| window == canary.as_bytes()));
+    }
+    assert!(
+        export_kernel_context(request).is_err(),
+        "Path-1 still requires its Vault binding"
+    );
+    let mut credential_bearing = test_export_request();
+    assert!(export_kernel_context_without_credentials(credential_bearing.clone()).is_err());
+    credential_bearing.vault = None;
+    fs::write(
+        isolation.join("user/skills/review/private.env"),
+        "API_KEY=synthetic-canary",
+    )
+    .unwrap();
+    assert!(export_kernel_context_without_credentials(credential_bearing).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn test_vault_snapshot() -> crate::secret::TransferredVaultSnapshot {
     let source_private = crate::transport::relay_crypto::generate_private_key_base64();
     let source_public =
@@ -55,7 +304,7 @@ fn test_export_request() -> KernelContextExportRequest {
         source_key_thumbprint: vault.source_key_thumbprint.clone(),
         target_kernel_id: vault.target_kernel_id.clone(),
         target_key_thumbprint: vault.target_key_thumbprint.clone(),
-        vault,
+        vault: Some(vault),
     }
 }
 
@@ -695,18 +944,19 @@ fn kernel_context_rejects_structurally_invalid_vault_snapshot() {
     );
     std::env::set_var("CHARIOX_HOME", root.join("home"));
     let mut request = test_export_request();
-    request.vault.vault_sha256 = "0".repeat(64);
+    request.vault.as_mut().unwrap().vault_sha256 = "0".repeat(64);
     let error = export_kernel_context(request).expect_err("invalid Vault digest should reject");
     assert!(error.to_string().contains("declared digest"));
     let mut request = test_export_request();
-    request.vault.sealed_unlock_key.nonce = "not-base64".to_string();
+    request.vault.as_mut().unwrap().sealed_unlock_key.nonce = "not-base64".to_string();
     let error = export_kernel_context(request).expect_err("invalid sealed payload should reject");
     assert!(error.to_string().contains("relay nonce"));
     let mut request = test_export_request();
     let malformed = b"not-json";
-    request.vault.vault_file_base64 = base64::engine::general_purpose::STANDARD.encode(malformed);
-    request.vault.vault_size_bytes = malformed.len() as u64;
-    request.vault.vault_sha256 = sha256_hex(malformed);
+    request.vault.as_mut().unwrap().vault_file_base64 =
+        base64::engine::general_purpose::STANDARD.encode(malformed);
+    request.vault.as_mut().unwrap().vault_size_bytes = malformed.len() as u64;
+    request.vault.as_mut().unwrap().vault_sha256 = sha256_hex(malformed);
     let error = export_kernel_context(request)
         .expect_err("self-consistent malformed Vault file should reject");
     assert!(error
@@ -1009,4 +1259,138 @@ fn kernel_context_rejects_symlinks_in_extension_roots() {
     std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     std::env::remove_var("CHARIOX_HOME");
     let _ = fs::remove_dir_all(root);
+}
+
+fn mp11_structured_mcp_case(source_only: bool) {
+    let root = test_root(format!(
+        "chariox-config-context-{:016x}",
+        rand::random::<u64>()
+    ));
+    let _cleanup = Mp11FixtureRoot(root.clone());
+    let isolation = root.join("capabilities");
+    let mcps = isolation.join("user/mcps");
+    fs::create_dir_all(mcps.join("local")).unwrap();
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", root.join("home"));
+    fs::write(mcps.join("local/run.sh"), "#!/bin/sh\necho ready\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(mcps.join("local/run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut stdio = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
+    if let CharioxMcpTransportConfig::Stdio { env, .. } = &mut stdio.transport {
+        env.insert("ORDINARY_LABEL".into(), "synthetic-slot-canary".into());
+    }
+    let mut http = CharioxMcpServerConfig::streamable_http("public", "https://example.test/mcp");
+    if let CharioxMcpTransportConfig::StreamableHttp { http_headers, .. } = &mut http.transport {
+        http_headers.insert("X-Context".into(), "synthetic-slot-canary".into());
+    }
+    for config in [stdio, http] {
+        fs::write(
+            mcps.join(format!("{}.json", config.name)),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+    }
+    let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+    let target_public =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+            .unwrap();
+    let mut request = test_export_request();
+    request.vault = None;
+    request.target_key_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(&target_public);
+    let exported = export_kernel_context_without_credentials(request.clone()).unwrap();
+    if source_only {
+        assert!(
+            !serde_json::to_string(&exported)
+                .unwrap()
+                .contains("synthetic-slot-canary"),
+            "MP-11 unnamed slots never exported by value"
+        );
+        return;
+    }
+    // MP-11: target must refuse hostile raw slots even when source hashes match.
+    let snapshot = export_kernel_context_mode(request.clone(), false).unwrap();
+    let destination = root.join("target-capabilities");
+    let target =
+        crate::managed_context::kernel::import_kernel_context(KernelContextImportRequest {
+            publication_root: None,
+            snapshot,
+            expected_source: crate::secret::TransferredVaultSourceBinding {
+                context_id: request.context_id,
+                source_kernel_id: request.source_kernel_id,
+                source_key_thumbprint: request.source_key_thumbprint,
+            },
+            target_kernel_id: request.target_kernel_id,
+            target_private_key: target_private,
+            capability_root: destination.clone(),
+            vault_path: root.join("unused-vault"),
+        });
+    assert!(
+        target.is_err(),
+        "MP-11 target rejects literal slots regardless of names"
+    );
+    assert!(!destination.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp11_packaged_snapshot_normalizes_encoding_and_checks_shebang_and_token_formats() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let mut wide = vec![0xff, 0xfe];
+    wide.extend(
+        "curl --us\\er owner:synthetic-canary https://example.test\n'"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes),
+    );
+    for source in [true, false] {
+        for mcp in [false, true] {
+            mp11_packaged_snapshot_case(mcp, "bootstrap.sh", &wide, false, source);
+            mp11_packaged_snapshot_case(
+                mcp,
+                "bootstrap",
+                b"#!/bin/sh\ncurl --us\\er owner:synthetic-canary https://example.test\n'",
+                false,
+                source,
+            );
+            mp11_packaged_snapshot_case(
+                mcp,
+                "notes.md",
+                b"ghp_000000000000000000000000000000000000",
+                false,
+                source,
+            );
+            mp11_packaged_snapshot_case(
+                mcp,
+                "notes.json",
+                br#"{"\u0067hp_000000000000000000000000000000000000":"ordinary"}"#,
+                false,
+                source,
+            );
+            mp11_packaged_snapshot_case(
+                mcp,
+                "bootstrap.sh",
+                b"echo 'ordinary Unicode: \xf0\x9f\xa6\x80'\n",
+                true,
+                source,
+            );
+        }
+    }
+}
+
+#[test]
+fn mp08_mp11_structured_mcp_source_omits_slots_by_role() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    mp11_structured_mcp_case(true);
+}
+
+#[test]
+fn mp11_structured_mcp_target_refuses_literal_slots() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    mp11_structured_mcp_case(false);
 }

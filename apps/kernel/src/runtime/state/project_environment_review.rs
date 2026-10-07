@@ -22,8 +22,13 @@ impl KernelRuntimeState {
         target: &str,
         code: String,
         vault: &dyn crate::secret::CredentialVaultStore,
+        owner_context_id: Option<&str>,
     ) -> Result<ProjectPrivateFileAdditions, DaemonError> {
-        let id = format!("project-environment:{}", rand::random::<u64>());
+        // MP-11: credential-free owner copies use the same human-only guard as kernel-only copies.
+        let id = owner_context_id.map_or_else(
+            || format!("project-environment:{}", rand::random::<u64>()),
+            |context| format!("owner-context:{context}"),
+        );
         let mut expanded = false;
         let mut revise = false;
         let mut supply: Option<String> = None;
@@ -146,22 +151,32 @@ impl KernelRuntimeState {
                 "cancel",
                 Some(RuntimeInteractionChoiceStyle::Danger),
             ));
+            let message = if owner_context_id.is_some() {
+                "Review your Project files and any selected kernel extensions and personal instructions before continuing: automatic credential checks cannot identify every secret in free-form files."
+            } else {
+                "Review your Project setup"
+            };
             let interaction = RuntimeInteraction::new(
                 &id,
                 agent_id,
                 RuntimeInteractionKind::Choice,
                 RuntimeInteractionLevel::Info,
                 Some(format!("Ready to move {project} to {target}")),
-                "Review your Project setup",
+                message,
                 choices,
                 custom,
                 Some(900),
                 Some("cancel".into()),
             )
             .with_project_environment_review(review.clone());
-            let receiver = self
-                .create_runtime_interaction(session_id, interaction)
-                .await?;
+            // MP-11: keep Project editing controls on the existing terminal UI,
+            // bind its human owner and never dispatch this review to a Meta agent.
+            let receiver = if owner_context_id.is_some() {
+                self.create_terminal_credential_interaction(session_id, interaction)?
+            } else {
+                self.create_runtime_interaction(session_id, interaction)
+                    .await?
+            };
             let resolution = match tokio::time::timeout(Duration::from_secs(900), receiver).await {
                 Ok(Ok(resolution)) => resolution,
                 _ => {

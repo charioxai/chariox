@@ -26,7 +26,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
         response["RelayStatus"]["status"]["capabilities"],
         serde_json::json!([
             "disposable_worker_control_v1",
-            "managed_environment_keep_running_v1"
+            "managed_environment_keep_running_v1",
+            "owner_managed_context_transfer_v1"
         ])
     );
     assert_eq!(
@@ -34,7 +35,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "624e094c92db7410d1b7a4a4f50a51997be9ec1d8a23c7384dce28d2e5437ea3"
+        "2d8b6abf18c7392e2314b5e7fd729e22f39994b56dfb19f0f5f2b8965f10a34d"
     );
 }
 
@@ -193,7 +194,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
 
 #[test]
 fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 444);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 445);
     let private = crate::config::PersistedCloudRelayProfile {
         kernel_id: Some("kernel-a".into()),
         kernel_credential: Some("synthetic-kernel-secret".into()),
@@ -226,7 +227,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
 
 #[test]
 fn self_host_terminal_admission_response_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 444);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 445);
     let response = LocalDaemonResponse::TerminalPairingLinkJoined {
         terminal: TerminalRecord {
             terminal_id: "terminal".into(),

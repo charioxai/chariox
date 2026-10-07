@@ -46,6 +46,7 @@ pub(super) fn authorize_entry<'a>(
             .is_some_and(|target_environment_id| {
                 entry.target_environment_id != target_environment_id
             })
+        || entry.plan.destination != caller.target_destination
         || entry.target_kernel_id != caller.target_kernel_id
         || entry.target_key_thumbprint != caller.target_key_thumbprint
     {
@@ -74,7 +75,6 @@ pub(super) fn validate_arm_request(
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
-        ("target environment", request.target_environment_id.as_str()),
         ("target kernel", request.target_kernel_id.as_str()),
         ("target key", request.target_key_thumbprint.as_str()),
         ("source kernel", request.source_kernel_id.as_str()),
@@ -85,6 +85,11 @@ pub(super) fn validate_arm_request(
         validate_identifier(value, label)?;
     }
     crate::managed_context::package::validate_plan_binding(&request.plan)?;
+    crate::managed_context::owner_managed::validate_destination_binding(
+        &request.target_environment_id,
+        request.plan.destination.as_ref(),
+        &request.target_kernel_id,
+    )?;
     if request.capability.len() < 40
         || request.capability.len() > 256
         || request.capability.chars().any(char::is_control)
@@ -129,6 +134,21 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
     for context_id in &state.consumed_context_ids {
         validate_identifier(context_id, "consumed context")?;
     }
+    if state.owner_context_authorities.len() > MAX_TRANSFER_RECORDS {
+        return Err(transfer_error("owner context authority capacity exceeded"));
+    }
+    for (context_id, authority) in &state.owner_context_authorities {
+        if !state
+            .applied_contexts
+            .get(context_id)
+            .is_some_and(|target| target.destination.is_some())
+        {
+            return Err(transfer_error("orphaned owner context authority"));
+        }
+        validate_identifier(&authority.owner_user_id, "owner context user")?;
+        validate_identifier(&authority.realm_id, "owner context realm")?;
+        validate_sha256(&authority.target_key_thumbprint, "owner context target key")?;
+    }
     for (context_id, target) in &state.applied_contexts {
         if context_id != &target.context_id || !state.consumed_context_ids.contains(context_id) {
             return Err(transfer_error(
@@ -136,7 +156,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
-            ("launch target environment", target.environment_id.as_str()),
             ("launch target kernel", target.kernel_id.as_str()),
             ("launch target context", target.context_id.as_str()),
         ] {
@@ -146,6 +165,15 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             transfer_error("managed context launch target plan digest is invalid")
         })?;
         validate_sha256(digest, "launch target plan")?;
+        if target.destination.is_some() && !state.owner_context_authorities.contains_key(context_id)
+        {
+            return Err(transfer_error("owner context authority is missing"));
+        }
+        crate::managed_context::owner_managed::validate_destination_binding(
+            &target.environment_id,
+            target.destination.as_ref(),
+            &target.kernel_id,
+        )?;
         validate_launch_target_development(&target.development)?;
     }
     for (transfer_id, entry) in &state.entries {
@@ -155,7 +183,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
-            ("target environment", entry.target_environment_id.as_str()),
             ("target kernel", entry.target_kernel_id.as_str()),
             ("source kernel", entry.source_kernel_id.as_str()),
             ("owner", entry.owner_user_id.as_str()),
@@ -164,6 +191,11 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             validate_identifier(value, label)?;
         }
         crate::managed_context::package::validate_plan_binding(&entry.plan)?;
+        crate::managed_context::owner_managed::validate_destination_binding(
+            &entry.target_environment_id,
+            entry.plan.destination.as_ref(),
+            &entry.target_kernel_id,
+        )?;
         validate_sha256(&entry.capability_sha256, "capability")?;
         validate_sha256(&entry.target_key_thumbprint, "target key thumbprint")?;
         validate_sha256(&entry.source_key_thumbprint, "source key thumbprint")?;
