@@ -56,11 +56,17 @@ export function createKernelEventSubscriptionController(
       return running
     }
     running = (async () => {
-      do {
-        rerun = false
-        await syncOnce()
-      } while (rerun)
-    })().finally(() => { running = null })
+      // Cleared in the same step as the last rerun check, so no later sync
+      // can join a run that will not look at it.
+      try {
+        do {
+          rerun = false
+          await syncOnce()
+        } while (rerun)
+      } finally {
+        running = null
+      }
+    })()
     return running
   }
 

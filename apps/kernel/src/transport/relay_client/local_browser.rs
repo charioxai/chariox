@@ -316,9 +316,8 @@ fn configured_port(value: Option<&str>) -> Option<u16> {
 }
 
 /// The lease a short, live relay identity earns at `now_ms`: at most
-/// `GRANT_TTL_MS` and never past the identity's expiry, which every relay
-/// dispatch also requires. `None` when the identity is expired or long-lived
-/// even allowing for clock skew.
+/// `GRANT_TTL_MS` and never past the identity's expiry. `None` when the
+/// identity is expired or long-lived even allowing for clock skew.
 fn short_identity_deadline(identity: &RelayCallerIdentity, now_ms: u64) -> Option<u64> {
     let short = identity.expires_at_ms
         <= now_ms.saturating_add(GRANT_TTL_MS + CLOCK_SKEW_ALLOWANCE_MS);

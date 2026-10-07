@@ -524,12 +524,16 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    30-second relay token from Cloud's lightweight
    `POST /browser/relay-kernel/local-lease` (it also mints grants with it) and,
    over one encrypted relay connection, requests `local_browser_renew` for each
-   of that kernel's redeemed grants with a strictly increasing one-use
-   `sequence` starting at 1, whatever the number of lanes and clients.
-   Every attempt spends its sequence; the kernel accepts any sequence at or
-   above the next expected one and returns `LocalBrowserLeaseRenewed` with
-   `expires_at_ms` and `next_sequence` (the accepted sequence plus one), so a
-   retry after a lost response recovers while every used sequence stays refused.
+   grant of that kernel redeemed with the same browser key, with a strictly
+   increasing one-use `sequence` starting at 1. The kernel renews a grant only
+   for the browser key, user and realm that redeemed it, so a batch never mixes
+   grants of different keys; the Cloud web client uses one browser key per tab,
+   so one token and connection serve all of that tab's lanes and clients.
+   Every attempt, including each relay failover, spends its sequence; the
+   kernel accepts any sequence at or above the next expected one and returns
+   `LocalBrowserLeaseRenewed` with `expires_at_ms` and `next_sequence` (the
+   accepted sequence plus one), so a retry after a lost response recovers
+   while every used sequence stays refused.
    Only a live relay-verified client with the original browser key, user and
    realm can renew. The kernel refuses long-lived renewal identities, expired
    leases, unredeemed/retired grants, replays and direct-carrier renewals.
@@ -537,11 +541,12 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    user's clock with a 10-second skew allowance: an identity counts as short
    when it expires at most 40 seconds ahead of the kernel clock, so a machine
    clock up to 10 seconds behind Cloud keeps direct mode. The lease ends at the
-   earlier of 30 seconds on the kernel clock and the identity's expiry, which
-   every relay dispatch also requires; a kernel clock ahead of Cloud shortens
+   earlier of 30 seconds on the kernel clock and the identity's expiry, so it
+   never exceeds the identity's expiry; a kernel clock ahead of Cloud shortens
    each lease by the same amount, and direct mode tolerates up to about 15
-   seconds of it (about 10 seconds when one renewal is also lost). The session uses that freshly verified identity for
-   subsequent dispatch, allowing continuous renewal across identity expiry.
+   seconds of it (about 10 seconds when one renewal is also lost). The session
+   uses that freshly verified identity for subsequent dispatch, allowing
+   continuous renewal across identity expiry.
    Thus even a cached authorization issued before Cloud revocation cannot
    extend the session beyond its expiry. The browser
    retries one failed renewal after one second, well inside the lease; a
@@ -555,7 +560,8 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
 
 Clients require kernel protocol 464 and the user's explicit local-connect consent
-before trying the loopback endpoint, and fall back to the relay for the same kernel
+before trying the loopback endpoint (Cloud offers it only for the caller's own
+kernels, not to shared-session viewers), and fall back to the relay for the same kernel
 on any refusal, timeout or unreachable endpoint. A kernel-identity mismatch is a
 surfaced security diagnostic that blocks local attempts until the user retries.
 
