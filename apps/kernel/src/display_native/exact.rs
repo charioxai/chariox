@@ -45,19 +45,25 @@ impl ExactPlan {
                 height as u32,
                 w as usize * 4,
             )?;
-            Ok(json!({"x":x,"y":y,"width":width,"height":height,"data_base64":STANDARD.encode(bytes)}))
+            Ok(
+                json!({"x":x,"y":y,"width":width,"height":height,"data_base64":STANDARD.encode(bytes)}),
+            )
         };
         let part = self.rectangles.len().div_ceil(4).max(1);
         let tiles = std::thread::scope(|scope| {
             let workers = self
                 .rectangles
                 .chunks(part)
-                .map(|rects| scope.spawn(move || rects.iter().map(encode).collect::<Result<Vec<_>, _>>()))
+                .map(|rects| {
+                    scope.spawn(move || rects.iter().map(encode).collect::<Result<Vec<_>, _>>())
+                })
                 .collect::<Vec<_>>();
-            workers.into_iter().try_fold(Vec::new(), |mut tiles, worker| {
-                tiles.extend(worker.join().map_err(|_| "MP-10: exact PNG worker")??);
-                Ok::<_, String>(tiles)
-            })
+            workers
+                .into_iter()
+                .try_fold(Vec::new(), |mut tiles, worker| {
+                    tiles.extend(worker.join().map_err(|_| "MP-10: exact PNG worker")??);
+                    Ok::<_, String>(tiles)
+                })
         })?;
         value[if self.patch {
             "native_tiles"

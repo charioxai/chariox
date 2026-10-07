@@ -5,9 +5,9 @@ use serde_json::Value;
 // MD-DISPLAY-02/04: local diagnostics contain only a fixed stage and times.
 pub(crate) fn timing(stage: &'static str, started: std::time::Instant) {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ENABLED.get_or_init(|| {
-        std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1")
-    }) {
+    if *ENABLED
+        .get_or_init(|| std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1"))
+    {
         let duration = started.elapsed().as_secs_f64() * 1000.0;
         let ended = crate::session::unix_epoch_ms() as f64;
         eprintln!(

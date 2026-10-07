@@ -368,7 +368,11 @@ mod tests {
         assert!(linux_identity("42 (broken) S 2").is_none());
         let before = last_allocated_pid().unwrap();
         std::process::Command::new("true").status().unwrap();
-        assert_ne!(last_allocated_pid().unwrap(), before, "a new process allocates a PID");
+        assert_ne!(
+            last_allocated_pid().unwrap(),
+            before,
+            "a new process allocates a PID"
+        );
         for root in [0, 1, u32::MAX] {
             assert!(snapshot(root).is_none());
         }
