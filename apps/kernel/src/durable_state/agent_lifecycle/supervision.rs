@@ -107,7 +107,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             replies::reconcile_source(tx, &room, &source)?;
             Ok(Outcome::Saved)
         }
-        Operation::Sweep { now } => {
+        Operation::Sweep {
+            now,
+            busy_recipients,
+        } => {
             let mut changed = vec![];
             for mut t in tasks(tx)? {
                 if t.state == ExecutionState::Waiting {
@@ -211,8 +214,32 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
+                let deadline_start = if e.state == "pending" {
+                    // Busy refusals are normal queueing, not missing receipts.
+                    // The next idle refusal starts a new bounded window.
+                    if busy_recipients
+                        .iter()
+                        .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
+                    {
+                        tx.execute(
+                            "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
+                            [sql_integer(e.sequence)?],
+                        )
+                        .map_err(sql)?;
+                        continue;
+                    }
+                    let at = tx.query_row(
+                        "SELECT first_refused_at_ms FROM agent_inbox_refusals WHERE sequence=?1",
+                        [sql_integer(e.sequence)?],
+                        |r| r.get::<_, i64>(0),
+                    ).optional().map_err(sql)?;
+                    at.map(|at| u64::try_from(at).map_err(|_| error("invalid refusal clock")))
+                        .transpose()?
+                } else {
+                    e.attempted_at_ms
+                };
                 if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
-                    && e.attempted_at_ms
+                    && deadline_start
                         .is_some_and(|at| now < at || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS)
                 {
                     e.state = "blocked".into();

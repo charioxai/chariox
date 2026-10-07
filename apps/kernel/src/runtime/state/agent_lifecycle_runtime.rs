@@ -526,10 +526,32 @@ impl KernelRuntimeState {
                 }
             }
         }
-        let Outcome::Swept(changed) = self
+        // Include taskless recipients: their active user/provider turn must
+        // not consume the idle-refusal budget or suppress later urgent steering.
+        let mut busy_recipients = Vec::new();
+        for (room, agent) in self
             .owned
             .durable_state_store
-            .agent_lifecycle(Operation::Sweep { now })?
+            .agent_pending_inbox_recipients()?
+        {
+            if let Ok(session) = self.owned.session_store.get_session(&room) {
+                if self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent)
+                    .is_some()
+                {
+                    busy_recipients.push((room, agent));
+                }
+            }
+        }
+        let Outcome::Swept(changed) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::Sweep {
+                    now,
+                    busy_recipients,
+                })?
         else {
             unreachable!()
         };

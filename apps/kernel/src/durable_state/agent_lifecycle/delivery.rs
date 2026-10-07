@@ -70,8 +70,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;
             e.provider_run_id = run;
-            // Retrying a refused delivery must not renew its supervision deadline.
-            e.attempted_at_ms.get_or_insert(now);
+            // Every admitted attempt gets its full receipt window.
+            e.attempted_at_ms = Some(now);
             save_event(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
@@ -119,7 +119,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if e.state != "pending" {
                 return Err(error("cannot defer an admitted attempt"));
             }
-            // Retrying a refused delivery must not renew its supervision deadline.
+            // Unsupported steering stays queued for idle delivery; this marker
+            // prevents repeated steering, but is not an admitted-attempt clock.
             e.attempted_at_ms.get_or_insert(now);
             save_event(tx, &e)?;
             Ok(Outcome::Event(e))
@@ -165,7 +166,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 e.prompt_id = None;
                 e.target_prompt_id = None;
                 e.provider_run_id = None;
-                // Keep the rejected-at marker: native rejection falls back to a later wake.
+                // Keep the steer marker, but supervise idle refusals separately.
+                if let Some(at) = e.attempted_at_ms {
+                    tx.execute(
+                        "INSERT INTO agent_inbox_refusals VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",
+                        params![sql_integer(e.sequence)?, sql_integer(at)?],
+                    ).map_err(sql)?;
+                }
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;

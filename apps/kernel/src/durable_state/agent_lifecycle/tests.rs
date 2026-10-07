@@ -193,9 +193,11 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     assert_eq!(f.task().state, ExecutionState::Waiting);
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
+        busy_recipients: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 2,
+        busy_recipients: Vec::new(),
     });
     assert!(f.task().wait.unwrap().long_wait_notified);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
@@ -301,6 +303,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         .is_err());
     f.apply(Operation::Sweep {
         now: DELIVERY_TIMEOUT_MS + 10,
+        busy_recipients: Vec::new(),
     });
     assert_eq!(f.task().state, ExecutionState::Blocked);
 }
@@ -436,7 +439,10 @@ fn a02_corrupt_delivery_is_quarantined_without_replay() {
         [sql_integer(e.sequence).unwrap()],
     )
     .unwrap();
-    f.apply(Operation::Sweep { now: 10 });
+    f.apply(Operation::Sweep {
+        now: 10,
+        busy_recipients: Vec::new(),
+    });
     let row = f
         .store
         .agent_delivery_front("room", "parent")
@@ -513,6 +519,7 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            busy_recipients: Vec::new(),
         });
         let task = f
             .store
@@ -582,6 +589,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            busy_recipients: Vec::new(),
         });
         let blocked = f.task();
         assert_eq!(blocked.state, ExecutionState::Blocked);
@@ -737,8 +745,14 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     f.subscribe();
     f.yield_now();
     f.settle("p", true);
-    f.apply(Operation::Sweep { now: 20 });
-    f.apply(Operation::Sweep { now: 10 });
+    f.apply(Operation::Sweep {
+        now: 20,
+        busy_recipients: Vec::new(),
+    });
+    f.apply(Operation::Sweep {
+        now: 10,
+        busy_recipients: Vec::new(),
+    });
     let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "deadline_reached");
@@ -1660,13 +1674,17 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             state: "rejected".into(),
         });
         assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
-        let Outcome::Swept(changed) = f.apply(Operation::Sweep { now }) else {
+        let Outcome::Swept(changed) = f.apply(Operation::Sweep {
+            now,
+            busy_recipients: Vec::new(),
+        }) else {
             panic!()
         };
         assert!(changed.is_empty());
     }
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
     }) else {
         panic!()
     };
@@ -1687,6 +1705,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     );
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
+        busy_recipients: Vec::new(),
     }) else {
         panic!()
     };
@@ -1725,6 +1744,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let waiting = tasks.iter().find(|t| t.task_id == "p").unwrap();
@@ -1756,4 +1776,77 @@ fn a02_review_delivery_receipt_classification() {
     assert_eq!(delivery_receipt_state(Some(&busy), true), "uncertain");
     // Nothing reached the provider: retain for a later wake, never uncertain.
     assert_eq!(delivery_receipt_state(None, true), "rejected");
+}
+
+// MP-08/MP-10/MP-11: a refusal cannot shorten a later admitted attempt.
+#[test]
+fn a02_r4_submitting_after_refusal_gets_full_delivery_timeout() {
+    a02_r4_admission_after_refusal_gets_full_delivery_timeout("submitting");
+}
+#[test]
+fn a02_r4_uncertain_after_refusal_gets_full_delivery_timeout() {
+    a02_r4_admission_after_refusal_gets_full_delivery_timeout("uncertain");
+}
+fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
+    let f = Fixture::new();
+    let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "child",
+        "parent",
+        "retry",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    for now in [10, 90_010] {
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: e.sequence,
+            prompt: "delivery".into(),
+            target: None,
+            run: None,
+            now,
+        });
+        if now == 10 || receipt == "uncertain" {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: e.sequence,
+                state: if now == 10 { "rejected" } else { receipt }.into(),
+            });
+        }
+    }
+    f.apply(Operation::Sweep {
+        now: 120_010,
+        busy_recipients: Vec::new(),
+    });
+    let event = f
+        .store
+        .agent_delivery_front("room", "child")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event.state, receipt,
+        "a refusal must not consume in-flight time"
+    );
+    assert_eq!(event.attempted_at_ms, Some(90_010));
+    f.apply(Operation::Sweep {
+        now: 90_010 + DELIVERY_TIMEOUT_MS - 1,
+        busy_recipients: Vec::new(),
+    });
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+    f.apply(Operation::Sweep {
+        now: 90_010 + DELIVERY_TIMEOUT_MS,
+        busy_recipients: Vec::new(),
+    });
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .unwrap()
+            .state,
+        "blocked"
+    );
 }

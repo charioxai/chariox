@@ -208,6 +208,7 @@ pub(crate) enum Operation {
     },
     Sweep {
         now: u64,
+        busy_recipients: Vec<(String, String)>,
     },
     CancelTask {
         task: String,
