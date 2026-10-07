@@ -487,6 +487,75 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
 }
 
 #[test]
+fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
+    for target in [Some("p"), None] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.begin("independent");
+        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
+            "room",
+            "parent",
+            "peer",
+            "uncertain",
+            "message",
+            serde_json::json!({}),
+        ))) else {
+            panic!()
+        };
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: "event".into(),
+            target: target.map(str::to_owned),
+            run: Some("run".into()),
+            now: 1,
+        });
+        f.apply(Operation::Sweep {
+            now: DELIVERY_TIMEOUT_MS + 1,
+        });
+        let task = f
+            .store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == "independent")
+            .unwrap();
+        f.apply(Operation::OwnerResponse {
+            task: task.task_id,
+            revision: task.blocked_revision,
+            resume: false,
+            now: DELIVERY_TIMEOUT_MS + 2,
+        });
+        assert_eq!(
+            f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+            "blocked",
+            "cancelling unrelated work must not abandon another turn's receipt"
+        );
+        let bound_id = target
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("delivery-{}", e.sequence));
+        let bound = f
+            .store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == bound_id)
+            .expect("unknown delivery has its own owner interaction");
+        f.apply(Operation::OwnerResponse {
+            task: bound.task_id,
+            revision: bound.blocked_revision,
+            resume: false,
+            now: DELIVERY_TIMEOUT_MS + 3,
+        });
+        assert_eq!(
+            f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+            "failed"
+        );
+    }
+}
+
+#[test]
 fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_replay() {
     for resume in [false, true] {
         let f = Fixture::new();
