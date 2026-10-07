@@ -14,6 +14,10 @@ static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
+#include <libavutil/log.h>
+#include <libavutil/error.h>
+#include <stdarg.h>
+#include <pthread.h>
 
 struct Rect { int left,top,right,bottom; };
 struct RowResult { int row,y,height,key; uint64_t sequence,reference; const uint8_t *bytes; size_t length; };
@@ -29,7 +33,22 @@ struct Row {
     size_t packet_capacity;
     uint64_t sequence;
 };
-struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; };
+struct Codec { int width,height,bitrate,row_count; struct Row rows[8]; uint8_t *masked; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+/* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
+static _Thread_local struct Codec *diagnosing;
+static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
+static void diagnostic_append(struct Codec *c,const char *text) {
+    size_t used=strlen(c->diagnostic);if(used<sizeof(c->diagnostic)-1)snprintf(c->diagnostic+used,sizeof(c->diagnostic)-used,"%s",text);
+}
+static void hardware_log(void *context,int level,const char *format,va_list args) {
+    if(diagnosing&&level<=AV_LOG_WARNING){char text[1024];va_list copy;va_copy(copy,args);vsnprintf(text,sizeof(text),format,copy);va_end(copy);diagnostic_append(diagnosing,text);}
+    av_log_default_callback(context,level,format,args);
+}
+static void diagnostic_install(void){av_log_set_callback(hardware_log);}
+static void diagnostic_status(struct Codec *c,const char *stage,int status) {
+    char error[AV_ERROR_MAX_STRING_SIZE],text[256];av_strerror(status,error,sizeof(error));snprintf(text,sizeof(text),"%s: %s (%d)\n",stage,error,status);diagnostic_append(c,text);
+}
+const char *cx_codec_diagnostic(struct Codec *c){return c->diagnostic;}
 void cx_codec_cpu(struct Codec *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 static void row_close(struct Row *row) {
     if (row->codec) x264_encoder_close(row->codec);
@@ -49,7 +68,15 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count) {
     if (!c) return NULL;
     c->hardware_requested=!getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE")||strcmp(getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE"),"1");
     if(c->hardware_requested) {
-        for(int n=128;n<144&&!c->device;n++){char path[64];snprintf(path,sizeof(path),"/dev/dri/renderD%d",n);if(access(path,R_OK|W_OK)==0)av_hwdevice_ctx_create(&c->device,AV_HWDEVICE_TYPE_VAAPI,path,NULL,0);}
+        pthread_once(&diagnostic_once,diagnostic_install);
+        for(int n=128;n<144&&!c->device;n++){
+            char path[64];snprintf(path,sizeof(path),"/dev/dri/renderD%d",n);
+            if(access(path,R_OK|W_OK)!=0)continue;
+            diagnostic_append(c,path);diagnostic_append(c,": VAAPI device init\n");diagnosing=c;
+            int status=av_hwdevice_ctx_create(&c->device,AV_HWDEVICE_TYPE_VAAPI,path,NULL,0);diagnosing=NULL;
+            if(status<0)diagnostic_status(c,"av_hwdevice_ctx_create",status);
+        }
+        if(!c->device&&!c->diagnostic[0])diagnostic_append(c,"No accessible VAAPI render device /dev/dri/renderD128..143\n");
         if(!c->device)c->fallback=1;
     }
     c->width=width;c->height=height;c->bitrate=bitrate;c->row_count=row_count;
@@ -68,12 +95,12 @@ static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     AVBufferRef *frames=av_hwframe_ctx_alloc(c->device);if(!frames)return -1;
     AVHWFramesContext *pool=(AVHWFramesContext*)frames->data;
     pool->format=AV_PIX_FMT_VAAPI;pool->sw_format=AV_PIX_FMT_NV12;pool->width=(c->width+15)&~15;pool->height=(h+15)&~15;pool->initial_pool_size=4;
-    if(av_hwframe_ctx_init(frames)<0){av_buffer_unref(&frames);return -1;}
+    int pool_status=av_hwframe_ctx_init(frames);if(pool_status<0){av_buffer_unref(&frames);return pool_status;}
     AVCodecContext *ctx=row->hardware;
     ctx->hw_frames_ctx=frames;ctx->width=c->width;ctx->height=h;ctx->pix_fmt=AV_PIX_FMT_VAAPI;ctx->time_base=(AVRational){1,60};ctx->framerate=(AVRational){60,1};ctx->gop_size=120;ctx->max_b_frames=0;
     ctx->profile=AV_PROFILE_H264_CONSTRAINED_BASELINE;ctx->level=51;ctx->bit_rate=(int64_t)rate*1000;ctx->rc_max_rate=ctx->bit_rate;ctx->rc_buffer_size=rate*50;ctx->thread_count=1;ctx->color_range=AVCOL_RANGE_MPEG;
     AVDictionary *options=NULL;av_dict_set(&options,"rc_mode","VBR",0);av_dict_set(&options,"async_depth","1",0);
-    int status=avcodec_open2(ctx,encoder,&options);av_dict_free(&options);if(status<0)return -1;
+    int status=avcodec_open2(ctx,encoder,&options);av_dict_free(&options);if(status<0)return status;
     row->staging=av_frame_alloc();if(!row->staging)return -1;
     row->staging->format=AV_PIX_FMT_NV12;row->staging->width=c->width;row->staging->height=h;
     return av_frame_get_buffer(row->staging,32);
@@ -90,7 +117,7 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     if (rate<16)rate=16;
     p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
     if (x264_param_apply_profile(&p,"baseline")) return -1;
-    if(c->device&&!c->fallback&&hardware_open(c,row,h,rate)<0){c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}
+    if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}}
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,c->width,h)) return -1;
     row->allocated=1;row->previous=malloc((size_t)c->width*h*4);
@@ -186,7 +213,8 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         at=cpu_ms();
         AVPacket *hardware_packet=NULL;int length;
         if(row->hardware) {
-            hardware_packet=hardware_encode(c,row,h);
+            diagnosing=c;hardware_packet=hardware_encode(c,row,h);diagnosing=NULL;
+            if(!hardware_packet)diagnostic_append(c,"h264_vaapi encode/transfer failed; restarting masked software stream\n");
             if(!hardware_packet){for(int i=0;i<8;i++)row_close(&c->rows[i]);c->fallback=3;return cx_codec_encode(c,source,255,regions,count,results);}
             length=hardware_packet->size;
         }else length=x264_encoder_encode(row->codec,&nals,&n,&row->picture,&out);

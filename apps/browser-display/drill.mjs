@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import {nativeLoader} from './native-loader.mjs';
 import { shapeViewerLeg } from './drill-netem.mjs';
 import {assertIndependentNavigation} from './drill-navigation.mjs';
 import { drainRepairs, verifySettled } from './drill-settle.mjs';
@@ -112,8 +113,9 @@ try {
   nativeWorker=executable;
   if(process.env.MD_BINARY_LOADER){
    if(!path.isAbsolute(process.env.MD_BINARY_LOADER)||!path.isAbsolute(process.env.MD_BINARY_LIBS||''))throw Error('MP-10: absolute worker loader/library paths required');
-   nativeWorker=path.join(root,'native-worker');await writeFile(nativeWorker,`#!/bin/sh\nexec ${quote(process.env.MD_BINARY_LOADER)} --library-path ${quote(process.env.MD_BINARY_LIBS)} ${quote(executable)} "$@"\n`,{mode:0o755});
-   receipt.native_worker.loader=process.env.MD_BINARY_LOADER;receipt.native_worker.library_path=process.env.MD_BINARY_LIBS;
+   const selected=nativeLoader(executable,process.env.MD_BINARY_LOADER,process.env.MD_BINARY_LIBS);
+   nativeWorker=path.join(root,'native-worker');await writeFile(nativeWorker,`#!/bin/sh\nexec ${quote(selected.loader)} --library-path ${quote(selected.library_path)} ${quote(executable)} "$@"\n`,{mode:0o755});
+   Object.assign(receipt.native_worker,selected);
   }
   if(process.env.MD_NATIVE_LIBYUV){
    const directory=path.join(root,'native-libs');await mkdir(directory);await cp(process.env.MD_NATIVE_LIBYUV,path.join(directory,'libyuv.so.0'));
@@ -480,8 +482,8 @@ finally {
   if(receipt.supervisor_crash.remaining_packet_roots.length||receipt.supervisor_crash.remaining_transient_files.length){receipt.cleanup.push('MP-11: supervisor death leaked reusable encoder raster');receipt.status='RED';process.exitCode=1}
  }
  // Read only our non-secret, fixed-label diagnostic files before disposing state.
- const traces=[];
- async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
+ const traces=[];receipt.hardware_diagnostics=[];
+ async function collectTiming(directory){for(const entry of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const p=path.join(directory,entry.name);if(entry.isDirectory()&&entry.name!=='profile')await collectTiming(p);else if(entry.name==='display-hardware.jsonl'){for(const line of (await readFile(p,'utf8')).trim().split('\n'))if(line){const value=JSON.parse(line);if(typeof value.diagnostic!=='string'||value.diagnostic.length>4096)throw Error('MP-11: hardware diagnostic bound');receipt.hardware_diagnostics.push(value);}}else if(entry.name==='display-timing.jsonl'){const lines=(await readFile(p,'utf8')).trim().split('\n');for(const line of lines)if(line)traces.push(JSON.parse(line));}}}
  try{await collectTiming(path.join(root,'home','chariox'))}
  catch{receipt.diagnostic_error='MP-10: invalid host timing JSON';receipt.status='RED';process.exitCode=1}
  if(process.env.MD_PROFILE==='1')for(const name of await readdir(path.join(root,'profiles')).catch(()=>[])){

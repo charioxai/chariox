@@ -307,7 +307,7 @@ impl Sessions {
         };
         spans.push(json!(["codec_packetize", encoded_at, epoch()]));
         Ok(
-            json!({"stripes":headers,"packet":descriptor,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"converter":"libyuv","workers":1,"timings":spans,"whole":!q.stripes,"revision":session.revision}),
+            json!({"stripes":headers,"packet":descriptor,"backend":if unsafe {ffi::cx_codec_backend(session.codec.0)}==1 {"native-vaapi"}else{"native-x264"},"hardware_fallback":unsafe {ffi::cx_codec_backend(session.codec.0)}==2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(session.codec.0))}.to_string_lossy(),"converter":"libyuv","workers":1,"timings":spans,"whole":!q.stripes,"revision":session.revision}),
         )
     }
     pub fn exact(&mut self, q: Exact, slot: &Slot) -> Result<ExactPlan, String> {
