@@ -323,7 +323,12 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
     }
     const key=ids.get(node);
     if(!key||!live.has(key)||!node.isConnected||editable&&!node.isContentEditable&&!['input','textarea'].includes(node.localName))throw new Error('mirror unavailable native text focus');
-    unprotected(node);locate({node_id:key});
+    unprotected(node);
+    // Tab can leave focus on the document body. Keyboard admission has no
+    // pointer hit: the centre of a long page is naturally outside its viewport.
+    if(!editable&&(node===node.ownerDocument.body||node===node.ownerDocument.documentElement)){
+      const r=box(node);if(!(r.width>0&&r.height>0&&r.x<innerWidth&&r.y<innerHeight&&r.x+r.width>0&&r.y+r.height>0))throw new Error('mirror offscreen keyboard document');
+    }else locate({node_id:key});
     if(expected.length){if(key!==expected[0].id)throw new Error('mirror changed native text focus');validate(expected);}
     return key;
   };

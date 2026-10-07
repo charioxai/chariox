@@ -15,8 +15,10 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
-export async function selectNativeCapture({platform=process.platform,display,create}){
- if(platform!=='linux'||!ownsDisplay(display))return null;
+export async function selectNativeCapture({platform=process.platform,display,scale=hostDisplayScale,create}){
+ // CDP emulated Retina density does not enlarge the persistent X window paint.
+ // A startup screenshot may temporarily match; it cannot attest later DPR1 damage.
+ if(platform!=='linux'||scale!==hostDisplayScale||!ownsDisplay(display))return null;
  try{return await create()}catch{return null}
 }
 export function nativeReferenceMatches(reference,raw){

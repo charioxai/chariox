@@ -34,6 +34,7 @@ test('MD-DISPLAY selection admits only a live kernel-created server; retirement 
   await display.start();assert.equal(ownsDisplay(display),true);
   let called=false;const chosen=await selectNativeCapture({platform:'linux',display,create:()=>{called=true;return 'native'}});
   assert.equal(chosen,'native');assert.equal(called,true);
+  for(const scale of [2,NaN,0]){let started=false;assert.equal(await selectNativeCapture({platform:'linux',display,scale,create:()=>{started=true;return 'native'}}),null,'Emulated Retina pixels are not a native DPR1 crop');assert.equal(started,false)}
   assert.equal(await selectNativeCapture({platform:'linux',display,create:()=>{throw Error('XShm absent')}}),null);
   await display.close();assert.equal(ownsDisplay(display),false);
  }finally{await display.close();await rm(root,{recursive:true,force:true})}

@@ -166,7 +166,7 @@ export class KernelBrowserHost {
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      let source=await selectNativeCapture({display:this.chromium.display,create:async()=>{
+      let source=await selectNativeCapture({display:this.chromium.display,scale:stream.device_scale_factor,create:async()=>{
         if(this.tabs.size!==1)throw Error('native tab scope');
         const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         return await source.start();
