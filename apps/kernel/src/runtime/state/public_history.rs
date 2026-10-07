@@ -122,6 +122,27 @@ fn public_tool_value(value: serde_json::Value) -> serde_json::Value {
             return Value::Null;
         }
         match value {
+            Value::Object(values)
+                if values
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind,
+                            "image"
+                                | "input_image"
+                                | "audio"
+                                | "input_audio"
+                                | "file"
+                                | "resource"
+                                | "resource_link"
+                                | "reasoning"
+                                | "thinking"
+                        )
+                    }) =>
+            {
+                Value::Null
+            }
             Value::Object(values) => Value::Object(
                 values
                     .into_iter()
@@ -136,6 +157,7 @@ fn public_tool_value(value: serde_json::Value) -> serde_json::Value {
                             "cookie",
                             "private",
                             "reasoning",
+                            "thinking",
                             "system",
                             "hidden",
                             "overlay",
@@ -433,6 +455,11 @@ mod tests {
             r#"{"tool":"bash","raw":"provider_raw_canary","input":{"api_key":"provider_api_canary"},"output":{"image_url":"image_body_canary","text":"safe_media_result"}}"#,
         );
 
+        append(
+            HistoryEventKind::ProviderTool,
+            r#"{"tool":"browser","output":[{"type":"image","data":"typed_attachment_canary","mimeType":"image/png"},{"type":"text","text":"safe_capture_description"}]}"#,
+        );
+
         let _guard = store.lock_public_history().unwrap();
         for query in [
             "sensitive_canary",
@@ -444,6 +471,7 @@ mod tests {
             "provider_raw_canary",
             "provider_api_canary",
             "image_body_canary",
+            "typed_attachment_canary",
         ] {
             assert!(store
                 .search_public_history_locked("owner", "room", None, query, 50, None)
