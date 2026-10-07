@@ -51,7 +51,9 @@ async fn mp11_kafix_access_popup_names_session_and_separates_refusal_from_expiry
         })
         .await
         .unwrap();
-        assert!(prompt.message.contains("access to session daily-work"));
+        // Integration candidate 1: #910 grants cover the whole local kernel, so the
+        // popup names that scope instead of a session alias.
+        assert!(prompt.message.contains("access to the whole LOCAL kernel"));
         assert!(!prompt.message.contains(session.id()));
         if expire {
             state
