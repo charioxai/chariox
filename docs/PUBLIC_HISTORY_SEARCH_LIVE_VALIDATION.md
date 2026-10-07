@@ -1,12 +1,30 @@
-# MP-08 / MP-10 / MP-11 — A09 round 4 real local drills
+# MP-08 / MP-10 / MP-11 — A09 real local drills (rounds 4–5)
 
-MP-08 / MP-10 / MP-11: the requested local real Codex/TUI recall and privacy
-cells PASS. Broader hosted, worker, managed Path-1 and browser/display acceptance
-is not established. These results supersede round 3's recall REDs and its missing
-Vault/private-MCP/Room prerequisites; those resources were created through the
-product in disposable lane-owned state. No mock is counted as acceptance.
+MP-08 / MP-10 / MP-11: the requested local real Codex/TUI recall, privacy and
+search-quality cells PASS. Broader hosted, worker, managed Path-1 and
+browser/display acceptance is not established. No mock is counted as acceptance.
 
-## MP-08 / MP-10 / MP-11: exact source and clients
+## MP-08 / MP-10 / MP-11: round 5 real RED → GREEN
+
+Base: `1be2719e8` (kernel SHA-256 `4a3794897feaa4aaf2a024a43099bc3c3453a079b25bba22083806d2bf3bd994`,
+Rust tree identical). Candidate: native kernel built from clean
+`8e3164f0b3ec185662b989faaea334172c19dd37`, SHA-256
+`b77b16fde8e200c02f5f0391e2a49a4a6480a189aaef5e90428fff8f6fa8f477`. The TUI
+(SHA-256 `8511305e…dabf`) is unchanged. Official Codex used the product-linked
+login; credentials were never read. Fresh kernel and TUI per scenario.
+
+| Real user flow | Base | Candidate |
+| --- | --- | --- |
+| Agent stores a Vault value by hidden input, no Room Environment, then answers again | RED: every later answer rendered only the withheld marker (154 withheld events); peer recall empty. | PASS: answer visible in the TUI, 0 withheld events; peer `history.search`/`history.read` return the complete answer. |
+| Peer searches ordinary words from a streamed review | RED: `stale cursor`, `cursor revision`, `stale cursor error` found no answer. | PASS: the 195-delta review is one 1,061-character public message; each query found it exactly once; read and turn return it complete. `search pagination` found no answer because the actual answer lacks `search`. |
+| Official filesystem MCP registered as `files` reads a TEST file | RED: output persisted in 3 public rows; search returned 6 tool hits. | PASS: 0 public rows, 0 hits; both call references and a guessed reference return the same unavailable error. |
+| Vault creation while a history read snapshot is open | RED: tool reported a stale-cursor error after the deletion committed. | PASS: tool reports `stored`; WAL truncation is deferred with a warning; matching public rows 2 → 0, 15 unrelated rows remain. |
+
+Source checks at `8e3164f0b`: public history 35, Room protection 47 and protocol
+226 tests PASS. Evidence: `round5`, `round5-red*`, `round5-wal-red` and
+`round5-green-*` under the evidence root below.
+
+## MP-08 / MP-10 / MP-11: round 4 exact source and clients
 
 Assigned base: `59f9b312d8d30ff43378d12bbdd77f6a0477033e` (PR #912).
 The real baseline kernel was built from
@@ -35,7 +53,7 @@ Actual peer agents were `baserecall/agent-2` and `recallpeer/agent-2`.
 Tool results were captured through expanded real TUI tool output, alongside
 terminal screenshots and console captures; internal fixtures are supplementary.
 
-## MP-08 / MP-10 / MP-11: real RED → GREEN
+## MP-08 / MP-10 / MP-11: round 4 real RED → GREEN
 
 | Real user flow | Baseline result | Candidate result |
 | --- | --- | --- |
@@ -44,11 +62,8 @@ terminal screenshots and console captures; internal fixtures are supplementary.
 | Official private MCP call | The already-published private-title fix excluded both call records. | PASS: official filesystem MCP `read_text_file` executed against lane scratch. A query for its output-only TEST witness returned 0 hits; both call references and a guessed reference returned the identical unavailable error. |
 | Store an already-public TEST word as an encrypted Vault value | RED: normal successful hidden-input creation left 8 public source matches and the earlier reference available. | PASS: normal successful creation reduced 15 earlier public matches to 0; original-value FTS count 0. Peer search returned 0 hits, and the earlier answer/prompt references became indistinguishable from a guessed reference. |
 
-Search still matches individual sanitized fragments; reading a matched answer
-assembles its retained public deltas. Cross-fragment phrase matching is not
-claimed. Assembly is scoped by owner, Room, agent, run, logical prompt and merge
-key, with a 65,536-character bound and truncation indication. No raw provider text
-is used as a fallback. Turn selection happens before the returned-message limit.
+Round 4 searched individual fragments and assembled them on read; round 5
+indexes the whole message instead (above).
 
 The private package was the real official
 `@modelcontextprotocol/server-filesystem@2026.8.31`, installed in lane-owned
@@ -117,7 +132,7 @@ count-only diagnostics. All generated state remains outside source.
 ## MP-08 / MP-10 / MP-11: remaining acceptance scope
 
 Round 3's local room-scoping and 13-page concurrent increasing-append pagination
-PASS remain historical results with their original identities. Round 4 does not
+PASS remain historical results with their original identities. Rounds 4–5 do not
 relabel them as candidate runs. Delayed leased lower-sequence append, hosted wss,
 worker/slice and managed Path-1, Claude/OpenCode, other clients, real public
 site/service matrix, DPR 1/2, shaped uplink/RTT, latency/fps and multi-hour stability
