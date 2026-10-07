@@ -176,7 +176,10 @@ try {
   await writeFile(path.join(options.evidence, 'resource-approval-tui.ansi'), screen)
   passed(stage, {newAuthorityBeforeOwnerReply: false})
   step('owner-denies-resource-acquisition-through-tui')
-  await press('\x1b[B')
+  // Opening starts with no selected decision. Up selects the final Deny
+  // choice; Down would select the first Allow choice.
+  requireValue(approval.choices.at(-1)?.id === 'deny')
+  await press('\x1b[A')
   await until(async () => visibleScreen().includes('Selected: Deny'), 5_000)
   await press('\r')
   await until(async () => !(await automation.send('snapshot')).interactions.some(item => item.id === approval.id), 30_000)
