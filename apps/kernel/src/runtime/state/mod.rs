@@ -757,12 +757,9 @@ impl KernelRuntimeState {
         );
         // MP-08 / MP-11 A09: capture only newly admitted, sanitized public rows.
         let projection_protection = room_secret_observations.clone();
-        let projection_sessions = session_store.clone();
         operational_history_store.set_public_history_projector(Arc::new(move |event| {
-            let session = projection_sessions
-                .get_session(event.session_id.as_deref()?)
-                .ok()?;
-            projection_protection.public_history_document(event, session.owner_user_id())
+            projection_protection
+                .public_history_document(event, event.public_history_owner_user_id.as_deref()?)
         }));
         let room_secret_observations =
             room_secret_observations.with_public_history(operational_history_store.clone());

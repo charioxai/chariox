@@ -69,3 +69,9 @@ blocker, never a fixture substitute or an acceptance pass.
 
 MP-08 / MP-10 / MP-11: see [the real TUI replay](../scripts/public-history-search-drill.md)
 for the focused user-driven protocol drill and exact resource prerequisites.
+
+MP-08 / MP-11: kernel history producers resolve trusted room-owner provenance
+before transcript/projection locks. This internal field is skipped by serde;
+serialized history cannot supply it. Query services release projection locks to
+revalidate canonical authority, then fence the room/index revision before releasing
+a result. Invalidated snapshots fail visibly and require a fresh query.

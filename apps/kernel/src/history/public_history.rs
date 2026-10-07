@@ -167,7 +167,7 @@ impl OperationalHistoryStore {
         );
         self.advance_public_history_rebuild_locked(256)?;
         let connection = self.lock_read_connection(Some(room))?;
-        let revision: u64 = connection.query_row("SELECT COALESCE((SELECT revision FROM public_history_revision WHERE session_id=?1),0)+(SELECT epoch FROM public_history_build)", [room], |r| read_u64(r,0)).map_err(public_error)?;
+        let revision = public_revision(&connection, room)?;
         let coverage = coverage(&connection, owner, room)?;
         let (through, offset) = if let Some(cursor) = cursor {
             if cursor.len() > 2048 {
@@ -247,6 +247,11 @@ impl OperationalHistoryStore {
             next_cursor,
             coverage,
         })
+    }
+
+    pub(crate) fn public_history_revision_locked(&self, room: &str) -> Result<u64, DaemonError> {
+        let connection = self.lock_read_connection(Some(room))?;
+        public_revision(&connection, room)
     }
 
     pub(crate) fn read_public_history_locked(
@@ -345,6 +350,10 @@ impl OperationalHistoryStore {
 
 fn public_error(error: rusqlite::Error) -> DaemonError {
     operational_history_error("public history index", error)
+}
+
+fn public_revision(connection: &Connection, room: &str) -> Result<u64, DaemonError> {
+    connection.query_row("SELECT COALESCE((SELECT revision FROM public_history_revision WHERE session_id=?1),0)+(SELECT epoch FROM public_history_build)", [room], |r| read_u64(r,0)).map_err(public_error)
 }
 
 fn coverage(

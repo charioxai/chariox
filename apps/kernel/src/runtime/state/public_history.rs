@@ -260,6 +260,36 @@ impl KernelRuntimeState {
         Ok(target)
     }
 
+    // Canonical state -> projection is the writer lock order. Revalidate outside
+    // the projection mutex, then fence invalidation without taking canonical locks.
+    fn finish_public_history_snapshot<'a>(
+        &'a self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        room: &crate::session::RuntimeSession,
+        requested: Option<&str>,
+        revision: u64,
+    ) -> Result<std::sync::MutexGuard<'a, ()>, DaemonError> {
+        let current = self.authorize_public_history_room(session, agent, requested)?;
+        let guard = self.owned.operational_history_store.lock_public_history()?;
+        self.owned
+            .room_secret_observations
+            .require(room.id(), false)?;
+        if current.id() != room.id()
+            || current.owner_user_id() != room.owner_user_id()
+            || self
+                .owned
+                .operational_history_store
+                .public_history_revision_locked(room.id())?
+                != revision
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Public history changed; retry the query",
+            ));
+        }
+        Ok(guard)
+    }
+
     pub(super) async fn search_room_history(
         &self,
         session: &crate::session::RuntimeSession,
@@ -275,14 +305,6 @@ impl KernelRuntimeState {
                 &agent,
                 args.session_id.as_deref(),
             )?;
-            let _guard = state
-                .owned
-                .operational_history_store
-                .lock_public_history()?;
-            state
-                .owned
-                .room_secret_observations
-                .require(room.id(), false)?;
             let agent_id = if let Some(reference) = args.agent_ref.as_deref() {
                 let agents = state.owned.agent_store.get_session_agents(room.id());
                 Some(
@@ -297,8 +319,18 @@ impl KernelRuntimeState {
             } else {
                 None
             };
-            // Authorization is rechecked after waiting for the projection lock.
-            state.authorize_public_history_room(&session, &agent, args.session_id.as_deref())?;
+            let _guard = state
+                .owned
+                .operational_history_store
+                .lock_public_history()?;
+            state
+                .owned
+                .room_secret_observations
+                .require(room.id(), false)?;
+            let revision = state
+                .owned
+                .operational_history_store
+                .public_history_revision_locked(room.id())?;
             let result = state
                 .owned
                 .operational_history_store
@@ -310,6 +342,14 @@ impl KernelRuntimeState {
                     args.limit.unwrap_or(20),
                     args.cursor.as_deref(),
                 )?;
+            drop(_guard);
+            let _guard = state.finish_public_history_snapshot(
+                &session,
+                &agent,
+                &room,
+                args.session_id.as_deref(),
+                revision,
+            )?;
             Ok(RuntimeToolResult {
                 ok: true,
                 payload: serde_json::to_value(result).map_err(|_| {
@@ -344,11 +384,22 @@ impl KernelRuntimeState {
                 .owned
                 .room_secret_observations
                 .require(room.id(), false)?;
-            state.authorize_public_history_room(&session, &agent, requested.as_deref())?;
+            let revision = state
+                .owned
+                .operational_history_store
+                .public_history_revision_locked(room.id())?;
             let document = state
                 .owned
                 .operational_history_store
                 .read_public_history_locked(room.owner_user_id(), room.id(), &event_ref)?;
+            drop(_guard);
+            let _guard = state.finish_public_history_snapshot(
+                &session,
+                &agent,
+                &room,
+                requested.as_deref(),
+                revision,
+            )?;
             Ok(RuntimeToolResult {
                 ok: document.is_some(),
                 payload: match document {
@@ -376,8 +427,10 @@ impl KernelRuntimeState {
             let target=crate::runtime::room_tool_admission::resolve_agent(&agents,room.id(),args.agent_ref.as_deref().unwrap_or(agent.id()))?;
             let _guard=state.owned.operational_history_store.lock_public_history()?;
             state.owned.room_secret_observations.require(room.id(),false)?;
-            state.authorize_public_history_room(&session,&agent,None)?;
+            let revision=state.owned.operational_history_store.public_history_revision_locked(room.id())?;
             let mut events=state.owned.operational_history_store.public_history_turn_locked(room.owner_user_id(),room.id(),target.id(),200)?;
+            drop(_guard);
+            let _guard=state.finish_public_history_snapshot(&session,&agent,&room,None,revision)?;
             let mut turns=Vec::new();for event in &events {if !turns.contains(&event.turn_id) {turns.push(event.turn_id.clone());}}
             let turn=args.turn_ref.or_else(||turns.get(args.turns_back.unwrap_or(0)).cloned().flatten());
             events.retain(|event|event.turn_id==turn);events.truncate(args.limit.unwrap_or(200).clamp(1,200));events.reverse();
@@ -390,6 +443,33 @@ impl KernelRuntimeState {
 mod tests {
     use super::*;
     use crate::history::{HistoryEventRole, HistoryEventTurnContext, OperationalHistoryStore};
+    #[test]
+    fn public_history_owner_provenance_is_never_accepted_or_emitted_as_json() {
+        let context: HistoryEventTurnContext = serde_json::from_value(
+            serde_json::json!({"public_history_owner_user_id":"forged-owner"}),
+        )
+        .unwrap();
+        assert!(context.public_history_owner_user_id.is_none());
+        let event = HistoryEvent::operational(
+            1,
+            HistoryEventKind::UserPrompt,
+            None,
+            Some("public task".into()),
+            Default::default(),
+            HistoryEventTurnContext {
+                public_history_owner_user_id: Some("trusted-owner".into()),
+                ..Default::default()
+            },
+        );
+        let mut wire = serde_json::to_value(event).unwrap();
+        assert!(wire.get("public_history_owner_user_id").is_none());
+        wire["public_history_owner_user_id"] = serde_json::json!("forged-owner");
+        assert!(serde_json::from_value::<HistoryEvent>(wire)
+            .unwrap()
+            .public_history_owner_user_id
+            .is_none());
+    }
+
     #[test]
     fn public_history_projection_excludes_private_content_and_scrubs_echoes() {
         let root = std::env::temp_dir().join(format!(
