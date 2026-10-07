@@ -1,7 +1,7 @@
 # MP-08 / MP-10 / MP-11 — A09 real history search replay
 
 This is a user-driven replay for PR9. It requires the exact built kernel/TUI and
-an authorized Chariox-linked official provider profile. Use the profile authorized for the current round. Round 3 permits linking
+an authorized Chariox-linked official provider profile. Use the profile authorized for the current round. Rounds 3 and 4 permit linking
 the existing `/root/.codex-agents` login through the product command. Do not substitute a stub
 provider, synthetic page or internal IPC call for a live acceptance step. Record
 source/binary hashes, exit codes and screenshots per step outside the checkout.
@@ -93,6 +93,66 @@ Source regressions do not substitute for them.
   `turns_back: 1` and its returned `turn_id` as `turn_ref`. Bound the returned
   events with `limit`; the newer turn must not hide the previous one.
 
+## MP-08 / MP-10 / MP-11: round 4 recall and privacy replay
+
+Run on the assigned baseline and exact candidate with real compiled TUI/kernel
+and official Codex. Expand actual tool output in the TUI and capture the returned
+JSON, rather than accepting the agent's prose as proof.
+
+1. Ask the root agent for a useful repository review, then a longer newer review
+   emitting more than 200 public output events. Spawn a real peer through the TUI,
+   assign the product-linked account, and ask it to search/read the earlier answer.
+   Record the matched reference, all retained sanitized delta identities, and the
+   complete useful answer. Baseline must return only a fragment; candidate must
+   assemble the answer with room/agent/run/prompt/merge-key isolation.
+2. Have the peer call `history.turn` with `turns_back:1`, then the canonical prompt
+   ID as `turn_ref`, then the corresponding provider-native turn ID. Use `limit:1`
+   for a fully reviewable returned answer; also capture a larger limit to verify
+   the preceding user prompt belongs to the correct logical turn. Large public
+   tool records can exceed a TUI excerpt, so an excerpt alone cannot prove their
+   complete body. The newer turn must not consume the previous turn's offset.
+3. Install the official filesystem MCP in an exact lane-owned external scratch
+   directory, for example `@modelcontextprotocol/server-filesystem@2026.8.31`.
+   Give it only a lane-owned scratch root containing a TEST document/witness.
+   Through the real TUI, register it as private `am9_vault_fs` using
+   `/mcp install <name> --command <node> --arg <official-dist/index.js> --arg <scratch>`
+   and grant it with `/mcp grant <agent> <name>`. Ask the real agent to call
+   `read_text_file`; do not put its output witness into the initial public prompt.
+   Have it search for the output-only witness: zero hits. Have the peer read both
+   private call references and a guessed reference: identical unavailable errors.
+   Capture the actual provider-normalized private call identity. Do not infer
+   that all later voluntary public echoes of an unregistered output are protected.
+4. Start the normal Room Environment with `/room start` and capture `/room status`.
+   Use a real browser/CDP endpoint and the stock product controller. Set
+   `CHARIOX_BROWSER_DEBUGGER_ENDPOINT` to that owned real endpoint,
+   `CHARIOX_BROWSER_CONTROLLER_SCRIPT` to the candidate checkout's stock
+   `apps/kernel/slice-linux-docker/docker/browser-controller.mjs`, and
+   `CHARIOX_BROWSER_CONTROLLER_NODE` to the real Node22 binary before launching
+   the kernel. Browser,
+   controller and kernel must share the correct PID namespace so real health
+   identity/resource checks work; never rewrite health replies. Keep Chromium's
+   normal profile-before-other-flags argument order. Record unavailable desktop
+   or viewer components honestly; browser/controller readiness alone is not full
+   Room display acceptance.
+5. Choose a non-sensitive TEST word already present in the earlier public review;
+   establish its public reference is available before registration. Through the
+   normal encrypted `chariox_request_credential_secret` agent-tool flow, use an explicit Vault path inside
+   this run's disposable kernel home. Submit passphrase and TEST value through
+   hidden runtime interactions, with Room metadata and browser scope. Never print
+   the value, capture hidden-input payloads, or inspect the Vault/provider files.
+   Mask historical public TEST occurrences in retained screenshots/transcripts.
+6. After successful creation, have the real peer search the protected value and
+   read the formerly available answer/prompt references plus a guessed reference.
+   Search must return zero hits; all three reads must be indistinguishable
+   unavailable errors. Supplement with count-only queries of sanitized public
+   source/FTS using the TEST value only in memory, never printed. The baseline
+   creation retained its old public matches; candidate creation invalidates them.
+   Do not substitute direct IPC for the real TUI/provider calls.
+
+These TEST resources are lane-creatable and need no owner credential transfer.
+The exact round4 source/binary identities and results are recorded in
+[MP-08 / MP-10 / MP-11 live validation](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md).
+
 ## MP-10 / MP-11: full acceptance and cleanup
 
 Execute every A09 G01–G18 / S01–S04 axis cell using the frozen appendix: all three
@@ -107,5 +167,5 @@ owned descendants exited, inventory the exact disposable state path and remove
 its generated runtime identities/materialized profiles. Preserve native linked
 profiles, durable key stores, shared reviewer state and all other lanes' resources.
 
-MP-08 / MP-10 / MP-11: [round 3 live results](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
-record local passes, newly reproduced failures and exact protected-service blockers.
+MP-08 / MP-10 / MP-11: [round 4 live results](../docs/PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)
+record local real RED → GREEN results and the remaining hosted/managed acceptance scope.
