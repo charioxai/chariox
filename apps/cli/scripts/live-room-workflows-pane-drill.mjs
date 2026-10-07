@@ -20,7 +20,8 @@ const relayTransport = args.transport === 'relay'
 const interruptRaceRounds = Number(args['interrupt-race-rounds'] ?? 0)
 assert.ok(Number.isInteger(interruptRaceRounds) && interruptRaceRounds >= 0 && interruptRaceRounds <= 30)
 const noisyInterruptRounds = Number(args['noisy-interrupt-rounds'] ?? 0)
-assert.ok(Number.isInteger(noisyInterruptRounds) && noisyInterruptRounds >= 0 && noisyInterruptRounds <= 30)
+assert.ok(Number.isInteger(noisyInterruptRounds) && noisyInterruptRounds >= 0 && noisyInterruptRounds <= 60)
+const reconnectRounds = new Set((args["reconnect-rounds"] ?? "").split(",").filter(Boolean).map(Number))
 const tracingInterrupts = interruptRaceRounds > 0 || noisyInterruptRounds > 0
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const unwrap = (response, key) => { if (response.Error) throw new Error(response.Error.message); assert.ok(response[key], `MP-08 missing ${key}`); return response[key] }
@@ -105,14 +106,14 @@ async function diagnostics(result) {
     const lines=(await readFile(path.join(state,'logs',name),'utf8')).trim().split('\n').slice(-100)
     for(const line of lines) {
       let entry;try{entry=JSON.parse(line)}catch{continue}
-      if(entry.component!=='daemon.app_events')continue
+      if(!['warn','error'].includes(entry.level) && entry.component!=='daemon.app_events')continue
       const error=String(entry.error??'')
       records.push({component:entry.component,message:entry.message,error:error.includes('is not authenticated;')?'provider account lacks successful product auth observation':/token|credential|bearer|secret|passphrase|auth/i.test(error)?'[credential-related diagnostic suppressed]':error})
     }
   }
   await writeFile(path.join(args.output,'runtime-pump.json'),JSON.stringify({mpItems:['MP-08','MP-11'],messages:records,
     homeKernelId:result.room_workflows?.home_kernel_id,hostDaemonId:result.session.host_daemon_id,
-    activity:result.agent_activity,runs:result.session.workflow_runs?.map(run=>({id:run.id,status:run.status,nodes:run.node_runs?.map(node=>({id:node.id,status:node.status,agentId:node.agent_id}))}))},null,2)+'\n',{mode:0o600})
+    activity:result.agent_activity,prompts:Object.entries(result.session.prompt_states??{}).map(([agentId, state])=>({agentId,active:state.active_prompt?{id:state.active_prompt.id,status:state.active_prompt.status,workflowRunId:state.active_prompt.workflow_run_id}:null,queued:(state.queued_prompts??[]).map(prompt=>({id:prompt.id,status:prompt.status,workflowRunId:prompt.workflow_run_id}))})),runs:result.session.workflow_runs?.map(run=>({id:run.id,status:run.status,nodes:run.node_runs?.map(node=>({id:node.id,status:node.status,agentId:node.agent_id}))}))},null,2)+'\n',{mode:0o600})
   // MP-08 / MP-10: retain public queue/counter projections, never URLs,
   // provider diagnostics, prompts, credentials or the whole health response.
   const health=unwrap(await client.send(requests.getDaemonHealthRequest()),'DaemonHealth').projection
@@ -174,7 +175,32 @@ try {
   terminal.stderr.on('data', chunk=> { /* Only fixture diagnostics; no provider stdout is connected here. */ receipt.terminalError=String(chunk).slice(-1000) })
   terminal.on('close',()=>{for(const waiter of pending.values())waiter.reject(new Error('MP-08 terminal driver exited'));pending.clear()})
   await capture('01-room-inventory',text=>text.includes(heading))
+  const queuedFollowupRounds=Number(args['queued-followup-rounds']??0)
+  assert.ok(Number.isSafeInteger(queuedFollowupRounds)&&queuedFollowupRounds>=0&&queuedFollowupRounds<=20)
+  if (queuedFollowupRounds) {
+    noiseRoot=await mkdtemp('/tmp/wfpause-queue-');receipt.ownedNoiseRoot=noiseRoot
+    for(let round=0;round<queuedFollowupRounds;round++) {
+      const label=`queue-${String(round+1).padStart(2,'0')}`
+      const marker=path.join(noiseRoot,label+'-started')
+      const followup=path.join(noiseRoot,label+'-followup')
+      await key('\x17')
+      await key(`Use exec_command to run printf ready > '${marker}'; sleep 120. Wait for the command before returning the workflow envelope.`)
+      await key('\r')
+      const deadline=Date.now()+60000
+      while(!(await readFile(marker,'utf8').catch(()=>''))) {assert.ok(Date.now()<deadline,'MP-08 queued-start command must reach real provider');await sleep(100)}
+      await capture(label+'-running',text=>text.includes('1 running'))
+      await key(`Use exec_command to run printf followed > '${followup}', then return the successful workflow envelope with output message QUEUE_FOLLOWUP_OK.`)
+      await key('\r')
+      await capture(label+'-queued',text=>text.includes('Queued request'))
+      await raceKey('\x13')
+      const nextDeadline=Date.now()+90000
+      while(!(await readFile(followup,'utf8').catch(()=>''))) {assert.ok(Date.now()<nextDeadline,'MP-08 queued follow-up must run after Stop');await diagnostics(await stateUntil(()=>true));await sleep(250)}
+      await stateUntil(s=>s.room_workflows.workflows[0].running_count===0&&s.room_workflows.workflows[0].queued_count===0,90000)
+      await capture(label+'-followup-completed',text=>text.includes('0 running')&&text.includes('0 queued'))
+    }
+  }
   if (noisyInterruptRounds) {
+    if(noiseRoot)await rm(noiseRoot,{recursive:true,force:true})
     noiseRoot = await mkdtemp('/tmp/wfpause-noisy-')
     receipt.ownedNoiseRoot = noiseRoot
     receipt.noisyInterrupts = []
@@ -203,8 +229,22 @@ try {
         if(progress >= 8192 && output.length)break
         await sleep(100)
       } while(Date.now()<noiseDeadline)
+      await diagnostics(await stateUntil(()=>true))
       assert.ok(progress >= 8192 && output.length, 'MP-08 real noisy command must be running and emitting provider socket deltas')
       await capture(label+'-command-running',text=>text.includes('1 running')&&text.includes('[Start · Enter]'))
+      if (reconnectRounds.has(round+1)) {
+        // MP-08/MP-11: interrupt only the exact relay owned by this run.
+        const exited = new Promise(resolve=>relay.once('exit',resolve))
+        signalOwnedProcess(relay,'SIGTERM'); await exited
+        await capture(label+'-disconnected',text=>text.includes('Offline') || text.includes('Disconnected'))
+        if (args['control-while-offline']==='1') {
+          await raceKey(action === 'pause' ? '\x10' : '\x13')
+          await capture(label+'-offline-control-feedback',text=>text.includes('Refreshing workflow state') || text.includes('failed') || text.includes('refused') || text.includes('connect') && !text.includes('Started run'),2000)
+        }
+        relay=spawnOwned(args.relay,[],{cwd:repo,env,stdio:'ignore',detached:true})
+        await capture(label+'-reconnected',text=>text.includes('Reconnected')&&text.includes('1 running'),30000)
+        receipt.steps.push({step:label+'-relay-reconnect',status:'GREEN'})
+      }
       // User action is a real TUI key. Time starts at the PTY write, before
       // the TUI/relay/kernel process the control; it does not start at an IPC call.
       // Sample the producer concurrently with the control path: waiting for
@@ -347,10 +387,11 @@ try {
   await capture('03-dismissed',text=>!text.includes('Start '+heading))
   await key('\x17')
   await capture('04-reopened-draft',text=>text.includes('Run sleep 30; reply HOLD.')&&text.includes('Start '+heading))
+  const normalPrevious = new Set((await stateUntil(()=>true)).room_workflows.workflows[0].runs.map(run=>run.run_id))
   await key('\r')
-  const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.length>0)
-  receipt.runId=started.room_workflows.workflows[0].runs[0].run_id
-  await capture('05-start-confirmed',text=>text.includes('Started run')||text.includes('running'))
+  const started = await stateUntil(s=>s.room_workflows.workflows[0].runs.some(run=>!normalPrevious.has(run.run_id)&&run.status.toLowerCase()==='running'))
+  receipt.runId=started.room_workflows.workflows[0].runs.find(run=>!normalPrevious.has(run.run_id)).run_id
+  await capture('05-start-confirmed',text=>text.includes('Started run')&&text.includes('[Start · Enter]')&&text.includes('1 running'))
   await key('\x10') // Ctrl+P: captured current run
   await stateUntil(s=>s.room_workflows.workflows[0].paused_count===1)
   await capture('06-paused',text=>text.includes('1 paused'))
@@ -400,17 +441,19 @@ try {
   receipt.status=receipt.expectedRed?'RED':'GREEN'
 } catch(error) {
   receipt.status='RED';receipt.firstFailure=error.message
+  if(sessionId)await diagnostics(await stateUntil(()=>true)).catch(()=>{})
   if(terminal&&terminal.exitCode===null)await terminalCommand('capture',{prefix:path.join(args.output,'failure')}).catch(()=>{})
   if (args['expect-red']==='1' && error.message==='MP-08 TUI assertion failed at 01-room-inventory')receipt.expectedRed=true
   else process.exitCode=1
 } finally {
   clearInterval(resourceMonitor)
   if(tracingInterrupts) {
-    const traces=[],queueTraces=[]
+    const traces=[],queueTraces=[],guardTraces=[]
     for(const name of await readdir(path.join(state,'logs')).catch(()=>[])) {
       if(!name.endsWith('.ndjson'))continue
       for(const line of (await readFile(path.join(state,'logs',name),'utf8')).split('\n')) {
         let entry;try{entry=JSON.parse(line)}catch{continue}
+        if(entry.component==='cli.room_workflows')guardTraces.push({at:entry.timestamp_ms,guard:entry.guard})
         if(entry.component==='daemon.command_latency' && !['session.state.get','daemon.health.get'].includes(entry.command_type)) {
           queueTraces.push({at:entry.timestamp_ms,message:entry.message,commandId:entry.command_id,
             commandType:entry.command_type,laneKind:entry.lane_kind,laneId:entry.lane_id,
@@ -425,7 +468,7 @@ try {
     await writeFile(path.join(args.output,'provider-turns.json'),JSON.stringify({mpItems:receipt.mpItems,traces,
       interruptEvidence:await interruptTraces(path.join(state,'logs'))},null,2)+'\n',{mode:0o600})
     await writeFile(path.join(args.output,'command-queues.json'),JSON.stringify({mpItems:receipt.mpItems,
-      traces:queueTraces.sort((a,b)=>a.at-b.at)},null,2)+'\n',{mode:0o600})
+      guardTraces,traces:queueTraces.sort((a,b)=>a.at-b.at)},null,2)+'\n',{mode:0o600})
   }
   await writeFile(path.join(args.output,'result.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600})
   const cleanupGroups=[]

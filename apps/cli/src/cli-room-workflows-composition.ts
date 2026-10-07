@@ -24,7 +24,7 @@ export function createCliRoomWorkflowsComposition(deps: {
    untrack(() => {
      if (!attached) { controller.deactivate(); return }
      const inventory = roomWorkflowInventoryPayload(session.room_workflows, session.id)
-     if (inventory && (inventory !== lastInventory || (connected && session.room_workflows_fresh === true && controller.record?.fresh === false))) { lastInventory = inventory; controller.apply(inventory, connected && (session.room_workflows_fresh === true || controller.record?.fresh !== false)) }
+     if (inventory && inventory !== lastInventory) { lastInventory = inventory; controller.apply(inventory, connected && (session.room_workflows_fresh === true || controller.record?.fresh !== false)) }
      else if (controller.record?.inventory.session_id !== session.id) controller.deactivate()
      else if (!connected) controller.stale()
    })
