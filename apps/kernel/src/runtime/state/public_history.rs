@@ -479,6 +479,59 @@ mod tests {
     }
 
     #[test]
+    fn public_history_excludes_codex_private_mcp_server_records() {
+        // MP-08 / MP-10 / MP-11 A09: Codex's MCP normalizer retains the
+        // unqualified tool in `tool` and the server identity in `title`.
+        // These values have never entered the Room secret registry.
+        let root = std::env::temp_dir().join(format!(
+            "chariox-am9-private-mcp-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let protection = room_secret_observation::RoomSecretObservations::new(
+            root.join("observation"),
+            Default::default(),
+        );
+        let store = OperationalHistoryStore::open(root.join("history.sqlite")).unwrap();
+        store.set_public_history_projector(Arc::new(move |event| {
+            protection.public_history_document(event, "owner")
+        }));
+        let append = |server: &str, output: &str| {
+            store.append_operational_event(
+                HistoryEventKind::ProviderTool,
+                Some(HistoryEventRole::Tool),
+                Some(serde_json::json!({
+                    "id":"mcp-private-read", "tool":"read", "status":"completed",
+                    "title":server, "input":{"path":"account"}, "output":output
+                }).to_string()),
+                Default::default(),
+                HistoryEventTurnContext {
+                    session_id:Some("room".into()), agent_id:Some("peer".into()),
+                    ..Default::default()
+                },
+            ).unwrap()
+        };
+        let private = append("vault", "external_credential_canary");
+        let public = append("documents", "public_document_marker");
+        let guard = store.lock_public_history().unwrap();
+        assert!(store.search_public_history_locked(
+            "owner", "room", None, "external_credential_canary", 50, None
+        ).unwrap().hits.is_empty());
+        assert!(store.read_public_history_locked(
+            "owner", "room", &private.event_id
+        ).unwrap().is_none());
+        assert_eq!(store.search_public_history_locked(
+            "owner", "room", None, "public_document_marker", 50, None
+        ).unwrap().hits.len(), 1);
+        assert!(store.read_public_history_locked(
+            "owner", "room", &public.event_id
+        ).unwrap().is_some());
+        drop(guard);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn public_history_projection_excludes_private_content_and_scrubs_echoes() {
         let root = std::env::temp_dir().join(format!(
             "chariox-am9-protection-{:016x}",
