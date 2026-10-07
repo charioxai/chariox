@@ -40,6 +40,10 @@ impl KernelRuntimeState {
         if !handoff.derived || !writes_handoff_briefs(target_run) {
             return handoff;
         }
+        if !handoff.needs_brief() {
+            handoff.conversation.brief = owned.stored_handoff_brief(session_id, agent_id);
+            return handoff;
+        }
         let started = Instant::now();
         let update = self
             .update_handoff_brief(
@@ -61,11 +65,12 @@ impl KernelRuntimeState {
                         "brief_bytes": brief.as_ref().map(String::len),
                     }),
                 );
-                if brief.is_some() {
-                    handoff.conversation.brief = brief;
-                }
+                handoff.conversation.brief = brief;
             }
-            Err(error) => crate::logging::warn_with_fields(
+            Err(error) => {
+                // Every completed fold is durable; use it even if a later fold failed.
+                handoff.conversation.brief = owned.stored_handoff_brief(session_id, agent_id);
+                crate::logging::warn_with_fields(
                 "daemon.provider_context_handoff",
                 "failed to update the agent's handoff brief; the handoff keeps the stored brief",
                 serde_json::json!({
@@ -75,7 +80,8 @@ impl KernelRuntimeState {
                     "elapsed_ms": elapsed_ms,
                     "error": error.to_string(),
                 }),
-            ),
+                );
+            }
         }
         handoff
     }
@@ -134,32 +140,27 @@ impl KernelRuntimeState {
         let configured = crate::provider::canonical_provider_family(target_run.provider())
             .and_then(|family| config.user_config.history.handoff.brief_model(family));
         utility_run.set_model(brief_model(configured, handoff, target_run));
+        if owned
+            .pending_agent_context_handoffs
+            .brief_model_is_unavailable(&utility_run)
+        {
+            utility_run.set_model(target_run.model().to_string());
+        }
         utility_run.set_variant(Some("low".to_string()));
         utility_run.set_metadata_only_discovery(scratch.0.clone());
         let mut calls = 0;
         for (part, chunk) in chunks.iter().enumerate() {
             if !chunk.text.is_empty() {
-                calls += 1;
-                let prompt = || brief_prompt(brief.as_deref(), chunk, part, chunks.len());
-                let output = match self.brief_call(&utility_run, prompt(), started).await {
-                    // A default or configured brief model the account cannot
-                    // run gives way to the target model once.
-                    Err(error) if calls == 1 && utility_run.model() != target_run.model() => {
-                        crate::logging::warn_with_fields(
-                            "daemon.provider_context_handoff",
-                            "the brief model failed; briefing with the target model",
-                            serde_json::json!({
-                                "brief_model": utility_run.model(),
-                                "target_provider_run_id": target_run.id(),
-                                "error": error.to_string(),
-                            }),
-                        );
-                        utility_run.set_model(target_run.model().to_string());
-                        calls += 1;
-                        self.brief_call(&utility_run, prompt(), started).await?
-                    }
-                    output => output?,
-                };
+                let (output, part_calls) = call_with_model_fallback(
+                    &owned.pending_agent_context_handoffs,
+                    &mut utility_run,
+                    target_run,
+                    brief_prompt(brief.as_deref(), chunk, part, chunks.len()),
+                    calls == 0,
+                    |run, prompt| async move { self.brief_call(&run, prompt, started).await },
+                )
+                .await?;
+                calls += part_calls;
                 brief = Some(
                     parse_brief(&output)
                         .ok_or_else(|| brief_error("the utility answer is not a handoff brief"))?,
@@ -192,24 +193,21 @@ impl KernelRuntimeState {
             .checked_sub(started.elapsed())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| brief_error("the brief deadline passed"))?;
-        tokio::time::timeout(
+        run_provider_utility_prompt(
+            self,
+            utility_run.clone(),
+            prompt,
+            "update handoff brief",
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
             remaining,
-            run_provider_utility_prompt(
-                self,
-                utility_run.clone(),
-                prompt,
-                "update handoff brief",
-                ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
-            ),
         )
         .await
-        .map_err(|_| brief_error("the brief deadline passed"))?
     }
 }
 
 /// Codex app-server runs and Chariox Claude runs can run a metadata-only
 /// utility turn; other harnesses fall back to the deterministic packet.
-fn writes_handoff_briefs(run: &RuntimeProviderRun) -> bool {
+pub(in crate::runtime::state) fn writes_handoff_briefs(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "codex"
         || crate::provider::provider_run_uses_runtime_structured_utility_prompt(run)
 }
@@ -239,5 +237,175 @@ fn brief_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "update handoff brief",
         message: message.to_string(),
+    }
+}
+
+/// One fold, with a single retry only for a definite model rejection.
+async fn call_with_model_fallback<F, Fut>(
+    store: &super::PendingAgentContextHandoffStore,
+    utility_run: &mut RuntimeProviderRun,
+    target_run: &RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    allow_fallback: bool,
+    mut call: F,
+) -> Result<(String, usize), DaemonError>
+where
+    F: FnMut(RuntimeProviderRun, AgentUtilityPromptParts) -> Fut,
+    Fut: std::future::Future<Output = Result<String, DaemonError>>,
+{
+    match call(utility_run.clone(), prompt.clone()).await {
+        Err(error)
+            if allow_fallback
+                && fallback_after_unavailable_model(store, utility_run, target_run, &error) =>
+        {
+            crate::logging::warn_with_fields(
+                "daemon.provider_context_handoff",
+                "the brief model is unavailable; briefing with the target model",
+                serde_json::json!({"brief_model": utility_run.model(), "target_provider_run_id": target_run.id(), "error": error.to_string()}),
+            );
+            utility_run.set_model(target_run.model().to_string());
+            call(utility_run.clone(), prompt)
+                .await
+                .map(|output| (output, 2))
+        }
+        result => result.map(|output| (output, 1)),
+    }
+}
+
+/// Only a definite unsupported-model rejection justifies changing models.
+/// Network, quota, timeout and other transient failures retain the configured model.
+fn fallback_after_unavailable_model(
+    store: &super::PendingAgentContextHandoffStore,
+    utility_run: &RuntimeProviderRun,
+    target_run: &RuntimeProviderRun,
+    error: &DaemonError,
+) -> bool {
+    if utility_run.model() == target_run.model() {
+        return false;
+    }
+    let message = error.to_string().to_ascii_lowercase();
+    let unsupported = [
+        "unsupported model",
+        "model_not_found",
+        "model not found",
+        "model does not exist",
+        "model is not supported",
+        "model is not available for this account",
+        "not supported when using codex with a chatgpt account",
+    ]
+    .iter()
+    .any(|reason| message.contains(reason));
+    if unsupported {
+        store.remember_unavailable_brief_model(utility_run);
+    }
+    unsupported
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(account: &str, model: &str) -> RuntimeProviderRun {
+        RuntimeProviderRun::new(
+            "run",
+            &crate::provider::LaunchProviderRequest::new("s", "codex", "codex", account, model),
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "codex".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn the_first_fold_retries_an_unavailable_model_once_but_not_a_transient_error() {
+        let store = super::super::PendingAgentContextHandoffStore::default();
+        let target = run("work", "gpt-5.5");
+        let mut utility = run("work", "gpt-6-luna");
+        let mut models = Vec::new();
+        let prompt = || AgentUtilityPromptParts {
+            visible_user_prompt: "fold".into(),
+            hidden_system_context: "brief".into(),
+        };
+        let (output, calls) = call_with_model_fallback(
+            &store,
+            &mut utility,
+            &target,
+            prompt(),
+            true,
+            |run, input| {
+                models.push(run.model().to_string());
+                assert_eq!(input.visible_user_prompt, "fold");
+                std::future::ready(if run.model() == "gpt-6-luna" {
+                    Err(brief_error("unsupported model gpt-6-luna"))
+                } else {
+                    Ok("folded".into())
+                })
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, "folded");
+        assert_eq!(calls, 2);
+        assert_eq!(models, ["gpt-6-luna", "gpt-5.5"]);
+        assert!(store.brief_model_is_unavailable(&run("work", "gpt-6-luna")));
+        let mut calls = 0;
+        let result = call_with_model_fallback(
+            &store,
+            &mut run("personal", "gpt-6-luna"),
+            &target,
+            prompt(),
+            true,
+            |_, _| {
+                calls += 1;
+                std::future::ready(Err(brief_error("rate limit exceeded")))
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn unavailable_model_fallback_is_account_scoped_and_transient_errors_do_not_switch() {
+        let store = super::super::PendingAgentContextHandoffStore::default();
+        let utility = run("work", "gpt-6-luna");
+        let target = run("work", "gpt-5.5");
+        for message in [
+            "network timeout",
+            "rate limit exceeded",
+            "quota exhausted",
+            "server overloaded",
+            "model is not available at this time",
+        ] {
+            assert!(!fallback_after_unavailable_model(
+                &store,
+                &utility,
+                &target,
+                &brief_error(message)
+            ));
+            assert!(!store.brief_model_is_unavailable(&utility));
+        }
+        assert!(fallback_after_unavailable_model(
+            &store,
+            &utility,
+            &target,
+            &brief_error("unsupported model gpt-6-luna")
+        ));
+        assert!(store.brief_model_is_unavailable(&utility));
+        assert!(!store.brief_model_is_unavailable(&run("personal", "gpt-6-luna")));
+        assert!(!store.brief_model_is_unavailable(&run("work", "different-model")));
+        assert!(!fallback_after_unavailable_model(
+            &store,
+            &target,
+            &target,
+            &brief_error("unsupported model")
+        ));
     }
 }

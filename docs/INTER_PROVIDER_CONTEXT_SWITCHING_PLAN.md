@@ -51,7 +51,7 @@ The kernel stores it per agent in operational history, with the history sequence
 
 How it is written:
 
-- **When.** Before a provider-switch handoff is dispatched to a Codex or Chariox Claude run, the kernel folds the history after the watermark into the stored brief. It never runs for an intra-provider switch, which keeps the native session.
+- **When.** Before a provider-switch handoff is dispatched to a Codex or Chariox Claude run, a detached dispatch continuation folds history after the watermark into the stored brief. The output pumps remain available, and session clients see “Preparing handoff brief…”. A deterministic packet that already preserves every turn needs no refresh. It never runs for an intra-provider switch, which keeps the native session.
 - **Engine.** One utility call on the target run's official harness. It runs in a fresh, metadata-only session: no tools, no MCP, no prior thread, and a private empty working directory.
 - **Update rules.** The call applies PRESERVE / ADD / UPDATE rules to the previous brief.
 - **Long histories.** History is read oldest first, in transcript chunks of up to 160 KB. Tool calls are reduced to their command, outcome and a short output excerpt; the full output stays in history for recall.
@@ -63,9 +63,9 @@ Which model writes it:
 - Otherwise, on Codex, `gpt-6-luna`: it writes an L brief in about 5 s, where gpt-5.5 took up to 19 s.
 - Otherwise the source model, when the target harness can run it, as on an account switch.
 - Otherwise the target model.
-- If the chosen model fails on the first call, for instance because the account cannot run it, the brief is retried once on the target model.
+- A definite unsupported-model rejection on the first call retries once on the target model. That rejection is remembered per account and exact model for the kernel lifetime; transient failures do not change models.
 
-The update has 120 seconds. If it fails, times out, or the target is a Claude native run, the packet keeps the stored brief, if any, and its deterministic sections.
+The update passes the remaining part of its 120-second deadline into each utility call, and waits for the utility to end before removing scratch. If it fails, times out, or the target is a Claude native run, the packet keeps the last successfully stored fold, if any, and its deterministic sections.
 
 ## Validation
 

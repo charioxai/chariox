@@ -303,7 +303,7 @@ impl KernelRuntimeState {
         let output = run_provider_utility_prompt(self, run, AgentUtilityPromptParts {
             visible_user_prompt: project_environment_discovery_prompt(input)?,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
-        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery).await?;
+        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
         parse_project_environment_discovery_output(&output, input)
     }
 

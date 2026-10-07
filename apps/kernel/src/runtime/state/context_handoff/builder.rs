@@ -88,6 +88,36 @@ impl AgentConversation {
         self.turns.is_empty()
     }
 
+    /// Whether the deterministic packet keeps every turn without shortening
+    /// prompts, answers or hiding tool details. Whitespace folding is harmless.
+    pub(super) fn fits_without_brief(&self, max_bytes: usize) -> bool {
+        let Some(packet) = self.render(max_bytes) else {
+            return self.is_empty();
+        };
+        if packet.contains("earlier turns omitted") || packet.contains("[truncated]") {
+            return false;
+        }
+        self.turns.iter().enumerate().all(|(index, turn)| {
+            let latest = index + 1 == self.turns.len();
+            let contains = |text: &str| {
+                let text = if latest {
+                    text.trim().to_string()
+                } else {
+                    single_line(text)
+                };
+                packet.contains(&text)
+            };
+            contains(&turn.user_prompt)
+                && contains(&turn.answer())
+                && (turn.latest_details.is_empty()
+                    || (latest
+                        && turn
+                            .latest_details
+                            .iter()
+                            .all(|(_, detail)| packet.contains(detail))))
+        })
+    }
+
     /// The handoff packet in at most `max_bytes`: the brief, the kernel's
     /// facts, the prior turns and the latest turn. Under a tight budget prior
     /// turns give way first, then the facts, the latest turn's details and the
@@ -770,6 +800,22 @@ mod tests {
         );
         let latest = handoff.split(LATEST_TURN_HEADER).nth(1).unwrap();
         assert_eq!(latest.matches("print(7*6)").count(), 1, "{handoff}");
+    }
+
+    #[test]
+    fn a_complete_deterministic_packet_needs_no_brief() {
+        let small = vec![
+            user_event(1, "s", "a", "remember amber-kestrel"),
+            output_event(2, "s", "a", "r", "OK"),
+        ];
+        assert!(AgentConversation::from_events(&small).fits_without_brief(MAX_HANDOFF_BYTES));
+        let mut large = small.clone();
+        large.push(user_event(3, "s", "a", &"varied notes ".repeat(500)));
+        assert!(!AgentConversation::from_events(&large).fits_without_brief(MAX_HANDOFF_BYTES));
+        let mut tool = small;
+        tool.push(tool_event(3, "s", "a", "r", "edited parse.rs"));
+        tool.push(user_event(4, "s", "a", "next request"));
+        assert!(!AgentConversation::from_events(&tool).fits_without_brief(MAX_HANDOFF_BYTES));
     }
 
     fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {

@@ -100,7 +100,7 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
     }
 
-    fn ensure_prompt_dispatch_matches_active_prompt(
+    pub(super) fn ensure_prompt_dispatch_matches_active_prompt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {
@@ -1799,6 +1799,76 @@ mod tests {
             }),
             "steering prompt should be recorded as provider input: {input_records:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn handoff_dispatch_returns_to_the_pump_before_preparing_the_brief() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, _run_id, mut dispatch) =
+            runtime_with_admitted_prompt().await;
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "brief-target-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "claude".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        dispatch.provider_run_id = run.id().to_string();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let entry = crate::history::SessionHistoryEntry::user_prompt(
+            &session_id,
+            "prior",
+            &agent_id,
+            &format!("remember amber-kestrel {}", "notes ".repeat(2_000)),
+        );
+        runtime
+            .owned
+            .operational_history_store
+            .append(&crate::history::HistoryEvent::transcript(
+                100,
+                &entry,
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some("prior".into()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        // A current-thread executor cannot run the continuation until this test yields.
+        // The missing Claude actor makes a synchronous dispatch fail immediately.
+        assert!(runtime
+            .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
+            .await
+            .unwrap());
+        let records = runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(&session_id, &observer_id);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.message.contains("Preparing handoff")),
+            "{records:?}"
+        );
+        assert!(runtime
+            .owned
+            .prompt_dispatch_matches_active_prompt(&dispatch)
+            .unwrap());
     }
 
     #[tokio::test]
@@ -3589,69 +3659,32 @@ impl KernelRuntimeState {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
-            let handoff = match owned.context_handoff_for_dispatch(
+            let handoff = owned.context_handoff_for_dispatch(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &provider_run,
                 &dispatch.prompt_id,
                 dispatch.steering,
-            ) {
-                Some(handoff) => Some(
-                    self.with_current_handoff_brief(
-                        owned,
-                        handoff,
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &provider_run,
-                    )
-                    .await,
-                ),
-                None => None,
-            };
-            let prompt_with_handoff = handoff
-                .map(|handoff| {
-                    super::context_handoff::inject_context_handoff(&dispatch.prompt, &handoff)
-                })
-                .unwrap_or_else(|| dispatch.prompt.clone());
-            let granted_skill_context = owned.granted_skill_hidden_context(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &prompt_with_handoff,
-            )?;
-            let hidden_system_context =
-                join_hidden_context(&hidden_system_context, &granted_skill_context);
-            let (source_client_id, _source_user_id) =
-                owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
-            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
-                &dispatch.agent_id,
-                owned
-                    .agent_store
-                    .get_agent(&dispatch.agent_id)?
-                    .is_metaagent(),
-                source_client_id.as_deref(),
-                &hidden_system_context,
             );
-            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(false);
+            if handoff
+                .as_ref()
+                .is_some_and(|handoff| handoff.needs_brief())
+                && super::context_handoff::brief_refresh::writes_handoff_briefs(&provider_run)
+            {
+                self.spawn_handoff_brief_dispatch(
+                    dispatch.clone(),
+                    provider_run,
+                    handoff.unwrap(),
+                    hidden_system_context,
+                );
+                return Ok(true);
             }
-            let result = owned.provider_store.enqueue_structured_prompt_submit(
-                dispatch.session_id.clone(),
-                dispatch.provider_run_id.clone(),
-                dispatch.agent_id.clone(),
-                dispatch.prompt_id.clone(),
-                dispatch
-                    .target_active_prompt_id
-                    .as_deref()
-                    .unwrap_or(&dispatch.prompt_id),
+            return self.submit_structured_prompt_with_handoff(
+                dispatch,
                 &provider_run,
-                &prompt_with_handoff,
+                handoff,
                 &hidden_system_context,
-                &dispatch.attachments,
-                mode,
-                dispatch.steering,
             );
-            return result.map(|()| true);
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -4780,7 +4813,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn join_hidden_context(first: &str, second: &str) -> String {
+pub(super) fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
         ("", "") => String::new(),
         (first, "") => first.to_string(),

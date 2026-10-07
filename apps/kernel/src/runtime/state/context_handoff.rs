@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use crate::provider::RuntimeProviderRun;
 
 mod brief;
-mod brief_refresh;
+pub(super) mod brief_refresh;
 mod builder;
 mod facts;
 use builder::{load_agent_conversation, AgentConversation};
@@ -40,9 +40,34 @@ pub(super) struct PendingAgentContextHandoffStore {
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
     conversation_runs: Arc<StdMutex<BTreeMap<String, String>>>,
+    /// Unsupported brief models are remembered only for this kernel lifetime,
+    /// and only for the selected provider account and exact model.
+    unavailable_brief_models: Arc<StdMutex<std::collections::BTreeSet<(String, String, String)>>>,
 }
 
 impl PendingAgentContextHandoffStore {
+    pub(super) fn brief_model_is_unavailable(&self, run: &RuntimeProviderRun) -> bool {
+        self.unavailable_brief_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(
+                run.provider().to_string(),
+                run.account_profile().to_string(),
+                run.model().to_string(),
+            ))
+    }
+
+    pub(super) fn remember_unavailable_brief_model(&self, run: &RuntimeProviderRun) {
+        self.unavailable_brief_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((
+                run.provider().to_string(),
+                run.account_profile().to_string(),
+                run.model().to_string(),
+            ));
+    }
+
     fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingAgentContextHandoff>> {
         self.inner
             .lock()
@@ -114,6 +139,10 @@ impl PendingAgentContextHandoffStore {
 }
 
 impl PendingAgentContextHandoff {
+    pub(super) fn needs_brief(&self) -> bool {
+        self.derived && !self.conversation.fits_without_brief(self.budget())
+    }
+
     fn matches_target(&self, target_run: &RuntimeProviderRun) -> bool {
         self.target_provider == target_run.provider()
             && self.target_account_profile == target_run.account_profile()
@@ -390,6 +419,11 @@ impl super::KernelRuntimeOwnedState {
             return None;
         };
         self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
+        // Structured harnesses load the brief once during refresh. Other harnesses
+        // carry the last stored brief alongside their deterministic packet.
+        if !brief_refresh::writes_handoff_briefs(target_run) {
+            conversation.brief = self.stored_handoff_brief(session_id, agent_id);
+        }
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -419,17 +453,8 @@ impl super::KernelRuntimeOwnedState {
         })
     }
 
-    /// The agent's stored handoff brief, its open interactions and the
-    /// prompts queued behind `prompt_id`.
-    fn add_session_facts(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt_id: &str,
-        conversation: &mut AgentConversation,
-    ) {
-        conversation.brief = self
-            .operational_history_store
+    pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
+        self.operational_history_store
             .load_agent_handoff_brief(session_id, agent_id)
             .inspect_err(|error| {
                 crate::logging::warn_with_fields(
@@ -444,7 +469,17 @@ impl super::KernelRuntimeOwnedState {
             })
             .ok()
             .flatten()
-            .map(|stored| stored.brief);
+            .map(|stored| stored.brief)
+    }
+
+    /// The agent's open interactions and prompts queued behind `prompt_id`.
+    fn add_session_facts(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        conversation: &mut AgentConversation,
+    ) {
         let Ok(session) = self.session_store.get_session(session_id) else {
             return;
         };
@@ -1152,6 +1187,17 @@ mod tests {
             )
             .expect("the new session receives the conversation");
 
+        let handoff = fixture
+            .runtime
+            .with_current_handoff_brief(
+                &fixture.runtime.owned,
+                handoff,
+                &fixture.session_id,
+                &fixture.agent_id,
+                "prompt-next",
+                &fixture.run("run-new", "claude", None),
+            )
+            .await;
         assert!(handoff.derived);
         assert_eq!(handoff.budget(), 90_000);
         assert!(handoff
@@ -1219,9 +1265,66 @@ mod tests {
             "sonnet"
         );
         assert_eq!(
+            brief_model(Some("haiku"), &handoff("claude", "sonnet"), &claude),
+            "haiku"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("claude-headless", "sonnet"), &claude),
+            "sonnet"
+        );
+        assert_eq!(brief_model(None, &handoff("claude", "  "), &claude), "opus");
+        assert_eq!(
             brief_model(None, &handoff("codex", "gpt-6"), &claude),
             "opus"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_uses_the_last_stored_brief() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(
+            1,
+            &format!("remember amber-kestrel {}", "notes ".repeat(500)),
+        );
+        fixture.output(2, "old", "codex", Some("old-thread"), "OK");
+        let target = fixture.run("new", "claude", None);
+        let handoff = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "prompt-next",
+                false,
+            )
+            .unwrap();
+        // A successful fold is durable even when the next utility call fails.
+        let brief = "## Goal\nShip amber-kestrel.\n## Next Steps\nTest.";
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: brief.into(),
+                    covered_through_sequence: 1,
+                },
+            )
+            .unwrap();
+        // No target runtime: the utility fails, as a later chunk can in production.
+        let handoff = fixture
+            .runtime
+            .with_current_handoff_brief(
+                &fixture.runtime.owned,
+                handoff,
+                &fixture.session_id,
+                &fixture.agent_id,
+                "prompt-next",
+                &target,
+            )
+            .await;
+        assert_eq!(handoff.conversation.brief.as_deref(), Some(brief));
     }
 
     #[test]
