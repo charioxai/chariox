@@ -149,7 +149,10 @@ async fn live_display() {
         let stop = root.join("STOP");
         let probe_router = router.clone();
         crate::runtime_transport::run_kernel_websocket_server_with_router_on_listener(router.clone(), listener, async move {
-            let deadline = Instant::now() + Duration::from_secs(240);
+            // MP-08/MP-10/MP-11: DPR2 masking campaigns can exceed four
+            // minutes. STOP still ends the owned drill immediately; keep a
+            // finite watchdog without truncating the unchanged 70-cycle gate.
+            let deadline = Instant::now() + Duration::from_secs(600);
             while !stop.exists() && Instant::now() < deadline {
                 for name in ["PROBE_TAKEOVER", "PROBE_RELEASE"] {
                     let result_file = root.join(format!("{name}.json"));
