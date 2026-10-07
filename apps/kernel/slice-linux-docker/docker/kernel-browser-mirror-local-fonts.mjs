@@ -64,6 +64,20 @@ export async function readSystemFont(postscript){
   }finally{await fileHandle.close()}
  }catch{return null}
 }
+// Geometry-only native font measurement. A transformed Range includes paint
+// rotation/scaling and cannot determine the font's untransformed metrics.
+export function measureNativeFont(){
+ const s=this.ownerDocument.defaultView.getComputedStyle(this),c=this.ownerDocument.createElement('canvas').getContext('2d');
+ c.font=s.font||[s.fontStyle,s.fontWeight,s.fontSize,s.fontFamily].join(' ');const m=c.measureText('M');
+ let untransformed=true,depth=0;
+ for(let e=this;e;e=e.parentElement??e.getRootNode()?.host??e.ownerDocument.defaultView.frameElement){
+  const style=e.ownerDocument.defaultView.getComputedStyle(e);
+  if(++depth>128||style.transform!=='none'||style.perspective!=='none'||!['1','normal'].includes(style.zoom)||style.writingMode!=='horizontal-tb'){untransformed=false;break}
+ }
+ const text=untransformed?Array.from(this.childNodes).find(n=>n.nodeType===3):null,range=this.ownerDocument.createRange();
+ if(text)range.selectNodeContents(text);const height=text?range.getClientRects()[0]?.height:undefined;
+ return {size:parseFloat(s.fontSize),ascent:m.fontBoundingBoxAscent,descent:m.fontBoundingBoxDescent,...(height>0?{height}:{})};
+}
 export async function materializeMirrorLocalFonts(world,source,protectedValues,{readFont=readSystemFont,wireBudget=16*1024*1024,decodedBudget=64*1024*1024}={}){
  if(protectedValues.length)return {resources:[],fonts:[]};
  const {connection,sessionId,contextId}=world,objectGroup='mirror-fonts-'+randomUUID();
@@ -85,7 +99,7 @@ export async function materializeMirrorLocalFonts(world,source,protectedValues,{
    // Mixed custom/system glyph runs need that path plus its native fallback;
    // don't substitute a guessed font when the native selection is ambiguous.
    if(!native.fonts?.length||native.fonts.some(f=>f.isCustomFont))continue;
-   const measurement=native.fonts.length===1?await connection.send('Runtime.callFunctionOn',{objectId:objects[i].value.objectId,returnByValue:true,functionDeclaration:`function(){const s=this.ownerDocument.defaultView.getComputedStyle(this),c=this.ownerDocument.createElement('canvas').getContext('2d');c.font=s.font||[s.fontStyle,s.fontWeight,s.fontSize,s.fontFamily].join(' ');const m=c.measureText('M'),text=Array.from(this.childNodes).find(n=>n.nodeType===3),range=this.ownerDocument.createRange();if(text)range.selectNodeContents(text);const height=text?range.getClientRects()[0]?.height:undefined;return {size:parseFloat(s.fontSize),ascent:m.fontBoundingBoxAscent,descent:m.fontBoundingBoxDescent,...(height>0?{height}:{})}}`},sessionId):null;
+   const measurement=native.fonts.length===1?await connection.send('Runtime.callFunctionOn',{objectId:objects[i].value.objectId,returnByValue:true,functionDeclaration:measureNativeFont.toString()},sessionId):null;
    const metrics=measurement?.exceptionDetails?null:measurement?.result?.value,aliases=[];
    for(const face of native.fonts){
     if(!readFonts.has(face.postScriptName))readFonts.set(face.postScriptName,await readFont(face.postScriptName));

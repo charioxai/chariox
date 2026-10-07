@@ -41,3 +41,13 @@ test('native ascent/descent are size-specific, with valid sfnt checksums and unc
  assert.equal(fitted.readInt16BE(offsets[3]+6),-448,'Use the actual native DOM text box, not the rounded Canvas metric sum');
  assert.deepEqual(fitted.subarray(offsets[1],offsets[1]+entries[1][1].length),entries[1][1]);
 });
+
+test('native DOM font height excludes transformed runs and transformed ancestors',async()=>{
+ const {measureNativeFont}=await import('./kernel-browser-mirror-local-fonts.mjs');
+ const normal={font:'700 32px sans-serif',fontSize:'32px',fontStyle:'normal',fontWeight:'700',fontFamily:'sans-serif',transform:'none',perspective:'none',zoom:'1',writingMode:'horizontal-tb'};
+ const doc={defaultView:{frameElement:null,getComputedStyle:e=>e.style},createElement:()=>({getContext:()=>({measureText:()=>({fontBoundingBoxAscent:30,fontBoundingBoxDescent:8})})}),createRange:()=>({selectNodeContents(){},getClientRects:()=>[{height:37}]})};
+ const node={style:{...normal},ownerDocument:doc,childNodes:[{nodeType:3}],parentElement:null,getRootNode:()=>doc};
+ assert.equal(measureNativeFont.call(node).height,37);
+ node.style.transform='matrix(1, .1, 0, 1, 0, 0)';assert.equal(measureNativeFont.call(node).height,undefined);
+ node.style={...normal};node.parentElement={...node,style:{...normal,transform:'scale(2)'}};assert.equal(measureNativeFont.call(node).height,undefined);
+});
