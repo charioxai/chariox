@@ -192,6 +192,10 @@ workflow.endpoint(worker,{handle:'entry'});`)
     const state = await automation.send('snapshot')
     const workflow = state.workflows.find((flow) => flow.alias === 'seatbelt-ordinary')
     report.workflowStatuses = state.workflowRuns.map((entry) => entry.status)
+    // Sanitized run-path diagnostics: statuses and kinds only.
+    report.ordinaryQueuedPromptStatuses = workflow?.queuedPrompts.map((prompt) => prompt.status) ?? null
+    report.ordinaryAgentState = state.session?.agents?.find((agent) => agent.id === created.SessionCreated.agent.id)?.state ?? null
+    report.pendingInteractionKinds = state.interactions.map((interaction) => interaction.kind)
     const complete = state.workflowRuns.find((entry) => entry.workflowId === workflow?.id && entry.status === 'Completed')
     if (!complete) return false
     report.workflowCompleted = true
