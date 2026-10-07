@@ -127,7 +127,12 @@ impl ProviderAccountProfileRegistry {
 
     /// Probes the official credential path without reading credential bytes. Claude
     /// keeps the content check: portability filtering and Keychain fallback need it.
-    fn credential_artifact_missing(&self, owner: &str, provider: &str, profile_id: &str) -> bool {
+    pub(crate) fn credential_artifact_missing(
+        &self,
+        owner: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> bool {
         let Ok(provider) = normalize_provider(provider) else {
             return false;
         };
@@ -175,6 +180,20 @@ impl ProviderAccountProfileRegistry {
                 profile.auth_state,
                 ProviderAccountAuthState::NotConfigured | ProviderAccountAuthState::Expired
             ) || self.credential_artifact_missing(owner, provider, profile_id)))
+    }
+
+    /// Renewal-failure recovery logs out only a received copy; a local login keeps its state.
+    pub(crate) fn mark_copied_login_logged_out(
+        &self,
+        owner: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let profile = self.get(owner, provider, profile_id)?;
+        if self.holds_incoming_copy(&profile) {
+            self.mark_logged_out(owner, provider, profile_id)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn has_renewable_login(
@@ -562,6 +581,162 @@ mod tests {
         assert!(!registry
             .copied_login_needs_login("owner", "codex", "default")
             .unwrap());
+        drop(registry);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_renewal_failure_marks_only_received_copies_logged_out() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-copy-renewal-{}", rand::random::<u64>()));
+        let registry = ProviderAccountProfileRegistry::open(&root.join("registry.json"))
+            .unwrap()
+            .with_machine_identity("worker-machine", "worker-kernel");
+        let local = registry.create_managed("owner", "codex", "Local").unwrap();
+        let env = registry
+            .resolve_environment("owner", "codex", &local.profile_id)
+            .unwrap();
+        fs::write(
+            Path::new(&env["CODEX_HOME"]).join("auth.json"),
+            br#"{"tokens":{"refresh_token":"synthetic-local"}}"#,
+        )
+        .unwrap();
+        let authenticate = |profile_id: &str| {
+            registry
+                .update_observation(
+                    "owner",
+                    "codex",
+                    profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    Some("synthetic identity".into()),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        };
+        authenticate(&local.profile_id);
+        assert!(registry
+            .has_renewable_login("owner", "codex", &local.profile_id)
+            .unwrap());
+        // A locally linked login keeps its last observed state until the user logs in again.
+        registry
+            .mark_copied_login_logged_out("owner", "codex", &local.profile_id)
+            .unwrap();
+        let local = registry.get("owner", "codex", &local.profile_id).unwrap();
+        assert_eq!(local.auth_state, ProviderAccountAuthState::Authenticated);
+        assert_eq!(
+            local.identity_summary.as_deref(),
+            Some("synthetic identity")
+        );
+
+        // A local OpenCode login keeps all last-observed services and metadata.
+        let opencode = registry
+            .create_managed("owner", "opencode", "Local services")
+            .unwrap();
+        registry
+            .update_observation(
+                "owner",
+                "opencode",
+                &opencode.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("local identity".into()),
+                Some("local plan".into()),
+                None,
+                None,
+            )
+            .unwrap();
+        registry
+            .update_services(
+                "owner",
+                "opencode",
+                &opencode.profile_id,
+                ["openai", "anthropic"]
+                    .into_iter()
+                    .map(|service| ProviderAccountService {
+                        service_id: service.into(),
+                        label: service.into(),
+                        auth_state: ProviderAccountAuthState::Authenticated,
+                        credential_type: ProviderAccountServiceCredentialType::Oauth,
+                        billing_kind: None,
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let before = serde_json::to_value(
+            registry
+                .get("owner", "opencode", &opencode.profile_id)
+                .unwrap(),
+        )
+        .unwrap();
+        registry
+            .mark_copied_login_logged_out("owner", "opencode", &opencode.profile_id)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                registry
+                    .get("owner", "opencode", &opencode.profile_id)
+                    .unwrap()
+            )
+            .unwrap(),
+            before
+        );
+
+        let materialization = ProviderAccountMaterialization {
+            copy_source: Some(ProviderAccountCopySource {
+                machine_id: "source-machine".into(),
+                kernel_id: "source-kernel".into(),
+            }),
+            profile: ProviderAccountReplicaMetadata {
+                owner_user_id: "owner".into(),
+                provider: "codex".into(),
+                profile_id: "copied".into(),
+                label: "Copy".into(),
+                origin: ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![ProviderAccountMaterializationFile {
+                relative_path: "auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(br#"{"tokens":{"refresh_token":"synthetic"}}"#),
+            }],
+            generated_at_ms: 1,
+        };
+        let copied = registry
+            .materialize_replica("owner", &materialization)
+            .unwrap();
+        registry
+            .record_received_account_copy(
+                "owner",
+                &materialization,
+                &copied.profile_id,
+                ProviderAccountMaterializationTargetKind::Worker,
+            )
+            .unwrap();
+        authenticate(&copied.profile_id);
+        // A different kernel does not hold this incoming copy.
+        registry
+            .clone()
+            .with_machine_identity("other-machine", "other-kernel")
+            .mark_copied_login_logged_out("owner", "codex", &copied.profile_id)
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("owner", "codex", &copied.profile_id)
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Authenticated
+        );
+        registry
+            .mark_copied_login_logged_out("owner", "codex", &copied.profile_id)
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("owner", "codex", &copied.profile_id)
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::NotConfigured
+        );
         drop(registry);
         fs::remove_dir_all(root).unwrap();
     }

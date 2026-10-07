@@ -130,11 +130,9 @@ impl KernelRuntimeState {
                 return Ok(true);
             }
             // Mark only the receiving profile/copy; preserve permissions and queued work.
-            self.owned.provider_account_profiles.mark_logged_out(
-                &owner,
-                run.adapter_key(),
-                run.account_profile(),
-            )?;
+            self.owned
+                .provider_account_profiles
+                .mark_copied_login_logged_out(&owner, run.adapter_key(), run.account_profile())?;
             let initial_receiver = if session.active_interaction_for_agent(agent_id).is_none() {
                 Some(
                     self.create_runtime_interaction(run.session_id(), recovery_choice(run, &id))
