@@ -191,7 +191,7 @@ export class MirrorService {
     // A tile is an opaque subtree. Descendants must not remain in the wire/map.
     const byId=new Map(source.nodes.map(n=>[n.id,n])),hidden=new Set();
     const hide=id=>{hidden.add(id);for(const child of byId.get(id)?.children??[])hide(child);};
-    for(const n of source.nodes)if(n.kind==='tile'||n.kind==='mask'){for(const child of n.children)hide(child);n.children=[];}
+    for(const n of source.nodes)if(n.kind==='mask'||n.kind==='tile'&&n.reason!=='unsupported_paint'){for(const child of n.children)hide(child);n.children=[];}
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
     if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
@@ -270,8 +270,8 @@ export class MirrorService {
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);
     if(stream.pending?.sequence===input.sequence&&!stream.pending.lastIssued)throw new MirrorInputEpochRefusal();
     const epoch=stream.epochs.find(e=>e.sequence===input.sequence);
-    // This marker ONLY means sequence admission refused before any CDP/input
-    // work. A later fence or changed target is never a sequence-only refusal.
+    // This marker means admission refused before any CDP/input work. A
+    // wheel may refresh changed viewport geometry here; clicks never replay.
     if(!epoch)throw new MirrorInputEpochRefusal();
     const generation=this.host.generation;
     const assertEpoch=()=>{if(this.require(input.subscription_id,scope,generation)!==stream||stream.policy!==this.host.protection||stream.document_id!==tab.document_id||!stream.epochs.includes(epoch)||this.now()-epoch.issuedAt>2000)throw new Error('MP-11: stale mirror protection policy or admitted input');};
@@ -300,10 +300,11 @@ export class MirrorService {
     if(action.kind==='coordinate') {
       if(epoch.fullFallback!==stream.fullFallback)throw new Error('MP-11: changed mirror coordinate surface');
       const point=action.input;
+      const changed=message=>{if(point?.kind==='scroll')throw new MirrorInputEpochRefusal();throw new Error(message);};
       const candidates=new Set();
       if(point?.kind==='click'||point?.kind==='scroll')for(const record of records.values())if(record.box&&['element','frame','tile','mask'].includes(record.kind)) {
         const box={...record.box};for(let parent=records.get(record.parent);parent;parent=records.get(parent.parent))if(parent.kind==='frame'){box.x+=parent.box.x+(parseFloat(parent.style?.['border-left-width'])||0)+(parseFloat(parent.style?.['padding-left'])||0);box.y+=parent.box.y+(parseFloat(parent.style?.['border-top-width'])||0)+(parseFloat(parent.style?.['padding-top'])||0);}
-        if(point.x>=box.x&&point.x<box.x+box.width&&point.y>=box.y&&point.y<box.y+box.height){if(!unchanged(record.id))throw new Error('MP-11: changed mirror coordinate target');candidates.add(record.id);}
+        if(point.x>=box.x&&point.x<box.x+box.width&&point.y>=box.y&&point.y<box.y+box.height){if(!unchanged(record.id))changed('MP-11: changed mirror coordinate target');candidates.add(record.id);}
       }
       if(!stream.fullFallback&&['click','scroll'].includes(point?.kind)) {
         // MP-11: bind coordinates to one observed leaf, never whichever live
@@ -312,7 +313,7 @@ export class MirrorService {
         const leaves=[...candidates].filter(id=>!ancestors.has(id));
         if(leaves.length!==1)throw new Error('MP-11: ambiguous or unknown mirror coordinate target');
         for(let node=records.get(leaves[0]);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
-          if(!unchanged(node.id))throw new Error('MP-11: changed mirror coordinate ancestor');
+          if(!unchanged(node.id))changed('MP-11: changed mirror coordinate ancestor');
           const old=JSON.parse(epoch.nodes.get(node.id));coordinateExpected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
         }
       }

@@ -175,9 +175,10 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
         // pixels for this region, retaining the page's DOM elsewhere.
         const opaquePaint=style=>['mask-image','-webkit-mask-image','border-image-source'].some(property=>style.getPropertyValue(property)!=='none'&&forbiddenCss.test(style.getPropertyValue(property)));
         if(opaquePaint(getComputedStyle(node))||['::before','::after'].some(p=>{const s=getComputedStyle(node,p);return !['none','normal'].includes(s.content)&&(opaquePaint(s)||s.backgroundImage!=='none')})){
-          record.kind='tile';record.tag='img';record.reason='unsupported_paint';
-          const used=getComputedStyle(node);for(const property of ['width','height','inline-size','block-size']){const value=used.getPropertyValue(property);if(value!=='auto')record.style[property]=value}
-          return done(record);
+          record.kind='tile';record.reason='unsupported_paint';
+          // Retain sanitized public descendants for native flex/inline baseline
+          // layout. Protected children still terminate at opaque masks. Paint
+          // is composited separately; replacing the host with IMG changes flow.
         }
         if(media.has(tag) || tag.includes('-') && !node.shadowRoot&&nativeCustom.get(node)!=='light') {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';const flow=opaqueFlow.get(node);if(flow)record.style={...record.style,...flow};return done(record);}
         if(tag==='iframe') {

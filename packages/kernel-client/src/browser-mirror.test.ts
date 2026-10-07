@@ -71,8 +71,8 @@ test('MP-08/MP-11: nested event listeners bind once per Document independent of 
  const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
  Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:8,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
  for(let packet=0;packet<8;packet++)renderer.bindEvents(doc);
- for(const [kind,extra]of [['click',{}],['beforeinput',{inputType:'insertText',data:'Q',isComposing:false}],['keydown',{key:'Enter'}],['wheel',{deltaX:0,deltaY:20}] ] as const){const event=new Event(kind);Object.assign(event,extra);Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event)}
- await renderer.inputChain;assert.equal(actions.length,4);assert.equal(renderer.documentBindings.size,1);assert.equal(renderer.documentBindings.get(doc).length,8);
+ for(const [kind,extra]of [['click',{}],['beforeinput',{inputType:'insertText',data:'Q',isComposing:false}],['keydown',{key:'Enter'}],['wheel',{deltaX:0,deltaY:20,clientX:10,clientY:15}] ] as const){const event=new Event(kind);Object.assign(event,extra);Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event)}
+ await renderer.inputChain;assert.equal(actions.length,4);assert.deepEqual(actions[3],{kind:'coordinate',input:{kind:'scroll',x:10,y:15,delta_x:0,delta_y:20}});assert.equal(renderer.documentBindings.size,1);assert.equal(renderer.documentBindings.get(doc).length,8);
  renderer.releaseDocuments(new Set());assert.equal(renderer.documentBindings.size,0);const event=new Event('click');Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event);await renderer.inputChain;assert.equal(actions.length,4);
 });
 

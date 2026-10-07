@@ -377,3 +377,23 @@ test('MD-454: protection updates during a chunk native verification fence the re
  await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/chunk policy or document changed/);
  assert.equal(stream.pending,null);assert.equal(stream.previous,null);assert.deepEqual(stream.epochs,[]);
 });
+
+// A credit may move viewport geometry while a wheel waits in the client queue.
+// This is a pre-dispatch refusal only; pointer clicks must never be replayed.
+test('MP-11: changed wheel geometry refreshes once before effects; clicks still refuse',async()=>{
+ const {service,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(s.subscription_id),'a');
+ state.snapshot.nodes[0].box.width=81;await service.next(next(s.subscription_id,first.sequence),'a');service.world=async()=>assert.fail('no native work before admission');
+ const input=kind=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind,x:10,y:10,delta_x:0,delta_y:20}}},'a');
+ await assert.rejects(input('scroll'),/MP-11: stale mirror input epoch/);
+ await assert.rejects(input('click'),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MP-11: native paint overlays preserve public inline flow but never protected descendants',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].kind='tile';state.snapshot.nodes[0].tag='label';state.snapshot.nodes[0].reason='unsupported_paint';state.snapshot.nodes[0].children.push('n3');
+ state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'mask',tag:'div',box:{x:40,y:0,width:20,height:20}});
+ // Keep the overlay host below the document root; whole-page opaque roots refuse.
+ state.snapshot.nodes[0].parent='n0';state.snapshot.nodes.unshift({id:'n0',parent:null,children:['n1'],kind:'element',tag:'html'});state.snapshot.root='n0';
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+ assert.equal(packet.nodes.find(n=>n.id==='n1').tag,'label');assert.deepEqual(packet.nodes.find(n=>n.id==='n1').children,['n2','n3']);assert.equal(packet.nodes.find(n=>n.id==='n2').text,'fixture');assert.equal(packet.nodes.find(n=>n.id==='n3').kind,'mask');
+ assert.equal(packet.tiles.length,1);
+});

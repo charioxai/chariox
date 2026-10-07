@@ -84,10 +84,10 @@ export class BrowserMirrorRenderer {
     // MP-08/MP-11: opaque full-frame input uses the existing protected display
     // text path. IME composes locally in the inert tile and commits once.
     const text=(node:string,value:string):void=>this.enqueue(fullTile(node)||this.nativeFocus?{kind:'coordinate',input:{kind:'text',text:value}}:{kind:'text',node_id:node,text:value})
-    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
+    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,{capture:true,passive:false});removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('focusin',event=>{if(!this.applying&&!this.disposed&&!this.nativeFocus)this.rememberFocus(target(event))})
     on('click',event=>{event.preventDefault();const element=target(event) as HTMLElement,node=id(element);if(node){const record=this.records.get(node);if(record?.kind==='mask')return;this.nativeFocus=null;if(record?.kind==='tile'||record?.form||element.isContentEditable){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
-    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
+    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}})})
     // MP-08/MP-11: after native focus progress, keys follow the same live-focus
     // bridge as text. A newer credit in flight cannot bind them to painted focus.
     on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();const native=Boolean(this.nativeFocus);if(['Tab','Enter','Escape'].includes(key))this.localFocus=null;this.nativeFocus={document_id:this.documentId,through_sequence:this.sequence+1};this.enqueue(native?{kind:'coordinate',input:{kind:'key',key}}:{kind:'key',key})}})
@@ -134,7 +134,7 @@ export class BrowserMirrorRenderer {
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
-    if(record.kind==='mask'||record.kind==='tile'&&!['native_control','viewport_deferred'].includes(record.reason??'')) {
+    if(record.kind==='mask'||record.kind==='tile'&&!['native_control','viewport_deferred','unsupported_paint'].includes(record.reason??'')) {
       element.style.boxSizing='border-box';element.style.width=record.style?.width??`${record.box?.width??0}px`;element.style.height=record.style?.height??`${record.box?.height??0}px`;element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
