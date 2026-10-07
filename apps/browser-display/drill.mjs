@@ -21,6 +21,7 @@ import {sourceIdentity} from './source-identity.mjs';
 import {memoryFloorGiB} from './drill-resources.mjs';
 import { summarizeStages } from './drill-stages.mjs';
 import {stressProtection} from './drill-protection.mjs';
+import {KernelLogCapture} from './drill-kernel-log.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
@@ -45,7 +46,7 @@ receipt.workload=workload;const fixtureStats=[];
 receipt.requested_hardware=process.env.MD_SOFTWARE==='0';receipt.memory_floor_gib=memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB);
 receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
 let kernelExit;
-const groups = [], errors = [], log = [];
+const groups = [], errors = [], log = new KernelLogCapture();
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{receipt.interrupted=signal;errors.push(Error('MD-DISPLAY: interrupted '+signal));
  // Closing only this run's browser breaks any long repair evaluate; finally
  // still settles its owned process groups and writes the interrupted receipt.
@@ -167,7 +168,7 @@ try {
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
  kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
- kernel.stdout.on('data',b=>log.push(b));kernel.stderr.on('data',b=>log.push(b));
+ kernel.stdout.on('data',b=>log.record('stdout',b));kernel.stderr.on('data',b=>log.record('stderr',b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
  receipt.protocol=ready.protocol;receipt.opened_by=ready.opened_by;
@@ -437,7 +438,7 @@ try {
  if(!receipt.supervisor_crash)await page.evaluate(()=>mdStream.close());
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
- await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
+ await log.writeTo(output);
  if(errors.length)throw errors[0];
  if(process.env.MD_PROTECTED==='1'){
   receipt.protected_presentations=await page.evaluate(()=>mdProtection);
@@ -484,7 +485,7 @@ finally {
  if(process.env.MD_PROFILE==='1')for(const name of await readdir(path.join(root,'profiles')).catch(()=>[])){
   if(/^(CPU\.[\w.-]+\.cpuprofile|(?:encoder|capture)\.\d+\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
  }
- receipt.host_timings=traces;receipt.kernel_timings=Buffer.concat(log).toString().split('\n').filter(line=>line.startsWith('MD-DISPLAY-TIMING ')).map(line=>JSON.parse(line.slice('MD-DISPLAY-TIMING '.length)));
+ receipt.host_timings=traces;receipt.kernel_timings=log.timings();
  receipt.actual_encoders=[...new Set(traces.filter(t=>t.stage.startsWith('motion_backend_')).map(t=>t.stage.slice('motion_backend_'.length)))];
  receipt.hardware_fallback=receipt.requested_hardware&&!receipt.actual_encoders.includes('vaapi');
  if(receipt.hardware_fallback){receipt.hardware_warning='MP-10: HARDWARE REQUEST FAILED — successful VAAPI packets not observed; timings describe software fallback';console.error(receipt.hardware_warning);}
@@ -502,6 +503,6 @@ finally {
  if(server)await new Promise(resolve=>server.close(resolve));
  // Delete only the exact freshly-created disposable root, after owned teardown.
  if(!process.exitCode || receipt.cleanup.some(value=>value.includes('inventory empty'))){await rm(root,{recursive:true,force:true});if(shortTmp)await rm(shortTmp,{recursive:true,force:true});receipt.cleanup.push('exact disposable state and owned short temporary directory removed');}else receipt.cleanup.push('uncertain teardown state retained at '+root);
- await writeFile(path.join(output,'kernel.log'),Buffer.concat(log));
+ await log.writeTo(output);
  receipt.finished_at=new Date().toISOString();await writeFile(path.join(output,'results.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify({item:receipt.item,status:receipt.status,error:receipt.error,latency:receipt.latency,lossless:receipt.settled?.fidelity.lossless}));
 }
