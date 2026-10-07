@@ -964,3 +964,115 @@ fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
         ExecutionState::Cancelled
     );
 }
+
+#[test]
+fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
+    let f = Fixture::new();
+    let Outcome::Event(normal) = f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "sender",
+        "normal",
+        "message",
+        serde_json::json!({}),
+    ))) else {
+        panic!()
+    };
+    let mut urgent = occurrence(
+        "room",
+        "parent",
+        "sender",
+        "urgent",
+        "message",
+        serde_json::json!({}),
+    );
+    urgent.urgent = true;
+    let Outcome::Event(urgent) = f.apply(Operation::Occur(urgent)) else {
+        panic!()
+    };
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        normal.sequence
+    );
+    assert_eq!(
+        f.store
+            .agent_urgent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        urgent.sequence
+    );
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: urgent.sequence,
+        prompt: "steer".into(),
+        target: Some("running".into()),
+        run: Some("run".into()),
+        now: 1,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: urgent.sequence,
+        state: "uncertain".into(),
+    });
+    let mut later = occurrence(
+        "room",
+        "parent",
+        "sender",
+        "later",
+        "message",
+        serde_json::json!({}),
+    );
+    later.urgent = true;
+    let Outcome::Event(later) = f.apply(Operation::Occur(later)) else {
+        panic!()
+    };
+    assert_eq!(
+        f.store
+            .agent_urgent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        urgent.sequence
+    );
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: later.sequence,
+            prompt: "later".into(),
+            target: Some("running".into()),
+            run: Some("run".into()),
+            now: 2,
+        })
+        .is_err());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: urgent.sequence,
+        state: "accepted".into(),
+    });
+    assert_eq!(
+        f.store
+            .agent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        normal.sequence
+    );
+    assert_eq!(
+        f.store
+            .agent_urgent_delivery_front("room", "parent")
+            .unwrap()
+            .unwrap()
+            .sequence,
+        later.sequence
+    );
+}

@@ -17,11 +17,16 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
         let event = loop {
-            let Some(event) = self
-                .owned
-                .durable_state_store
-                .agent_delivery_front(room, agent)?
-            else {
+            let front = if active.is_some() {
+                self.owned
+                    .durable_state_store
+                    .agent_urgent_delivery_front(room, agent)?
+            } else {
+                self.owned
+                    .durable_state_store
+                    .agent_delivery_front(room, agent)?
+            };
+            let Some(event) = front else {
                 return Ok(());
             };
             if event.state == "pending" && event.kind != "message" {

@@ -115,6 +115,18 @@ impl DurableKernelStateStore {
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
+    /// Urgent steering is separate from FIFO idle wake admission. Any unresolved
+    /// attempt still blocks subsequent delivery, regardless of priority.
+    pub(crate) fn agent_urgent_delivery_front(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Option<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.urgent")?;
+        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
+            .transpose()
+    }
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,
