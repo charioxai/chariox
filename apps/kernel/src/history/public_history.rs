@@ -225,7 +225,7 @@ impl OperationalHistoryStore {
             .map_err(public_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(public_error)?;
-        let next_cursor = if hits.len() > limit && !coverage.rebuilding {
+        let next_cursor = if hits.len() > limit && (cursor.is_some() || !coverage.rebuilding) {
             hits.truncate(limit);
             Some(
                 URL_SAFE_NO_PAD.encode(

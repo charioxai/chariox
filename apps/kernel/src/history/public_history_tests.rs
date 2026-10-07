@@ -363,3 +363,29 @@ fn public_history_protocol_453_detail_shape_hash() {
         "b52f6eb046910ca68f1b14fb3e54747cea6f1fa8b834180c658ffc4fff71348b"
     );
 }
+
+#[test]
+fn public_history_complete_snapshot_keeps_paginating_while_later_rows_rebuild() {
+    let f = Fixture::new();
+    let first = f.append("room", "compiler first");
+    f.append("room", "compiler second");
+    f.append("room", "compiler third");
+    for _ in 0..800 {
+        f.append("foreign", "unrelated activity");
+    }
+    f.store.begin_public_history_rebuild().unwrap();
+    let a = f.search("room", "compiler", 1, None).unwrap();
+    assert!(!a.coverage.rebuilding);
+    assert!(a.next_cursor.is_some());
+    f.append("room", "compiler later");
+    let b = f
+        .search("room", "compiler", 1, a.next_cursor.as_deref())
+        .unwrap();
+    assert!(b.coverage.rebuilding);
+    assert!(b.next_cursor.is_some());
+    let c = f
+        .search("room", "compiler", 1, b.next_cursor.as_deref())
+        .unwrap();
+    assert_eq!(c.hits[0].event_ref, first.event_id);
+    assert!(c.next_cursor.is_none());
+}
