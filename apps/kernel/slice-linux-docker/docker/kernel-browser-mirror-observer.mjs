@@ -287,7 +287,7 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
     if(x<0||y<0||x>=innerWidth||y>=innerHeight)throw new Error('mirror offscreen frame');
     return {x:Math.floor(x),y:Math.floor(y)};
   };
-  const coordinateTarget = (point,opaque=[],expected=[]) => {
+  const coordinateTarget = (point,opaque=[],expected=[],alternatives=[]) => {
     let owner=document,x=point.x,y=point.y,hit;
     for(let depth=0;depth<128;depth++) {
       hit=owner.elementFromPoint(x,y);
@@ -306,8 +306,12 @@ function installMirrorObserver(initialStyles = {},inspectCss,makeTextScanner,fon
     // its full element/frame ancestry must retain the sampled geometry.
     unprotected(node);
     if(expected.length) {
-      if(key!==expected[0].id){if(point.kind==='scroll')return {scroll_epoch_refused:true};throw new Error('mirror changed live coordinate target');}
-      if(!validate(expected,point.kind==='scroll'))return {scroll_epoch_refused:true};
+      if(point.kind==='scroll'&&alternatives.length){
+        if(!alternatives.some(path=>path[0]?.id===key)||alternatives.some(path=>!validate(path,true)))return {scroll_epoch_refused:true};
+      }else{
+        if(key!==expected[0].id){if(point.kind==='scroll')return {scroll_epoch_refused:true};throw new Error('mirror changed live coordinate target');}
+        if(!validate(expected,point.kind==='scroll'))return {scroll_epoch_refused:true};
+      }
     }
     return key;
   };

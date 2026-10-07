@@ -317,7 +317,7 @@ export class MirrorService {
     if(targets.some(id=>!unchanged(id)))throw new Error('MP-11: changed or unknown mirror input target');
     if(action.kind==='selection')for(const [id,offset]of [[action.anchor_id,action.anchor_offset],[action.focus_id,action.focus_offset]])if(!Number.isInteger(offset)||offset<0||offset>(records.get(id)?.text?.length??0))throw new Error('MP-11: invalid mirror selection endpoint');
     if(action.kind==='key'&&(epoch.focused!==stream.previous.focused||epoch.focused&&!unchanged(epoch.focused)))throw new Error('MP-11: changed mirror focus');
-    let coordinateExpected=[];
+    let coordinateExpected=[],coordinateAlternatives=[];
     if(action.kind==='coordinate') {
       if(epoch.fullFallback!==stream.fullFallback)throw new Error('MP-11: changed mirror coordinate surface');
       const point=action.input;
@@ -325,18 +325,32 @@ export class MirrorService {
       const candidates=new Set();
       if(point?.kind==='click'||point?.kind==='scroll')for(const record of records.values())if(record.box&&['element','frame','tile','mask'].includes(record.kind)) {
         const box={...record.box};for(let parent=records.get(record.parent);parent;parent=records.get(parent.parent))if(parent.kind==='frame'){box.x+=parent.box.x+(parseFloat(parent.style?.['border-left-width'])||0)+(parseFloat(parent.style?.['padding-left'])||0);box.y+=parent.box.y+(parseFloat(parent.style?.['border-top-width'])||0)+(parseFloat(parent.style?.['padding-top'])||0);}
-        if(point.x>=box.x&&point.x<box.x+box.width&&point.y>=box.y&&point.y<box.y+box.height){if(!unchanged(record.id))changed('MP-11: changed mirror coordinate target');candidates.add(record.id);}
+        if((point.kind==='scroll'?point.x+1>box.x&&point.y+1>box.y:point.x>=box.x&&point.y>=box.y)&&point.x<box.x+box.width&&point.y<box.y+box.height){if(!unchanged(record.id))changed('MP-11: changed mirror coordinate target');candidates.add(record.id);}
       }
       if(!stream.fullFallback&&['click','scroll'].includes(point?.kind)) {
-        // MP-11: bind coordinates to one observed leaf, never whichever live
-        // sibling now occupies the point. Ambiguous overlapping leaves refuse.
+        // MP-11: clicks bind one observed leaf; wheel cells admit only their
+        // observed nonoverlapping neighbours. Unknown or overlapping paint refuses.
         const ancestors=new Set();for(const id of candidates)for(let node=records.get(records.get(id).parent);node;node=records.get(node.parent))ancestors.add(node.id);
         const leaves=[...candidates].filter(id=>!ancestors.has(id));
-        if(leaves.length!==1)throw new Error('MP-11: ambiguous or unknown mirror coordinate target');
-        for(let node=records.get(leaves[0]);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
-          if(!unchanged(node.id))changed('MP-11: changed mirror coordinate ancestor');
-          const old=JSON.parse(epoch.nodes.get(node.id));coordinateExpected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
+        if(!leaves.length||leaves.length>4||point.kind!=='scroll'&&leaves.length!==1)throw new Error('MP-11: ambiguous or unknown mirror coordinate target');
+        // Chromium hit-tests a CSS pixel cell, so a fractional boundary can
+        // include two adjacent flow boxes. Bind only those EXACT observed leaves;
+        // real overlapping paint and any protected alternative still refuse.
+        const box=id=>{const b={...records.get(id).box};for(let p=records.get(records.get(id).parent);p;p=records.get(p.parent))if(p.kind==='frame'){b.x+=p.box.x+(parseFloat(p.style?.['border-left-width'])||0)+(parseFloat(p.style?.['padding-left'])||0);b.y+=p.box.y+(parseFloat(p.style?.['border-top-width'])||0)+(parseFloat(p.style?.['padding-top'])||0);}return b};
+        for(let i=0;i<leaves.length;i++)for(let j=0;j<i;j++){
+          const a=box(leaves[i]),b=box(leaves[j]);
+          if(Math.min(a.x+a.width,b.x+b.width)>Math.max(a.x,b.x)&&Math.min(a.y+a.height,b.y+b.height)>Math.max(a.y,b.y))throw new Error('MP-11: ambiguous overlapping mirror coordinate target');
         }
+        for(const leaf of leaves){
+          const path=[];
+          for(let node=records.get(leaf);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
+            if(node.kind==='mask')throw new Error('MP-11: protected mirror coordinate alternative');
+            if(!unchanged(node.id))changed('MP-11: changed mirror coordinate ancestor');
+            const old=JSON.parse(epoch.nodes.get(node.id));path.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
+          }
+          coordinateAlternatives.push(path);
+        }
+        coordinateExpected=coordinateAlternatives[0];
       }
     }
     const world=await this.world(tab);
@@ -375,10 +389,10 @@ export class MirrorService {
         // immediately before the first physical pointer event. Release stays
         // paired with press even when the page reacts by moving its controls.
         if(!checked&&coordinateExpected.length) {
-          const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(action.input)},${JSON.stringify([...records.values()].filter(n=>n.kind==='tile').map(n=>n.id))},${JSON.stringify(coordinateExpected)})`);
+          const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(action.input)},${JSON.stringify([...records.values()].filter(n=>n.kind==='tile').map(n=>n.id))},${JSON.stringify(coordinateExpected)},${JSON.stringify(coordinateAlternatives.length>1?coordinateAlternatives:[])})`);
           assertNotCancelled(signal);pointerEpoch();
           if(action.input.kind==='scroll'&&id?.scroll_epoch_refused===true)throw new MirrorInputEpochRefusal();
-          if(id!==coordinateExpected[0].id||!unchanged(id))throw new Error('MP-11: changed live mirror coordinate target');
+          if(!(coordinateAlternatives.length?coordinateAlternatives:[coordinateExpected]).some(path=>path[0].id===id)||!unchanged(id))throw new Error('MP-11: changed live mirror coordinate target');
           checked=true;
         }
       };

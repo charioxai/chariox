@@ -460,3 +460,17 @@ for(const change of ['ordinary source','policy','document','incomplete'])test('M
   assert.equal(fresh.base_sequence,packet.sequence);assert(fresh.nodes.some(n=>n.text==='Updated ordinary text'))
  }else await assert.rejects(service.next(next(sub.subscription_id,packet.sequence),'a'),change==='incomplete'?/incomplete mirror frame acknowledgement/:/policy or document changed/)
 })
+
+for(const variant of ['adjacent','overlap','mask','unknown'])test('MD-454: wheel hit-test cell keeps exact observed adjacent targets: '+variant,async()=>{
+ const {service,state}=fixture();
+ state.snapshot.nodes=[{id:'n1',parent:null,children:['n2','n3'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:80}},
+  {id:'n2',parent:'n1',children:[],kind:'element',tag:'p',box:{x:0,y:0,width:80,height:20.375}},
+  {id:'n3',parent:'n1',children:[],kind:variant==='mask'?'mask':'element',tag:'p',box:{x:0,y:variant==='overlap'?19:20.375,width:80,height:20}}];
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(sub.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);let paths;
+ service.evaluate=async(w,e)=>{if(e.includes('.coordinateTarget(')){const args=JSON.parse('['+e.slice(e.indexOf('(')+1,-1)+']');paths=args[3];return variant==='unknown'?'unobserved':'n3'}return evaluate(w,e)};
+ const admit=()=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:p.sequence,action:{kind:'coordinate',input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:10}}},'a');
+ if(variant==='adjacent'){const input=await admit();await input.guard();assert.deepEqual(paths.map(p=>p[0].id),['n2','n3']);assert(paths.every(p=>p.at(-1).id==='n1'))}
+ else if(variant==='unknown'){const input=await admit();await assert.rejects(input.guard(),/changed live mirror coordinate target/)}
+ else await assert.rejects(admit(),/ambiguous|protected|stale mirror input epoch/);
+});
