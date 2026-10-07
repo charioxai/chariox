@@ -508,6 +508,10 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &session,
+                unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+            ),
             metadata: crate::runtime::projection::ProjectionMetadata::new(
                 crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
                 last_event_id,

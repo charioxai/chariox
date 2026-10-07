@@ -34,11 +34,12 @@ export function startCloudRelayLoginRequest(apiUrl: string, input: {
   }
 }
 
-export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string) {
+export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string, supportsAccessDenied = false) {
   return {
     PollCloudRelayLogin: {
       api_url: apiUrl,
       device_code: deviceCode,
+      ...(supportsAccessDenied ? { supports_access_denied: true } : {}),
     },
   }
 }
@@ -95,6 +96,7 @@ export function resolveKernelClientConnectionRequest(input: {
   machineRef?: string | null
   clientId?: string | null
   sessionId?: string | null
+  publicKeyThumbprint?: string | null
 }) {
   return {
     ResolveKernelClientConnection: {
@@ -102,6 +104,7 @@ export function resolveKernelClientConnectionRequest(input: {
       machine_ref: input.machineRef ?? null,
       client_id: input.clientId ?? null,
       session_id: input.sessionId ?? null,
+      public_key_thumbprint: input.publicKeyThumbprint ?? null,
     },
   }
 }

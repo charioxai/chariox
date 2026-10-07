@@ -342,6 +342,18 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -483,6 +495,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -693,6 +708,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)

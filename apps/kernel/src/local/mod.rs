@@ -1,3 +1,11 @@
+pub use api::{
+    AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, NotificationDeliveryMode,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationEvents,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+};
 mod api;
 mod client;
 mod harness;
@@ -7,6 +15,7 @@ pub(crate) mod provider_requests;
 pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
+pub use api::PreflightProviderAccountPortabilityRequest;
 pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, AppPackageUploadPhase,
@@ -130,6 +139,7 @@ pub use api::{
     ObserveEventConnectionAuthorizationRequest, ObserveManagedEnvironmentPreReimageRequest,
     PairCloudRelayClientRequest, PairCloudRelayMachineRequest, PairedClientRecord,
     PairingInviteIntent, PairingInviteRecord, PairingJoinRecord, PauseMetaagentTaskRequest,
+    ControlRoomWorkflowRunsRequest, RoomWorkflowRunAction, RoomWorkflowRunControlResult, RoomWorkflowRunControlOutcome,
     PauseWorkflowRunRequest, PollCloudRelayLoginRequest, PollRuntimeNoticesRequest,
     PrepareManagedEnvironmentContextTransferRequest,
     PrepareManagedEnvironmentGitCredentialEnrollmentRequest, PreviewPromptSettingRequest,

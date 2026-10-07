@@ -60,10 +60,22 @@ struct CodexGetAccountResponse {
     plan_type: Option<String>,
 }
 
+impl CodexGetAccountResponse {
+    fn plan(&self) -> Option<String> {
+        self.account
+            .as_ref()
+            .and_then(|account| account.plan_type.clone())
+            .or_else(|| self.plan_type.clone())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct CodexAccount {
     #[serde(default)]
     email: Option<String>,
+    /// Current app servers report the plan on the ChatGPT account itself.
+    #[serde(rename = "planType", default)]
+    plan_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,8 +108,8 @@ impl CodexClient {
                 "unknown".to_string()
             },
             account_profile: account_profile.to_string(),
+            plan: response.plan(),
             identity_summary: response.account.and_then(|account| account.email),
-            plan: response.plan_type,
             login_hint: Some("Run /provider login codex to authenticate Codex.".to_string()),
             detected_version: codex_version().ok(),
         })
@@ -511,10 +523,20 @@ fn codex_version() -> Result<String, DaemonError> {
 mod tests {
     use serde_json::json;
 
-    use super::normalize_codex_usage;
+    use super::{normalize_codex_usage, CodexGetAccountResponse};
     use crate::account_profile::{
         ProviderAccountUsageAvailability, ProviderAccountUsageMeterState,
     };
+
+    #[test]
+    fn reads_the_plan_reported_on_the_chatgpt_account() {
+        let response: CodexGetAccountResponse = serde_json::from_value(json!({
+            "account": {"type": "chatgpt", "email": "dev@example.test", "planType": "pro"},
+            "requiresOpenaiAuth": true
+        }))
+        .unwrap();
+        assert_eq!(response.plan().as_deref(), Some("pro"));
+    }
 
     #[test]
     fn normalizes_multiple_codex_limit_windows_and_credit_balance() {

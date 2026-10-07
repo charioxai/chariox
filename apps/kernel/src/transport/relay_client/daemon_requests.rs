@@ -128,12 +128,41 @@ pub(super) async fn handle_daemon_request(
                     error: Some(error),
                 };
             }
+            let caller = if router.self_host_terminal_pairing_required() {
+                if matches!(&request.request, LocalDaemonRequest::JoinTerminalPairingLink(join) if join.public_key_thumbprint.is_some())
+                {
+                    KernelCaller::for_relay_request(caller_identity)
+                } else {
+                    let grant = match router.admit_self_host_terminal(&client_public_key) {
+                        Ok(Some(grant)) => grant,
+                        _ => {
+                            return RelayRequestOutcome {
+                                encrypted_response: None,
+                                error: Some(relay_error(
+                                    "authorization_denied",
+                                    "terminal key is unpaired or revoked",
+                                    false,
+                                )),
+                            }
+                        }
+                    };
+                    let mut caller = KernelCaller::for_relay_request(None);
+                    caller.caller_id = grant.client_id.clone();
+                    caller.client_id = Some(grant.client_id);
+                    caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
+                    caller.public_key_thumbprint = Some(grant.public_key_thumbprint);
+                    caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+                    caller
+                }
+            } else {
+                KernelCaller::for_relay_request(caller_identity)
+            };
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
             let result = dispatch_relay_client_request(
                 router,
                 command_sequence,
-                caller_identity,
+                caller,
                 request.request,
                 request.command_id.clone(),
                 command_result_cache,
@@ -147,6 +176,16 @@ pub(super) async fn handle_daemon_request(
             )
         }
         ParsedRelayClientMessage::BrowserImportDelivery(request) => {
+            if router.admit_self_host_terminal(&client_public_key).is_err() {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "authorization_denied",
+                        "terminal key is unpaired or revoked",
+                        false,
+                    )),
+                };
+            }
             if ACTIVE_BROWSER_IMPORT_DELIVERIES
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                     (active < MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES).then_some(active + 1)
@@ -315,6 +354,9 @@ fn validate_cli_relay_sender_key(
         LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
             request.public_key_thumbprint.as_deref()
         }
+        LocalDaemonRequest::ResolveKernelClientConnection(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
         _ => return Ok(()),
     };
     let Some(claimed_thumbprint) = claimed_thumbprint else {
@@ -448,7 +490,7 @@ enum RelayDispatchOutcome {
 async fn dispatch_relay_client_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
-    caller_identity: Option<RelayCallerIdentity>,
+    caller: KernelCaller,
     request: LocalDaemonRequest,
     command_id: Option<String>,
     command_result_cache: &CommandResultCache,
@@ -463,13 +505,15 @@ async fn dispatch_relay_client_request(
     let command = KernelCommand::from_local_request_with_caller(
         command_id.clone(),
         KernelCommandSource::RelayClient,
-        KernelCaller::for_relay_request(caller_identity),
+        caller,
         None,
         None,
         &request,
     );
-    let fingerprint = request_is_cacheable(&request)
-        .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+    let fingerprint = (request_is_cacheable(&request)
+        && !(router.self_host_terminal_pairing_required()
+            && matches!(&request, LocalDaemonRequest::JoinTerminalPairingLink(_))))
+    .then(|| CommandFingerprint::from_command_and_request(&command, &request));
     if let Some(fingerprint) = fingerprint.as_ref() {
         match command_result_cache
             .reserve(&command.command_id, fingerprint)
@@ -711,9 +755,8 @@ mod tests {
                 client_alias: None,
                 machine_id: None,
                 machine_alias: None,
-                machine_credential: None,
-                cloud_session_token: None,
-                cloud_session_expires_at_ms: None,
+                kernel_id: None,
+                kernel_enrolled: false,
                 token_expires_at_ms: None,
             },
             token: crate::local::CloudRelayRuntimeToken {

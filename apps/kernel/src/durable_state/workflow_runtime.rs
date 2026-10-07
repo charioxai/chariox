@@ -145,6 +145,7 @@ impl DurableKernelStateStore {
                 timestamp_ms,
                 payload_json,
                 owner_id: session.host_daemon_id().to_string(),
+                source_owner_id: session.owner_user_id().to_string(),
                 session_id: session.id().to_string(),
                 hot_entities: encoded.hot_entities,
                 workflow_runs: encoded.workflow_runs,
@@ -436,6 +437,7 @@ pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) timestamp_ms: u64,
     pub(super) payload_json: &'a str,
     pub(super) owner_id: &'a str,
+    pub(super) source_owner_id: &'a str,
     pub(super) session_id: &'a str,
     pub(super) hot_entities: &'a [DurableWorkflowHotEntityWrite],
     pub(super) workflow_runs: &'a [DurableWorkflowRunWrite],
@@ -474,6 +476,12 @@ pub(super) fn write_workflow_runtime_transition(
         write.timestamp_ms,
         write.hot_entities,
         true,
+    )?;
+    super::workflow_notifications::capture_in(
+        transaction,
+        write.owner_id,
+        write.source_owner_id,
+        write.workflow_runs,
     )?;
     write_workflow_runs(
         transaction,

@@ -1,3 +1,4 @@
+import { cloudControlFetch } from "./cloud-control-auth.js"
 import { execFile } from "node:child_process"
 import { readFile, mkdtemp, rm, stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
@@ -8,7 +9,7 @@ import {
   workflowPublicationDeploymentContractPath,
   type WorkflowPublicationDeploymentContract,
 } from "@chariox/kernel-client/workflow-publication-deployment-contract"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 export type PublicationDeploymentMode = "local_runtime" | "hosted_container"
 
@@ -134,7 +135,7 @@ async function uploadPublicationDeploymentPackage(input: {
 export async function listPublicationDeployments(profile: RelayCloudProfile): Promise<readonly PublicationDeploymentSummary[]> {
   const url = new URL(`${normalizeApiUrl(profile.apiUrl)}/publication-deployments`)
   url.searchParams.set("accountId", profile.accountId)
-  const response = await fetch(url, { headers: cloudHeaders(profile) })
+  const response = await cloudControlFetch(profile, url)
   const body = await readJson<{ readonly deployments?: readonly PublicationDeploymentSummary[] }>(response)
   return body.deployments ?? []
 }
@@ -142,7 +143,7 @@ export async function listPublicationDeployments(profile: RelayCloudProfile): Pr
 export async function getPublicationDeployment(profile: RelayCloudProfile, deploymentId: string): Promise<PublicationDeploymentSummary> {
   const url = new URL(`${normalizeApiUrl(profile.apiUrl)}/publication-deployments/${encodeURIComponent(deploymentId)}`)
   url.searchParams.set("accountId", profile.accountId)
-  const response = await fetch(url, { headers: cloudHeaders(profile) })
+  const response = await cloudControlFetch(profile, url)
   return (await readJson<{ readonly deployment: PublicationDeploymentSummary }>(response)).deployment
 }
 
@@ -177,7 +178,7 @@ export async function registerPublicationDeploymentLocalBackend(input: {
 export async function listPublicationDeploymentLogs(profile: RelayCloudProfile, deploymentId: string): Promise<readonly { readonly level: string; readonly message: string; readonly occurredAt: string }[]> {
   const url = new URL(`${normalizeApiUrl(profile.apiUrl)}/publication-deployments/${encodeURIComponent(deploymentId)}/logs`)
   url.searchParams.set("accountId", profile.accountId)
-  const response = await fetch(url, { headers: cloudHeaders(profile) })
+  const response = await cloudControlFetch(profile, url)
   const body = await readJson<{ readonly logs?: readonly { readonly level: string; readonly message: string; readonly occurredAt: string }[] }>(response)
   return body.logs ?? []
 }
@@ -297,10 +298,9 @@ async function postJson<TResponse = unknown>(
   pathname: string,
   body: Record<string, unknown>,
 ): Promise<TResponse> {
-  const response = await fetch(`${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
+  const response = await cloudControlFetch(profile, `${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
     method: "POST",
     redirect: "manual",
-    headers: cloudHeaders(profile),
     body: JSON.stringify(body),
   })
   return readJson<TResponse>(response)
@@ -318,14 +318,6 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
     throw new Error(`publication deployment request returned non-JSON HTTP ${response.status}`)
   }
   return body as TResponse
-}
-
-function cloudHeaders(profile: RelayCloudProfile): HeadersInit {
-  return {
-    accept: "application/json",
-    "content-type": "application/json",
-    ...(profile.cloudSessionToken ? { authorization: `Bearer ${profile.cloudSessionToken}` } : {}),
-  }
 }
 
 function normalizeApiUrl(apiUrl: string): string {

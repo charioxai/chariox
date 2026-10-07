@@ -26,6 +26,10 @@ export type KernelApprovalPaste = {
 export type KernelApprovalView = {
   open: boolean
   count: number
+  /** Owner passkey prompts have their own indicator for this same request. */
+  indicatorCount?: number
+  sessionId?: string
+  sessionAlias?: string | null
   criticalCount: number
   index: number
   interaction: RuntimeInteraction | null
@@ -60,6 +64,7 @@ export function createKernelApprovalController(deps: {
   /** Shows this terminal's passkey popup for a critical approval; false when
    * it has none (another user's decision). */
   showPasskeyPrompt(sessionId: string, interactionId: string): boolean
+  getPasskeyPrompts?(): readonly { session_id: string; interaction_id: string }[]
 }) {
   let sessionId = ""
   let epoch = 0
@@ -76,7 +81,9 @@ export function createKernelApprovalController(deps: {
     const items = kernelApprovals(deps.getSession())
     index = Math.min(index, Math.max(0, items.length - 1))
     const interaction = items[index] ?? null
-    return { open, count: items.length, criticalCount: items.filter(item => item.choices.some(choice => choice.requires_passkey)).length, index, interaction,
+    const ownerPrompts = deps.getPasskeyPrompts?.() ?? []
+    const advertised = items.filter(item => !ownerPrompts.some(prompt => prompt.session_id === deps.getSession().id && prompt.interaction_id === item.id))
+    return { open, count: items.length, indicatorCount: advertised.length, sessionId: deps.getSession().id, sessionAlias: deps.getSession().alias ?? null, criticalCount: advertised.filter(item => item.choices.some(choice => choice.requires_passkey)).length, index, interaction,
       selected, pending: pending !== null, connected: deps.connected(), error }
   }
   const render = () => {
@@ -192,10 +199,15 @@ export function createKernelApprovalController(deps: {
         if (open) close(); else show()
         return true
       }
-      if (event.ctrl || event.meta || event.alt) return true
       sync()
       const current = view()
       if (current.pending || !current.interaction) return true
+      if (event.ctrl && !event.meta && !event.alt && event.name === "r") {
+        const refuse = current.interaction.choices.find(choice => !choice.requires_passkey && ["refuse", "deny", "decline"].includes(choice.reply))
+        if (refuse) void choose(current.interaction.id, refuse.id)
+        return true
+      }
+      if (event.ctrl || event.meta || event.alt) return true
       if (event.name === "left" || event.name === "right") {
         index = (index + (event.name === "left" ? -1 : 1) + current.count) % current.count
         sync()

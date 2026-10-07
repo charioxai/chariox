@@ -2,6 +2,10 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
+    AttachWorkflowNotification(AttachWorkflowNotificationRequest),
+    ListWorkflowNotifications(ListWorkflowNotificationsRequest),
+    DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
@@ -195,6 +199,7 @@ pub enum LocalDaemonRequest {
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
     LockCredentialVault(LockCredentialVaultRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
+    PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     CreateDisposableWorker(CreateDisposableWorkerRequest),
     GetDisposableWorker(DisposableWorkerRequest),
@@ -417,6 +422,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
+    ControlRoomWorkflowRuns(ControlRoomWorkflowRunsRequest),
     PauseWorkflowRun(PauseWorkflowRunRequest),
     ResumeWorkflowRun(ResumeWorkflowRunRequest),
     CreateWorkflowWatchdog(CreateWorkflowWatchdogRequest),

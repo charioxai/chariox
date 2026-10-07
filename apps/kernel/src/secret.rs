@@ -27,6 +27,7 @@ pub use vault::{
     clear_all_chariox_encrypted_vault_unlocks, export_transferred_vault_snapshot,
     extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
     is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
+    resolve_chariox_vault_path,
     sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
     validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
     CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
@@ -34,7 +35,8 @@ pub use vault::{
 };
 #[cfg(test)]
 pub(crate) use vault::{
-    create_chariox_encrypted_vault_for_test, fail_next_vault_dir_sync_for_test,
+    create_chariox_encrypted_vault_for_test, expire_chariox_encrypted_vault_for_test,
+    fail_next_vault_dir_sync_for_test,
 };
 
 #[cfg(test)]

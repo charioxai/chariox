@@ -22,6 +22,11 @@ import {
 } from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
+  & {
+    handleClientCloudCommand?: (args: string[]) => Promise<boolean>
+    getCloudControlProfile?: () => Promise<RelayCloudProfile | null>
+    getCloudCollaborationProfile?: () => Promise<RelayCloudProfile | null>
+  }
   & CloudCommandLifecycleDeps
   & CloudSessionCommandHandlerDeps
   & RelayCloudCommandHandlerDeps
@@ -97,6 +102,7 @@ export async function handleCloudSlashCommand(
   deps: CloudCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
 ): Promise<void> {
+  if (await deps.handleClientCloudCommand?.(command.args)) return
   const [area, action, ...args] = command.args
   if (!area || area === "open") {
     await openHostedCloud(deps)
@@ -106,29 +112,39 @@ export async function handleCloudSlashCommand(
     await startHostedCloudLink(deps)
     return
   }
-  const profile = deps.getCloudRelayProfile?.() ?? null
+  if (area === "unlink" || area === "logout") {
+    await handleRelayCloudCommand(deps, ["logout", ...command.args.slice(1)])
+    await deps.refreshWaitingRoomData?.()
+    return
+  }
   if (area === "status") {
-    await showCloudStatus(deps, profile)
+    await showCloudStatus(deps, await deps.getCloudRelayProfile?.() ?? null)
     return
   }
-  if (!profile) {
-    deps.flashFooter("cloud profile missing; run /cloud link first", "error")
+  const getProfile = ["invite", "members", "collaborators"].includes(area)
+    ? deps.getCloudCollaborationProfile ?? deps.getCloudControlProfile
+    : deps.getCloudControlProfile
+  const controlProfile = getProfile ? await getProfile() : await deps.getCloudRelayProfile?.() ?? null
+  if (!controlProfile) {
+    deps.flashFooter(getProfile ? "sign in with /cloud login first" : "cloud profile missing; run /cloud link first", "error")
     return
   }
-  if (await handleDeployedWorkflowCloudCommand(deps, profile, area, action, args)) {
+  if (await handleDeployedWorkflowCloudCommand(deps, controlProfile, area, action, args)) {
     return
   }
-  if (await handleCloudSessionCommand(deps, profile, area, action, args)) {
+  if (await handleCloudSessionCommand(deps, controlProfile, area, action, args)) {
     return
   }
-  deps.flashFooter("usage: /cloud [open|link|status] | /cloud deployments list|show|setup|create|adopt|preflight|release|promote|rollback|start|stop|restart|usage|limits|operations|credentials|domains|audience | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")
+  deps.flashFooter("usage: /cloud [open|link|status|unlink] | /cloud deployments list|show|setup|create|adopt|preflight|release|promote|rollback|start|stop|restart|usage|limits|operations|credentials|domains|audience | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")
 }
 
 export async function handleCollabSlashCommand(
   deps: CloudCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "collab" }>,
 ): Promise<void> {
-  const profile = deps.getCloudRelayProfile?.() ?? null
+  const profile = deps.getCloudCollaborationProfile
+    ? await deps.getCloudCollaborationProfile()
+    : await deps.getCloudRelayProfile?.() ?? null
   if (profile) {
     await handleCloudSlashCommand(deps, {
       kind: "cloud",

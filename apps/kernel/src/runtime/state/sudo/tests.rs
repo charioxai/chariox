@@ -177,6 +177,83 @@ pub(super) async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
 }
 
 #[tokio::test]
+async fn mp11_kafix_sudo_popup_names_aliases_and_returns_typed_refusal_or_expiry() {
+    for (aliased, expire) in [(true, false), (false, false), (true, true)] {
+        let f = fixture();
+        let agent_id = f.request.target_agent_id.as_deref().unwrap();
+        f.state
+            .owned
+            .agent_store
+            .alias_agent(agent_id, aliased.then(|| "release-helper".into()))
+            .unwrap();
+        let mut session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&f.request.session_id)
+            .unwrap();
+        session.set_alias(aliased.then(|| "daily-work".into()));
+        f.state.owned.session_store.write().restore_session(session);
+        let state = f.state.clone();
+        let request = f.request.clone();
+        let task = tokio::spawn(async move {
+            state
+                .submit_sudo_prompt(request, "local", "sudo-terminal")
+                .await
+        });
+        let prompt = popup(&f.state).await;
+        let label = if aliased { "release-helper" } else { agent_id };
+        let session_label = if aliased {
+            "daily-work"
+        } else {
+            &f.request.session_id
+        };
+        assert!(prompt
+            .message
+            .contains(&format!("agent {label} in session {session_label}.")));
+        assert_eq!(
+            prompt.session_alias.as_deref(),
+            aliased.then_some("daily-work")
+        );
+        if aliased {
+            assert!(!prompt.message.contains(&f.request.session_id));
+        }
+        if expire {
+            f.state
+                .owned
+                .timeout_runtime_interaction(&prompt.session_id, &prompt.interaction_id)
+                .unwrap();
+        } else {
+            f.state
+                .answer_terminal_runtime_interaction(
+                    &prompt.session_id,
+                    &prompt.interaction_id,
+                    "refuse",
+                    None,
+                    Some("local"),
+                    None,
+                    None,
+                    Some(KernelConnectionClass::Terminal),
+                )
+                .await
+                .unwrap();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(if expire {
+            matches!(error, DaemonError::OwnerRequestExpired)
+        } else {
+            matches!(error, DaemonError::KernelSudoRefused)
+        });
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        assert!(f.state.list_sudo_turns("local").is_empty());
+    }
+}
+
+#[tokio::test]
 async fn sudo_exact_turn_ends_at_yield_without_time_expiry_or_inheritance() {
     let f = fixture();
     let turn = running(&f);
@@ -840,10 +917,27 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
             .0
             .executable
     ));
+    let agent = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(f.request.target_agent_id.as_deref().unwrap())
+        .unwrap();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    assert!(prompt.message.contains(agent.alias().unwrap_or(agent.id())));
     assert!(prompt
         .message
-        .contains(f.request.target_agent_id.as_deref().unwrap()));
-    assert!(prompt.message.contains(&f.request.session_id));
+        .contains(session.alias().unwrap_or(session.id())));
+    assert_eq!(
+        prompt.session_id,
+        session.id(),
+        "the separate session identity stays exact"
+    );
     assert!(prompt
         .message
         .contains("Requester-supplied prompt:\nexternal first line\nfull second line"));

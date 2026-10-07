@@ -23,6 +23,19 @@ where
             Ok(())
         };
     };
+    if let Some(credential) = profile.kernel_credential.as_deref() {
+        if request.revoke_client || request.revoke_machine {
+            return Err(logout_error("kernel credentials can unlink only this kernel; manage clients or machines in Cloud"));
+        }
+        return post(
+            profile.api_url.clone(),
+            serde_json::json!({
+                "kernelCredential": credential, "accountId": profile.account_id,
+                "realmId": profile.realm_id, "kernelId": profile.kernel_id,
+            }),
+        )
+        .await;
+    }
     if requires_acknowledgement {
         if missing(profile.cloud_session_token.as_deref()) {
             return Err(logout_error(
@@ -76,6 +89,9 @@ mod tests {
 
     fn profile() -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.invalid".into(),
             account_id: "account-fixture".into(),
             client_id: Some("client-fixture".into()),
@@ -246,5 +262,44 @@ mod tests {
         request_cloud_logout(Some(&profile), &request, |_, _| async { Ok(()) })
             .await
             .expect("only the requested identity is required");
+    }
+}
+
+#[cfg(test)]
+mod kernel_unlink_tests {
+    use super::*;
+    #[tokio::test]
+    async fn kernel_unlink_needs_remote_ack_and_never_revokes_a_machine() {
+        let profile = PersistedCloudRelayProfile {
+            kernel_id: Some("kernel-a".into()),
+            kernel_credential: Some("synthetic-kernel-grant".into()),
+            ..Default::default()
+        };
+        let request = LogoutCloudRelayRequest {
+            revoke_client: false,
+            revoke_machine: false,
+        };
+        assert!(
+            request_cloud_logout(Some(&profile), &request, |_, body| async move {
+                assert_eq!(body["kernelId"], "kernel-a");
+                assert!(body.get("machineCredential").is_none());
+                Err(logout_error("offline"))
+            })
+            .await
+            .is_err()
+        );
+        request_cloud_logout(Some(&profile), &request, |_, _| async { Ok(()) })
+            .await
+            .unwrap();
+        assert!(request_cloud_logout(
+            Some(&profile),
+            &LogoutCloudRelayRequest {
+                revoke_client: false,
+                revoke_machine: true
+            },
+            |_, _| async { panic!("a kernel cannot revoke a machine") }
+        )
+        .await
+        .is_err());
     }
 }

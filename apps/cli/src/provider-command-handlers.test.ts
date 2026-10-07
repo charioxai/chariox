@@ -724,3 +724,70 @@ test("MP-08/MP-11 TUI setup-token --run uses the kernel login workflow and expli
   assert.deepEqual(calls, [["work", true]])
   assert.match(notices.join("\n"), /login-status capture-1/)
 })
+
+// MP-08 / MP-11: safe metadata identifies the native account without another login.
+test("provider accounts list shows email, plan and machine login in each profile line", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "local", provider: "codex", profile_id: "opaque-id", label: "Work",
+      origin: "default", is_default: true, auth_state: "authenticated", identity_summary: "owner@example.test", plan: "team",
+      usage: { provider: "codex", profile_id: "opaque-id", availability: "unavailable", source: "test" },
+    }],
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts", value: "accounts" })
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0]!.split("\n").length, 1)
+  assert.match(notices[0]!, /owner@example\.test/)
+  assert.match(notices[0]!, /team/)
+  assert.match(notices[0]!, /from this machine's Codex login/)
+  assert.doesNotMatch(notices[0]!, /opaque-id/)
+})
+
+
+test("provider accounts shows how to continue an unfinished managed login", async () => {
+  const notices: string[] = []
+  const profiles = ["not_configured", "unknown", "authenticated", "expired", "error"].map((auth_state) => ({
+    owner_user_id: "owner-a", provider: "codex", profile_id: `internal-${auth_state}`,
+    label: "chariox", origin: "chariox_created" as const, is_default: false,
+    auth_state: auth_state as "not_configured" | "unknown" | "authenticated" | "expired" | "error",
+    materializations: [],
+    usage: { provider: "codex", profile_id: "fixture", availability: "unavailable" as const, meters: [], source: "provider_not_observed" },
+  }))
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: (line) => notices.push(line),
+    listProviderAccountProfiles: async () => [...profiles,
+      { ...profiles[0]!, origin: "linked", label: "Linked" },
+      { ...profiles[0]!, identity_summary: "known@example.test", label: "Known" },
+      { ...profiles[0]!, origin: "default", label: "Native" },
+    ],
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts", value: "accounts" })
+  const lines = notices.join("\n").split("\n")
+  assert.equal(lines.length, 8)
+  for (const line of lines.slice(0, 2)) {
+    assert.match(line, /login not finished · \/provider login codex chariox to continue/)
+  }
+  for (const line of lines.slice(2)) assert.doesNotMatch(line, /login not finished/)
+  assert.doesNotMatch(notices.join("\n"), /internal-/)
+})
+
+
+test("the unfinished login continuation command accepts the full account label", async () => {
+  const calls: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter: () => {}, appendNotice: () => {},
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a", provider: "claude", profile_id: "unfinished-id",
+      label: "Work Account", origin: "chariox_created", is_default: false, auth_state: "not_configured",
+      materializations: [], usage: { provider: "claude", profile_id: "unfinished-id", availability: "unavailable", meters: [], source: "provider_not_observed" },
+    }],
+    startProviderLogin: async (provider, profile, method) => {
+      calls.push(`${provider}:${profile}:${method}`)
+      return { provider, account_profile: profile!, login_kind: "terminal", login_id: "synthetic-login", auth_url: null, verification_url: null, user_code: null }
+    },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider login claude Work Account --method terminal", value: "login claude Work Account --method terminal" })
+  assert.deepEqual(calls, ["claude:unfinished-id:terminal"])
+})

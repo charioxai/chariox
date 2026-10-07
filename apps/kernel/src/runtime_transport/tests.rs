@@ -1218,6 +1218,10 @@ async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
             include_str!("../../slice-linux-docker/slice-command-guard.py"),
         ),
         (
+            "owned_process_signals.py",
+            include_str!("../../slice-linux-docker/owned_process_signals.py"),
+        ),
+        (
             "home-archive-policy.json",
             include_str!("../../slice-linux-docker/home-archive-policy.json"),
         ),
@@ -2461,3 +2465,5 @@ mod wake_pressure;
 mod kernel_access_grants;
 
 mod ka_validation;
+
+mod provider_account_portability;

@@ -94,6 +94,9 @@ fn server(paths: &[&str]) -> (String, thread::JoinHandle<Vec<Request>>) {
 
 fn profile(url: String) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: url,
         account_id: "account-fixture".into(),
         user_id: "user-fixture".into(),
@@ -172,7 +175,7 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         );
     }
     assert_eq!(requests[1].body["publicKeyThumbprint"], "a".repeat(64));
-    assert_eq!(requests[1].body["ttlMs"], 30 * 60_000);
+    assert_eq!(requests[1].body["ttlMs"], 300_000);
 }
 
 #[tokio::test]
@@ -259,4 +262,47 @@ async fn account_auto_pair_omits_absent_alias_from_redemption() {
     .unwrap();
     let requests = fixture.join().unwrap();
     assert!(!requests[1].body.as_object().unwrap().contains_key("alias"));
+}
+
+#[tokio::test]
+async fn kernel_terminal_pivot_is_exact_target_key_bound_and_uses_no_human_or_machine_secret() {
+    let (url, fixture) = server(&["/relay/token"]);
+    let mut profile = profile(url);
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    // Even a stale predecessor in memory must never be selected.
+    profile.cloud_session_token = Some("synthetic-predecessor-session".into());
+    let (subject, _) = issue_cloud_terminal_client_token(
+        &profile,
+        "terminal-profile",
+        "kernel-other",
+        CloudTerminalClientOptions {
+            pair_account_client: true,
+            ttl_ms: Some(30 * 60_000),
+            public_key_thumbprint: Some("a".repeat(64)),
+            session_id: Some("old-session".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let requests = fixture.join().unwrap();
+    let body = &requests[0].body;
+    assert!(subject.starts_with("kernel-client:"));
+    assert_eq!(body["kernelCredential"], "synthetic-kernel-grant");
+    assert!(body.get("machineCredential").is_none());
+    assert!(body.get("sessionToken").is_none());
+    assert!(body.get("sessionId").is_none());
+    assert_eq!(body["allowedTargets"], serde_json::json!(["kernel-other"]));
+    assert_eq!(body["publicKeyThumbprint"], "a".repeat(64));
+    assert_eq!(body["ttlMs"], 300_000);
+    assert_eq!(profile.client_id, None);
+    assert!(issue_cloud_terminal_client_token(
+        &profile,
+        "terminal-profile",
+        "kernel-other",
+        Default::default()
+    )
+    .await
+    .is_err());
 }

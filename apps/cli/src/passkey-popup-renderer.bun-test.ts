@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { BoxRenderable, TextRenderable, TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, TextRenderable, TextareaRenderable, parseKeypress } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 import { createPasskeyPopupController, type PasskeyPopupView } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
+import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
+import { renderCliDialogOverlay } from "./cli-dialog-overlay.js"
 import { routeRawPastes } from "./raw-paste-routing.js"
+import { theme } from "./theme.js"
 
 const prompt: PasskeyPrompt = {
   kind: "critical_approval", session_id: "session-1", session_alias: "Payments", interaction_id: "app_validation_op-1",
@@ -35,6 +38,9 @@ test("the passkey popup is shaped like the hot-keys popup and shows only the ker
     assert.match(frame, /Approve App action/)
     assert.match(frame, /Action: pay/)
     assert.match(frame, /Session: Payments \(session-1\) · expires/)
+    const spans = harness.captureSpans().lines.flatMap(line => line.spans)
+    assert.ok(spans.find(span => span.text.includes("Session: Payments"))?.fg.equals(theme.text))
+    assert.ok(spans.find(span => span.text.includes("(session-1)"))?.fg.equals(theme.textMuted))
     assert.match(frame, /Passkey: ••••••▏/)
     assert.match(frame, /Remember for: off/)
     assert.match(frame, /\[ Approve \] +\[ Refuse \]/)
@@ -193,3 +199,98 @@ test("sudo popup describes a fresh one-turn decision without grant lifetime cont
     assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for/)
   } finally { harness.renderer.destroy() }
 })
+
+test("MP-11 kafix arrival preview shows the waiting request and requires deliberate focus", async () => {
+  const h = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: false, attention: true, prompt: { ...prompt, kind: "access_extension", title: "Access expires. Extend?" } }, { width: 90, height: 30 })
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Access expires. Extend\?/)
+    assert.match(frame, /F8 reviews.*Esc hides/)
+    assert.doesNotMatch(frame, /Passkey:|Enter approves/)
+  } finally { h.renderer.destroy() }
+})
+
+for (const kittyKeyboard of [false, true]) {
+  for (const underlying of ["hotkeys", "session-browser", "command-center"] as const) {
+    test(`MP-08/MP-11 preview Escape preserves ${underlying} across both input routes (kitty ${kittyKeyboard})`, async () => {
+      const h = await createTestRenderer({ width: 90, height: 30, useThread: false, kittyKeyboard })
+      const textarea = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
+      const overlay = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+      const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+      h.renderer.root.add(textarea)
+      h.renderer.root.add(overlay)
+      h.renderer.root.add(box)
+      let underlyingOpen = true
+      let answers = 0
+      const renderUnderlying = () => renderCliDialogOverlay({
+        overlayBox: overlay, renderer: h.renderer, dimensions: { width: 90, height: 30 },
+        mode: underlyingOpen && underlying !== "command-center" ? underlying : "closed",
+        onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0,
+        terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [],
+      })
+      const closeUnderlying = () => { underlyingOpen = false; renderUnderlying() }
+      const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+      surface.assign(box)
+      const popup = createPasskeyPopupController({
+        connected: () => true, onView: view => surface.render(view, { width: 90, height: 30 }),
+        onOpen: () => textarea.blur(), onClose: () => textarea.focus(), scroll() {}, notify() {},
+        respond: async () => { answers++ },
+      })
+      const noKey = () => false
+      const stdin = createCliStdinKeyController({
+        parseKeypress, kernelApprovalOwnsInput: popup.ownsInput,
+        dialogOverlayOpen: () => underlyingOpen && underlying !== "command-center",
+        closeActiveDialogOverlay: closeUnderlying, handleSessionBrowserKey: noKey,
+        requestExit() {}, focusedInteractionActive: noKey, handleFocusedInteractionKey: noKey,
+        handleQueuedPromptKey: noKey, promptFocused: () => textarea.focused,
+        commandCenterOpen: () => underlyingOpen && underlying === "command-center",
+        commandCenterQuery: () => "draft kept", clearCommandCenter: closeUnderlying,
+        toggleWorkspaceScreen() {}, isAttached: () => true, workflowScreenActive: noKey,
+        cycleWorkflowCanvasNode() {}, handleWorkflowDetailPaneKey: noKey, cycleAgentFocus() {},
+        copyPromptSelection: noKey, hasActiveTurnWork: noKey, requestPromptStop() {},
+        removePromptAttachmentsForEdit: noKey, currentPromptText: () => textarea.plainText,
+        pendingAttachmentCount: () => 0, removeLastPendingPromptAttachment() {},
+        handlePromptTurnNavigationKey: noKey, handleWaitingRoomKey: noKey,
+      })
+      // Match production: OpenTUI parses the read first, then the separately
+      // registered raw-stdin listener runs the actual CLI routing controller.
+      h.renderer.keyInput.on("keypress", popup.handleKey)
+      h.renderer.stdin.on("data", stdin.handleData)
+      try {
+        textarea.focus()
+        renderUnderlying()
+        popup.apply([{ ...prompt, kind: "access_extension", title: "Access expires. Extend?" }])
+        await h.renderOnce()
+        assert.match(h.captureCharFrame(), /Access expires. Extend\?/)
+        assert.equal(textarea.focused, true, "the arrival preview does not steal composer focus")
+        assert.equal(popup.ownsInput(), false)
+        const escape = kittyKeyboard ? "\x1b[27u" : "\x1b"
+        h.renderer.stdin.emit("data", Buffer.from(escape))
+        await new Promise(resolve => setTimeout(resolve, 50))
+        assert.equal(popup.view().attention, false, "Escape hides the preview")
+        assert.equal(underlyingOpen, true, "the same Escape must not dismiss the underlying UI")
+        assert.equal(popup.ownsInput(), false, "consumption ends after the input turn")
+        assert.equal(textarea.plainText, "draft kept")
+        assert.equal(answers, 0, "hiding never answers the protected request")
+        await h.renderOnce()
+        if (underlying !== "command-center") {
+          assert.match(h.captureCharFrame(), underlying === "hotkeys" ? /Hotkeys/ : /All Sessions/)
+        }
+        h.renderer.stdin.emit("data", Buffer.from(escape))
+        await new Promise(resolve => setTimeout(resolve, 50))
+        assert.equal(underlyingOpen, false, "the next Escape still dismisses the underlying UI")
+      } finally {
+        h.renderer.stdin.off("data", stdin.handleData)
+        h.renderer.keyInput.off("keypress", popup.handleKey)
+        popup.dispose()
+        h.renderer.destroy()
+      }
+    })
+  }
+}

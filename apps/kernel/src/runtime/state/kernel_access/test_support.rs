@@ -11,6 +11,82 @@ mod session_authority;
 pub(in crate::runtime::state) mod worker_spy;
 mod workflow_authority;
 
+#[tokio::test]
+async fn mp11_kafix_access_popup_names_session_and_separates_refusal_from_expiry() {
+    let worktree = crate::test_support::TestWorktree::new("kafix-access");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (mut session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    session.set_alias(Some("daily-work".into()));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    );
+    let state = router.runtime_state();
+    state
+        .owned
+        .session_store
+        .write()
+        .restore_session(session.clone());
+    let id = state.insert_access_grant_for_test(session.id());
+    let grant = state.owned.kernel_access.lock().unwrap().grants[&id].clone();
+    for (action, expire) in [("grant", false), ("extension", false), ("extension", true)] {
+        let runtime = state.clone();
+        let grant = grant.clone();
+        let task = tokio::spawn(async move {
+            runtime
+                .access_decision(&grant.summary, &grant.holder, action, 10)
+                .await
+        });
+        let prompt = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(prompt) = state.passkey_prompts_for("local").first() {
+                    break prompt.clone();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(prompt.message.contains("access to session daily-work"));
+        assert!(!prompt.message.contains(session.id()));
+        if expire {
+            state
+                .owned
+                .timeout_runtime_interaction(&prompt.session_id, &prompt.interaction_id)
+                .unwrap();
+        } else {
+            state
+                .answer_terminal_runtime_interaction(
+                    &prompt.session_id,
+                    &prompt.interaction_id,
+                    "refuse",
+                    None,
+                    Some("local"),
+                    None,
+                    None,
+                    Some(KernelConnectionClass::Terminal),
+                )
+                .await
+                .unwrap();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(if expire {
+            matches!(error, DaemonError::OwnerRequestExpired)
+        } else {
+            matches!(error, DaemonError::KernelAccessRefused)
+        });
+        assert!(state.passkey_prompts_for("local").is_empty());
+    }
+}
+
 impl KernelRuntimeState {
     pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {
         let session = self.access_session(session_id).unwrap();

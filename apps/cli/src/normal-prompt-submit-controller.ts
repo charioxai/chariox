@@ -20,6 +20,7 @@ import {
 import type { TranscriptPromptMetadata } from "@chariox/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 import { NO_FOCUS_AGENT_MESSAGE } from "./cli-runtime-tuning.js"
+import { ownerRequestNotice } from "./owner-request-notice.js"
 
 export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
@@ -140,8 +141,10 @@ export function createNormalPromptSubmitController(
         deps.updateSessionChrome()
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       } catch (error) {
-        const message = formatError(error)
-        deps.logError?.("prompt submission failed", {
+        const notice = ownerRequestNotice(error)
+        const message = notice ?? formatError(error)
+        const log = notice ? deps.logInfo : deps.logError
+        log?.(notice ? "prompt submission ended" : "prompt submission failed", {
           error: message,
         })
         deps.restoreFailedPromptUi(submissionUi)
@@ -154,8 +157,8 @@ export function createNormalPromptSubmitController(
         deps.setSubmitting(transition.submitting)
         deps.setStreamingAgentId(transition.streamingAgentId)
         deps.setWorking(transition.working)
-        deps.setFatalError(message)
-        deps.flashFooter(message, "error")
+        if (!notice) deps.setFatalError(message)
+        deps.flashFooter(message, notice ? "info" : "error")
         deps.updateSessionChrome()
       }
     },

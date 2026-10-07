@@ -2,7 +2,7 @@ import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
-import { createCliStdinKeyController } from "./cli-stdin-key-controller.js"
+import { createCliStdinKeyController, type CliStdinKeyEvent } from "./cli-stdin-key-controller.js"
 import { createFocusedInteractionChoiceController } from "./focused-interaction-choice-controller.js"
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { routeInteractionPastes } from "./interaction-paste-routing.js"
@@ -32,9 +32,11 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
+  handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
-  kernelApprovalOwnsInput?: () => boolean
+  kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   client: any
   options: any
   appLogger: any
@@ -523,7 +525,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
-  useKeyboard(globalKeyboardShortcutController.handleKey)
+  useKeyboard(event => {
+    if (globalKeyboardShortcutController.handleKey(event)) return
+    if (!deps.kernelApprovalOwnsInput?.()) deps.handleRoomWorkflowsKey?.(event)
+  })
   const handleSigint = globalKeyboardShortcutController.handleSigint
 
   const promptKeyDownController = createPromptKeyDownController({
@@ -671,7 +676,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
-    kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
+    roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
+    kernelApprovalOwnsInput: (event) => deps.kernelApprovalOwnsInput?.(event) ?? false,
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,

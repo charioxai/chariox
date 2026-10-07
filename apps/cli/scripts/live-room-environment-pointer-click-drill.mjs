@@ -3472,11 +3472,11 @@ async function closeFixtureServer() {
 async function terminateChild(child) {
   if (!child) return
   if (child.killProcessGroup) {
-    signalProcessGroup(child.pid, "SIGTERM")
+    signalProcessGroup(child, "SIGTERM")
     await waitForChildExit(child, 5_000)
-    if (await waitForProcessGroupExit(child.pid, 500)) return
-    signalProcessGroup(child.pid, "SIGKILL")
-    await waitForProcessGroupExit(child.pid, 1_000)
+    if (await waitForProcessGroupExit(child, 500)) return
+    signalProcessGroup(child, "SIGKILL")
+    await waitForProcessGroupExit(child, 1_000)
     return
   }
   if (child.exitCode != null) return
@@ -3503,27 +3503,27 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-async function waitForProcessGroupExit(processGroupId, timeoutMs) {
+async function waitForProcessGroupExit(child, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (!processGroupExists(processGroupId)) return true
+    if (!processGroupExists(child)) return true
     await sleep(50)
   }
-  return !processGroupExists(processGroupId)
+  return !processGroupExists(child)
 }
 
-function processGroupExists(processGroupId) {
+function processGroupExists(child) {
   try {
-    return signalOwnedProcessGroup(processGroupId, 0)
+    return signalOwnedProcessGroup(child, 0)
   } catch (error) {
     if (error?.code === "ESRCH") return false
     throw error
   }
 }
 
-function signalProcessGroup(processGroupId, signal) {
+function signalProcessGroup(child, signal) {
   try {
-    signalOwnedProcessGroup(processGroupId, signal)
+    signalOwnedProcessGroup(child, signal)
   } catch (error) {
     if (error?.code !== "ESRCH") throw error
   }

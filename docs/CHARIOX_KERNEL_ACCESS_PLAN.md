@@ -449,6 +449,24 @@ From PR 2 the kernel assigns every connection one class from this fixed vocabula
 - **Phase 1 remember window.** Within it a human at a terminal approves without retyping the passkey, and so can a same-user agent posing as a terminal (D11); that is the accepted cost of opting in. It is off by default, lasts at most 15 minutes, and never applies to `/sudo`, grants or extensions.
 - **Process identity gaps.** Processes that reparent or live in another PID namespace lose the grant (safe but inconvenient), and code injection into the holder defeats the check.
 
+## MP-08 / MP-11 owner popup corrections (2026-10-05)
+
+Sudo and access decisions name the target aliases, falling back to IDs. Both
+TUI popup surfaces show the session alias with its ID in muted text. A request
+has one header indicator, and Ctrl+R refuses from either owner popup.
+
+New owner requests display a protected preview in a focused TUI. Typing stays
+in the composer until F8 or a click deliberately opens passkey entry; Esc hides
+the preview or entry. A replay of the same pending request does not reopen it.
+Refusal and expiry use stable codes in the existing transport error envelope,
+so the requester receives an informational notice and retains its draft.
+
+Without an explicit Vault path, an explicit `CHARIOX_HOME` selects
+`$CHARIOX_HOME/vault/vault.json`. With it unset, the existing
+`~/.chariox/vault/vault.json` default remains. Boot logs record the resolved
+path. Explicitly configured paths retain their existing meaning. These shared
+source corrections do not establish MP-10 ordinary/managed or Mac acceptance.
+
 ## 11. Open questions for the owner
 
 1. **Lifetimes.** Confirm the grant default of 30 minutes and maximum of 240, the 5-minute extension notice, and the 10-minute request timeout.

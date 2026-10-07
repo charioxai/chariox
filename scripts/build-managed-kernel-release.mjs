@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from "node:crypto"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
@@ -95,7 +96,7 @@ function signalProcessTree(child, signal) {
     child.kill(signal)
     return
   }
-  if (child.pid) process.kill(-child.pid, signal)
+  if (child.pid) signalOwnedProcessGroup(child, signal)
 }
 
 function runCommand(command, args, {
@@ -107,7 +108,7 @@ function runCommand(command, args, {
   gracefulCancellation = false,
 }) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, {
+    const child = spawnOwned(command, args, {
       env,
       cwd,
       detached: process.platform !== "win32",

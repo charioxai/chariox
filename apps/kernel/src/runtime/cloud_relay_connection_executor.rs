@@ -21,7 +21,8 @@ use crate::runtime::cloud_relay_control::{
     CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
-    clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
+    clear_cloud_profile_if_stale, migrate_legacy_kernel_profile, persist_cloud_profile,
+    required_cloud_relay_profile,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -48,6 +49,7 @@ pub(crate) async fn ensure_cloud_relay_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let config = config_projection.snapshot();
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(());
@@ -101,6 +103,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     relay_state: Arc<RwLock<RelayClientState>>,
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let config = config_projection.snapshot();
     let token_subject = cloud_runtime_token_subject(&config, &profile);
@@ -128,15 +131,9 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         )
         .await?;
     provider_catalog_projection.invalidate();
-    let token = CloudRelayRuntimeToken {
-        relay_url: profile.relay_url,
-        relay_token: issued.token,
-        token_expires_at: issued.expires_at,
-    };
     Ok(LocalDaemonResponse::CloudRelayConnected {
         status: projected_relay_status(relay_state, config_projection.clone()).await,
         profile: cloud_profile_from_persisted(&saved),
-        token,
     })
 }
 
@@ -193,7 +190,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
                 session_id: request.session_id.clone(),
-                public_key_thumbprint: None,
+                public_key_thumbprint: request.public_key_thumbprint.clone(),
             },
         )
         .await?;
@@ -234,6 +231,7 @@ async fn issue_cloud_relay_client_token(
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<(CloudRelayProfile, CloudRelayRuntimeToken), DaemonError> {
     let required_public_key_thumbprint = request.public_key_thumbprint.clone();
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let requested_client_id = profile.client_id.as_deref().unwrap_or(&request.client_id);
     let config = config_projection.snapshot();
@@ -255,7 +253,11 @@ async fn issue_cloud_relay_client_token(
         CloudTerminalClientOptions {
             pair_account_client: profile.client_id.is_none(),
             ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            session_id: request.session_id,
+            session_id: if profile.kernel_credential.is_some() {
+                None
+            } else {
+                request.session_id
+            },
             public_key_thumbprint: request.public_key_thumbprint,
             ..CloudTerminalClientOptions::default()
         },
@@ -271,7 +273,9 @@ async fn issue_cloud_relay_client_token(
     if let Some(public_key_thumbprint) = required_public_key_thumbprint.as_deref() {
         require_cloud_relay_token_key_binding(&issued.token, public_key_thumbprint)?;
     }
-    if profile.client_id.as_deref() != Some(client_id.as_str()) {
+    if profile.kernel_credential.is_none()
+        && profile.client_id.as_deref() != Some(client_id.as_str())
+    {
         profile.client_id = Some(client_id);
         profile = persist_cloud_profile(runtime_state, profile).await?;
     }
@@ -438,6 +442,7 @@ mod tests {
             kernel_ref: "kernel-new".to_string(),
             machine_ref: Some("machine-new".to_string()),
             client_id: Some("client-1".to_string()),
+            public_key_thumbprint: None,
             session_id: None,
         }
     }

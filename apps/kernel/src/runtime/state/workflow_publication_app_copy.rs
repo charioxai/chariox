@@ -730,6 +730,16 @@ impl KernelRuntimeState {
             let automation_id = text(automation, "automation_id");
             let queue_id = text(automation, "queue_id");
             let scheduled = automation["scheduled"].as_bool().unwrap_or_default();
+            let delivery_mode = serde_json::from_value(
+                automation
+                    .get("delivery_mode")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!("queue")),
+            )
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "copy App automation",
+                message: "invalid delivery mode".into(),
+            })?;
             let current = copy
                 .automations
                 .iter()
@@ -741,6 +751,7 @@ impl KernelRuntimeState {
                     && current.queue_id == queue_id
                     && current.event_name == text(automation, "event_name")
                     && current.scheduled == scheduled
+                    && current.delivery_mode == delivery_mode
             }) {
                 continue;
             }
@@ -756,6 +767,7 @@ impl KernelRuntimeState {
                     publication_ref: publication_id.to_owned(),
                     queue_ref: Some(queue_id.to_owned()),
                     scheduled,
+                    delivery_mode,
                 }),
                 "an App automation could not be configured for the copy",
             )

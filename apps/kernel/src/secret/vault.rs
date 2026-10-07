@@ -382,6 +382,17 @@ pub(crate) fn create_chariox_encrypted_vault_for_test(
     write_vault_file(path, key.as_ref(), &VaultPlaintext::default(), kdf)
 }
 
+// MP-11: deterministic expiry while a management interaction is pending.
+#[cfg(test)]
+pub(crate) fn expire_chariox_encrypted_vault_for_test(path: &Path) {
+    unlocked_vaults()
+        .lock()
+        .expect("unlock map")
+        .get_mut(&normalize_vault_path(path.to_path_buf()))
+        .expect("live test lease")
+        .expires_at_ms = Some(0);
+}
+
 pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()
@@ -488,10 +499,18 @@ pub fn extend_chariox_encrypted_vault(
     let mut unlocked = unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    if unlocked
+        .get(&path)
+        .is_some_and(|vault| vault.is_expired(now_ms))
+    {
+        // MP-11 F1: removal drops/zeroizes the cached key under this same mutex.
+        unlocked.remove(&path);
+        return Err(vault_locked_error(&path));
+    }
     let vault = unlocked
         .get_mut(&path)
         .ok_or_else(|| vault_locked_error(&path))?;
-    let now_ms = crate::session::unix_epoch_ms();
     vault.expires_at_ms = match lease {
         VaultUnlockLease::Operation => Some(now_ms),
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
@@ -1669,6 +1688,10 @@ fn unlocked_vaults() -> &'static Mutex<BTreeMap<PathBuf, UnlockedVault>> {
     VAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+pub fn resolve_chariox_vault_path(path: impl Into<PathBuf>) -> PathBuf {
+    normalize_vault_path(path.into())
+}
+
 fn normalize_vault_path(path: PathBuf) -> PathBuf {
     let raw = path.to_string_lossy();
     if raw == "~" {
@@ -1826,6 +1849,59 @@ mod tests {
         );
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config
+    }
+
+    // MP-11 F1: an expired cached key cannot acquire any new lease.
+    #[test]
+    fn expired_cached_vault_lease_cannot_be_extended() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-expired-lease-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        for lease in [
+            VaultUnlockLease::Operation,
+            VaultUnlockLease::TtlMinutes(30),
+            VaultUnlockLease::KernelShutdown,
+        ] {
+            unlocked_vaults().lock().unwrap().insert(
+                path.clone(),
+                UnlockedVault {
+                    key: Zeroizing::new([42; KEY_LEN]),
+                    expires_at_ms: Some(0),
+                },
+            );
+            let result = extend_chariox_encrypted_vault(&path, lease);
+            // Clear even on the fail-first run; this fixture owns only its path.
+            let removed = unlocked_vaults().lock().unwrap().remove(&path);
+            assert!(
+                result.is_err(),
+                "expired key must require passphrase re-entry"
+            );
+            assert!(is_chariox_vault_locked_error(&result.unwrap_err()));
+            assert!(removed.is_none(), "expired Zeroizing key must be removed");
+        }
+    }
+
+    #[test]
+    fn live_cached_vault_lease_can_be_extended() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-live-lease-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        unlocked_vaults().lock().unwrap().insert(
+            path.clone(),
+            UnlockedVault {
+                key: Zeroizing::new([42; KEY_LEN]),
+                expires_at_ms: None,
+            },
+        );
+        let result = extend_chariox_encrypted_vault(&path, VaultUnlockLease::TtlMinutes(30));
+        lock_chariox_encrypted_vault(&path).unwrap();
+        let status = result.unwrap();
+        assert!(status.unlocked);
+        assert!(status.expires_at_ms.unwrap() > crate::session::unix_epoch_ms());
     }
 
     #[test]

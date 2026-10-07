@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 // MP-08/MP-10: timing-exact Drill E. The selected test artifact must be built
 // from this checkout; this runner records identity, it does not attest provenance.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, statfs, symlink, writeFile } from "node:fs/promises";
@@ -11,7 +11,6 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { assertConcurrencyArtifact, assertConcurrencyResources, concurrencyRustMinStackBytes, concurrencyTestSymbol, parseConcurrencyProbe } from "./lib/browser-controller-concurrency-preflight.mjs";
 
-import { signalBrowserStateChild } from "./lib/browser-state-drill-process.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const options = {};
@@ -36,15 +35,15 @@ const owned = new Set();
 let interrupted = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
   interrupted = true;
-  for (const child of owned) signalBrowserStateChild(child, "SIGTERM");
+  for (const child of owned) signalOwnedProcessGroup(child, "SIGTERM");
 });
 async function command(program, args, { timeout = 120000, env = process.env, log } = {}) {
   assert.ok(!interrupted, "MP-08/MP-10 interrupted");
   const record = { program, args, startedAt: new Date().toISOString() }; receipt.commands.push(record);
-  const child = spawn(program, args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: true }); owned.add(child);
+  const child = spawnOwned(program, args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: true }); owned.add(child);
   let stdout = "", stderr = "";
   child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
-  const timer = setTimeout(() => { try { signalBrowserStateChild(child, "SIGTERM"); } catch {} }, timeout);
+  const timer = setTimeout(() => { try { signalOwnedProcessGroup(child, "SIGTERM"); } catch {} }, timeout);
   const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
   clearTimeout(timer); owned.delete(child); record.exitCode = code; record.finishedAt = new Date().toISOString();
   if (log) await writeFile(log, stdout + stderr, { mode: 0o600 });
@@ -65,7 +64,7 @@ let started = false;
 let transportDirectory;
 try {
   await resources();
-  watchdog = setInterval(() => { resources().catch(() => { interrupted = true; for (const child of owned) signalBrowserStateChild(child, "SIGTERM"); }); }, 5000);
+  watchdog = setInterval(() => { resources().catch(() => { interrupted = true; for (const child of owned) signalOwnedProcessGroup(child, "SIGTERM"); }); }, 5000);
   receipt.source = (await command("git", ["rev-parse", "HEAD"])).stdout.trim();
   receipt.tree = (await command("git", ["rev-parse", "HEAD^{tree}"])).stdout.trim();
   assert.equal((await command("git", ["status", "--porcelain"])).stdout.trim(), "", "MP-08/MP-10 requires clean source");

@@ -7,6 +7,8 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import type { KernelEvent } from "@chariox/kernel-client/kernel-events"
+import { theme } from "./theme.js"
 
 const view: KernelApprovalView = {
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
@@ -291,4 +293,69 @@ test("shared approval command opener handles waiting room, empty session and pen
     assert.equal(prompt.focused, false)
     assert.equal(prompt.plainText, "draft kept")
   } finally { dispose(); h.renderer.destroy() }
+})
+
+test("MP-11 kafix owner request arrival, Esc, one badge and focused entry preserve composer input", async () => {
+  const h = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const draft = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
+  h.renderer.root.add(draft)
+  const panel = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  const popup = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(panel)
+  h.renderer.root.add(popup)
+  const interaction = { ...view.interaction!, id: "access-fixture-extension", kernel_operation_id: "access-extension:access-fixture", title: "Access expires. Extend?",
+    choices: [{ id: "refuse", label: "Refuse", reply: "refuse" }, { id: "approve", label: "Approve", reply: "approve", requires_passkey: true }] }
+  let receive!: (event: KernelEvent) => void
+  let dispose!: () => void
+  const approvals = createRoot(cleanup => {
+    dispose = cleanup
+    return createCliKernelApprovalComposition({
+      client: { onKernelEvent: (handler: typeof receive) => { receive = handler; return () => {} } } as never,
+      renderer: h.renderer, session: () => ({ id: "session", alias: "Daily", agents: [], active_interactions: [interaction] }) as unknown as RuntimeSession,
+      connected: () => true, attached: () => true, kernelConnected: () => true, notify() {}, flashFooter() {},
+      dimensions: () => ({ width: 90, height: 30 }), themeRevision: () => 0,
+      currentFocus: () => draft, promptFocus: () => draft, closeOtherDialog() {}, applySession() {},
+    })
+  })
+  h.renderer.keyInput.on("keypress", approvals.handleKey)
+  try {
+    approvals.assignBox(panel)
+    approvals.assignPopupBox(popup)
+    draft.focus()
+    const event = { event: "passkey_prompts_changed", prompts: [{ kind: "access_extension", session_id: "session", session_alias: "Daily", interaction_id: interaction.id,
+      title: interaction.title, message: "A waiting external agent needs access.", approve_choice_id: "approve", refuse_choice_id: "refuse", requested_at_ms: 1, expires_at_ms: Date.now() + 60_000, lifetime_minutes: 30, max_lifetime_minutes: 120 }] } as KernelEvent
+    h.renderer.emit("blur")
+    receive(event)
+    await h.renderOnce()
+    assert.doesNotMatch(h.captureCharFrame(), /F8 reviews/)
+    h.renderer.emit("focus")
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Access expires. Extend\?/)
+    assert.equal(draft.focused, true)
+    await h.mockInput.typeText("x")
+    assert.match(draft.plainText, /x/)
+    assert.equal(approvals.ownsInput(), false)
+    await h.mockInput.pressKeys(["ESCAPE"])
+    await new Promise(resolve => setTimeout(resolve, 50))
+    receive(event)
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.equal((frame.match(/Chariox ·/g) ?? []).length, 1, "one request advertises one badge")
+    assert.match(frame, /1 passkey request/)
+    await h.mockInput.pressKeys(["F8"])
+    assert.equal(draft.focused, false)
+    const before = draft.plainText
+    await h.mockInput.typeText("private entry")
+    assert.equal(draft.plainText, before)
+    await h.mockInput.pressKeys(["ESCAPE"])
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(draft.focused, true)
+    approvals.show()
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Session: Daily \(session\)/)
+    const spans = h.captureSpans().lines.flatMap(line => line.spans)
+    assert.ok(spans.find(span => span.text.includes("Session: Daily"))?.fg.equals(theme.text))
+    assert.ok(spans.find(span => span.text.includes("(session)"))?.fg.equals(theme.textMuted))
+    assert.match(h.captureCharFrame(), /Ctrl\+R refuses/)
+  } finally { h.renderer.keyInput.off("keypress", approvals.handleKey); dispose(); h.renderer.destroy() }
 })

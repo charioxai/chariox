@@ -83,6 +83,7 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
             "config_load_ms": config_started.elapsed().as_millis(),
             "process_elapsed_ms": process_started.elapsed().as_millis(),
             "user_config_path": config.user_config_path().display().to_string(),
+            "credential_vault_path": chariox_kernel::secret::resolve_chariox_vault_path(&config.user_config.credential_vault.path).display().to_string(),
             "relay_configured": config.relay_url.is_some() && config.relay_token.is_some(),
             "cloud_profile_present": config.cloud_relay.is_some(),
             "kernel_websocket_url": config.kernel_websocket_url(),

@@ -362,6 +362,18 @@ pub(crate) async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
+                            if verified_identity.as_ref().is_some_and(|previous| {
+                                !super::client_reauthentication::same_client(previous, &identity)
+                            }) {
+                                send_close(&outgoing_tx, "client renewal changed identity or key".to_string());
+                                break;
+                            }
+                            if verified_identity.as_ref().is_some_and(|previous| {
+                                !super::client_reauthentication::retains_permissions(previous, &identity)
+                            }) {
+                                send_close(&outgoing_tx, "client renewal reduced permissions".to_string());
+                                break;
+                            }
                             auth_expiry_deadline = relay_auth_expiry_deadline(
                                 &auth_verifier,
                                 identity.expires_at_ms,
@@ -454,7 +466,7 @@ pub(crate) async fn handle_connection(
                             let guard = registry.read().await;
                             let (machines, kernels, kernel) = match query {
                                 RelayMetadataQuery::ListLiveMachines => (
-                                    Some(guard.live_machines_in_realm(&identity.realm_id)),
+                                    Some(guard.live_machines_in_realm_with_targets(&identity.realm_id, identity.allowed_targets.as_deref())),
                                     None,
                                     None,
                                 ),
@@ -463,13 +475,13 @@ pub(crate) async fn handle_connection(
                                     Some(guard.live_kernels_for_machine_in_realm(
                                         &identity.realm_id,
                                         &machine_ref,
-                                    )),
+                                    ).into_iter().filter(|kernel| super::metadata_scope::kernel_is_permitted(kernel, identity.allowed_targets.as_deref())).collect()),
                                     None,
                                 ),
                                 RelayMetadataQuery::GetLiveKernel { kernel_ref } => (
                                     None,
                                     None,
-                                    guard.live_kernel_in_realm(&identity.realm_id, &kernel_ref),
+                                    guard.live_kernel_in_realm(&identity.realm_id, &kernel_ref).filter(|kernel| super::metadata_scope::kernel_is_permitted(kernel, identity.allowed_targets.as_deref())),
                                 ),
                             };
                             send_envelope(

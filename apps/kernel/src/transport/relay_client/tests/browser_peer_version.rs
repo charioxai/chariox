@@ -152,8 +152,9 @@ async fn check() {
         })
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
+    let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [70, 73] {
+        for advertised in [70, current] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +177,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 73 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(73));
+                    if advertised == current {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(current));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -193,7 +194,7 @@ async fn check() {
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 73"));
+                assert!(error.to_string().contains(&format!("requires {current}")));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -201,7 +202,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v73 must bind: {}",
+                    "current peer version must bind: {}",
                     result
                         .as_ref()
                         .err()

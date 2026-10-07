@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import { createHash } from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { constants, createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, statfs, writeFile } from 'node:fs/promises';
 import { totalmem } from 'node:os';
@@ -211,7 +212,7 @@ export async function runCommand(command, environment, plan) {
     const { runMacCommand } = await import('./app-runtime-macos-command.mjs');
     return runMacCommand(command, environment, plan, plan.macSession);
   }
-  const child = spawn(command.program, command.args, { cwd: command.cwd, env: environment, stdio: 'inherit', detached: true });
+  const child = spawnOwned(command.program, command.args, { cwd: command.cwd, env: environment, stdio: 'inherit', detached: true });
   let resourceFailure;
   let checking = false;
   let forceKill;
@@ -221,8 +222,8 @@ export async function runCommand(command, environment, plan) {
     if (finished || resourceFailure) return;
     resourceFailure = reason;
     if (child.pid) {
-      try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-      forceKill = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 3000);
+      try { signalOwnedProcessGroup(child, 'SIGTERM'); } catch {}
+      forceKill = setTimeout(() => { try { signalOwnedProcessGroup(child, 'SIGKILL'); } catch {} }, 3000);
     }
   }
   const interrupted = () => stop(new Error('build interrupted'));
@@ -249,7 +250,7 @@ export async function runCommand(command, environment, plan) {
     finished = true;
     // make/compiler failure or an externally killed leader can leave detached
     // descendants alive. Stop the whole owned group before deleting scratch.
-    if (failed && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    if (failed && child.pid) { try { signalOwnedProcessGroup(child, 'SIGKILL'); } catch {} }
     clearInterval(interval);
     clearTimeout(forceKill);
     process.removeListener('SIGINT', interrupted);

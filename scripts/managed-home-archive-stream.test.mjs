@@ -1,3 +1,4 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
@@ -6,7 +7,21 @@ import { join } from "node:path"
 import { test } from "node:test"
 import { runInNewContext } from "node:vm"
 import { dirname } from "node:path"
-import { capturePrivateHomeArchive, HOME_ARCHIVE_MINIMUM_FREE_BYTES, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, homeArchiveMetadataMatches } from "../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs"
+import { capturePrivateHomeArchive as captureArchive, HOME_ARCHIVE_MINIMUM_FREE_BYTES, HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, homeArchiveMetadataMatches } from "../apps/kernel/slice-linux-docker/managed-home-archive-stream.mjs"
+
+// Keep launch handles for failure cleanup; PID marker files are accounting only.
+const producers = new Set()
+function capturePrivateHomeArchive(options) {
+  return captureArchive({ ...options, spawnProcess: (...args) => {
+    const child = spawnOwned(...args)
+    producers.add(child)
+    child.once('close', () => producers.delete(child))
+    return child
+  } })
+}
+function stopProducers() {
+  for (const child of producers) signalOwnedProcessGroup(child, 'SIGKILL')
+}
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "chariox-private-archive-"))
@@ -21,16 +36,11 @@ async function fixture(t) {
 
 // Mocked clocks must still settle owned producers when an earlier assertion
 // fails, before test state is discarded or the clock is reset.
-function settleMockedCaptureAfterTest(t, observed, isSettled, pause, marker) {
+function settleMockedCaptureAfterTest(t, observed, isSettled, pause) {
   t.after(async () => {
     t.mock.timers.tick(HOME_ARCHIVE_PROGRESS_TIMEOUT_MS + 1)
     await pause(30)
-    if (!isSettled() && marker) {
-      try {
-        const pid = Number(await readFile(marker, "utf8"))
-        if (Number.isSafeInteger(pid) && pid > 0) process.kill(-pid, "SIGKILL")
-      } catch {}
-    }
+    if (!isSettled()) stopProducers()
     await observed
   })
 }
@@ -207,12 +217,12 @@ for (const eof of [false,true]) test(`default archive inactivity policy settles 
   let settled=false,result
   const capture=capturePrivateHomeArchive({command:process.execPath,args:['-e',`const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},String(process.pid));process.stdout.write('private-partial',()=>{${eof?'fs.closeSync(1);':''}setInterval(()=>{},1000)})`],env:{PATH:process.env.PATH},destination:archive,minimumFreeBytes:0})
   const observed=capture.then(value=>{settled=true;result={value}},error=>{settled=true;result={error}})
-  settleMockedCaptureAfterTest(t, observed, () => settled, pause, marker)
+  settleMockedCaptureAfterTest(t, observed, () => settled, pause)
   for(let i=0;i<100;i++){try{await stat(marker);await stat(archive);if((await stat(archive)).size)break}catch{}await pause(10)}
   const pid=Number(await readFile(marker,'utf8'))
   t.mock.timers.tick(300001);await pause(50)
   const settledAtDeadline=settled
-  if(!settled){process.kill(pid,'SIGKILL');await observed}
+  if(!settled){stopProducers();await observed}
   else await observed
   assert.equal(await readFile(prior,'utf8'),'known-good')
   await assert.rejects(stat(archive),{code:'ENOENT'})
@@ -242,7 +252,7 @@ for (const mode of ["startup", "descendant"]) {
       env: { PATH: process.env.PATH }, destination, minimumFreeBytes: 0 })
     const observed = capture.then(value => { settled = true; return { value } },
       error => { settled = true; return { error } })
-    settleMockedCaptureAfterTest(t, observed, () => settled, pause, marker)
+    settleMockedCaptureAfterTest(t, observed, () => settled, pause)
     for (let i = 0; i < 100; i++) {
       try { if (mode === "startup" ? await stat(marker) : (await stat(destination)).size > 0) break } catch {}
       await pause(10)
@@ -251,7 +261,7 @@ for (const mode of ["startup", "descendant"]) {
     t.mock.timers.tick(300_001)
     await pause(50)
     const settledAtDeadline = settled
-    if (!settled) { try { process.kill(-pid, "SIGKILL") } catch {} }
+    if (!settled) stopProducers()
     const result = await observed
     assert.equal(await readFile(prior, "utf8"), "known-good")
     await assert.rejects(stat(destination), { code: "ENOENT" })
@@ -277,7 +287,7 @@ for (const mode of ["startup", "descendant"]) {
 test("failed capture preserves a concurrently replaced archive name", async t => {
   const { root, destination, run } = await fixture(t)
   const moved = join(root, "our-partial")
-  const capture = run("process.stdout.write('private');setInterval(()=>{},1000)", { progressTimeoutMs: 150 })
+  const capture = run("process.stdout.write('private');setInterval(()=>{},1000)", { progressTimeoutMs: 500 })
   const observed = capture.catch(error => error)
   for (let i = 0; i < 100 && (await stat(destination)).size === 0; i++) await new Promise(resolve => setTimeout(resolve, 5))
   const { rename } = await import("node:fs/promises")

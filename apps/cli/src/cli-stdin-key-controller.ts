@@ -12,8 +12,9 @@ export type CliStdinKeypressParser = (
 ) => CliStdinKeyEvent | null
 
 export type CliStdinKeyControllerDeps = {
+  roomWorkflowsOwnsInput?: () => boolean
   parseKeypress: CliStdinKeypressParser
-  kernelApprovalOwnsInput?: () => boolean
+  kernelApprovalOwnsInput?: (event?: CliStdinKeyEvent) => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
@@ -58,7 +59,7 @@ export function createCliStdinKeyController(
       }
       // OpenTUI's global key handler owns this dialog. Do not also dispatch
       // its terminal bytes into focused-agent or workflow shortcuts.
-      if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true
+      if (deps.kernelApprovalOwnsInput?.(event) || isApprovalShortcut(event)) return true
       if (event.eventType !== "release" && deps.dialogOverlayOpen() && event.name === "escape") {
         deps.closeActiveDialogOverlay()
         return true
@@ -92,6 +93,15 @@ export function createCliStdinKeyController(
         }
         return true
       }
+      if (event.ctrl && event.name === "c") {
+        if (deps.hasActiveTurnWork()) {
+          deps.requestPromptStop()
+        } else {
+          deps.requestExit()
+        }
+        return true
+      }
+      if (deps.roomWorkflowsOwnsInput?.()) return true
       if (event.eventType !== "release" && event.ctrl && event.name === "p") {
         if (deps.dialogOverlayOpen()) {
           return true
@@ -114,14 +124,6 @@ export function createCliStdinKeyController(
         return true
       }
       if (event.eventType !== "release" && event.meta && event.name === "c" && deps.copyPromptSelection()) {
-        return true
-      }
-      if (event.ctrl && event.name === "c") {
-        if (deps.hasActiveTurnWork()) {
-          deps.requestPromptStop()
-        } else {
-          deps.requestExit()
-        }
         return true
       }
       if (deps.dialogOverlayOpen()) {

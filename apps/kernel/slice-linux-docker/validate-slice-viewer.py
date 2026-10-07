@@ -9,8 +9,14 @@ import signal
 import socket
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from owned_process_signals import OwnedProcesses
+
+owned_signals = OwnedProcesses()
 
 
 def prepare_runtime(source, root):
@@ -19,11 +25,12 @@ def prepare_runtime(source, root):
         shutil.copy2(source / name, root / name)
 
 
-def crash_chromium(browser_pid):
+def crash_chromium(browser_launch):
+    browser_pid = browser_launch.pid
     # The lifecycle supervisor's argv also contains Chromium and its profile.
     # Kill the browser's separate process group, preserving its owner's receipt.
     assert os.getpgid(browser_pid) == browser_pid, "browser must own its process group"
-    os.killpg(browser_pid, signal.SIGKILL)
+    owned_signals.group(browser_launch, signal.SIGKILL)
 
 
 def main():
@@ -168,7 +175,8 @@ with ViewerAccess():
             assert checkpoint_browser["title"] == marker
             checkpoint_streamer_pid = selkies_status()["pid"]
             browser_pid = chromium_pid()
-            crash_chromium(browser_pid)
+            browser_launch = owned_signals.record(browser_pid, fresh_launch=True)
+            crash_chromium(browser_launch)
             time.sleep(0.5)
             assert "missing=chromium" in screen("status", expected=1)
             assert selkies_status()["pid"] == checkpoint_streamer_pid

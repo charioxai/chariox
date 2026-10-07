@@ -97,7 +97,7 @@ test("a worker refused for low host disk space points at the App log that says h
 test("App automation commands route one event to one workflow and validate arguments", async () => {
   const automation = { automation_id: "reminders", revision: 1, event_name: "todo_due", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: true, status: "active" }
   const result = await executeAppCommand(["automation", "add", "todo", "reminders", "todo_due", "s", "todo-flow", "--scheduled", "--queue", "main"], { send: async sent => {
-    assert.deepEqual(sent, { ConfigureAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 0, event_name: "todo_due", session_id: "s", publication_ref: "todo-flow", queue_ref: "main", scheduled: true } })
+    assert.deepEqual(sent, { ConfigureAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 0, event_name: "todo_due", session_id: "s", publication_ref: "todo-flow", queue_ref: "main", scheduled: true, delivery_mode: "queue" } })
     return { AppAutomation: { installation_id: "todo", automation } }
   } })
   assert.equal(result.ok, true)
@@ -267,3 +267,13 @@ test("App worker start causes distinguish readiness cancellation from deadline",
     }
   }
 })
+
+ test("MP-08 / MP-10 App automation attach supports inject", async () => {
+  let request: Record<string, unknown> | undefined
+  const result = await executeAppCommand(["automation", "add", "app", "sub", "changed", "s", "p", "--delivery", "inject"], { send: async sent => {
+    request = sent
+    return { AppAutomation: { installation_id: "app", automation: { automation_id: "sub", revision: 1, event_name: "changed", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: false, status: "active", delivery_mode: "inject" } } }
+  } })
+  assert.equal(result.ok, true)
+  assert.equal((request?.ConfigureAppAutomation as { delivery_mode: string }).delivery_mode, "inject")
+ })

@@ -3,6 +3,10 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
@@ -76,7 +80,12 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSetupRetried { status: ProjectEnvironmentSetupStatus, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
+    RoomWorkflowRunsControlled {
+        results: Vec<RoomWorkflowRunControlResult>,
+        inventory: crate::runtime::projection::RoomWorkflowInventory,
+    },
     SessionState {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
@@ -169,7 +178,7 @@ pub enum LocalDaemonResponse {
     CloudRelayLoggedOut,
     CloudRelayClientPaired { profile: CloudRelayProfile, },
     CloudRelayMachinePaired { profile: CloudRelayProfile, },
-    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
+    CloudRelayConnected { status: RelayStatus, profile: CloudRelayProfile, },
     CloudRelayClientTokenIssued { profile: CloudRelayProfile, token: CloudRelayRuntimeToken, },
     KernelClientConnectionResolved { connection: KernelClientConnection, },
     CloudSessionInviteCreated { invite: CloudSessionInvite, },
@@ -191,6 +200,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
+    ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
     DisposableWorker { allocation: DisposableWorkerAllocation, },
     DisposableWorkerContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
@@ -284,6 +294,8 @@ pub enum LocalDaemonResponse {
         pairing: PairingJoinRecord,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_token: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kernel_pairing: bool,
     },
     TerminalsListed { terminals: Vec<TerminalRecord>, },
     PairedClientsListed { clients: Vec<PairedClientRecord>, },

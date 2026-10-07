@@ -1,5 +1,6 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from 'node:assert/strict'
-import { spawn, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createReadStream } from 'node:fs'
 import { once } from 'node:events'
@@ -137,7 +138,7 @@ try {
   report.drillSourceHead = (await execute('git', ['rev-parse', 'HEAD'], { cwd: repo })).stdout.trim()
   report.drillSourceDirty = (await execute('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: repo })).stdout.trim().length > 0
   stage = 'kernel-start'
-  kernel = spawn(kernelBinary, [], { cwd: dirs.workspace, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
+  kernel = spawnOwned(kernelBinary, [], { cwd: dirs.workspace, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
     PATH: process.env.PATH, HOME: dirs.home, TMPDIR: dirs.tmp,
     XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state,
     OPENCODE_CONFIG_DIR: path.join(dirs.config, 'opencode'), CHARIOX_OPENCODE_BIN: launchBinary,
@@ -237,8 +238,8 @@ try {
   await client?.close().catch(() => {})
   if (kernel?.pid && kernel.exitCode === null && kernel.signalCode === null) {
     const exited = once(kernel, 'exit')
-    process.kill(-kernel.pid, 'SIGTERM')
-    const force = setTimeout(() => { try { process.kill(-kernel.pid, 'SIGKILL') } catch {} }, 3000)
+    signalOwnedProcessGroup(kernel, 'SIGTERM')
+    const force = setTimeout(() => { try { signalOwnedProcessGroup(kernel, 'SIGKILL') } catch {} }, 3000)
     await exited.finally(() => clearTimeout(force))
   }
   endpoint.closeAllConnections()

@@ -11,6 +11,7 @@ export type PromptInputRefRenderable = {
 
 export function createPromptInputRefController<TInput extends PromptInputRefRenderable>() {
   let input: TInput | undefined
+  let focusAllowed = () => true
 
   function liveInput(): TInput | undefined {
     if (input?.isDestroyed) {
@@ -20,6 +21,7 @@ export function createPromptInputRefController<TInput extends PromptInputRefRend
   }
 
   return {
+    setFocusGuard(allowed: () => boolean) { focusAllowed = allowed },
     assignInput(value: TInput | undefined) {
       input = value
     },
@@ -48,7 +50,7 @@ export function createPromptInputRefController<TInput extends PromptInputRefRend
       }
     },
     focus() {
-      liveInput()?.focus()
+      if (focusAllowed()) liveInput()?.focus()
     },
     blur() {
       liveInput()?.blur()

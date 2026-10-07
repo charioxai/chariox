@@ -68,5 +68,24 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  return providerAccountCapacityLabel(profile, Date.now(), model)
+  return [providerAccountCapacityLabel(profile, Date.now(), model), providerAccountIdentityLabel(profile)]
+    .filter(Boolean).join(" · ")
+}
+
+export function providerAccountIdentityLabel(profile: ProviderAccountProfile): string {
+  const provider = ({ codex: "Codex", claude: "Claude", opencode: "OpenCode" } as Record<string, string>)[providerAccountFamily(profile.provider)] ?? profile.provider
+  return [
+    profile.identity_summary,
+    profile.plan,
+    profile.origin === "default" ? `from this machine's ${provider} login` : null,
+  ].filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.replace(/\s+/gu, " ").trim()).join(" · ")
+}
+
+export function providerAccountLoginHint(profile: ProviderAccountProfile): string | null {
+  return profile.origin === "chariox_created"
+    && (profile.auth_state === "not_configured" || profile.auth_state === "unknown")
+    && !profile.identity_summary?.trim()
+    ? `login not finished · /provider login ${profile.provider} ${profile.label} to continue`
+    : null
 }

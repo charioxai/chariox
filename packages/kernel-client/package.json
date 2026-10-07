@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./relay-auth-renewal": "./dist/relay-auth-renewal.js",
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
@@ -89,7 +90,9 @@
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js",
     "./project-environment-panel": "./dist/project-environment-panel.js",
     "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
-    "./hidden-input": "./dist/hidden-input.js"
+    "./hidden-input": "./dist/hidden-input.js",
+    "./room-workflows-controller": "./dist/room-workflows-controller.js",
+    "./room-workflows": "./dist/room-workflows.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

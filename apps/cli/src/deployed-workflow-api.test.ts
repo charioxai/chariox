@@ -31,7 +31,7 @@ import {
   waitForDeploymentCredentialEnrollment,
 } from "./deployed-workflow-api.js"
 import { deployedWorkflowPackageFixture } from "./deployed-workflow-package.test-support.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("deployed workflow API scopes project and lifecycle requests to the linked account", async () => {
   const originalFetch = globalThis.fetch

@@ -11,6 +11,19 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 #[test]
+fn mp11_kafix_owner_outcomes_preserve_structured_codes_without_retry() {
+    for (code, error) in [
+        ("sudo_refused", DaemonError::KernelSudoRefused),
+        ("kernel_access_refused", DaemonError::KernelAccessRefused),
+        ("owner_request_expired", DaemonError::OwnerRequestExpired),
+    ] {
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+    }
+}
+
+#[test]
 fn credential_vault_locked_uses_a_stable_transport_error_code() {
     let error = DaemonError::LocalTransport {
         operation: "credential_vault_locked",
@@ -112,6 +125,7 @@ fn session_snapshot_frame_redacts_remote_relay_credentials() {
     let frame = KernelOutgoingFrame::Event {
         event_id: 1,
         event: Box::new(KernelEvent::SessionSnapshot {
+            room_workflows: projection.room_workflows,
             session: Box::new(projection.session),
             provider_run: Box::new(None),
             agent_activity: Box::new(projection.agent_activity),
@@ -623,6 +637,10 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         },
     );
     SessionSnapshotProjection {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &session,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         metadata: ProjectionMetadata::new(2, 0),
         session,
         provider_run: None,
@@ -652,6 +670,10 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     workflow_run.set_status(status);
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &session,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         metadata: ProjectionMetadata::new(2, 0),
         session,
         provider_run: None,
@@ -766,7 +788,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 439);
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,
@@ -781,5 +803,28 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
             .set_status(status);
         assert!(workflow_run_updated_events(&current, Some(&previous)).is_empty());
         assert!(workflow_run_updated_events(&current, None).is_empty());
+    }
+}
+
+#[test]
+fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
+    let mut previous = session_snapshot_with_agent();
+    previous
+        .session
+        .create_workflow(crate::session::WorkflowDefinition::new("blank", None));
+    previous.room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&previous.session, "local");
+    assert!(super::room_workflows_changed_event(&previous, None).is_none());
+    assert!(super::room_workflows_changed_event(&previous, Some(&previous)).is_none());
+    let mut current = previous.clone();
+    current.session.remove_workflow("blank");
+    current.room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&current.session, "local");
+    let event = super::room_workflows_changed_event(&current, Some(&previous)).unwrap();
+    assert_eq!(super::event_session_id(&event), Some("session-a"));
+    assert_eq!(super::kernel_event_name(&event), "room_workflows_changed");
+    match event {
+        KernelEvent::RoomWorkflowsChanged { inventory } => assert_eq!(inventory.workflow_count, 0),
+        other => panic!("unexpected event: {other:?}"),
     }
 }

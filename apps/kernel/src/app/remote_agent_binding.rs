@@ -2291,7 +2291,7 @@ mod tests {
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(73),
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());
@@ -2304,6 +2304,9 @@ mod tests {
 
     fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.test".to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),

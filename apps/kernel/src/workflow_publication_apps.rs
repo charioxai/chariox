@@ -47,6 +47,7 @@ pub(crate) fn publication_app_plan(
                     "endpoint_id": automation.endpoint_id,
                     "queue_id": automation.queue_id,
                     "scheduled": automation.scheduled,
+                    "delivery_mode": automation.delivery_mode,
                 })
             })
             .collect::<Vec<_>>();

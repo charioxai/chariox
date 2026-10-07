@@ -1594,6 +1594,9 @@ mod tests {
 
     fn cloud_profile() -> crate::config::PersistedCloudRelayProfile {
         crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.example.test".to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -1660,7 +1663,8 @@ mod tests {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
-        for version in [70, 73] {
+        let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        for version in [70, current] {
             for (slice_id, nonce) in [
                 ("slice-1", "nonce-1"),
                 ("other", "nonce-1"),
@@ -1692,7 +1696,7 @@ mod tests {
                         "slice-1",
                         "nonce-1",
                     ),
-                    version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                    version == current && slice_id == "slice-1" && activation_nonce == "nonce-1"
                 );
             }
         }

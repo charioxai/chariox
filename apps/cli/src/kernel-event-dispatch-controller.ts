@@ -100,7 +100,7 @@ export function createKernelEventDispatchController(
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
       normalizeRuntimeSessionWithAgentActivity({
-        session: event.session as RuntimeSession,
+        session: { ...event.session, room_workflows: event.room_workflows } as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]
           : null,
@@ -157,6 +157,10 @@ export function createKernelEventDispatchController(
         return
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
+        return
+      case "room_workflows_changed":
+        // The room workflow composition subscribes to these itself.
+        deps.recordDaemonActivity("kernel_room_workflows_changed")
         return
       case "passkey_prompts_changed":
         // The passkey popup composition subscribes to these itself.

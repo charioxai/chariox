@@ -43,6 +43,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -78,6 +79,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -253,4 +255,8 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 435;
+/// Version 436 adds opt-in terminal Cloud device-login denial outcomes.
+/// Version 437 adds kernel-emitted, owner-private workflow notifications.
+/// Version 439 also includes Room workflow inventory and captured run controls.
+/// Version 439 adds Cloud-free kernel-owned key-bound terminal admission.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 439;

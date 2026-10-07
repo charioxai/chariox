@@ -2184,8 +2184,8 @@ Workflow trigger and deployment direction:
   `event_action` refuses it for bindings persisted before 364. Older peers,
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
-- protocol 365: direct workflow event bindings are retired. Events reach
-  workflows only through Apps: an App inbox route (protocol 358) receives the
+- protocol 365: direct workflow event bindings are retired. Initially events reached
+  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3120,3 +3120,70 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### Workflow completion notifications — local 437 / relay peer 82 (MP-08 / MP-10 / MP-11)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+Peer 82 adds owner-bound `ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.
+
+### Kernel Cloud ownership, protocol 438
+
+Ordinary Cloud enrollment is kernel-scoped. `CloudRelayProfile` exposes `kernel_id` and `kernel_enrolled`, and omits credentials and human-session fields. `CloudRelayConnected` exposes status/profile, without the kernel relay token. `ResolveKernelClientConnectionRequest.public_key_thumbprint` binds an owner's exact-target terminal grant to the receiving CLI identity. Remote requests must prove the claimed encrypted sender key. Kernel owner checks apply below every client; shared-session membership does not confer directory or enrollment authority. See [kernel ownership auth](KERNEL_OWNERSHIP_AUTH.md) for persistence, migration and acknowledged unlink semantics. The relay peer wire format is unchanged.
+
+
+### Cloud-free terminal pairing, protocol 439
+
+`TerminalPairingLinkJoined.kernel_pairing=true` confirms that this exact kernel admitted the terminal's encryption key. A self-hosted join returns no Cloud relay JWT; the operator token continues to admit relay transport. The encrypted request sender must match the requested SHA-256 key pin. The kernel redeems only a hash of a pairing link it issued, bound to its kernel ID, relay URL, terminal ID and expiry. The same key may retry; a different key cannot consume an already redeemed link. Grants live in kernel-private `terminal-grants.json` (0600), and have no fixed lifetime. The terminal's existing private encryption key is its proof; no Cloud session or refresh credential is involved.
+
+Every self-hosted terminal request, subscription, event emission and replay checks the current kernel grant. Revocation immediately denies new requests and stops forwarding events, including on existing subscriptions. The relay remains transport only and its peer protocol is unchanged. Unpaired transport clients may redeem a kernel-issued terminal link, but may not obtain runtime inventory or subscribe. Cloud terminals retain their existing scoped relay admission path. CLI profiles reuse their private key on restart.
+
+
+Scoped self-hosted relays require separate operator-issued KERNEL and CLIENT transport tokens. A terminal pairing link replaces a scoped kernel transport token with the noncredential marker `operator-client-token-required`. The terminal supplies its CLIENT token with `--relay-token-env`; explicit transport credentials take precedence in either flag order. The kernel-issued key grant provides runtime admission, without giving the terminal a scoped kernel credential or issuer secret.
+
+### Provider account portability preflight, protocol 439 (MP-08 / MP-11)
+
+`PreflightProviderAccountPortability` accepts only `providerAccounts` selection
+metadata. The ordinary kernel owner gate applies to local and relay callers;
+shared-session membership, another realm, and kernel peers cannot use it. The
+kernel checks the selected accounts through the existing provider-native managed
+context exporter and discards the exported bytes. Success is
+`ProviderAccountPortabilityPreflightPassed: {}`. Neither request nor response
+contains credential values or human Cloud authority.
+
+The signed-in terminal runs this preflight on its source kernel before selected
+provider-account creation or reimage spends human Cloud authority, including
+before the reimage STOP. Cloud HTTP still uses the terminal's private, renewable
+client session. Export, transfer, import and launch remain kernel-owned and
+revalidate the actual selected credentials; an acknowledgement is not a durable
+transfer capability. Unsupported kernels fail with the protocol-439 diagnostic
+before Cloud mutation. This addition uses the coordinator-approved unmerged
+439 reservation; the relay wire format is unchanged.
+
+The focused boundary drill is the Rust test
+`provider_account_portability_websocket_drill`: it sends actual terminal
+WebSocket frames through the ordinary router and provider-native export paths
+with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
+local protocol/portability behavior, not live provider login, provisioning or
+fresh-machine MP-10 acceptance.
