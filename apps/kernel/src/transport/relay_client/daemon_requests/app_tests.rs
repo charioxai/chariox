@@ -26,6 +26,7 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
             encrypted,
             &cache,
             &Default::default(),
+            None,
         )
         .await;
         assert!(outcome.encrypted_response.is_none());

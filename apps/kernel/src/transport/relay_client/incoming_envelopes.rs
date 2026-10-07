@@ -11,6 +11,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
     pub event_runtime: &'a Arc<RelayEventRuntime>,
     pub command_result_cache: &'a RelayCommandResultCache,
     pub reconnect_gate: &'a Arc<RelayReconnectGate>,
+    pub local_browser: &'a Arc<LocalBrowserDirect>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +96,7 @@ pub(super) async fn handle_incoming_envelope(
         event_runtime,
         command_result_cache,
         reconnect_gate,
+        local_browser,
     } = context;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
         DaemonError::LocalTransport {
@@ -124,6 +126,7 @@ pub(super) async fn handle_incoming_envelope(
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
             let display_subscriptions = Arc::clone(subscription_tasks);
+            let local_browser = Arc::clone(local_browser);
             tokio::spawn(async move {
                 let display_sender = encrypted_request.sender_public_key.clone();
                 let mut relay_response = handle_daemon_request(
@@ -133,6 +136,7 @@ pub(super) async fn handle_incoming_envelope(
                     encrypted_request,
                     &command_result_cache,
                     &display_subscriptions,
+                    Some(&local_browser),
                 )
                 .await;
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event

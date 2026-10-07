@@ -282,6 +282,54 @@ test("terminal pairing closes bootstrap transport and rejects a legacy unbound t
   assert.equal(closeCount, 1)
 })
 
+test("MP-08 a relay-addressed kernel on this machine is attached through its local endpoint", async () => {
+  const relayClient = fakeClient()
+  let relayClosed = false
+  relayClient.close = async () => { relayClosed = true }
+  const localClient = fakeClient()
+  const targets: unknown[] = []
+  const deps = createDeps({
+    parseArgs: () => cliOptions({ relayUrl: "wss://relay.example", relayToken: "token", targetDaemonId: "home-1" }),
+    createClient: () => relayClient,
+    selectLocalKernelClient: async (target) => {
+      targets.push(target)
+      return {
+        client: localClient,
+        endpoint: "ws://127.0.0.1:43118/kernel",
+        presence: { kernelId: "home-1", machineId: "machine-1", host: "127.0.0.1", port: 43118, heartbeatAtMs: 1 },
+      }
+    },
+    bootstrapAttachedSession: async (client, attachedOptions, _workspace, _worktree, preferences) => {
+      assert.equal(client, localClient)
+      return attachedBootstrap(client, attachedOptions, preferences)
+    },
+  })
+
+  const result = await bootstrapCliRuntime({ argv: [], cwd: "/repo" }, deps)
+
+  assert.equal(result.kind, "ready")
+  assert.equal(result.kernelEndpoint, "ws://127.0.0.1:43118/kernel")
+  assert.equal(relayClosed, true)
+  assert.deepEqual(targets, [{ kernelId: "home-1", kernelAlias: undefined }])
+})
+
+test("MP-08 a relay-addressed kernel elsewhere keeps the relay client", async () => {
+  const relayClient = fakeClient()
+  const deps = createDeps({
+    parseArgs: () => cliOptions({ relayUrl: "wss://relay.example", relayToken: "token", targetDaemonAlias: "home" }),
+    createClient: () => relayClient,
+    bootstrapAttachedSession: async (client, attachedOptions, _workspace, _worktree, preferences) => {
+      assert.equal(client, relayClient)
+      return attachedBootstrap(client, attachedOptions, preferences)
+    },
+  })
+
+  const result = await bootstrapCliRuntime({ argv: [], cwd: "/repo" }, deps)
+
+  assert.equal(result.kind, "ready")
+  assert.equal(result.kernelEndpoint, "wss://relay.example")
+})
+
 test("buildDetachedBootstrap creates a waiting-room bootstrap shell", () => {
   const client = fakeClient()
   const options = cliOptions({ detached: true })
@@ -318,6 +366,7 @@ function createDeps(overrides: Partial<CliRuntimeBootstrapDeps> = {}): CliRuntim
     bootstrapAttachedSession: async (attachedClient, attachedOptions, _workspace, _worktree, preferences) =>
       attachedBootstrap(attachedClient, attachedOptions, preferences),
     maybeResize: async () => {},
+    selectLocalKernelClient: async () => null,
     ...overrides,
   }
 }

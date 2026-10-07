@@ -84,6 +84,11 @@ function defaultActiveKernelRegistryDir(): string {
   if (explicit) {
     return explicit
   }
+  // Mirrors the kernel's config dir: CHARIOX_HOME, then XDG_CONFIG_HOME/chariox, then ~/.chariox.
+  const charioxHome = process.env.CHARIOX_HOME?.trim()
+  if (charioxHome) {
+    return join(charioxHome, "kernels", "active")
+  }
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim()
   return xdgConfigHome
     ? join(xdgConfigHome, "chariox", "kernels", "active")
