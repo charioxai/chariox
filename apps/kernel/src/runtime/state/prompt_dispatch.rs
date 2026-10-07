@@ -660,7 +660,7 @@ impl KernelRuntimeState {
 
     async fn submit_prepared_prompt_authorized(
         &self,
-        prepared: crate::app::KernelPreparedPromptSubmission,
+        mut prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
@@ -672,6 +672,9 @@ impl KernelRuntimeState {
         };
         authorize()?;
         self.owned.require_publication_activation()?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            prepared.allocate_draft_prompt_id(|| self.owned.session_store.reserve_prompt_id());
+        }
         {
             let owned = &self.owned;
             let session = owned.session_store.get_session(&prepared.session_id)?;

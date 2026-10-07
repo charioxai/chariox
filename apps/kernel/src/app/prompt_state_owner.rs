@@ -631,6 +631,34 @@ mod tests {
             panic!()
         };
         assert_eq!(prompt.id(), id);
+        let mut previous = id;
+        for _ in 0..2 {
+            let mut prepared = crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().into(),
+                prompt: PromptQueueItem::new(
+                    "pending-draft:repeated",
+                    attachment.id(),
+                    agent.id(),
+                    "next task",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: false,
+            };
+            prepared.allocate_draft_prompt_id(|| app.sessions.reserve_prompt_id());
+            let allocated = prepared.prompt.id().to_string();
+            prepared.allocate_draft_prompt_id(|| panic!("allocated IDs must stay stable"));
+            assert_ne!(allocated, previous);
+            assert!(!allocated.starts_with("pending-draft:"));
+            let outcome = app
+                .prompt_owner_submit_prepared_prompt(session.id(), prepared.prompt, false)
+                .unwrap();
+            let PromptSubmissionOutcome::Queued { prompt } = outcome else {
+                panic!()
+            };
+            assert_eq!(prompt.id(), allocated);
+            previous = allocated;
+        }
     }
 
     #[test]

@@ -286,6 +286,14 @@ pub(crate) struct KernelPreparedPromptSubmission {
     pub(crate) refresh_projection: bool,
 }
 
+impl KernelPreparedPromptSubmission {
+    pub(crate) fn allocate_draft_prompt_id(&mut self, allocate: impl FnOnce() -> String) {
+        if self.prompt.id().starts_with("pending-draft:") {
+            self.prompt = self.prompt.clone().with_id(allocate());
+        }
+    }
+}
+
 pub(crate) struct KernelPromptAdmission {
     pub(crate) session_id: String,
     pub(crate) attachment_id: String,
@@ -663,10 +671,18 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
-            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(&self.durable_state, self.providers.structured_submit_epoch(), &finished) {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state,
+                self.providers.structured_submit_epoch(),
+                &finished,
+            ) {
                 Ok(true) => continue,
-                Ok(false) => {},
-                Err(_) => { self.providers.schedule_finished_structured_prompt_submit_retry(finished); continue; }
+                Ok(false) => {}
+                Err(_) => {
+                    self.providers
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
             }
             match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
                 &self.durable_state,
