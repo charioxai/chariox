@@ -7,11 +7,16 @@
 //   --from codex:gpt-5.5[:effort][@profile] --to claude:sonnet[:effort][@profile] [--evidence-root DIR]
 //   [--before-switch-cmd CMD] [--after-switch-cmd CMD]  (e.g. restart the kernel at that point)
 //   [--filler-turns N]  ordinary turns between the facts and the switch
+//   [--recall-attachment-bytes N]  attach an N-byte text file to the recall prompt; a
+//     Claude native target carries it as hidden context, next to the handoff
+//   [--queued-follow-up]  submit a second prompt while the recall turn runs; the kernel
+//     log shows the handoff rendered once for the new session
 //   [--keep-session]  leave the drill session for inspection instead of deleting it
 import assert from "node:assert/strict"
 import { execSync } from "node:child_process"
 import { randomInt } from "node:crypto"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -74,6 +79,7 @@ const from = profile(option("from", ""))
 const to = profile(option("to", ""))
 const timeoutMs = Number(option("timeout-ms", "300000"))
 const fillerTurns = Number(option("filler-turns", "0"))
+const recallAttachmentBytes = Number(option("recall-attachment-bytes", "0"))
 const TOPICS = ["tide pools", "bread baking", "lighthouses", "glaciers", "chess openings", "bees", "volcanoes", "paper making", "kites", "river deltas", "telescopes", "salt marshes"]
 const evidenceRoot = path.resolve(option("evidence-root", path.join(process.env.HOME ?? process.cwd(), ".codex/evidence/model-switch-context")))
 if (!kernelUrl || !from.provider || !to.provider) {
@@ -85,6 +91,7 @@ const facts = { codename: `${pick()}-${pick()}`, port: String(20000 + randomInt(
 const evidence = { from, to, facts, started_at_ms: Date.now(), turns: [] }
 const client = new LocalIpcClient(kernelUrl)
 let sessionId = null
+let scratch = null
 try {
   const created = variant(await client.send(createSessionRequest(workspace, workspace, `ctxswitch-${Date.now()}`, {
     provider: from.provider, model: from.model, effort: from.effort, account_profile: from.accountProfile,
@@ -95,13 +102,23 @@ try {
   // The drill does not subscribe to events, so the kernel may reap an idle
   // attachment between turns (or drop it on restart); attach for each prompt.
   const attach = async () => variant(await client.send(attachToSessionRequest(sessionId, `ctxswitch-drill-${process.pid}`)), "SessionAttached").attachment
-  const ask = async (label, prompt) => {
+  const submit = async (label, prompt, files = []) => {
     const marker = `[${label}-${Date.now()}]`
     const attachment = await attach()
-    variant(await client.send(submitPromptRequest(sessionId, attachment.id, agentId, `${marker} ${prompt}`, [])), "PromptSubmitted")
+    variant(await client.send(submitPromptRequest(sessionId, attachment.id, agentId, `${marker} ${prompt}`, files)), "PromptSubmitted")
+    return marker
+  }
+  const ask = async (label, prompt, files = [], followUp = null) => {
+    const marker = await submit(label, prompt, files)
+    const followUpMarker = followUp && await submit(`${label}-follow-up`, followUp)
     const result = await turnOutput(client, sessionId, agentId, marker, timeoutMs)
     evidence.turns.push({ label, prompt, ...result })
     console.log(`${label}: ${result.lifecycle} ${JSON.stringify(result.text.slice(0, 300))}`)
+    if (followUpMarker) {
+      const next = await turnOutput(client, sessionId, agentId, followUpMarker, timeoutMs)
+      evidence.turns.push({ label: `${label}-follow-up`, prompt: followUp, ...next })
+      console.log(`${label}-follow-up: ${next.lifecycle} ${JSON.stringify(next.text.slice(0, 300))}`)
+    }
     return result
   }
 
@@ -125,7 +142,17 @@ try {
   evidence.switched_agent = { provider: switched.provider, model: switched.model, effort: switched.effort, account_profile: switched.account_profile }
   hook("after-switch-cmd")
 
-  const recall = await ask("recall", "Without using any tools, answer from our conversation so far: what is the project codename, the staging deploy port, and my favourite fruit? Reply on one line exactly as codename=<value> port=<value> fruit=<value>, writing UNKNOWN for anything you were not told.")
+  const files = []
+  if (recallAttachmentBytes > 0) {
+    scratch = await mkdtemp(path.join(tmpdir(), "ctxswitch-drill-"))
+    const notes = path.join(scratch, "notes.txt")
+    const line = "Reference notes unrelated to the question; ignore them.\n"
+    await writeFile(notes, line.repeat(Math.ceil(recallAttachmentBytes / line.length)).slice(0, recallAttachmentBytes), "utf8")
+    files.push({ url: `file://${notes}`, mime: "text/plain", filename: "notes.txt" })
+    evidence.recall_attachment_bytes = recallAttachmentBytes
+  }
+  const recall = await ask("recall", "Without using any tools, answer from our conversation so far: what is the project codename, the staging deploy port, and my favourite fruit? Reply on one line exactly as codename=<value> port=<value> fruit=<value>, writing UNKNOWN for anything you were not told.", files,
+    process.argv.includes("--queued-follow-up") ? "Without using tools, reply with just the word DONE." : null)
   evidence.recalled = Object.fromEntries(Object.entries(facts).map(([key, value]) => [key, recall.text.includes(value)]))
   evidence.passed = Object.values(evidence.recalled).every(Boolean)
   assert.ok(evidence.passed, `facts lost after switch: ${JSON.stringify(evidence.recalled)}`)
@@ -139,6 +166,7 @@ try {
     await client.send(deleteSessionRequest(sessionId, workspace)).catch(() => {})
   }
   await client.close().catch(() => {})
+  if (scratch) await rm(scratch, { recursive: true, force: true })
 }
 
 await mkdir(evidenceRoot, { recursive: true })

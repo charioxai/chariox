@@ -196,16 +196,13 @@ impl OperationalHistoryStore {
     ) -> Result<bool, DaemonError> {
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
-        let marker = serde_json::json!({ "provider_session_id": provider_session_id }).to_string();
-        let marker = &marker[1..marker.len() - 1];
         connection
             .query_row(
                 "SELECT EXISTS(
-                    SELECT 1 FROM history_events
-                    WHERE session_id = ?1 AND agent_id = ?2 AND kind = 'provider_output'
-                      AND instr(event_json, ?3) > 0
+                    SELECT 1 FROM history_answered_provider_sessions
+                    WHERE session_id = ?1 AND agent_id = ?2 AND provider_session_id = ?3
                  )",
-                params![session_id, agent_id, marker],
+                params![session_id, agent_id, provider_session_id],
                 |row| row.get::<_, bool>(0),
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {

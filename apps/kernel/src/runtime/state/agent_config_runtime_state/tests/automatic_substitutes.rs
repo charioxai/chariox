@@ -728,9 +728,9 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
     let next_prompt = turn.runtime.owned.prompt_with_pending_context_handoff(
         &turn.session_id,
         &turn.agent_id,
-        "substitute-test",
         &next_run,
         "implement that solution",
+        false,
     );
     assert!(
         next_prompt.contains("Proposed fix: rename parse_all to parse."),

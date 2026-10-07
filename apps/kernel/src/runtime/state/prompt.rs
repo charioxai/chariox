@@ -548,9 +548,9 @@ impl KernelRuntimeOwnedState {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
                 agent_id,
-                &source_attachment_id,
                 &provider_run,
                 started_next.prompt(),
+                false,
             );
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;

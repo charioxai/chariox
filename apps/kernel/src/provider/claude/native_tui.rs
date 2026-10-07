@@ -27,6 +27,15 @@ const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
+/// The bytes one more section can add to `hidden_context`, separator included,
+/// and still fit the chunked hook delivery. Every chunk but the last closes at
+/// least 5,997 bytes in, because a UTF-8 scalar is at most four bytes.
+pub(crate) fn claude_native_hidden_context_room(hidden_context: &str) -> usize {
+    let used = hidden_context.trim().len();
+    (CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3))
+        .saturating_sub(used + if used == 0 { 0 } else { 2 })
+}
+
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
     hidden_context: &str,
@@ -461,7 +470,7 @@ mod tests {
     };
 
     use super::{
-        claude_native_hook_handler, claude_native_tui_args,
+        claude_native_hidden_context_room, claude_native_hook_handler, claude_native_tui_args,
         ensure_claude_native_hidden_context_fits, prepare_claude_native_tui_files,
         CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES, CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
         CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES,
@@ -1105,6 +1114,26 @@ mod tests {
             context,
             "the primary response hook must publish the full context for sibling chunks"
         );
+    }
+
+    #[test]
+    fn hidden_context_room_always_fits_the_chunked_delivery() {
+        let ascii = "x".repeat(20_000);
+        let multibyte = "🦀".repeat(5_000);
+        for base in ["", "x", ascii.as_str(), multibyte.as_str()] {
+            let room = claude_native_hidden_context_room(base);
+            for fill in ["x", "é", "🦀"] {
+                let section = fill.repeat(room / fill.len());
+                let joined = if base.is_empty() {
+                    section
+                } else {
+                    format!("{base}\n\n{section}")
+                };
+                ensure_claude_native_hidden_context_fits("run-room", &joined)
+                    .expect("a section within the room should fit");
+            }
+        }
+        assert_eq!(claude_native_hidden_context_room(&"x".repeat(60_000)), 0);
     }
 
     #[test]

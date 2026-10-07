@@ -3,54 +3,80 @@
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventKind, OperationalHistoryStore};
 
-// Claude receives the handoff as hidden hook context, at most 48 KB together
-// with the turn's other hidden context, so the handoff stays within 24 KB.
-const MAX_HANDOFF_BYTES: usize = 24_000;
+/// The default handoff size. A Claude native turn renders it into the room its
+/// other hidden context leaves under the hook ceiling instead.
+pub(super) const MAX_HANDOFF_BYTES: usize = 24_000;
 const MAX_LATEST_TURN_BYTES: usize = 6_500;
 const MAX_LATEST_ITEM_BYTES: usize = 1_500;
 const MAX_PRIOR_USER_BYTES: usize = 1_000;
 const MAX_PRIOR_ASSISTANT_BYTES: usize = 600;
+const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
+const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
 const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request.";
+const PRIOR_TURNS_HEADER: &str = "Prior turns:\n";
+const LATEST_TURN_HEADER: &str = "Latest turn:\n";
+const TRUNCATED: &str = "\n[truncated]";
 
-pub(super) fn build_agent_context_handoff_from_history(
+/// An agent's protected conversation, rendered on demand within a byte budget.
+#[derive(Debug, Clone, Default)]
+pub(super) struct AgentConversation {
+    turns: Vec<HandoffTurn>,
+}
+
+pub(super) fn load_agent_conversation(
     history_store: &OperationalHistoryStore,
     session_id: &str,
     agent_id: &str,
     protection: &super::super::room_secret_observation::RoomSecretObservations,
-) -> Result<Option<String>, DaemonError> {
+) -> Result<AgentConversation, DaemonError> {
     let events = history_store.load_session_events(session_id, Some(agent_id))?;
     let events = protection.protect_history_events(events);
-    Ok(build_agent_context_handoff(&events))
+    Ok(AgentConversation::from_events(&events))
 }
 
-pub(super) fn build_agent_context_handoff(events: &[HistoryEvent]) -> Option<String> {
-    let mut turns = collect_turns(events);
-    let latest = turns.pop()?;
-    let latest_text = format_latest_turn(&latest);
-    let prior_budget =
-        MAX_HANDOFF_BYTES.saturating_sub(latest_text.len() + HANDOFF_PREAMBLE.len() + 256);
-    let prior_text = format_prior_turns(&turns, prior_budget);
-    if latest_text.trim().is_empty() && prior_text.trim().is_empty() {
-        return None;
+impl AgentConversation {
+    pub(super) fn from_events(events: &[HistoryEvent]) -> Self {
+        Self {
+            turns: collect_turns(events),
+        }
     }
 
-    let mut lines = vec![
-        "<chariox_context_handoff>".to_string(),
-        HANDOFF_PREAMBLE.to_string(),
-        String::new(),
-    ];
-    if !prior_text.trim().is_empty() {
-        lines.push("Prior turns:".to_string());
-        lines.push(prior_text);
-        lines.push(String::new());
+    pub(super) fn is_empty(&self) -> bool {
+        self.turns.is_empty()
     }
-    if !latest_text.trim().is_empty() {
-        lines.push("Latest turn:".to_string());
-        lines.push(latest_text);
-        lines.push(String::new());
+
+    /// The handoff packet in at most `max_bytes`. Prior turns give way first,
+    /// then the latest turn's details; `None` when not even its frame fits.
+    pub(super) fn render(&self, max_bytes: usize) -> Option<String> {
+        let (latest, prior) = self.turns.split_last()?;
+        let mut packet = format!("{HANDOFF_OPEN}\n{HANDOFF_PREAMBLE}\n\n");
+        let mut room = max_bytes.checked_sub(packet.len() + HANDOFF_CLOSE.len())?;
+        let latest_text = format_latest_turn(
+            latest,
+            room.saturating_sub(LATEST_TURN_HEADER.len() + 2)
+                .min(MAX_LATEST_TURN_BYTES),
+        );
+        if !latest_text.is_empty() {
+            room -= LATEST_TURN_HEADER.len() + latest_text.len() + 2;
+        }
+        let prior_text =
+            format_prior_turns(prior, room.saturating_sub(PRIOR_TURNS_HEADER.len() + 2));
+        if latest_text.is_empty() && prior_text.is_empty() {
+            return None;
+        }
+        for (header, text) in [
+            (PRIOR_TURNS_HEADER, prior_text),
+            (LATEST_TURN_HEADER, latest_text),
+        ] {
+            if !text.is_empty() {
+                packet.push_str(header);
+                packet.push_str(&text);
+                packet.push_str("\n\n");
+            }
+        }
+        packet.push_str(HANDOFF_CLOSE);
+        Some(packet)
     }
-    lines.push("</chariox_context_handoff>".to_string());
-    Some(lines.join("\n"))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,56 +144,64 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
 
 /// User prompts carry the requests, facts, and decisions, so every prior turn
 /// keeps its prompt before any keeps its answer; answers fill the rest from the
-/// newest turn back. Turns that do not fit stay reachable through recall.
+/// newest turn back. Turns that do not fit stay reachable through recall. Every
+/// line is charged with its newline, and the omitted-turns line up front.
 fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
+    let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
+        return String::new();
+    };
     let users = turns
         .iter()
-        .map(|turn| single_line(&truncate_bytes(&turn.user_prompt, MAX_PRIOR_USER_BYTES)))
-        .collect::<Vec<_>>();
-    let assistants = turns
-        .iter()
         .map(|turn| {
-            single_line(&truncate_bytes(
-                &turn.assistant_outputs.join("\n"),
-                MAX_PRIOR_ASSISTANT_BYTES,
-            ))
+            format!(
+                "- User: {}",
+                single_line(&truncate_bytes(&turn.user_prompt, MAX_PRIOR_USER_BYTES))
+            )
         })
         .collect::<Vec<_>>();
-    let mut used = 0usize;
+    let answers = turns
+        .iter()
+        .map(|turn| {
+            let answer = single_line(&truncate_bytes(
+                &turn.assistant_outputs.join("\n"),
+                MAX_PRIOR_ASSISTANT_BYTES,
+            ));
+            (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
+        })
+        .collect::<Vec<_>>();
     let mut first = turns.len();
-    while first > 0 && used + users[first - 1].len() + 10 <= budget {
+    while first > 0 && users[first - 1].len() < room {
         first -= 1;
-        used += users[first].len() + 10;
+        room -= users[first].len() + 1;
     }
     let mut answered_from = turns.len();
-    while answered_from > first && used + assistants[answered_from - 1].len() + 16 <= budget {
+    while answered_from > first {
+        let cost = answers[answered_from - 1]
+            .as_ref()
+            .map_or(0, |answer| answer.len() + 1);
+        if cost > room {
+            break;
+        }
         answered_from -= 1;
-        used += assistants[answered_from].len() + 16;
+        room -= cost;
     }
 
     let mut lines = Vec::new();
     if first > 0 {
-        lines.push(format!(
-            "- ({first} earlier turns omitted; find them with the chariox.search_recall tool.)"
-        ));
+        lines.push(omitted_turns_line(first));
     }
-    for index in first..turns.len() {
-        lines.push(format!("- User: {}", users[index]));
-        if index >= answered_from {
-            lines.push(format!(
-                "  Assistant: {}",
-                if assistants[index].is_empty() {
-                    "(no assistant output captured)"
-                } else {
-                    &assistants[index]
-                }
-            ));
-        }
+    for (index, (user, answer)) in users.into_iter().zip(answers).enumerate().skip(first) {
+        lines.push(user);
+        lines.extend(answer.filter(|_| index >= answered_from));
     }
     lines.join("\n")
 }
 
-fn format_latest_turn(turn: &HandoffTurn) -> String {
+fn omitted_turns_line(count: usize) -> String {
+    format!("- ({count} earlier turns omitted; find them with the chariox.search_recall tool.)")
+}
+
+fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "- User: {}",
@@ -187,7 +221,7 @@ fn format_latest_turn(turn: &HandoffTurn) -> String {
             details.trim()
         ));
     }
-    truncate_bytes(&lines.join("\n"), MAX_LATEST_TURN_BYTES)
+    truncate_bytes(&lines.join("\n"), max_bytes)
 }
 
 fn non_empty_content(event: &HistoryEvent) -> Option<String> {
@@ -213,15 +247,18 @@ fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// At most `max_bytes`, marker included.
 fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    let mut end = max_bytes;
+    let Some(mut end) = max_bytes.checked_sub(TRUNCATED.len()) else {
+        return String::new();
+    };
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n[truncated]", &text[..end])
+    format!("{}{TRUNCATED}", &text[..end])
 }
 
 #[cfg(test)]
@@ -241,7 +278,8 @@ mod tests {
             tool_event(6, "session", "agent", "run-1", "latest tool output"),
         ];
 
-        let handoff = build_agent_context_handoff(&events).expect("handoff should be built");
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
 
         assert!(handoff.contains("older prompt"));
         assert!(handoff.contains("older assistant answer"));
@@ -275,7 +313,8 @@ mod tests {
             &format!("important latest prompt {}", "z".repeat(2000)),
         ));
 
-        let handoff = build_agent_context_handoff(&events).expect("handoff should be built");
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
 
         assert!(
             handoff.len() <= MAX_HANDOFF_BYTES,
@@ -317,7 +356,8 @@ mod tests {
         }
         events.push(user_event(100, "session", "agent", "What is the codename?"));
 
-        let handoff = build_agent_context_handoff(&events).expect("handoff should be built");
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
 
         assert!(handoff.contains("amber-kestrel"), "{handoff}");
         assert!(handoff.contains("paragraph 29"));
@@ -333,10 +373,75 @@ mod tests {
             user_event(3, "session", "agent", "latest"),
         ];
 
-        let handoff = build_agent_context_handoff(&events).expect("handoff should be built");
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
 
         assert!(handoff.contains("[truncated]"));
         assert!(handoff.len() <= MAX_HANDOFF_BYTES);
+    }
+
+    fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {
+        AgentConversation::from_events(events).render(max_bytes)
+    }
+
+    #[test]
+    fn handoff_shrinks_to_any_budget_and_keeps_the_latest_request_longest() {
+        let mut events = Vec::new();
+        for index in 0..40u64 {
+            events.push(user_event(
+                index * 2 + 1,
+                "session",
+                "agent",
+                &format!("prior prompt {index} {}", "x".repeat(700)),
+            ));
+            events.push(output_event(
+                index * 2 + 2,
+                "session",
+                "agent",
+                "run-1",
+                &format!("prior answer {index} {}", "y".repeat(700)),
+            ));
+        }
+        events.push(user_event(1_000, "session", "agent", "latest request"));
+        events.push(tool_event(
+            1_001,
+            "session",
+            "agent",
+            "run-1",
+            &"t".repeat(5_000),
+        ));
+
+        for max_bytes in [0, 200, 400, 1_000, 3_000, 8_000, 16_000, MAX_HANDOFF_BYTES] {
+            let handoff = build_agent_context_handoff(&events, max_bytes);
+            let len = handoff.as_ref().map_or(0, String::len);
+            assert!(
+                len <= max_bytes,
+                "{len} bytes for a {max_bytes}-byte budget"
+            );
+            if max_bytes >= 400 {
+                assert!(handoff.unwrap().contains("latest request"), "{max_bytes}");
+            }
+        }
+        let small = build_agent_context_handoff(&events, 8_000).unwrap();
+        assert!(small.contains("prior prompt 39"));
+        assert!(!small.contains("prior prompt 0 "));
+    }
+
+    #[test]
+    fn handoff_budget_is_strict_for_unanswered_turns_and_truncated_text() {
+        let mut events = (0..600u64)
+            .map(|index| user_event(index + 1, "session", "agent", &format!("question {index}")))
+            .collect::<Vec<_>>();
+        events.push(user_event(1_000, "session", "agent", &"z".repeat(10_000)));
+
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
+
+        assert!(
+            handoff.len() <= MAX_HANDOFF_BYTES,
+            "{} bytes",
+            handoff.len()
+        );
     }
 
     fn user_event(sequence: u64, session_id: &str, agent_id: &str, prompt: &str) -> HistoryEvent {
