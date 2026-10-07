@@ -791,3 +791,18 @@ test("the unfinished login continuation command accepts the full account label",
   await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider login claude Work Account --method terminal", value: "login claude Work Account --method terminal" })
   assert.deepEqual(calls, ["claude:unfinished-id:terminal"])
 })
+
+test("MP-08/MP-11 rejected setup token keeps its recovery message visible", async () => {
+  const notices: string[] = []
+  const footers: Array<{ message: string; tone: string }> = []
+  const message = "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Create a new token with `claude setup-token` and store it again."
+  await handleProviderSlashCommand({
+    currentProviderId: () => "claude-headless",
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: message => notices.push(message),
+    readSecret: async () => "synthetic-token",
+    storeProviderSetupToken: async () => { throw new Error(`${message} synthetic-token`) },
+  }, { kind: "provider", raw: "/provider setup-token claude default --replace", value: "setup-token claude default --replace" })
+  assert.deepEqual(notices, [`${message} <redacted>`])
+  assert.equal(footers.at(-1)?.tone, "error")
+})
