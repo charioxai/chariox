@@ -67,37 +67,86 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
-        // A later task may reuse the provider run. Never borrow its answer.
-        let key = format!("prompt:{}", task.prompt_id);
-        let start = entries.iter().position(|e| {
-            e.kind == crate::history::SessionHistoryEntryKind::UserPrompt
-                && e.merge_key.as_deref() == Some(&key)
-        });
-        let excerpt = start
-            .map(|index| {
-                entries
-                    .iter()
-                    .skip(index + 1)
-                    .take_while(|e| {
-                        e.kind != crate::history::SessionHistoryEntryKind::UserPrompt
-                            || e.merge_key.as_deref().is_some_and(|k| {
-                                k.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
-                            })
-                    })
-                    .filter(|e| {
-                        e.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
-                            && e.provider_run_id == task.provider_run_id
-                    })
-                    .map(|e| e.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .chars()
-                    .take(1_024)
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
+        let excerpt =
+            task_public_outputs(&entries, &task.prompt_id, task.provider_run_id.as_deref())
+                .join("\n")
+                .chars()
+                .take(1_024)
+                .collect::<String>();
         let mut answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         crate::secret_redaction::redact_json_secrets(&mut answer);
         Ok(Some(answer))
+    }
+}
+
+// Steering belongs to the current turn; an independent prompt closes its answer boundary.
+pub(super) fn task_public_outputs<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+) -> Vec<&'a str> {
+    use crate::history::SessionHistoryEntryKind as Kind;
+    let key = format!("prompt:{prompt}");
+    let Some(start) = entries
+        .iter()
+        .position(|e| e.kind == Kind::UserPrompt && e.merge_key.as_deref() == Some(&key))
+    else {
+        return vec![];
+    };
+    entries
+        .iter()
+        .skip(start + 1)
+        .take_while(|e| {
+            e.kind != Kind::UserPrompt
+                || e.merge_key.as_deref().is_some_and(|key| {
+                    key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
+                })
+        })
+        .filter(|e| {
+            e.kind == Kind::ProviderOutput && run.is_some() && e.provider_run_id.as_deref() == run
+        })
+        .map(|e| e.text.as_str())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a02_public_answer_survives_steering_without_borrowing_later_tasks() {
+        let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {
+            serde_json::from_value(serde_json::json!({"session_id":"room", "kind":kind,
+                "merge_key":key,"provider_run_id":run,"text":text,"timestamp_ms":1}))
+            .unwrap()
+        };
+        let entries = vec![
+            entry("user_prompt", Some("prompt:current"), None, "task"),
+            entry(
+                "provider_output",
+                None,
+                Some("run"),
+                "answer before steering",
+            ),
+            entry(
+                "user_prompt",
+                Some("steering-prompt:urgent"),
+                None,
+                "urgent",
+            ),
+            entry(
+                "provider_output",
+                None,
+                Some("foreign-run"),
+                "foreign answer",
+            ),
+            entry("user_prompt", Some("prompt:later"), None, "later task"),
+            entry("provider_output", None, Some("run"), "later answer"),
+        ];
+        assert_eq!(
+            task_public_outputs(&entries, "current", Some("run")),
+            vec!["answer before steering"]
+        );
+        assert!(task_public_outputs(&entries, "absent", Some("run")).is_empty());
+        assert!(task_public_outputs(&entries, "current", None).is_empty());
     }
 }

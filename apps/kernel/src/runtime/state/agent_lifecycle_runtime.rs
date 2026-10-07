@@ -55,16 +55,10 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
-        // Only public assistant output after this exact prompt counts as an answer.
-        let has_answer = entries
-            .iter()
-            .rev()
-            .take_while(|e| e.kind != crate::history::SessionHistoryEntryKind::UserPrompt)
-            .any(|e| {
-                e.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
-                    && e.provider_run_id.as_deref() == Some(run)
-                    && !e.text.trim().is_empty()
-            });
+        let has_answer =
+            super::agent_task_projection::task_public_outputs(&entries, prompt.id(), Some(run))
+                .iter()
+                .any(|text| !text.trim().is_empty());
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {
