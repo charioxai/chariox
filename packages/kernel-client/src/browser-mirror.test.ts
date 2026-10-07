@@ -100,9 +100,9 @@ test('MP-08/MP-11: keys following native focus progress use the guarded native i
  const event=(kind:string,extra:Record<string,unknown>)=>{const e=new Event(kind);Object.assign(e,extra);Object.defineProperty(e,'composedPath',{value:()=>[node]});listeners.get(kind)!(e)};
  event('keydown',{key:'Tab'});await renderer.inputChain;
  // The host has captured B at sequence2 but its delayed response has not painted.
- event('keydown',{key:'Backspace'});event('keydown',{key:'ArrowLeft'});event('keydown',{key:'Tab'});event('keydown',{key:'Enter'});
+ event('keydown',{key:'Backspace'});event('keydown',{key:'ArrowLeft'});event('keydown',{key:'Tab',shiftKey:true});event('keydown',{key:'Enter'});
  event('beforeinput',{inputType:'insertText',data:'Q',isComposing:false});await renderer.inputChain;
- assert.deepEqual(actions,[{kind:'key',key:'Tab'},...['Backspace','ArrowLeft','Tab','Enter'].map(key=>({kind:'coordinate',input:{kind:'key',key}})),{kind:'coordinate',input:{kind:'text',text:'Q'}}]);
+ assert.deepEqual(actions,[{kind:'key',key:'Tab'},...['Backspace','ArrowLeft','Shift+Tab','Enter'].map(key=>({kind:'coordinate',input:{kind:'key',key}})),{kind:'coordinate',input:{kind:'text',text:'Q'}}]);
  event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
  assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
 });
