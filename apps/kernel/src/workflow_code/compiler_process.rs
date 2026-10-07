@@ -25,6 +25,11 @@ fn read_output(mut stream: impl Read, maximum: u64) -> std::io::Result<Vec<u8>> 
     Ok(bytes)
 }
 
+/// Like Linux's address-space allowance, sampled memory gets headroom above the
+/// V8 heap cap for Node's resident baseline and native allocations.
+#[cfg(target_os = "macos")]
+const NATIVE_MEMORY_ALLOWANCE: u64 = 256 * 1024 * 1024;
+
 #[cfg(target_os = "macos")]
 fn check_memory(child: &mut Child, maximum: u64) -> Result<(), crate::DaemonError> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v0>::zeroed();
@@ -83,7 +88,12 @@ pub(super) fn run(
         let error_reader = scope.spawn(move || read_output(stderr, 64 * 1024));
         let result = (|| loop {
             #[cfg(target_os = "macos")]
-            check_memory(&mut child, limits.script_memory_bytes)?;
+            check_memory(
+                &mut child,
+                limits
+                    .script_memory_bytes
+                    .saturating_add(NATIVE_MEMORY_ALLOWANCE),
+            )?;
             if let Some(status) = child
                 .try_wait()
                 .map_err(io_error("workflow_code.compile"))?

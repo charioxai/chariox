@@ -1,5 +1,6 @@
 //! macOS compiler boundary. No home, workspace, network, fork or host IPC access.
 use super::*;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::{fs::DirBuilderExt, process::CommandExt};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -64,59 +65,15 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
                 "compiler runtime dependency limit exceeded",
             ));
         }
-        let output = Command::new("/usr/bin/otool")
-            .env_clear()
-            .args(["-L"])
-            .arg(&canonical)
-            .output()
-            .map_err(io_error("workflow_code.compile"))?;
-        if !output.status.success() {
-            return Err(isolation_error(
-                "cannot identify compiler runtime libraries with /usr/bin/otool",
-            ));
-        }
-        let libraries = String::from_utf8_lossy(&output.stdout);
-        let rpaths = if libraries.contains("@rpath/") {
-            let output = Command::new("/usr/bin/otool")
-                .env_clear()
-                .arg("-l")
-                .arg(&canonical)
-                .output()
-                .map_err(io_error("workflow_code.compile"))?;
-            if !output.status.success() {
-                return Err(isolation_error(
-                    "cannot identify compiler runtime search paths",
-                ));
-            }
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    line.trim()
-                        .strip_prefix("path ")
-                        .and_then(|line| line.split_once(" (offset "))
-                        .map(|(name, _)| name.to_string())
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        for (index, line) in libraries.lines().skip(1).enumerate() {
-            let dependency = line
-                .trim()
-                .split(" (compatibility version")
-                .next()
-                .unwrap_or_default();
-            // otool lists a dylib's own install name before its dependencies.
-            if index == 0 && canonical.extension().is_some_and(|ext| ext == "dylib") {
-                continue;
-            }
+        let (libraries, rpaths) = load_commands(&canonical)?;
+        for dependency in libraries {
             let dependency = if let Some(relative) = dependency.strip_prefix("@rpath/") {
                 rpaths.iter().filter_map(|rpath| resolve_library_path(rpath, &path, node).ok())
                     .map(|directory| normalize_path(&directory.join(relative)))
                     .find(|candidate| candidate.is_file())
                     .ok_or_else(|| isolation_error("compiler runtime has an unresolved library search path; use Node with self-contained runtime dependencies"))?
             } else {
-                resolve_library_path(dependency, &path, node)?
+                resolve_library_path(&dependency, &path, node)?
             };
             if !files.contains(&dependency) {
                 pending.push(dependency);
@@ -124,6 +81,103 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
         }
     }
     Ok(files)
+}
+
+const LC_REQ_DYLD: u32 = 0x8000_0000;
+const LC_RPATH: u32 = 0x1c | LC_REQ_DYLD;
+// LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LAZY_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB.
+const LC_LOAD_DYLIBS: [u32; 5] = [
+    0xc,
+    0x18 | LC_REQ_DYLD,
+    0x1f | LC_REQ_DYLD,
+    0x20,
+    0x23 | LC_REQ_DYLD,
+];
+
+fn word(bytes: &[u8], at: usize, big_endian: bool) -> Option<u32> {
+    let bytes = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
+    Some(if big_endian {
+        u32::from_be_bytes(bytes)
+    } else {
+        u32::from_le_bytes(bytes)
+    })
+}
+
+/// Linked library and search-path names of every architecture slice, read from
+/// the Mach-O load commands so compilation needs no developer tools.
+fn load_commands(path: &Path) -> Result<(Vec<String>, Vec<String>), crate::DaemonError> {
+    let invalid = || isolation_error("compiler runtime is not a supported Mach-O binary");
+    let mut file = fs::File::open(path).map_err(io_error("workflow_code.compile"))?;
+    let mut read = |offset: u64, length: usize| {
+        let mut bytes = vec![0; length];
+        file.seek(SeekFrom::Start(offset))
+            .and_then(|_| file.read_exact(&mut bytes))
+            .map(|_| bytes)
+            .map_err(|_| invalid())
+    };
+    let header = read(0, 8)?;
+    let slices = match word(&header, 0, true) {
+        // Universal binaries: FAT_MAGIC and FAT_MAGIC_64 headers are big-endian.
+        Some(magic @ (0xcafe_babe | 0xcafe_babf)) => {
+            let count = word(&header, 4, true).ok_or_else(invalid)? as usize;
+            let size = if magic == 0xcafe_babf { 32 } else { 20 };
+            if count == 0 || count > 16 {
+                return Err(invalid());
+            }
+            let table = read(8, count * size)?;
+            table
+                .chunks(size)
+                .map(|entry| match size {
+                    32 => Some(
+                        u64::from(word(entry, 8, true)?) << 32 | u64::from(word(entry, 12, true)?),
+                    ),
+                    _ => word(entry, 8, true).map(u64::from),
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(invalid)?
+        }
+        _ => vec![0],
+    };
+    let (mut libraries, mut rpaths) = (Vec::new(), Vec::new());
+    for offset in slices {
+        let header = read(offset, 32)?;
+        // MH_MAGIC_64; arm64 and x86_64 runtimes are little-endian.
+        if word(&header, 0, false) != Some(0xfeed_facf) {
+            return Err(invalid());
+        }
+        let count = word(&header, 16, false).ok_or_else(invalid)?;
+        let size = word(&header, 20, false).ok_or_else(invalid)? as usize;
+        if size > 1024 * 1024 {
+            return Err(invalid());
+        }
+        let commands = read(offset + 32, size)?;
+        let mut at = 0;
+        for _ in 0..count {
+            let command = word(&commands, at, false).ok_or_else(invalid)?;
+            let length = word(&commands, at + 4, false).ok_or_else(invalid)? as usize;
+            let body = commands
+                .get(at..at + length)
+                .filter(|_| length >= 8)
+                .ok_or_else(invalid)?;
+            let names = if LC_LOAD_DYLIBS.contains(&command) {
+                &mut libraries
+            } else if command == LC_RPATH {
+                &mut rpaths
+            } else {
+                at += length;
+                continue;
+            };
+            // Both commands store their name as an lc_str offset after the header.
+            let name = word(body, 8, false)
+                .and_then(|start| body.get(start as usize..))
+                .and_then(|name| name.split(|byte| *byte == 0).next())
+                .and_then(|name| std::str::from_utf8(name).ok())
+                .ok_or_else(invalid)?;
+            names.push(name.to_string());
+            at += length;
+        }
+    }
+    Ok((libraries, rpaths))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -271,16 +325,75 @@ mod tests {
     }
 
     #[test]
-    fn macos_compiler_memory_monitor_refuses_low_budget() {
+    fn macos_compiler_memory_monitor_allows_node_baseline_above_heap_budget() {
+        // Node's resident baseline alone exceeds a minimal V8 heap budget.
         let limits = WorkflowCodeLimitsConfig {
-            script_memory_bytes: 4096,
+            script_memory_bytes: 16 * 1024 * 1024,
             ..WorkflowCodeLimitsConfig::default()
         };
-        let result = compile_workflow_code_javascript(
+        compile_workflow_code_javascript(
             "/ignored",
-            "workflow.define({alias: 'memory-limit'});",
+            "workflow.define({alias: 'memory-headroom'});",
             &limits,
-        );
-        assert!(result.unwrap_err().to_string().contains("memory limit"));
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn macos_runtime_libraries_are_read_from_mach_o_load_commands() {
+        fn command(kind: u32, name: &str) -> Vec<u8> {
+            let offset = if kind == LC_RPATH { 12 } else { 24 };
+            let mut bytes = [kind, 0, offset].map(u32::to_le_bytes).concat();
+            bytes.resize(offset as usize, 0);
+            bytes.extend(name.as_bytes());
+            bytes.resize((bytes.len() + 8) & !7, 0);
+            let length = bytes.len() as u32;
+            bytes[4..8].copy_from_slice(&length.to_le_bytes());
+            bytes
+        }
+        let commands = [
+            command(0xd, "@rpath/libself.dylib"),
+            command(0xc, "/usr/lib/libSystem.B.dylib"),
+            command(0x18 | LC_REQ_DYLD, "@loader_path/libweak.dylib"),
+            command(LC_RPATH, "@loader_path/../lib"),
+        ]
+        .concat();
+        let mut thin = [
+            0xfeed_facf,
+            0x0100_000c,
+            0,
+            6,
+            4,
+            commands.len() as u32,
+            0,
+            0,
+        ]
+        .map(u32::to_le_bytes)
+        .concat();
+        thin.extend(&commands);
+        let mut fat = [0xcafe_babe, 1, 0x0100_000c, 0, 4096, thin.len() as u32, 12]
+            .map(u32::to_be_bytes)
+            .concat();
+        fat.resize(4096, 0);
+        fat.extend(&thin);
+
+        let directory = Scratch::new().unwrap();
+        for (name, bytes) in [("thin", &thin), ("fat", &fat)] {
+            let path = directory.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            let (libraries, rpaths) = load_commands(&path).unwrap();
+            assert_eq!(
+                libraries,
+                ["/usr/lib/libSystem.B.dylib", "@loader_path/libweak.dylib"]
+            );
+            assert_eq!(rpaths, ["@loader_path/../lib"]);
+        }
+        let truncated = directory.0.join("truncated");
+        fs::write(&truncated, &thin[..thin.len() - 8]).unwrap();
+        assert!(load_commands(&truncated).is_err());
+
+        let node = fs::canonicalize(discover_workflow_code_node_path().unwrap()).unwrap();
+        let files = runtime_files(&node).unwrap();
+        assert!(files.contains(Path::new("/usr/lib/libSystem.B.dylib")));
     }
 }
