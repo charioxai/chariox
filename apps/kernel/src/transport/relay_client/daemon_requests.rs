@@ -23,8 +23,8 @@ use crate::transport::relay_crypto;
 
 use super::request_errors::{relay_error, relay_request_kind};
 use super::sender_identity::{
-    is_browser_import_request, require_browser_import_sender, validate_bound_service_sender,
-    validate_browser_import_sender,
+    is_browser_import_request, require_bound_client_sender, require_browser_import_sender,
+    validate_bound_service_sender, validate_browser_import_sender,
 };
 
 pub(super) const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
@@ -50,6 +50,7 @@ pub(super) async fn handle_daemon_request(
     caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
     command_result_cache: &Arc<CommandResultCache>,
+    local_browser: Option<&Arc<super::LocalBrowserDirect>>,
 ) -> RelayRequestOutcome {
     if relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
@@ -210,6 +211,36 @@ pub(super) async fn handle_daemon_request(
                     ))
                 });
             ("browser_import_delivery", Some(command_id), true, result)
+        }
+        ParsedRelayClientMessage::LocalBrowserConnect(LocalBrowserConnectRequest {}) => {
+            let identity = match require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local browser connect",
+            ) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            // Only the relay carrier mints grants: a direct session cannot
+            // extend itself beyond the relay-verified identity that admitted it.
+            let result = match local_browser {
+                Some(local_browser) => local_browser.issue_grant(identity).await,
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local browser connect is only issued over the relay",
+                    false,
+                )),
+            };
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => RelayDispatchOutcome::RelayError(error),
+            };
+            ("local_browser_connect", None, false, result)
         }
     };
     let quiet_success_request =
@@ -394,6 +425,19 @@ mod cli_relay_sender_tests {
 enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
+    LocalBrowserConnect(LocalBrowserConnectRequest),
+}
+
+/// Protocol 456: `{"local_browser_connect":{}}`, encrypted with the browser key
+/// bound into the caller's relay identity.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserConnectRequest {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserConnectEnvelope {
+    local_browser_connect: LocalBrowserConnectRequest,
 }
 
 #[derive(Debug)]
@@ -420,6 +464,11 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
     if let Ok(envelope) = serde_json::from_slice::<BrowserImportDeliveryEnvelope>(bytes) {
         return Ok(ParsedRelayClientMessage::BrowserImportDelivery(
             envelope.browser_import_delivery,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalBrowserConnectEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalBrowserConnect(
+            envelope.local_browser_connect,
         ));
     }
     if let Ok(envelope) = serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {

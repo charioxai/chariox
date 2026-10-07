@@ -647,6 +647,13 @@ async fn run_daemon_relay_connector_inner(
             }
         };
     let command_sequence = Arc::new(AtomicU64::new(1));
+    let local_browser = LocalBrowserDirect::new(
+        Arc::clone(&router),
+        Arc::clone(&command_sequence),
+        Arc::clone(&event_runtime),
+        Arc::clone(&command_result_cache),
+        shutdown.clone(),
+    );
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
 
@@ -1065,6 +1072,7 @@ async fn run_daemon_relay_connector_inner(
                                             event_runtime: &event_runtime,
                                             command_result_cache: &command_result_cache,
                                             reconnect_gate: &reconnect_gate,
+                                            local_browser: &local_browser,
                                         },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),

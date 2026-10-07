@@ -43,6 +43,7 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
@@ -62,6 +63,7 @@ use envelope_io::{
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
+use local_browser::LocalBrowserDirect;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
