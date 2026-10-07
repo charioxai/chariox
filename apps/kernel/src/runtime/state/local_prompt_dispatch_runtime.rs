@@ -3591,12 +3591,27 @@ impl KernelRuntimeState {
         );
         if owned.config_projection.snapshot().room_agent_tools {
             if !dispatch.steering {
-                owned.durable_state_store.agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
-                    owner: owned.session_store.get_session(&dispatch.session_id)?.owner_user_id().into(),
-                    room: dispatch.session_id.clone(), agent: dispatch.agent_id.clone(), prompt: dispatch.prompt_id.clone(), run: Some(dispatch.provider_run_id.clone()), now: crate::session::unix_epoch_ms(),
-                })?;
+                owned.durable_state_store.agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::Begin {
+                        owner: owned
+                            .session_store
+                            .get_session(&dispatch.session_id)?
+                            .owner_user_id()
+                            .into(),
+                        room: dispatch.session_id.clone(),
+                        agent: dispatch.agent_id.clone(),
+                        prompt: dispatch.prompt_id.clone(),
+                        run: Some(dispatch.provider_run_id.clone()),
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?;
             }
-            if let Some(task) = owned.durable_state_store.agent_tasks(Some(&dispatch.session_id),Some(&dispatch.agent_id))?.into_iter().find(|t|t.prompt_id==dispatch.prompt_id) {
+            if let Some(task) = owned
+                .durable_state_store
+                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
+                .into_iter()
+                .find(|t| t.prompt_id == dispatch.prompt_id)
+            {
                 hidden_system_context = join_hidden_context(&hidden_system_context, &format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id, dispatch.prompt_id));
             }
         }

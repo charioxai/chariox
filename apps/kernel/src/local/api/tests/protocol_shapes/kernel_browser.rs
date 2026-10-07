@@ -148,7 +148,11 @@ fn kernel_browser_display_protocol_447_shapes_and_hash() {
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
-            codecs: vec!["avc1.420033".into(), "png".into(), "chariox-stripes-v1".into()],
+            codecs: vec![
+                "avc1.420033".into(),
+                "png".into(),
+                "chariox-stripes-v1".into(),
+            ],
             bitrate: 2_000_000,
             device_scale_factor: 2,
         },

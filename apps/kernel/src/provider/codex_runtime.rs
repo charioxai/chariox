@@ -12,8 +12,8 @@ mod turn;
 mod utility;
 
 pub use drain::drain_codex_events;
-pub use lifecycle::initialize_codex_runtime;
 pub use interrupt::abort_codex_turn;
+pub use lifecycle::initialize_codex_runtime;
 pub use prompt::submit_codex_prompt;
 pub use state::{
     CodexAssistantCompletion, CodexOutputChunk, CodexPollResult, CodexRuntimeBinding,

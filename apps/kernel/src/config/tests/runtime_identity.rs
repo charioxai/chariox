@@ -416,7 +416,10 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
     let _ = fs::remove_dir_all(&temp_home);
 
     assert_eq!(config.user_config_path, temp_home.join("config.toml"));
-    assert_eq!(vault_path, temp_home.join("vault/vault.json").display().to_string());
+    assert_eq!(
+        vault_path,
+        temp_home.join("vault/vault.json").display().to_string()
+    );
     assert_eq!(
         durable_state_path,
         temp_home.join("state").join("kernel.db")

@@ -243,4 +243,4 @@ mod room_tool_names;
 pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};
 
 mod agent_events;
-pub(crate) use agent_events::{canonical_agent_event_tool_name, agent_event_tool_specs};
+pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};

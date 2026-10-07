@@ -70,12 +70,19 @@ fn mp08_interrupt_backlogged_command_output_sends_before_timeout() {
                     .unwrap();
             }
             let clean = socket.read().ok().and_then(|message| {
-                message.into_text().ok().and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                message
+                    .into_text()
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             });
             if let Some(clean) = clean.as_ref() {
                 assert_eq!(clean["method"], "thread/backgroundTerminals/clean");
                 assert_eq!(clean["params"], json!({"threadId":"thread"}));
-                socket.send(Message::Text(json!({"id":clean["id"],"result":{}}).to_string().into())).unwrap();
+                socket
+                    .send(Message::Text(
+                        json!({"id":clean["id"],"result":{}}).to_string().into(),
+                    ))
+                    .unwrap();
             }
             (request.is_some(), elapsed, sent, clean.is_some())
         });
@@ -116,7 +123,10 @@ fn mp08_interrupt_backlogged_command_output_sends_before_timeout() {
                 "MP-08 large-frame fixture must have backlogged output"
             );
         }
-        assert!(cleaned, "MP-08 interrupt ACK must be followed by provider-owned terminal cleanup");
+        assert!(
+            cleaned,
+            "MP-08 interrupt ACK must be followed by provider-owned terminal cleanup"
+        );
         result.unwrap();
         assert!(state.active_turn_id.is_none());
     }
