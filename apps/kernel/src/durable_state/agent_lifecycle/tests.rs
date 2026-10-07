@@ -761,3 +761,44 @@ fn a02_default_message_does_not_replace_an_independent_wait() {
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(f.task().no_progress_wakes, 0);
 }
+
+#[test]
+fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
+    let f = Fixture::new();
+    for (prompt, id) in [("p", "first"), ("second", "second")] {
+        f.begin(prompt);
+        f.apply(Operation::Subscribe {
+            task: prompt.into(),
+            prompt: prompt.into(),
+            registration: Registration {
+                id: id.into(),
+                task_id: prompt.into(),
+                source_id: "peer".into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+            },
+        });
+    }
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "peer".into(),
+        occurrence: "one-result".into(),
+        success: true,
+        now: 2,
+    });
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(
+        inbox[0].payload["task_ids"],
+        serde_json::json!(["p", "second"])
+    );
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "peer".into(),
+        occurrence: "one-result".into(),
+        success: true,
+        now: 3,
+    });
+    assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
+}

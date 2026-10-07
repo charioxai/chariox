@@ -76,10 +76,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     && t.agent_id == agent
                     && t.state == ExecutionState::Waiting
                     && e.kind != "message"
-                    && e.payload
-                        .get("task_id")
-                        .and_then(serde_json::Value::as_str)
-                        .is_none_or(|id| id == t.task_id)
+                    && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
+                        == Some(t.task_id.as_str())
+                        || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                        }))
                 {
                     t.no_progress_wakes += 1;
                     if t.no_progress_wakes > NO_PROGRESS_LIMIT {
@@ -190,7 +191,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }
                     }
                     // Handling an actual resource outcome is progress; a receipt ACK alone is not.
-                    if changed || e.kind == "source_completed" {
+                    if changed
+                        || e.kind == "source_completed"
+                        || (e.kind == "source_lost"
+                            && e.payload["success"].as_bool() == Some(false))
+                    {
                         t.no_progress_wakes = 0;
                         t.progress_sequence += 1;
                         t.last_progress_at_ms = now;

@@ -450,7 +450,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
                         if dead || w.deadline_ms <= now || now < w.started_at_ms || clock_rollback {
                             let kind = if dead {
-                                "source_lost"
+                                "wait_recheck"
                             } else {
                                 "deadline_reached"
                             };

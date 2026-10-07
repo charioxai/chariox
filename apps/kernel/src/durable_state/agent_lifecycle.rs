@@ -532,7 +532,33 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     crate::secret_redaction::redact_json_secrets(&mut e.payload);
     let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
-        let p: InboxEvent = decode(&previous)?;
+        let mut p: InboxEvent = decode(&previous)?;
+        if matches!(e.kind.as_str(), "source_completed" | "source_lost") && p.kind == e.kind {
+            let mut left = p.payload.clone();
+            let mut right = e.payload.clone();
+            if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object_mut()) {
+                left.remove("task_id");
+                left.remove("task_ids");
+                right.remove("task_id");
+                right.remove("task_ids");
+            }
+            if left == right {
+                let mut ids = std::collections::BTreeSet::new();
+                for value in [&p.payload, &e.payload] {
+                    if let Some(id) = value["task_id"].as_str() {
+                        ids.insert(id.to_owned());
+                    }
+                    if let Some(existing) = value["task_ids"].as_array() {
+                        for id in existing.iter().filter_map(|v| v.as_str()) {
+                            ids.insert(id.to_owned());
+                        }
+                    }
+                }
+                p.payload["task_ids"] = serde_json::json!(ids);
+                save_event(tx, &p)?;
+                return Ok(p);
+            }
+        }
         if p.payload != e.payload
             || p.kind != e.kind
             || p.urgent != e.urgent
