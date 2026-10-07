@@ -318,9 +318,10 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
 }
 
 #[tokio::test]
-async fn public_history_assembled_answers_scrub_secrets_across_delta_boundaries() {
-    // MP-08 / MP-10 / MP-11: each retained delta is safe individually, but
-    // joining it must not reveal a protected value through read or turn.
+async fn public_history_protected_room_withholds_fragmented_answers() {
+    // MP-08 / MP-10 / MP-11: protected Rooms withhold provider streams even
+    // when each delta lacks a complete secret. Assembly must not recover raw
+    // fragments through read or turn.
     let _environment = crate::env_lock::lock();
     let root = TestRoot::new();
     let _home = IsolatedHome::new(root.path());
@@ -375,8 +376,8 @@ async fn public_history_assembled_answers_scrub_secrets_across_delta_boundaries(
         .read_room_history(&session, &actor, first.event_id, None)
         .await
         .unwrap();
-    assert!(read.ok);
-    assert_eq!(read.payload["event"]["text"], "prefix [redacted] suffix");
+    assert!(!read.ok);
+    assert_eq!(read.payload["error"], "Public history reference is unavailable");
     let turn = room
         .runtime
         .room_public_turn(
@@ -388,6 +389,5 @@ async fn public_history_assembled_answers_scrub_secrets_across_delta_boundaries(
         .unwrap();
     assert!(turn.ok);
     let events = turn.payload["events"].as_array().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["text"], "prefix [redacted] suffix");
+    assert!(events.is_empty());
 }
