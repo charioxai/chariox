@@ -212,6 +212,26 @@ pub(super) async fn handle_daemon_request(
                 });
             ("browser_import_delivery", Some(command_id), true, result)
         }
+        ParsedRelayClientMessage::LocalBrowserRenew(request) => {
+            let result = require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local browser lease renewal",
+            )
+            .and_then(|identity| match local_browser {
+                Some(direct) => direct.renew_lease(identity, &request.grant, request.sequence),
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local browser lease renewal requires the relay",
+                    false,
+                )),
+            });
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => RelayDispatchOutcome::RelayError(error),
+            };
+            ("local_browser_renew", None, false, result)
+        }
         ParsedRelayClientMessage::LocalBrowserConnect(LocalBrowserConnectRequest {}) => {
             let identity = match require_bound_client_sender(
                 caller_identity.as_ref(),
@@ -426,6 +446,21 @@ enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
     LocalBrowserConnect(LocalBrowserConnectRequest),
+    LocalBrowserRenew(LocalBrowserRenewRequest),
+}
+
+/// Protocol 464: encrypted renewal handle and one-use sequence, relay only.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserRenewRequest {
+    grant: String,
+    sequence: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserRenewEnvelope {
+    local_browser_renew: LocalBrowserRenewRequest,
 }
 
 /// Protocol 456: `{"local_browser_connect":{}}`, encrypted with the browser key
@@ -464,6 +499,11 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
     if let Ok(envelope) = serde_json::from_slice::<BrowserImportDeliveryEnvelope>(bytes) {
         return Ok(ParsedRelayClientMessage::BrowserImportDelivery(
             envelope.browser_import_delivery,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalBrowserRenewEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalBrowserRenew(
+            envelope.local_browser_renew,
         ));
     }
     if let Ok(envelope) = serde_json::from_slice::<LocalBrowserConnectEnvelope>(bytes) {

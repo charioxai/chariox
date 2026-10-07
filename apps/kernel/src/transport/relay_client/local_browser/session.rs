@@ -3,6 +3,7 @@
 use tokio::task::JoinSet;
 
 use super::admission::LocalBrowserSocket;
+use super::leases::LocalBrowserLeaseState;
 use super::*;
 use crate::runtime_transport::CONNECTION_INBOUND_REQUEST_LIMIT;
 
@@ -15,7 +16,9 @@ pub(super) async fn run(
     socket: LocalBrowserSocket,
     grant: LocalBrowserGrant,
 ) {
-    let identity = grant.identity;
+    let mut identity = grant.identity.clone();
+    let lease_id = grant.lease_id.clone();
+    let mut lease = direct.activate_lease(&lease_id, &grant);
     let (outgoing_tx, mut priority_rx, mut event_rx) =
         RelayOutgoingSender::channel(SESSION_QUEUE_LIMIT);
     let subscription_tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
@@ -23,7 +26,7 @@ pub(super) async fn run(
     let (mut writer, mut reader) = socket.split();
     let mut shutdown = direct.shutdown.clone();
     let mut authority = direct.authority.subscribe();
-    let expiry_ms = identity
+    let expiry_ms = grant
         .expires_at_ms
         .saturating_sub(crate::session::unix_epoch_ms());
     let expiry = sleep(Duration::from_millis(expiry_ms));
@@ -39,7 +42,20 @@ pub(super) async fn run(
     let close_reason = loop {
         tokio::select! {
             _ = shutdown.changed() => break "daemon shutting down",
-            _ = &mut expiry => break "relay token expired",
+            _ = &mut expiry => {
+                if lease.borrow().expires_at_ms > crate::session::unix_epoch_ms() {
+                    expiry.as_mut().reset(tokio::time::Instant::now() + lease_remaining(&lease));
+                    continue;
+                }
+                break if identity.expires_at_ms <= crate::session::unix_epoch_ms() { "relay token expired" } else { "local browser lease expired" };
+            },
+            changed = lease.changed() => {
+                if changed.is_err() { break "local browser lease retired"; }
+                let renewed = lease.borrow().clone();
+                identity = renewed.identity;
+                let remaining_ms = renewed.expires_at_ms.saturating_sub(crate::session::unix_epoch_ms());
+                expiry.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(remaining_ms));
+            },
             changed = authority.changed() => {
                 if changed.is_err() || authority.borrow().as_ref() != Some(&grant.authority) {
                     break "local browser authority revoked";
@@ -49,17 +65,17 @@ pub(super) async fn run(
                 if last_read.elapsed() >= IDLE_TIMEOUT {
                     break "local browser connection idle timeout";
                 }
-                if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                if guarded_io(&lease, &mut authority, &mut shutdown, writer.send(Message::Ping(Vec::new().into()))).await.map_or(true, |result| result.is_err()) {
                     break "local browser connection closed";
                 }
             }
             Some(envelope) = priority_rx.recv() => {
-                if !write_client_frame(&mut writer, envelope).await {
+                if !guarded_io(&lease, &mut authority, &mut shutdown, write_client_frame(&mut writer, envelope)).await.unwrap_or(false) {
                     break "local browser connection closed";
                 }
             }
             Some(envelope) = event_rx.recv() => {
-                if !write_client_frame(&mut writer, envelope).await {
+                if !guarded_io(&lease, &mut authority, &mut shutdown, write_client_frame(&mut writer, envelope)).await.unwrap_or(false) {
                     break "local browser connection closed";
                 }
             }
@@ -72,35 +88,64 @@ pub(super) async fn run(
                     _ => break "local browser connection closed",
                 };
                 let still_admitted = direct.authority.borrow().as_ref() == Some(&grant.authority)
-                    && identity.expires_at_ms > crate::session::unix_epoch_ms();
+                    && lease.borrow().expires_at_ms > crate::session::unix_epoch_ms();
                 if !still_admitted {
                     break "local browser authority revoked";
                 }
-                if let Err(reason) = handle_client_frame(
+                identity = lease.borrow().identity.clone();
+                match guarded_io(&lease, &mut authority, &mut shutdown, handle_client_frame(
                     &direct,
                     &identity,
                     &outgoing_tx,
                     &subscription_tasks,
                     &mut requests,
                     &payload,
-                )
-                .await
+                )).await
                 {
-                    break reason;
+                    Some(Ok(())) => {},
+                    Some(Err(reason)) => break reason,
+                    None => break "local browser authority revoked",
                 }
             }
         }
     };
+    direct.retire_lease(&lease_id);
     requests.abort_all();
     abort_subscription_tasks(&direct.router, &subscription_tasks).await;
     let close = serde_json::json!({"kind": "close", "reason": close_reason}).to_string();
-    let _ = writer.send(Message::Text(close.into())).await;
-    let _ = writer.close().await;
+    let _ = timeout(
+        Duration::from_secs(1),
+        writer.send(Message::Text(close.into())),
+    )
+    .await;
+    let _ = timeout(Duration::from_secs(1), writer.close()).await;
     crate::logging::info_with_fields(
         "daemon.local_browser",
         "local browser session closed",
         serde_json::json!({"subject": identity.subject, "reason": close_reason}),
     );
+}
+
+async fn guarded_io<F: std::future::Future>(
+    lease: &watch::Receiver<LocalBrowserLeaseState>,
+    authority: &mut watch::Receiver<Option<LocalBrowserAuthority>>,
+    shutdown: &mut watch::Receiver<bool>,
+    io: F,
+) -> Option<F::Output> {
+    tokio::select! {
+        result = timeout(lease_remaining(lease), io) => result.ok(),
+        _ = authority.changed() => None,
+        _ = shutdown.changed() => None,
+    }
+}
+
+fn lease_remaining(lease: &watch::Receiver<LocalBrowserLeaseState>) -> Duration {
+    Duration::from_millis(
+        lease
+            .borrow()
+            .expires_at_ms
+            .saturating_sub(crate::session::unix_epoch_ms()),
+    )
 }
 
 async fn handle_client_frame(

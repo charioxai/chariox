@@ -20,6 +20,7 @@ use super::request_errors::relay_error;
 use super::*;
 
 mod admission;
+mod leases;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -42,6 +43,7 @@ struct LocalBrowserAuthority {
 
 #[derive(Debug, Clone)]
 struct LocalBrowserGrant {
+    lease_id: String,
     identity: RelayCallerIdentity,
     thumbprint: String,
     authority: LocalBrowserAuthority,
@@ -64,6 +66,7 @@ pub(crate) struct LocalBrowserDirect {
     endpoint: Mutex<Option<LocalBrowserEndpoint>>,
     bound: mpsc::UnboundedSender<(TcpListener, LocalBrowserEndpoint)>,
     grants: std::sync::Mutex<BTreeMap<String, LocalBrowserGrant>>,
+    leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
 }
 
@@ -105,6 +108,7 @@ impl LocalBrowserDirect {
             endpoint: Mutex::new(None),
             bound,
             grants: std::sync::Mutex::new(BTreeMap::new()),
+            leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
@@ -128,6 +132,7 @@ impl LocalBrowserDirect {
             || identity.user_id.is_none()
             || identity.realm_id != authority.realm_id
             || identity.expires_at_ms <= now_ms
+            || identity.expires_at_ms > now_ms.saturating_add(GRANT_TTL_MS)
             || thumbprint.is_empty()
         {
             return Err(relay_error(
@@ -155,6 +160,7 @@ impl LocalBrowserDirect {
             grants.insert(
                 grant.clone(),
                 LocalBrowserGrant {
+                    lease_id: grant.clone(),
                     identity: identity.clone(),
                     thumbprint,
                     authority,

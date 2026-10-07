@@ -479,7 +479,7 @@ Current implementation notes:
 - current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
 - event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
 
-### Same-machine browser carrier (local protocol 456, MP-08/MP-11)
+### Same-machine browser carrier (local protocol 464, MP-08/MP-11)
 
 The kernel's CLI listener keeps refusing every request that carries an
 `Origin` header. A paired web terminal whose kernel runs on the same machine
@@ -519,22 +519,39 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    through the relay dispatch, command-result cache and relay event log with the
    admitting relay identity, so command ids, replay cursors and authorization are
    identical on both carriers.
-5. The session closes with `relay token expired` at the identity's expiry, and with
+5. MP-08/MP-11: admission starts a lease ending at the grant's expiry, at
+   most 30 seconds. Every 10 seconds the web client forces an authenticated
+   Cloud bootstrap and uses its separate 30-second `localLeaseRelayToken`
+   over the encrypted relay carrier to request `local_browser_renew` with the
+   redeemed grant and a strictly increasing one-use `sequence` starting at 1.
+   `LocalBrowserLeaseRenewed` returns `expires_at_ms` and `next_sequence`.
+   Only a live relay-verified client with the original browser key, user and
+   realm can renew. The kernel refuses long-lived renewal identities, expired
+   leases, unredeemed/retired grants, replays and direct-carrier renewals.
+   Lease expiry is bounded by the freshly verified renewal identity's expiry. The session uses that freshly verified identity for
+   subsequent dispatch, allowing continuous renewal across identity expiry.
+   Thus even a cached authorization issued before
+   Cloud revocation cannot extend the session beyond one 30-second period.
+   Failed renewal retires the local transport epoch before reconnecting through
+   the relay. Socket backpressure does not delay the kernel lease deadline.
+6. The session closes with `relay token expired` at the latest identity's
+   expiry, `local browser lease expired` at the lease deadline, and
    `local browser authority revoked` within 250 ms when the kernel's Cloud
    pairing, realm, account, user, Cloud origin or relay key changes (for example
-   `LogoutCloudRelay`). Cloud-side identity revocation takes effect at the next
-   grant, at most one relay-token lifetime later.
+   `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
 
-Clients require kernel protocol 456 and the user's explicit local-connect consent
+Clients require kernel protocol 464 and the user's explicit local-connect consent
 before trying the loopback endpoint, and fall back to the relay for the same kernel
 on any refusal, timeout or unreachable endpoint. A kernel-identity mismatch is a
 surfaced security diagnostic that blocks local attempts until the user retries.
 
-Relay-addressed TUI launches (`--relay-url ... --target-daemon-id/alias`) and
+Relay-addressed TUI launches (`--relay-url ... --target-daemon-id`) and
 waiting-room kernel switches use the target kernel's local endpoint when its
 active-kernel presence is on this machine and the kernel answers `RelayStatus`
 with the requested id over the owner-only local credential; otherwise they use
-the relay.
+the relay. Alias-only launches stay on the relay because aliases are not unique
+across realms. Existing relay-only clients keep their unchanged transport;
+web clients use direct mode only from protocol 464 after consent.
 
 Current pushed event contract:
 

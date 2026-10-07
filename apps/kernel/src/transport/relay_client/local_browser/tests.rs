@@ -1,5 +1,6 @@
 //! MP-08/MP-11: direct loopback admission over real sockets and real dispatch.
 
+use super::super::daemon_requests::RelayRequestOutcome;
 use super::*;
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::local::{ListSessionsRequest, LocalDaemonRequest};
@@ -53,7 +54,7 @@ impl Browser {
             realm_id: "realm-1".into(),
             subject: "browser:user-1:tab".into(),
             subject_kind: RelaySubjectKind::Client,
-            expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+            expires_at_ms: crate::session::unix_epoch_ms() + GRANT_TTL_MS,
             token_id: Some("token-1".into()),
             user_id: Some("user-1".into()),
             public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
@@ -393,12 +394,10 @@ fn mp11_idle_local_connections_cannot_pin_handshake_slots() {
         }
         sleep(Duration::from_millis(200)).await;
         // Well inside the five-second handshake deadline the idle peers hold.
-        let (_socket, verdict) = timeout(
-            Duration::from_secs(2),
-            connect(&kernel, &browser, &grant),
-        )
-        .await
-        .expect("paired browser admitted while idle peers hold the endpoint");
+        let (_socket, verdict) =
+            timeout(Duration::from_secs(2), connect(&kernel, &browser, &grant))
+                .await
+                .expect("paired browser admitted while idle peers hold the endpoint");
         assert_eq!(verdict["kind"], "local_connected", "{verdict}");
     });
 }
@@ -629,9 +628,9 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
 }
 
 #[test]
-fn mp08_mp11_local_browser_wire_is_bound_to_protocol456() {
+fn mp08_mp11_local_browser_wire_is_bound_to_protocol464() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 456);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 464);
     let payload = EncryptedRelayPayload {
         sender_public_key: "key".into(),
         nonce: "nonce".into(),
@@ -663,6 +662,9 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol456() {
         "path": LOCAL_BROWSER_PATH,
         "default_port": configured_port(None),
         "request": {"local_browser_connect": {}},
+        "renew_request": {"local_browser_renew": {"grant": "grant", "sequence": 1}},
+        "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "next_sequence"],
+        "lease_ms": GRANT_TTL_MS,
         "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms"],
         "proof": ["grant", "challenge", "origin", "kernel_id", "endpoint_epoch"],
         "kernel_proof": ["grant", "challenge"],
@@ -671,6 +673,239 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol456() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "caf0b656c95fc1e46a118ca48deb7fff9d542d2b166182f6e9c838d49fb38924"
+        "8ed751d30f75a5c07f946ed52d55034952221c7d1f1a19b6a7b6a3a3c89a064f"
     );
+}
+
+#[test]
+fn mp11_admitted_session_expires_without_relay_lease_renewal() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        kernel
+            .direct
+            .grants
+            .lock()
+            .unwrap()
+            .get_mut(&grant.grant)
+            .unwrap()
+            .expires_at_ms = crate::session::unix_epoch_ms() + 200;
+        let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let closed = timeout(Duration::from_secs(1), next_json(&mut socket)).await;
+        assert!(
+            closed.is_ok(),
+            "admitted browser outlived its relay-renewed lease"
+        );
+        assert_eq!(closed.unwrap()["kind"], "close");
+    });
+}
+
+// MP-11: real encrypted relay dispatch, not an independently authorized path.
+async fn renew(
+    kernel: &Kernel,
+    browser: &Browser,
+    identity: RelayCallerIdentity,
+    grant: &Grant,
+    sequence: u64,
+    via_relay: bool,
+) -> RelayRequestOutcome {
+    let request = relay_crypto::encrypt_payload_for_peer(
+        &browser.private_key,
+        &kernel.daemon_public_key,
+        serde_json::json!({"local_browser_renew": {"grant": grant.grant, "sequence": sequence}})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    handle_daemon_request(
+        &kernel.direct.router,
+        &kernel.direct.command_sequence,
+        Some(identity),
+        request,
+        &kernel.direct.command_result_cache,
+        if via_relay {
+            Some(&kernel.direct)
+        } else {
+            None
+        },
+    )
+    .await
+}
+
+#[test]
+fn mp11_renewal_requires_relay_live_same_key_user_and_one_use_sequence() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        assert!(
+            renew(&kernel, &browser, browser.identity(), &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "unredeemed grant renewed"
+        );
+        let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        // Wait for the session's lease registration.
+        for _ in 0..100 {
+            if kernel
+                .direct
+                .leases
+                .lock()
+                .unwrap()
+                .contains_key(&grant.grant)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            renew(&kernel, &browser, browser.identity(), &grant, 1, false)
+                .await
+                .error
+                .is_some(),
+            "direct carrier renewed itself"
+        );
+        let foreign = Browser::new();
+        assert!(
+            renew(&kernel, &foreign, foreign.identity(), &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "foreign key renewed"
+        );
+        let mut other_user = browser.identity();
+        other_user.user_id = Some("other-user".into());
+        assert!(
+            renew(&kernel, &browser, other_user, &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "foreign user renewed"
+        );
+        let mut expired = browser.identity();
+        expired.expires_at_ms = 1;
+        assert!(
+            renew(&kernel, &browser, expired, &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "expired identity renewed"
+        );
+        let mut long = browser.identity();
+        long.expires_at_ms += GRANT_TTL_MS;
+        assert!(
+            renew(&kernel, &browser, long, &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "long-lived identity renewed"
+        );
+        let mut short_identity = browser.identity();
+        short_identity.expires_at_ms = crate::session::unix_epoch_ms() + 20_000;
+        assert!(
+            renew(&kernel, &browser, short_identity.clone(), &grant, 1, true)
+                .await
+                .error
+                .is_none(),
+            "valid relay renewal denied"
+        );
+        assert!(
+            renew(&kernel, &browser, short_identity.clone(), &grant, 1, true)
+                .await
+                .error
+                .is_some(),
+            "renewal replay accepted"
+        );
+        socket.close(None).await.unwrap();
+        for _ in 0..100 {
+            if !kernel
+                .direct
+                .leases
+                .lock()
+                .unwrap()
+                .contains_key(&grant.grant)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            renew(&kernel, &browser, short_identity, &grant, 2, true)
+                .await
+                .error
+                .is_some(),
+            "retired session renewed"
+        );
+    });
+}
+
+#[test]
+fn mp11_relay_renewal_extends_the_socket_only_to_short_identity_expiry() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        kernel
+            .direct
+            .grants
+            .lock()
+            .unwrap()
+            .get_mut(&grant.grant)
+            .unwrap()
+            .expires_at_ms = crate::session::unix_epoch_ms() + 300;
+        let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        for _ in 0..100 {
+            if kernel
+                .direct
+                .leases
+                .lock()
+                .unwrap()
+                .contains_key(&grant.grant)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let mut short = browser.identity();
+        short.expires_at_ms = crate::session::unix_epoch_ms() + 900;
+        assert!(renew(&kernel, &browser, short.clone(), &grant, 1, true)
+            .await
+            .error
+            .is_none());
+        sleep(Duration::from_millis(350)).await;
+        let request = relay_crypto::encrypt_payload_for_peer(
+            &browser.private_key,
+            &kernel.daemon_public_key,
+            &serde_json::to_vec(&LocalDaemonRequest::ListSessions(ListSessionsRequest)).unwrap(),
+        )
+        .unwrap();
+        send_json(
+            &mut socket,
+            serde_json::json!({ "kind": "client_request", "request_id": "lease-live",
+            "target": { "daemon_id": kernel.daemon_id }, "encrypted_request": request }),
+        )
+        .await;
+        let response = next_json(&mut socket).await;
+        assert_eq!(
+            response["kind"], "client_response",
+            "renewed socket did not outlive initial lease"
+        );
+        assert!(response["error"].is_null());
+        let close = timeout(Duration::from_secs(1), next_json(&mut socket))
+            .await
+            .unwrap();
+        assert_eq!(close["kind"], "close");
+        assert!(
+            renew(&kernel, &browser, short, &grant, 2, true)
+                .await
+                .error
+                .is_some(),
+            "expired socket revived"
+        );
+    });
 }

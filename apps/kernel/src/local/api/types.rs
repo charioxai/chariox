@@ -255,4 +255,4 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 456 adds the same-machine browser carrier: relay-minted
 /// `local_browser_connect` grants and the loopback `/v1/browser` handshake.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 456;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 464;
