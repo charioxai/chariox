@@ -57,7 +57,9 @@ async fn live_display() {
         },
         allowed_targets: Some(vec![config.daemon_id.clone()]),
         issued_at_ms: now,
-        expires_at_ms: now + 300_000,
+        // MP-08/MP-10/MP-11: the disposable grant must outlive the 600s
+        // server watchdog plus startup; expired grants still fail closed.
+        expires_at_ms: now + 900_000,
         token_id: if client {
             "md-display-client".into()
         } else {
