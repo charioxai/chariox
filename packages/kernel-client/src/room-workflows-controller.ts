@@ -78,14 +78,21 @@ export class RoomWorkflowsPaneController {
   finally { record.busy = false; this.deps.changed() }
  }
  async control(action: RoomWorkflowRunAction): Promise<void> {
-  const record = this.record; const row = this.selected; const ids = this.targets(action)
+  const record = this.record; const row = this.selected; let ids = this.targets(action)
+  const capturedRuns = new Set(row?.workflow.runs.map(run => run.run_id) ?? [])
+  const needsRefresh = record?.fresh === false
   if (!record) return
   if (record.busy) { this.report(record, "busy", `${action} refused: another workflow request is busy; try again when it finishes`); return }
-  if (!row || !ids.length) { this.report(record, !row ? "no-selection" : "no-targets", `${action} refused: ${!row ? "select a workflow" : "no eligible runs"}`); return }
+  if (!row || (!needsRefresh && !ids.length)) { this.report(record, !row ? "no-selection" : "no-targets", `${action} refused: ${!row ? "select a workflow" : "no eligible runs"}`); return }
   // MP-08 / MP-10: capture targets before refresh; never include later admissions.
   record.lastGuard = "ready"; record.busy = true; record.message = `${action} current runs (${ids.length})…`; this.deps.changed()
   try {
-   if (!record.fresh) await this.resync(record)
+   if (needsRefresh) {
+    await this.resync(record)
+    const workflow = record.inventory.workflows.find(workflow => workflow.workflow_id === row.workflow.workflow_id)
+    ids = workflow ? roomWorkflowRunTargets(workflow, action).filter(id => capturedRuns.has(id)) : []
+    if (!ids.length) { this.report(record, "no-targets", `${action} refused: no eligible captured runs; review the refreshed workflow and try again`); return }
+   }
    const request = controlRoomWorkflowRunsRequest(record.inventory.session_id, row.workflow.workflow_id, action, ids)
    record.lastGuard ??= "ready"; this.deps.trace?.("sending")
    const response = await this.deps.send<{ RoomWorkflowRunsControlled?: RoomWorkflowRunsControlled }>(request)

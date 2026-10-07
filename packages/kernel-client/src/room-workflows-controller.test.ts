@@ -55,3 +55,15 @@ test("failed resync refuses visibly without controlling a different home", async
  h.respond({ SessionState: { room_workflows: other } }); await pending
  assert.equal(h.requests.length, 1); assert.match(h.pane.record!.message, /authority/)
 })
+
+// MP-08 / MP-10: eligibility itself can change while disconnected.
+test("stale eligibility is refreshed without adding newly admitted run IDs", async () => {
+ const h = harness(); const old = inventory()
+ old.workflows[0]!.runs.forEach(run => { run.can_pause = false; run.status = "Paused" })
+ h.pane.apply(old); h.pane.stale(); const pending = h.pane.control("pause")
+ assert.deepEqual(h.requests[0], { GetSessionState: { session_id: "room" } })
+ const fresh = inventory(); fresh.workflows[0]!.runs.push({ run_id: "later", endpoint_id: "a", status: "Running", can_pause: true, can_resume: false, can_stop: true })
+ h.respond({ SessionState: { room_workflows: fresh } }); await new Promise(resolve => setTimeout(resolve, 0))
+ assert.deepEqual(h.requests[1], { ControlRoomWorkflowRuns: { session_id: "room", workflow_id: "flow", action: "pause", run_ids: ["one", "two"] } })
+ h.respond({ RoomWorkflowRunsControlled: { inventory: fresh, results: [{ run_id: "one", outcome: "applied" }] } }); await pending
+})
