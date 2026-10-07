@@ -315,3 +315,31 @@ fn public_history_rebuild_coverage_never_exposes_foreign_progress() {
     assert!(!local_result.coverage.rebuilding);
     assert!(local_result.coverage.complete);
 }
+
+#[test]
+fn public_history_recreated_index_rebuilds_from_sanitized_source() {
+    let f = Fixture::new();
+    for _ in 0..300 {
+        f.append("room", "retained compiler");
+    }
+    f.search("room", "compiler", 50, None).unwrap();
+    f.store
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TABLE public_history_fts;")
+        .unwrap();
+    let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf()).unwrap();
+    let _guard = reopened.lock_public_history().unwrap();
+    let partial = reopened
+        .search_public_history_locked("owner", "room", None, "compiler", 50, None)
+        .unwrap();
+    assert!(partial.coverage.rebuilding);
+    assert_eq!(partial.coverage.indexed_events, 256);
+    assert!(partial.next_cursor.is_none());
+    let complete = reopened
+        .search_public_history_locked("owner", "room", None, "compiler", 50, None)
+        .unwrap();
+    assert!(complete.coverage.complete);
+    assert_eq!(complete.coverage.indexed_events, 300);
+}

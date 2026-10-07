@@ -405,9 +405,21 @@ pub(super) fn write_public_document(
 }
 
 pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), DaemonError> {
+    let index_existed: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_history_fts')",
+        [], |r| r.get(0),
+    ).map_err(public_error)?;
     connection
         .execute_batch(include_str!("public_history.sql"))
         .map_err(public_error)?;
+    if !index_existed {
+        // A recreated derived index resumes from the existing sanitized source.
+        // Persist the reset before admitting writes/searches; raw history is never
+        // a recovery source, and new appends follow the bounded rebuild cursor.
+        connection
+            .execute_batch("UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;")
+            .map_err(public_error)?;
+    }
     let version: u32 = connection
         .query_row("SELECT version FROM public_history_version", [], |r| {
             r.get(0)
