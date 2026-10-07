@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachBrowserDisplay, IdleCredit } from './presenter.mjs';
+test('MD-DISPLAY supported H.264 precedes VP8 for the stripe fallback',async()=>{
+ const prior=globalThis.VideoDecoder;globalThis.VideoDecoder=class{static async isConfigSupported({codec}){return {supported:['avc1.420033','vp8'].includes(codec)}}};
+ try{const {supportedCodecs}=await import('./presenter.mjs');assert.equal((await supportedCodecs())[0],'avc1.420033')}finally{globalThis.VideoDecoder=prior}
+});
+test('MD-DISPLAY frame receipt does not wake empty credits or impersonate human input',async()=>{
+ const idle=new IdleCredit(()=>0),waits=[];idle.observeRoundTrip(2);
+ for(let i=0;i<12;i++)waits.push(idle.wait());assert.equal(idle.delay,4000);
+ idle.changed();assert.equal(idle.parked.size,12);assert.equal(idle.activeUntil,-Infinity);assert.equal(idle.delay,33);
+ waits.push(idle.wait());assert.equal(idle.delay,66);
+ idle.wake();await Promise.all(waits);
+});
 test('MP-08/MP-10 empty local credits bound retries to eight milliseconds and input wakes them',async()=>{
  const idle=new IdleCredit();idle.observeRoundTrip(2);idle.wake();const wait=idle.wait();
  try{assert.equal(idle.delay,8)}finally{idle.wake();await wait}
@@ -8,7 +19,7 @@ test('MP-08/MP-10 empty local credits bound retries to eight milliseconds and in
 });
 test('MD-DISPLAY idle credits back off independently and input wakes all parked slots',async()=>{
  const idle=new IdleCredit();const waits=[idle.wait(),idle.wait(),idle.wait(),idle.wait()];
- assert.equal(idle.delay,100);assert.equal(idle.parked.size,4);
+ assert.equal(idle.delay,256);assert.equal(idle.parked.size,4);
  idle.wake();await Promise.all(waits);assert.equal(idle.delay,0);assert.equal(idle.parked.size,0);
  const active=idle.wait();assert.ok(idle.delay<=8,'recent motion keeps the capture window responsive');idle.wake();await active;
 });

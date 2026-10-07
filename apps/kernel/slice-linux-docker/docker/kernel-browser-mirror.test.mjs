@@ -1,5 +1,7 @@
 // MP-08/MP-10/MP-11: service epochs, privacy, bounded streams and resource admission.
 import test from 'node:test';
+import {randomBytes} from 'node:crypto';
+import {gunzipSync,crc32} from 'node:zlib';
 import assert from 'node:assert/strict';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-resources.mjs';
@@ -14,21 +16,34 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Browser.getWindowForTarget')return {windowId:1};
+    if(method==='Browser.setWindowBounds')return {};
+    if(method==='Runtime.releaseObjectGroup')return {};
+    if(method==='Runtime.evaluate'&&params.expression.includes('.customHosts()'))return {result:{value:null}};
+    if(method==='Runtime.evaluate'&&params.expression.includes('.fontKeys()'))return {result:{value:[]}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:params.expression.includes('.epoch()')?(state.snapshot.revision??0):true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
   return {host,state,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
-test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
- for(const fallback of [false,true]) {
-  const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
-  if(fallback){const evaluate=service.evaluate.bind(service);service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('synthetic observer unavailable');return evaluate(world,expression);};}
-  const packet=await service.next(next(s.subscription_id),'a');
-  const resolved=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'text',text:'fixture'}}},'a');
-  assert.equal(resolved.observedFrameInput===true,!fallback);
- }
+test('MP-11: an additional mirror observer does not reset canonical headed geometry',async()=>{
+ const {service,host}=fixture();host.chromium={display:{}};
+ const {connection}=await host.browser.resolvePageTarget('target'),send=connection.send;let changes=0;
+ connection.send=async(method,...args)=>{if(['Browser.setWindowBounds','Emulation.setDeviceMetricsOverride'].includes(method))changes++;return send.call(connection,method,...args)};
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ assert.equal(changes,2);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'b');
+ assert.equal(changes,2,'Read-only subscription must not resize the page or invalidate another observer');
+});
+test('MP-11: headed tile capture keeps the native viewport unchanged',async()=>{
+ const {service,state,host}=fixture();host.chromium={display:{}};
+ const control=state.snapshot.nodes[0];Object.assign(control,{parent:'n0',kind:'tile',tag:'button',reason:'native_control'});
+ state.snapshot.root='n0';state.snapshot.nodes.unshift({id:'n0',parent:null,children:[control.id],kind:'element',tag:'html'});
+ const screenshot=host.screenshot;host.screenshot=async(tab,clip)=>{assert.equal(clip,null,'Headed CDP crops resize the viewport during observation');return screenshot(tab,clip)};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const packet=await service.next(next(sub.subscription_id),'a');assert.equal(packet.tiles.length,1);
 });
 test('MP-11: guessed stream IDs never authorize another terminal, expired or recovered browser',async()=>{
  const {service,host}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'terminal:a');
@@ -239,4 +254,232 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  service.evaluate=async()=> 'unknown';
  const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('opaque SVG tile does not apply its already captured opacity a second time',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].children.push('n3');state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',box:{x:0,y:0,width:20,height:20},style:{opacity:'0.6',width:'20px',height:'20px'}});
+ const stream=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(stream.subscription_id),'a');
+ assert(packet.nodes.some(n=>n.id==='n2'&&n.kind==='text'),'Ordinary text must stay mirrored beside the SVG logo');
+ assert.equal(packet.nodes.find(n=>n.id==='n3').style.opacity,'0.6','Native layout retains source opacity; compositor pixels paint separately');
+});
+
+test('composited source geometry uses protected region tiles without replacing ordinary DOM',async()=>{
+ for(const mode of ['ancestorOpacity','tileTransform']){
+  const {service,state}=fixture();state.snapshot.nodes[0].children.push('n3');state.snapshot.nodes[0].style=mode==='ancestorOpacity'?{opacity:'0.6'}:{};state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',box:{x:0,y:0,width:20,height:20},style:mode==='tileTransform'?{transform:'rotate(10deg)'}:{}});
+  const stream=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(stream.subscription_id),'a');assert(!packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(packet.tiles.some(t=>t.node_id==='n3'));
+ }
+});
+
+
+test('zero-opacity ancestors do not turn invisible native controls into full-page fallback',async()=>{
+ for(const dpr of [1,2]){
+  const {service,state,host}=fixture();
+  state.snapshot.nodes[0].children.push('hidden-parent');
+  state.snapshot.nodes.push({id:'hidden-parent',parent:'n1',children:['hidden-input'],kind:'element',tag:'div',style:{opacity:'0',transform:'translateX(5px)'},box:{x:10,y:10,width:80,height:30}},
+   {id:'hidden-input',parent:'hidden-parent',children:[],kind:'tile',tag:'input',reason:'native_control',style:{opacity:'1'},box:{x:10,y:10,width:80,height:30}});
+  host.screenshot=async()=>{throw Error('Invisible native controls must not require source pixels')};
+  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
+  const packet=await service.next(next(s.subscription_id),'a');
+  assert(packet.nodes.some(n=>n.id==='n2'&&n.kind==='text'),'Ordinary article text remains mirrored');
+  assert.equal(packet.nodes.find(n=>n.id==='hidden-parent').style.opacity,'0');
+  assert.deepEqual(packet.tiles,[]);
+  state.snapshot.nodes.find(n=>n.id==='hidden-parent').style.opacity='0.6';
+  host.screenshot=async()=>({data_base64:encodePng(1280*dpr,800*dpr,Buffer.alloc(1280*800*dpr*dpr*4,100)),protected_regions:[]});
+  const shown=await service.next(next(s.subscription_id,packet.sequence),'a');
+  assert(!shown.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(shown.tiles.some(t=>t.node_id==='hidden-input'),'Visible composition is captured and protected as an individual region');
+ }
+});
+
+test('a zero-opacity tile is never normalized into visible source pixels',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].children.push('hidden');
+ state.snapshot.nodes.push({id:'hidden',parent:'n1',children:[],kind:'tile',tag:'img',reason:'opaque_media',style:{opacity:'0'},box:{x:10,y:10,width:80,height:30}});
+ host.screenshot=async()=>{throw Error('Invisible tile must not be captured')};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');
+ const packet=await service.next(next(s.subscription_id),'a');
+ assert.equal(packet.nodes.find(n=>n.id==='hidden').style.opacity,'0');assert.deepEqual(packet.tiles,[]);
+});
+
+test('MD-454: large DOM credits stream bounded chunks instead of rejecting the page',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].children=[];
+ for(let n=3;n<5003;n++){const id='n'+n;state.snapshot.nodes[0].children.push(id);state.snapshot.nodes.push({id,parent:'n1',children:[],kind:'element',tag:'p',style:{color:'rgb(1, 2, 3)',width:'1200px',margin:'0px',font:'16px sans-serif',padding:'1px'},attributes:{title:randomBytes(600).toString('base64')}})}
+ state.snapshot.nodes=state.snapshot.nodes.filter(n=>n.id!=='n2');
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ let chunk=await service.next(next(sub.subscription_id),'a'),index=0;const pieces=[];
+ assert.equal(chunk.kind,'mirror_chunk');assert(chunk.parts>1);
+ const repeated=await service.next(next(sub.subscription_id),'a');assert.deepEqual(repeated,chunk);
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:chunk.sequence,action:{kind:'key',key:'Tab'}},'a'),/stale mirror input epoch/);
+ while(true){assert.equal(chunk.index,index);assert(JSON.stringify(chunk).length<400000);pieces.push(Buffer.from(chunk.payload_base64,'base64'));if(index+1===chunk.parts)break;chunk=await service.next({...next(sub.subscription_id),after_chunk:index++},'a')}
+ const wire=JSON.parse(gunzipSync(Buffer.concat(pieces)).toString('utf8'));
+ assert.equal(wire.nodes.length,5001);assert(wire.styles.length<10);
+ const retried=await service.next({...next(sub.subscription_id),after_chunk:chunk.index-1},'a');assert.deepEqual(retried,chunk);
+ const committed=await service.next(next(sub.subscription_id,chunk.sequence),'a');assert.equal(committed.base_sequence,chunk.sequence);
+ host.protection={...host.protection};service.invalidate();
+ await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/chunk/);
+});
+
+test('MD-454: repeated source descriptors share one admitted resource without a page-count cap',async()=>{
+ const data=encodePng(1,1,Buffer.from([1,2,3,255]));let reads=0;
+ const connection={async send(method){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'f'},resources:[{url:'https://example.test/image.png'}]}};if(method==='Page.getResourceContent'){reads++;return {base64Encoded:true,content:data}};throw Error(method)}};
+ const result=await materializeMirrorResources(connection,'s',Array.from({length:500},(_,i)=>({key:'r'+i,url:'https://example.test/image.png',kind:'image'})),[]);
+ assert.equal(result.mapped.size,500);assert.equal(result.resources.size,1);assert.equal(reads,1);
+});
+
+test('MD-454: transformed native controls remain region tiles instead of replacing the DOM',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'button',reason:'native_control',style:{transform:'matrix(0, -1, 1, 0, 0, 0)',width:'30px',height:'20px'},box:{x:10,y:10,width:20,height:30}});state.snapshot.nodes[0].children.push('n3');
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(sub.subscription_id),'a');
+ assert(!packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(packet.tiles.some(t=>t.node_id==='n3'));
+});
+
+
+test('MD-454: exact-settled native regions reuse verified pixels until source or protection changes',async()=>{
+ const {service,state,host}=fixture();state.snapshot.revision=0;
+ state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'tile',tag:'button',reason:'native_control',style:{width:'30px',height:'20px'},box:{x:10,y:10,width:30,height:20}});state.snapshot.nodes[0].children.push('n3');
+ let captures=0;const capture=host.screenshot;host.screenshot=async(...args)=>{captures++;return capture(...args)};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let seq=0;
+ for(let n=0;n<3;n++)seq=(await service.next(next(sub.subscription_id,seq),'a')).sequence;
+ assert.equal(captures,2,'One motion crop, one exact full-frame refinement, then cache');
+ state.snapshot.revision++;seq=(await service.next(next(sub.subscription_id,seq),'a')).sequence;assert.equal(captures,3,'A source mutation forces fresh protected pixels');
+ host.protection={...host.protection};service.invalidate();await service.next(next(sub.subscription_id,seq),'a');assert.equal(captures,4,'Policy invalidation cannot reuse the old protected cache');
+});
+
+test('MD-454: source protection/document changes during chunk delivery discard the unissued epoch',async()=>{
+ const {service,state}=fixture();state.snapshot.revision=0;state.snapshot.nodes[0].children=[];
+ for(let n=3;n<1203;n++){const id='n'+n;state.snapshot.nodes[0].children.push(id);state.snapshot.nodes.push({id,parent:'n1',children:[],kind:'element',tag:'p',attributes:{title:randomBytes(600).toString('base64')}})}state.snapshot.nodes=state.snapshot.nodes.filter(n=>n.id!=='n2');
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const first=await service.next(next(sub.subscription_id),'a');assert(first.parts>1);state.snapshot.revision++;
+ await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/mirror frame changed before commit/);
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:first.sequence,action:{kind:'key',key:'Tab'}},'a'),/stale mirror (input epoch|protection policy)/);
+});
+
+
+test('MD-454: content cache reuses hashes while revalidating stable URLs and evicting unused bodies',async()=>{
+ const cache=new Map();let body=encodePng(1,1,Buffer.from([1,2,3,255])),reads=0;
+ const connection={async send(method){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'f'},resources:[{url:'https://fixture/resource'}]}};reads++;return {base64Encoded:true,content:body}}};const descriptors=[{key:'r0',url:'https://fixture/resource',kind:'image'}];
+ const first=await materializeMirrorResources(connection,'s',descriptors,[],cache),second=await materializeMirrorResources(connection,'s',descriptors,[],cache);assert.equal([...first.resources.values()][0],[...second.resources.values()][0]);assert.equal(reads,2,'URL bodies revalidate on every read');
+ body=encodePng(1,1,Buffer.from([4,5,6,255]));const third=await materializeMirrorResources(connection,'s',descriptors,[],cache);assert.notEqual(third.mapped.get('r0'),first.mapped.get('r0'));assert.equal(cache.size,1);assert(!cache.has(first.mapped.get('r0')));
+});
+
+test('MD-454: decoded resource memory budget degrades only excess regions, never the entire DOM',async()=>{
+ const bodies=Array.from({length:5},(_,i)=>encodePng(2048,2048,Buffer.alloc(2048*2048*4,i+100)));
+ const connection={async send(method,params){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'f'},resources:bodies.map((_,i)=>({url:'https://fixture/'+i}))}};return {base64Encoded:true,content:bodies[Number(params.url.slice(-1))]}}};
+ const result=await materializeMirrorResources(connection,'s',bodies.map((_,i)=>({key:'r'+i,url:'https://fixture/'+i,kind:'image'})),[]);assert.equal(result.resources.size,4);assert.equal(result.mapped.get('r4'),null);assert.equal(result.mapped.size,5);
+});
+
+
+test('MD-454: unused/unloaded font faces do not hide a family with an admitted loaded face',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].style={'font-family':'ExampleFont', 'font-weight':'400'};state.snapshot.fonts=[{family:'ExampleFont',weight:'400',style:'normal',resource:'r0'},{family:'ExampleFont',weight:'700',style:'normal',resource:'r1'}];state.snapshot.resources=[{key:'r0',url:'https://fixture/loaded.woff2',kind:'font'},{key:'r1',url:'https://fixture/unused.woff2',kind:'font'}];
+ const font=Buffer.alloc(48);font.write('wOF2');font.writeUInt32BE(48,8);font.writeUInt16BE(1,12);font.writeUInt32BE(1000,16);
+ const resolve=host.browser.resolvePageTarget;host.browser.resolvePageTarget=async(...args)=>{const world=await resolve(...args),send=world.connection.send;world.connection.send=async(method,params)=>method==='Page.getResourceTree'?{frameTree:{frame:{id:'f'},resources:[{url:'https://fixture/loaded.woff2'}]}}:method==='Page.getResourceContent'?{base64Encoded:true,content:font.toString('base64')}:send(method,params);return world};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');const packet=await service.next(next(sub.subscription_id),'a');assert(!packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(packet.nodes.some(n=>n.id==='n2'&&n.kind==='text'));assert.equal(packet.fonts.length,1);
+});
+
+
+test('MD-454: browser-loaded font response is used when Page cache drops its body',async()=>{
+ const font=Buffer.alloc(48);font.write('wOF2');font.writeUInt32BE(48,8);font.writeUInt16BE(1,12);font.writeUInt32BE(1000,16);let reads=0;
+ const connection={async send(method){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'f'},resources:[{url:'https://fixture/font.woff2'}]}};throw Error('Page resource body evicted')}};
+ const result=await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/font.woff2',kind:'font'}],[],new Map(),{loadedFontBody:async()=>{reads++;return {base64Encoded:true,content:font.toString('base64')}}});assert.equal(result.resources.size,1);assert.equal(reads,1);
+});
+
+test('MD-454: native custom-host changes during chunk credits revoke the unissued frame',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].children=[];
+ for(let n=3;n<1203;n++){const id='n'+n;state.snapshot.nodes[0].children.push(id);state.snapshot.nodes.push({id,parent:'n1',children:[],kind:'element',tag:'p',attributes:{title:randomBytes(600).toString('base64')}})}state.snapshot.nodes=state.snapshot.nodes.filter(n=>n.id!=='n2');
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(sub.subscription_id),'a');assert(first.parts>1);
+ const stream=service.streams.get(sub.subscription_id);let released=false;stream.frameCustom={verify:async()=>{throw Error('MP-11: custom host changed during mirror frame')},release:async()=>{released=true}};
+ await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/custom host changed/);
+ assert(released);assert.equal(stream.pending,null);assert.equal(stream.previous,null);assert.deepEqual(stream.epochs,[]);
+});
+
+test('MD-454: protection updates during a chunk native verification fence the reply',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[0].children=[];
+ for(let n=3;n<1203;n++){const id='n'+n;state.snapshot.nodes[0].children.push(id);state.snapshot.nodes.push({id,parent:'n1',children:[],kind:'element',tag:'p',attributes:{title:randomBytes(600).toString('base64')}})}state.snapshot.nodes=state.snapshot.nodes.filter(n=>n.id!=='n2');
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(sub.subscription_id),'a');assert(first.parts>1);
+ const stream=service.streams.get(sub.subscription_id);stream.frameCustom={verify:async()=>{host.protection={...host.protection};service.invalidate()},release:async()=>{}};
+ await assert.rejects(service.next({...next(sub.subscription_id),after_chunk:0},'a'),/chunk policy or document changed/);
+ assert.equal(stream.pending,null);assert.equal(stream.previous,null);assert.deepEqual(stream.epochs,[]);
+});
+
+// A credit may move viewport geometry while a wheel waits in the client queue.
+// This is a pre-dispatch refusal only; pointer clicks must never be replayed.
+test('MP-11: changed wheel geometry refreshes once before effects; clicks still refuse',async()=>{
+ const {service,state}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),first=await service.next(next(s.subscription_id),'a');
+ state.snapshot.nodes[0].box.width=81;await service.next(next(s.subscription_id,first.sequence),'a');service.world=async()=>assert.fail('no native work before admission');
+ const input=kind=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind,x:10,y:10,delta_x:0,delta_y:20}}},'a');
+ await assert.rejects(input('scroll'),/MP-11: stale mirror input epoch/);
+ await assert.rejects(input('click'),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MP-11: native paint overlays preserve public inline flow but never protected descendants',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].kind='tile';state.snapshot.nodes[0].tag='label';state.snapshot.nodes[0].reason='unsupported_paint';state.snapshot.nodes[0].children.push('n3');
+ state.snapshot.nodes.push({id:'n3',parent:'n1',children:[],kind:'mask',tag:'div',box:{x:40,y:0,width:20,height:20}});
+ // Keep the overlay host below the document root; whole-page opaque roots refuse.
+ state.snapshot.nodes[0].parent='n0';state.snapshot.nodes.unshift({id:'n0',parent:null,children:['n1'],kind:'element',tag:'html'});state.snapshot.root='n0';
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+ assert.equal(packet.nodes.find(n=>n.id==='n1').tag,'label');assert.deepEqual(packet.nodes.find(n=>n.id==='n1').children,['n2','n3']);assert.equal(packet.nodes.find(n=>n.id==='n2').text,'fixture');assert.equal(packet.nodes.find(n=>n.id==='n3').kind,'mask');
+ assert.equal(packet.tiles.length,1);
+});
+test('MP-11: trusted live wheel-geometry refusal never dispatches and cannot replay a click',async()=>{
+ const {service,state,host}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'element',tag:'p',box:{x:5,y:5,width:20,height:20}};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);service.evaluate=(w,e)=>e.includes('.coordinateTarget(')?Promise.resolve({scroll_epoch_refused:true}):evaluate(w,e);
+ const input=kind=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'coordinate',input:{kind,x:10,y:10,delta_x:0,delta_y:20}}},'a');
+ const wheel=await input('scroll');await assert.rejects(wheel.guard(),/MP-11: stale mirror input epoch/);
+ const click=await input('click');await assert.rejects(click.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MD-454: a source-only capture race resets unissued bytes and refuses input without native effects',async()=>{
+ const {service,state,host}=fixture();state.snapshot.revision=1;
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);let race=true;
+ service.evaluate=async(w,e)=>{if(race&&e.endsWith('.epoch()')){race=false;state.snapshot.revision++}return evaluate(w,e)};
+ await assert.rejects(service.next(next(s.subscription_id,p.sequence),'a'),/mirror frame changed before commit/);
+ const stream=service.streams.get(s.subscription_id);assert.equal(stream.previous,null);assert.equal(stream.geometryResetPolicy,host.protection);
+ service.world=async()=>assert.fail('refuse before native dispatch');
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'key',key:'Tab'}},'a'),/stale mirror input epoch/);
+ host.protection={...host.protection};
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'key',key:'Tab'}},'a'),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+test('MP-11: a pending text operation cannot acquire the no-effect wheel marker after focus',async()=>{
+ const {service,state}=fixture();state.snapshot.nodes[0].tag='input';state.snapshot.nodes[0].form={value:'',selection_start:0,selection_end:0,checked:false,disabled:false};
+ const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(s.subscription_id),'a');
+ const stream=service.streams.get(s.subscription_id),evaluate=service.evaluate.bind(service);
+ service.evaluate=async(w,e)=>{if(e.includes('.locate('))return {x:10,y:10};if(e.includes('.focus(')){stream.geometryResetPolicy=stream.policy;stream.policy=null;stream.epochs=[];return true}return evaluate(w,e)};
+ const text=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:p.sequence,action:{kind:'text',node_id:'n1',text:'x'}},'a');let marked=false;
+ await assert.rejects(text.perform(async()=>assert.fail('no text dispatch'),()=>marked=true),error=>!error.message.includes('stale mirror input epoch'));assert(marked);
+});
+
+for(const change of ['ordinary source','policy','document','incomplete'])test('MD-454: fully issued frame acknowledgement retires its old observation: '+change,async()=>{
+ const {service,state,host}=fixture();state.snapshot.revision=0
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a')
+ const packet=await service.next(next(sub.subscription_id),'a'),stream=service.streams.get(sub.subscription_id)
+ stream.pending={chunks:[{},{}],sequence:packet.sequence,base_sequence:0,document_id:'d',policy:host.protection,world:stream.frameWorld,sourceRevision:0,lastIssued:change!=='incomplete'}
+ state.snapshot.revision=change==='incomplete'?0:1;state.snapshot.nodes[1].text='Updated ordinary text'
+ if(change==='policy')host.protection={...host.protection}
+ if(change==='document')state.document='new-document'
+ if(change==='ordinary source'){
+  const fresh=await service.next(next(sub.subscription_id,packet.sequence),'a')
+  assert.equal(fresh.base_sequence,packet.sequence);assert(fresh.nodes.some(n=>n.text==='Updated ordinary text'))
+ }else await assert.rejects(service.next(next(sub.subscription_id,packet.sequence),'a'),change==='incomplete'?/incomplete mirror frame acknowledgement/:/policy or document changed/)
+})
+
+for(const variant of ['adjacent','overlap','mask','unknown'])test('MD-454: wheel hit-test cell keeps exact observed adjacent targets: '+variant,async()=>{
+ const {service,state}=fixture();
+ state.snapshot.nodes=[{id:'n1',parent:null,children:['n2','n3'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:80}},
+  {id:'n2',parent:'n1',children:[],kind:'element',tag:'p',box:{x:0,y:0,width:80,height:20.375}},
+  {id:'n3',parent:'n1',children:[],kind:variant==='mask'?'mask':'element',tag:'p',box:{x:0,y:variant==='overlap'?19:20.375,width:80,height:20}}];
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),p=await service.next(next(sub.subscription_id),'a');
+ const evaluate=service.evaluate.bind(service);let paths;
+ service.evaluate=async(w,e)=>{if(e.includes('.coordinateTarget(')){const args=JSON.parse('['+e.slice(e.indexOf('(')+1,-1)+']');paths=args[3];return variant==='unknown'?'unobserved':'n3'}return evaluate(w,e)};
+ const admit=()=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:p.sequence,action:{kind:'coordinate',input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:10}}},'a');
+ if(variant==='adjacent'){const input=await admit();await input.guard();assert.deepEqual(paths.map(p=>p[0].id),['n2','n3']);assert(paths.every(p=>p.at(-1).id==='n1'))}
+ else if(variant==='unknown'){const input=await admit();await assert.rejects(input.guard(),/changed live mirror coordinate target/)}
+ else await assert.rejects(admit(),/ambiguous|protected|stale mirror input epoch/);
+});
+
+test('MD-454: chunked Retina static resources exceed the old packet cap within decoded budgets',async()=>{
+ const pixels=randomBytes(500*647*4);for(let i=3;i<pixels.length;i+=4)pixels[i]=255;const data=encodePng(500,647,pixels);assert(data.length>700000&&data.length<4*1024*1024);
+ let body=data;const connection={async send(method){return method==='Page.getResourceTree'?{frameTree:{frame:{id:'f'},resources:[{url:'https://fixture/retina.png'}]}}:{base64Encoded:true,content:body}}};
+ const result=await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[]);assert.equal(result.resources.size,1);assert.equal(result.decodedBytes,500*647*4);
+ await assert.rejects(materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],['protected']),/protected resources/);
+ const corrupt=Buffer.from(data,'base64');corrupt[50]^=1;body=corrupt.toString('base64');assert.equal((await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[])).resources.size,0);
+ const animation=Buffer.alloc(20);animation.writeUInt32BE(8);animation.write('acTL',4);animation.writeUInt32BE(1,8);animation.writeUInt32BE(crc32(animation.subarray(4,16)),16);const bytes=Buffer.from(data,'base64');body=Buffer.concat([bytes.subarray(0,33),animation,bytes.subarray(33)]).toString('base64');assert.equal((await materializeMirrorResources(connection,'s',[{key:'r0',url:'https://fixture/retina.png',kind:'image'}],[])).resources.size,0);
 });

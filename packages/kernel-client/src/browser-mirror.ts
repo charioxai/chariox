@@ -1,9 +1,12 @@
+import {mirrorViewportStyle,mirrorScrollbarSize,mirrorInlineBaselineOffset} from './browser-mirror-layout.js'
+import {nativeFontMetricOverrides} from './browser-mirror-fonts.js'
+import {readMirrorFrame,type MirrorChunk} from './browser-mirror-chunks.js'
 // MP-08/MP-10/MP-11: reference renderer for Cloud/native web clients. No origin I/O.
 import { mirrorSandboxCsp,validateMirrorPacket,mirrorTreeCanonicalJson } from './browser-mirror-security.js'
 import type { KernelBrowserMirrorAction, MirrorNode, MirrorPacket, MirrorResource, MirrorTile } from './browser-mirror-types.js'
 export * from './browser-mirror-types.js'
 export { mirrorSandboxCsp } from './browser-mirror-security.js'
-export const browserMirrorMinimumProtocolVersion = 443
+export const browserMirrorMinimumProtocolVersion = 454
 export interface MirrorTransport { protocolVersion: number; request(request: unknown): Promise<unknown> }
 type TileRaster = {tile:MirrorTile;url:string;image?:HTMLImageElement;placement?:string}
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
@@ -20,6 +23,9 @@ export class BrowserMirrorRenderer {
   private dom=new Map<string,Node>()
   private ids=new WeakMap<Node,string>()
   private resources=new Map<string,string>()
+  private inlineProjections=new WeakMap<HTMLElement,string[]>()
+  private fontMetrics=new Map<string,{ascent:string;descent:string}>()
+  private tilePlaceholderUrl:string|null=null
   private tileUrls:string[]=[]
   private tileCache=new Map<string,TileRaster>()
   private overlays:HTMLElement[]=[]
@@ -36,11 +42,12 @@ export class BrowserMirrorRenderer {
   private nativeFocus:{document_id:string;through_sequence:number}|null=null
   private pendingInputs=0
   private inputChain:Promise<void>=Promise.resolve()
+  private pendingWheel:{action:KernelBrowserMirrorAction;document_id:string}|null=null
   constructor(private container:HTMLElement,private input:(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string})=>Promise<unknown>,private failure:(error:unknown)=>void) {
     this.frame=container.ownerDocument.createElement('iframe')
     this.frame.setAttribute('sandbox','allow-same-origin') // scripts NEVER enabled
     this.frame.setAttribute('referrerpolicy','no-referrer')
-    this.frame.style.cssText='width:1280px;height:800px;border:0;display:block'
+    this.frame.style.cssText='width:1280px;height:800px;border:0;display:block;'+mirrorViewportStyle(container.ownerDocument.defaultView?.devicePixelRatio??1)
     this.frame.srcdoc=`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirrorSandboxCsp}"></head><body></body></html>`
     this.loaded=new Promise<void>(resolve=>this.frame.addEventListener('load',()=>resolve(),{once:true}))
     container.append(this.frame)
@@ -58,12 +65,18 @@ export class BrowserMirrorRenderer {
   }
   private enqueue(action:KernelBrowserMirrorAction):void {
     if(this.applying||this.disposed)return
+    const wheel=action.kind==='coordinate'&&action.input.kind==='scroll'?action.input:null
+    const pending=this.pendingWheel?.action
+    if(wheel&&this.pendingWheel?.document_id===this.documentId&&pending?.kind==='coordinate'&&pending.input.kind==='scroll'&&pending.input.x===wheel.x&&pending.input.y===wheel.y&&Math.abs(pending.input.delta_x+wheel.delta_x)<=1000000&&Math.abs(pending.input.delta_y+wheel.delta_y)<=1000000){
+      pending.input.delta_x+=wheel.delta_x;pending.input.delta_y+=wheel.delta_y;return
+    }
+    const batch=wheel?{action,document_id:this.documentId}:null;this.pendingWheel=batch
     let focused=this.doc?.activeElement??null
     while(focused){const nested=focused.tagName==='IFRAME'?(focused as HTMLIFrameElement).contentDocument?.activeElement:focused.shadowRoot?.activeElement;if(!nested)break;focused=nested}
     if(!this.nativeFocus)this.rememberFocus(focused)
     const epoch={sequence:this.sequence,document_id:this.documentId}
     this.pendingInputs++
-    this.inputChain=this.inputChain.then(async()=>{try{if(!this.disposed)await this.input(action,epoch)}finally{
+    this.inputChain=this.inputChain.then(async()=>{if(this.pendingWheel===batch)this.pendingWheel=null;try{if(!this.disposed)await this.input(action,epoch)}finally{
       this.pendingInputs--
       // MP-08/MP-11: one credit can already be captured before this input
       // settles. Its successor is the first observation that may restore focus.
@@ -83,13 +96,13 @@ export class BrowserMirrorRenderer {
     // MP-08/MP-11: opaque full-frame input uses the existing protected display
     // text path. IME composes locally in the inert tile and commits once.
     const text=(node:string,value:string):void=>this.enqueue(fullTile(node)||this.nativeFocus?{kind:'coordinate',input:{kind:'text',text:value}}:{kind:'text',node_id:node,text:value})
-    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
+    const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,{capture:true,passive:false});removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('focusin',event=>{if(!this.applying&&!this.disposed&&!this.nativeFocus)this.rememberFocus(target(event))})
     on('click',event=>{event.preventDefault();const element=target(event) as HTMLElement,node=id(element);if(node){const record=this.records.get(node);if(record?.kind==='mask')return;this.nativeFocus=null;if(record?.kind==='tile'||record?.form||element.isContentEditable){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
-    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
+    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}})})
     // MP-08/MP-11: after native focus progress, keys follow the same live-focus
     // bridge as text. A newer credit in flight cannot bind them to painted focus.
-    on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();const native=Boolean(this.nativeFocus);if(['Tab','Enter','Escape'].includes(key))this.localFocus=null;this.nativeFocus={document_id:this.documentId,through_sequence:this.sequence+1};this.enqueue(native?{kind:'coordinate',input:{kind:'key',key}}:{kind:'key',key})}})
+    on('keydown',event=>{const key=(event as KeyboardEvent).key;if(['Tab','Enter','Escape','Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(key)){event.preventDefault();const native=Boolean(this.nativeFocus);if(['Tab','Enter','Escape'].includes(key))this.localFocus=null;this.nativeFocus={document_id:this.documentId,through_sequence:this.sequence+1};const chord=key==='Tab'&&(event as KeyboardEvent).shiftKey?'Shift+Tab':key;this.enqueue(native?{kind:'coordinate',input:{kind:'key',key:chord}}:{kind:'key',key:chord})}})
     on('beforeinput',event=>{const input=event as InputEvent;event.preventDefault();if(input.isComposing||input.inputType.includes('Composition')||input.data===lastComposition)return;const node=id(target(event));if(node&&input.data)text(node,input.data)})
     on('compositionupdate',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node&&!fullTile(node)&&!this.nativeFocus)this.enqueue({kind:'composition',node_id:node,text:e.data,selection_start:e.data.length,selection_end:e.data.length})})
     on('compositionend',event=>{event.preventDefault();const e=event as CompositionEvent,node=id(target(event));if(node){lastComposition=e.data;setTimeout(()=>{lastComposition=null},0);text(node,e.data)}})
@@ -126,6 +139,7 @@ export class BrowserMirrorRenderer {
     if(record.kind==='text'){if(node.textContent!==(record.text??''))node.textContent=record.text??'';return}
     if(node.nodeType!==1)return
     const element=node as HTMLElement
+    this.restoreInlineProjection(element)
     if(!previous||JSON.stringify(previous.attributes??{})!==JSON.stringify(record.attributes??{})) {
       for(const attr of Array.from(element.attributes))if(attr.name!=='style')element.removeAttribute(attr.name)
       for(const [key,value]of Object.entries(record.attributes??{}))element.setAttribute(key,value)
@@ -133,11 +147,17 @@ export class BrowserMirrorRenderer {
     // MP-10: child/text changes do not invalidate unchanged sanitized styles.
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
-    if(record.kind==='tile'||record.kind==='mask') {
-      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+    if(record.kind==='mask'||record.kind==='tile'&&!['native_control','viewport_deferred','unsupported_paint'].includes(record.reason??'')) {
+      element.style.boxSizing='border-box';element.style.width=record.style?.width??`${record.box?.width??0}px`;element.style.height=record.style?.height??`${record.box?.height??0}px`;element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
       element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
+    }
+    // A source-less IMG renders alternate text rather than a replaced box.
+    // The opaque local pixel preserves native image flow; verified tiles paint
+    // over it separately. It cannot fetch origin bytes or reveal masked pixels.
+    if(record.tag==='img'&&(record.kind==='tile'||record.kind==='mask')){
+      this.tilePlaceholderUrl??=blobUrl('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==','image/png');(element as HTMLImageElement).src=this.tilePlaceholderUrl
     }
     if(record.tag==='img'&&record.resource){const url=this.resources.get(record.resource);if(url)(element as HTMLImageElement).src=url}
     if(record.form) {
@@ -223,7 +243,9 @@ export class BrowserMirrorRenderer {
       }
       this.doc.head.querySelectorAll('style[data-mirror-fonts],style[data-mirror-pseudo]').forEach(n=>n.remove())
       const fontStyle=this.doc.createElement('style');fontStyle.dataset.mirrorFonts='true'
-      for(const font of packet.fonts){const url=this.resources.get(font.resource);if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};}`}
+      const gutter=mirrorScrollbarSize(next.get(packet.root),packet.css_width)
+      if(gutter!==null)fontStyle.textContent=`::-webkit-scrollbar{width:${gutter}px;height:${gutter}px}`
+      for(const font of packet.fonts){const url=this.resources.get(font.resource),metrics=font.family===`cx-native-${font.resource}`?this.fontMetrics.get(font.resource):null;if(url)fontStyle.textContent+=`@font-face{font-family:${JSON.stringify(font.family.replaceAll('"',''))};src:url("${url}");font-weight:${/^[0-9 ]+$/.test(font.weight)?font.weight:'400'};font-style:${['normal','italic','oblique'].includes(font.style)?font.style:'normal'};${metrics?`ascent-override:${metrics.ascent};descent-override:${metrics.descent};`:''}}`}
       if(fontStyle.textContent)this.doc.head.append(fontStyle)
       const pseudoStyle=this.doc.createElement('style');pseudoStyle.dataset.mirrorPseudo='true'
       if([...next.values()].some(record=>Object.keys(record.pseudo??{}).length))this.doc.head.append(pseudoStyle)
@@ -257,11 +279,16 @@ export class BrowserMirrorRenderer {
       }
       for(const overlay of previousOverlays)if(!this.overlays.includes(overlay))overlay.remove()
       this.tileCache=new Map(newTiles.map(entry=>[entry.tile.node_id,entry]))
+      // The native packet owns scroll. Client font/image settlement must not
+      // move the inert document through an independent scroll-anchor update.
+      this.doc.documentElement.style.overflowAnchor='none'
+      this.doc.documentElement.style.scrollBehavior='auto'
+      for(const {element}of scrolls){element.style.overflowAnchor='none';element.style.scrollBehavior='auto'}
       for(const {element,x,y}of scrolls){if(element.scrollLeft!==x)element.scrollLeft=x;if(element.scrollTop!==y)element.scrollTop=y}
       this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
       const retainedTileUrls=new Set(newTiles.map(t=>t.url));for(const url of this.tileUrls)if(!retainedTileUrls.has(url))URL.revokeObjectURL(url);this.tileUrls=[...retainedTileUrls]
       const usedResources=new Set(packet.fonts.map(f=>f.resource));for(const record of next.values()){if(record.resource)usedResources.add(record.resource);for(const value of Object.values(record.style??{}))if(value.startsWith('resource:'))usedResources.add(value.slice(9))}
-      for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id)}
+      for(const [id,url]of this.resources)if(!usedResources.has(id)){URL.revokeObjectURL(url);this.resources.delete(id);this.fontMetrics.delete(id)}
       this.records=next;this.sequence=packet.sequence;this.documentId=packet.document_id
       if(!preserve){
         if(packet.selection){const selected=packet.selection,anchor=this.dom.get(selected.anchor_id)!,focus=this.dom.get(selected.focus_id)!,selection=anchor.ownerDocument!.getSelection()!;if(selection.anchorNode!==anchor||selection.anchorOffset!==selected.anchor_offset||selection.focusNode!==focus||selection.focusOffset!==selected.focus_offset)selection.setBaseAndExtent(anchor,selected.anchor_offset,focus,selected.focus_offset)}else for(const doc of new Set([...this.dom.values()].map(n=>n.ownerDocument).filter((d):d is Document=>d!==null))){const selection=doc.getSelection();if(selection&&!selection.isCollapsed)selection.removeAllRanges()}
@@ -273,11 +300,30 @@ export class BrowserMirrorRenderer {
     await this.doc.fonts.ready
     const images=[...this.dom.values(),...this.overlays].filter((node):node is HTMLImageElement=>node.nodeType===1&&(node as Element).tagName==='IMG')
     await Promise.all(images.filter(image=>image.getAttribute('src')&&!(image.complete&&image.naturalWidth>0)).map(image=>image.decode()))
+    if(!this.disposed&&this.doc)this.frame.contentWindow!.scrollTo(packet.scroll.x,packet.scroll.y)
+    if(!this.disposed&&this.doc){
+      for(const record of canonical.nodes){const node=this.dom.get(record.id);if(node?.nodeType===1)this.restoreInlineProjection(node as HTMLElement)}
+      for(const record of canonical.nodes){
+        const node=this.dom.get(record.id) as HTMLElement|undefined;if(!node||node.nodeType!==1)continue
+        const offset=mirrorInlineBaselineOffset(record,this.records,node.getBoundingClientRect(),node.ownerDocument.defaultView!.getComputedStyle(node),[...node.getClientRects()])
+        if(offset===null||Math.abs(offset)<.0078125)continue
+        const properties=['position','top','left','right','bottom'];this.inlineProjections.set(node,properties.map(key=>node.style.getPropertyValue(key)))
+        node.style.position='relative';node.style.top=`${offset}px`;node.style.left='0';node.style.right='auto';node.style.bottom='auto'
+      }
+    }
     this.timed('font_image_ready',at);this.timed('apply_total',started)
+  }
+  private restoreInlineProjection(node:HTMLElement):void {
+    const saved=this.inlineProjections.get(node);if(!saved)return
+    ;['position','top','left','right','bottom'].forEach((key,i)=>{if(saved[i])node.style.setProperty(key,saved[i]!);else node.style.removeProperty(key)})
+    this.inlineProjections.delete(node)
   }
   private async addResource(resource:MirrorResource):Promise<void> {
     if(await digest(bytesOf(resource.data_base64))!==resource.resource_id)throw Error('MP-11: mirror resource digest')
-    if(!this.resources.has(resource.resource_id))this.resources.set(resource.resource_id,blobUrl(resource.data_base64,resource.mime_type))
+    if(!this.resources.has(resource.resource_id)){
+      if(resource.mime_type==='font/woff'){const metrics=await nativeFontMetricOverrides(bytesOf(resource.data_base64));if(metrics)this.fontMetrics.set(resource.resource_id,metrics)}
+      this.resources.set(resource.resource_id,blobUrl(resource.data_base64,resource.mime_type))
+    }
   }
   // MP-10: each line fragment is measured independently, including wrapped text.
   textRunGeometry():Array<{id:string;rects:Array<{x:number;y:number;width:number;height:number}>}> {
@@ -295,7 +341,11 @@ export class BrowserMirrorRenderer {
   }
   driftNodes():string[] {
     const started=performance.now(),drift=new Set<string>()
-    for(const [id,record]of this.records){if(!['element','text','frame','tile'].includes(record.kind)||!record.box)continue;const node=this.dom.get(id);if(!node)continue;let box:DOMRect;if(record.kind==='text'){const range=node.ownerDocument!.createRange();range.selectNodeContents(node);box=range.getBoundingClientRect()}else box=(node as HTMLElement).getBoundingClientRect()
+    for(const [id,record]of this.records){if(!['element','text','frame','tile'].includes(record.kind)||!record.box)continue;
+      // Unpainted descendants cannot invalidate surrounding public geometry.
+      // Re-evaluate every packet; input still checks the native target/epoch.
+      let unpainted=false;for(let n:MirrorNode|undefined=record;n;n=this.records.get(n.parent??''))if(n.style?.visibility==='hidden'||n.style?.visibility==='collapse'||n.style?.opacity!==undefined&&Number(n.style.opacity)===0){unpainted=true;break}if(unpainted)continue;
+      const node=this.dom.get(id);if(!node)continue;let box:DOMRect;if(record.kind==='text'){const range=node.ownerDocument!.createRange();range.selectNodeContents(node);box=range.getBoundingClientRect()}else box=(node as HTMLElement).getBoundingClientRect()
       const textDrift=record.kind==='text'&&node.textContent!==record.text
       const style=['element','frame'].includes(record.kind)?node.ownerDocument!.defaultView!.getComputedStyle(node as Element):null
       const colorDrift=style&&Object.entries(record.style??{}).some(([key,value])=>(key==='color'||key.endsWith('-color'))&&value!=='initial'&&value!=='inherit'&&style.getPropertyValue(key)!==value)
@@ -308,19 +358,27 @@ export class BrowserMirrorRenderer {
     }
     this.timed('drift_scan',started);return [...drift]
   }
-  private clearResources():void {for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
+  private clearResources():void {if(this.tilePlaceholderUrl)URL.revokeObjectURL(this.tilePlaceholderUrl);this.tilePlaceholderUrl=null;for(const url of this.resources.values())URL.revokeObjectURL(url);this.resources.clear();this.fontMetrics.clear();for(const url of this.tileUrls)URL.revokeObjectURL(url);this.tileUrls=[];this.tileCache.clear()}
   close():void {this.disposed=true;this.releaseDocuments(new Set());this.localFocus=null;this.nativeFocus=null;this.doc=null;this.clearResources();this.dom.clear();this.records.clear();this.overlays=[];this.frame.remove()}
 }
 export async function attachBrowserMirror(transport:MirrorTransport,container:HTMLElement,binding:Binding,onFailure:(error:unknown)=>void):Promise<{next():Promise<MirrorPacket>;input(action:KernelBrowserMirrorAction):Promise<unknown>;takeover():Promise<unknown>;release():Promise<unknown>;actors():Promise<unknown>;close():Promise<void>;renderer:BrowserMirrorRenderer}> {
-  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-08: DOM mirroring requires protocol 443')
+  if(!Number.isInteger(transport.protocolVersion)||transport.protocolVersion<browserMirrorMinimumProtocolVersion)throw Error('MP-8: DOM mirroring requires protocol 454')
   const request=async(command:unknown):Promise<any>=>{const response=await transport.request({KernelBrowser:{command}}) as {KernelBrowser?:{result?:unknown}};if(!response.KernelBrowser?.result)throw Error('MP-08: invalid mirror response');return response.KernelBrowser.result}
   const subscribed=await request({op:'mirror_subscribe',...binding});const subscription_id=subscribed.subscription_id as string
   let sequence=0,document_id='',closed=false,busy=false
-  const input=(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string}):Promise<unknown>=>{if(closed||!document_id)throw Error('MP-08: mirror has no observed document');return request({op:'mirror_input',...binding,document_id:epoch?.document_id??document_id,subscription_id,sequence:epoch?.sequence??sequence,action})}
+  const input=(action:KernelBrowserMirrorAction,epoch?:{sequence:number;document_id:string}):Promise<unknown>=>{if(closed||!(epoch?.document_id??document_id))throw Error('MP-08: mirror has no observed document');return request({op:'mirror_input',...binding,document_id:epoch?.document_id??document_id,subscription_id,sequence:epoch?.sequence??sequence,action})}
   const renderer=new BrowserMirrorRenderer(container,input,onFailure)
   try{await renderer.ready()}catch(error){renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}
   return {renderer,input,
-    async next(){if(closed||busy)throw Error('MP-08: mirror credit unavailable');busy=true;try{const packet=await request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,drift_nodes:renderer.driftNodes()}) as MirrorPacket;if(packet.subscription_id!==subscription_id||packet.tab_id!==binding.tab_id||packet.generation!==binding.generation)throw Error('MP-11: foreign mirror packet');await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet}catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}},
+    async next(){
+      if(closed||busy)throw Error('MP-08: mirror credit unavailable')
+      busy=true
+      try {
+        const packet=await readMirrorFrame((cursor,restarted)=>request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:sequence,...(cursor===null?{}:{after_chunk:cursor}),drift_nodes:cursor===null&&!restarted?renderer.driftNodes():[]}) as Promise<MirrorPacket|MirrorChunk>,subscription_id,binding.tab_id,binding.generation)
+        if(closed)throw Error('MP-08: mirror closed during transfer')
+        await renderer.apply(packet);sequence=packet.sequence;document_id=packet.document_id;return packet
+      }catch(error){closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation}).catch(()=>{});throw error}finally{busy=false}
+    },
     takeover:()=>request({op:'display_takeover',tab_id:binding.tab_id,generation:binding.generation}),release:()=>request({op:'display_release',tab_id:binding.tab_id,generation:binding.generation}),actors:()=>request({op:'display_actors'}),
     async close(){if(closed)return;closed=true;renderer.close();await request({op:'mirror_close',subscription_id,generation:binding.generation})}}
 }

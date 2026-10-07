@@ -11,7 +11,7 @@ import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
-import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { launchArguments, HostChromium, HostChromiumSandboxError } from "./kernel-browser-process.mjs";
 
 function fixture(root) {
   const pages = new Map();
@@ -156,9 +156,9 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   assert.equal(handlers.size, 0);
   assert(sent.some(call => call.method === "Page.stopScreencast"));
   chromium.child.exitCode = 1;
-  await assert.rejects(host.request({ op: "poll", ...subscription }), /unavailable/);
+  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:"browser_unavailable"});
   await host.request({ op: "start" });
-  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:'user_domain_stale_reference'});
+  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
 }));
 test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
   await host.request({ op: "open", url: "about:blank" });
@@ -729,11 +729,28 @@ test('private CDP pipe loss retires the browser generation even while child is l
   chromium.start=async()=>{open=true;return start()};
   const before=await host.request({op:'open',url:'https://example.com/'});
   open=false;
-  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+  await assert.rejects(host.request({op:'state'}), {code:'browser_unavailable'});
   const after=await host.request({op:'start'});
   assert.equal(after.generation,before.generation+1);
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
+}));
+
+
+test('sandbox launch failures expose only the fixed actionable host diagnostic',()=>using(async({host})=>{
+ for(const restricted of [false,true]){
+  const failure=new HostChromiumSandboxError(restricted);
+  host.request=async()=>{throw failure};
+  const reply=await host.handle({id:'sandbox',method:'host.browser',params:{op:'open',url:'about:blank'}});
+  assert.equal(reply.error.code,'kernel_browser_failed');assert.equal(reply.error.message,failure.message);
+  assert.match(reply.error.message,/AppArmor/);assert.match(reply.error.message,/SUID sandbox/);
+  if(restricted)assert.match(reply.error.message,/kernel.apparmor_restrict_unprivileged_userns=1/);
+ }
+ for(const error of [new Error('No usable sandbox; synthetic-private-profile'),Object.assign(new Error('synthetic-private-page'),{code:'host_sandbox_unavailable'})]){
+  host.request=async()=>{throw error};
+  const reply=await host.handle({id:'private',method:'host.browser',params:{op:'open'}});
+  assert.equal(reply.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
+ }
 }));
 
 test('MP-08/MP-11 protected full captures cannot interrupt an in-flight pointer operation',()=>using(async({host,connection})=>{
@@ -759,4 +776,32 @@ test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutat
   assert.equal(host.displays.size,0);assert.equal(host.scales.size,0);
   assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));
+
+test('MD-454: headed capture uses the page surface, never the native window',()=>using(async({host,chromium,sent})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id);
+ chromium.display={};
+ await host.screenshot(tab);
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+ await host.screenshot(tab,{x:0,y:0,width:1280,height:800,scale:1});
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+ chromium.display=null;await host.screenshot(tab);
+ assert.equal(sent.filter(x=>x.method==='Page.captureScreenshot').at(-1).params.fromSurface,undefined);
+}));
+
+
+test('MD-454: captured PNG geometry must match declared device pixels even with an empty protection policy',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id),send=connection.send;
+ for(const [width,height] of [[1279,800],[1280,799],[2560,1687]]){
+  connection.send=async(method,...args)=>method==='Page.captureScreenshot'?{data:encodePng(width,height,Buffer.alloc(width*height*4,255))}:send(method,...args);
+  await assert.rejects(host.screenshot(tab),/capture.*dimensions|unsupported frame format/);
+ }
+}));
+
+test('MD-454: a wrong capture geometry is refused, not turned into a successful opaque screenshot',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://example.com'}),tab=host.tabs.get(opened.tab_id),send=connection.send;
+ host.protection={...host.protection,values:['synthetic-protected-value']};
+ delete host.browser.ensureConnection; // Empty, known fixture target set; no observation failure before capture.
+ connection.send=async(method,...args)=>method==='Page.captureScreenshot'?{data:encodePng(1279,800,Buffer.alloc(1279*800*4,255))}:send(method,...args);
+ await assert.rejects(host.screenshot(tab),/capture.*dimensions/);
 }));

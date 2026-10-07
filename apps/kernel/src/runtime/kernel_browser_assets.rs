@@ -60,8 +60,32 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
     ),
     (
+        "kernel-browser-mirror-local-fonts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-local-fonts.mjs"),
+    ),
+    (
+        "kernel-browser-mirror-protected-text.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-protected-text.mjs"),
+    ),
+    (
+        "kernel-browser-mirror-css.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-css.mjs"),
+    ),
+    (
+        "kernel-browser-mirror-custom-elements.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-custom-elements.mjs"),
+    ),
+    (
+        "browser-controller-mirror-fonts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-mirror-fonts.mjs"),
+    ),
+    (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),
+    ),
+    (
+        "kernel-browser-mirror-wire.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-wire.mjs"),
     ),
     (
         "kernel-browser-mirror.mjs",
@@ -241,4 +265,47 @@ pub(super) fn materialize(root: &Path) -> Result<PathBuf, String> {
             .map_err(|_| "MD-2: cannot publish browser controller asset")?;
     }
     Ok(directory.join("kernel-browser-host.mjs"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn md900_default_materialized_controller_loads_without_source_override() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-assets-{:032x}", rand::random::<u128>()));
+        let entry = materialize(&root).unwrap();
+        let mut child = Command::new("node")
+            .args([
+                entry.as_os_str(),
+                std::ffi::OsStr::new("stdio"),
+                root.as_os_str(),
+            ])
+            .env_clear()
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node is required to verify the default embedded controller");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"id\":1,\"method\":\"health\",\"params\":{}}\n")
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let health: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(health["ok"], true);
+        assert_eq!(health["result"]["state"], "ready");
+    }
 }

@@ -95,3 +95,34 @@ test('MP-11: nested protected input attributes are ASCII case insensitive',async
   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};assert.equal(method,'DOM.getBoxModel');boxed.push(params.nodeId);return {model:{border:[0,0,10,0,10,10,0,10]}};
  }};const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,2);assert.deepEqual(new Set(boxed),new Set([4,5]));
 });
+
+test('hidden protected frames need no pixels only when native CSS proves display:none',async()=>{
+ let hidden=true;const calls=[];const connection={async send(method,params){calls.push(method);
+  if(method==='DOM.getDocument')return {root:{nodeId:1,nodeType:9,children:[{nodeId:2,nodeType:1,localName:'iframe',attributes:[]}]}};
+  if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
+  if(method==='DOM.getBoxModel'){if(hidden)throw Error('Could not compute box model');return {model:{border:[0,0,30,0,30,20,0,20]}}}
+  if(method==='CSS.enable')return {};
+  if(method==='CSS.getComputedStyleForNode')return {computedStyle:[{name:'display',value:hidden?'none':'block'}]};throw Error(method);
+ }};
+ const masks=await captureRegionMasks(connection,'s');assert.deepEqual(await masks.afterCapture(),[]);assert(!calls.some(m=>m.startsWith('Runtime.')));
+ hidden=false;assert.deepEqual(await masks.afterCapture(),[{x:0,y:0,width:1280,height:800}],'Visibility change during capture masks the entire frame');
+});
+test('display:contents or unknown hidden protection geometry still refuses',async()=>{
+ for(const value of ['contents','block',null]){
+  const connection={async send(method){if(method==='DOM.getDocument')return {root:{nodeId:1,nodeType:9,children:[{nodeId:2,nodeType:1,localName:'div'}]}};if(method==='DOM.querySelectorAll')return {nodeIds:[2]};if(method==='DOM.getBoxModel')throw Error('box unavailable');if(method==='CSS.enable')return {};if(method==='CSS.getComputedStyleForNode'){if(value===null)throw Error('CSS unavailable');return {computedStyle:[{name:'display',value}]}};throw Error(method)}};
+  await assert.rejects(captureRegionMasks(connection,'s'));
+ }
+});
+
+test('MP-11 concurrent native and exact mask reads preserve their CDP document handles',async()=>{
+ let root=0;
+ const connection={send:async(method,params)=>{
+  if(method==='DOM.getDocument')return {root:{nodeId:++root}};
+  if(method==='DOM.querySelectorAll'){await new Promise(r=>setImmediate(r));assert.equal(params.nodeId,root,'The other mask reader must not replace this document handle');return {nodeIds:[]};}
+  throw Error('Unexpected metadata call');
+ }};
+ const {captureRegionMasks}=await import('./kernel-browser-region-protection.mjs');
+ const captures=await Promise.all([captureRegionMasks(connection,'s'),captureRegionMasks(connection,'s')]);
+ const masks=await Promise.all(captures.map(c=>c.afterCapture({width:1280,height:800})));
+ assert.deepEqual(masks,[[],[]]);
+});

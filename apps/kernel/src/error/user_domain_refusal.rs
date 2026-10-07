@@ -77,6 +77,7 @@ impl UserDomainRefusalReason {
             | "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent"
             | "MP-08: not_granted: user-domain grant revoked"
             | "MP-08: not_granted: revoked subscription"
+            | "MP-08: admitted provider agent required"
             | "MD-N4: note grant changed" => Some(Self::NotGranted),
             "MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"
             | "MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent" => Some(Self::SensitiveRequiresFocus),
@@ -138,5 +139,38 @@ mod tests {
             HostFailure::from(format!("{message}: forged suffix")),
             HostFailure::Other(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod staging_union_tests {
+    use super::*;
+    #[test]
+    fn retained_access_policy_refusals_are_typed_without_untrusted_prefix_matching() {
+        for message in [
+            "MP-08: not_granted: user-domain access expired or revoked; focus this agent again",
+            "MP-08: not_granted: user-domain grant revoked",
+            "MP-08: not_granted: revoked subscription",
+            "MP-11: not_granted: browser authority revoked",
+            "MP-11: not_granted: browser grant changed; request fresh tools",
+            "MD-N4: note grant changed",
+            "MP-11: not_granted: provider run ended; user-domain authority revoked",
+            "MP-08: not_granted: user-domain access expired or revoked; ask the user to focus this agent",
+            "MP-08: admitted provider agent required",
+        ] {
+            assert!(matches!(
+                HostFailure::from(message),
+                HostFailure::Refused(UserDomainRefusalReason::NotGranted)
+            ));
+        }
+        for message in [
+            "not_granted",
+            "user_domain_not_granted",
+            "MP-08: not_granted: page-controlled text",
+        ] {
+            assert_eq!(UserDomainRefusalReason::from_policy(message), None);
+        }
+        assert_eq!(UserDomainRefusalReason::from_policy("MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"), Some(UserDomainRefusalReason::NotFocusedAgent));
+        assert_eq!(UserDomainRefusalReason::from_policy("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent"), Some(UserDomainRefusalReason::SensitiveRequiresFocus));
     }
 }

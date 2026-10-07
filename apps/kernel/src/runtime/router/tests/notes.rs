@@ -268,3 +268,89 @@ mod live;
 
 #[path = "notes/hardening.rs"]
 mod hardening;
+
+#[test]
+fn notes_cloud_owned_terminal_window_keeps_membership_and_owner_alias_separate() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let workspace = crate::test_support::TestWorktree::new("mdnotes-cloud-membership");
+            let mut config = DaemonConfig::for_tests();
+            config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                user_id: "cloud-owner".into(),
+                ..Default::default()
+            });
+            let mut app = DaemonApp::bootstrap(config).unwrap();
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(
+                    workspace
+                        .session_request()
+                        .with_owner_user_id("cloud-owner"),
+                )
+                .unwrap();
+            assert!(session.has_member("cloud-owner"));
+            assert!(!session.has_member("local"));
+            let (foreign_session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(
+                    workspace
+                        .session_request()
+                        .with_owner_user_id("foreign-owner"),
+                )
+                .unwrap();
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            let request = LocalDaemonRequest::Notes(NotesRequest {
+                command: NoteCommand::ReportSelection {
+                    anchor: NoteAnchor {
+                        window: NoteWindow::Terminal {
+                            session_id: session.id().into(),
+                            window_id: "web:agent_transcript:fixture".into(),
+                        },
+                        url: None,
+                        document_id: Some("message:public".into()),
+                        hint: Some("agent_transcript".into()),
+                        quote: NoteTextQuote {
+                            exact: "Public selected text".into(),
+                            prefix: "".into(),
+                            suffix: "".into(),
+                        },
+                    },
+                    box_css: None,
+                },
+            });
+            let mut owner = terminal_command("mdnotes-cloud-owner", &request);
+            owner.caller.user_id = Some("cloud-owner".into());
+            let response = router.dispatch(owner, request.clone()).await;
+            assert!(
+                response.is_ok(),
+                "Cloud owner must be admitted to its terminal note window: {response:?}"
+            );
+            let mut foreign = terminal_command("mdnotes-foreign-owner", &request);
+            foreign.caller.user_id = Some("foreign-owner".into());
+            assert!(
+                router.dispatch(foreign, request.clone()).await.is_err(),
+                "Foreign caller must remain refused"
+            );
+            let mut foreign_room_request = request;
+            let LocalDaemonRequest::Notes(NotesRequest {
+                command: NoteCommand::ReportSelection { anchor, .. },
+            }) = &mut foreign_room_request
+            else {
+                unreachable!()
+            };
+            anchor.window = NoteWindow::Terminal {
+                session_id: foreign_session.id().into(),
+                window_id: "web:foreign-transcript".into(),
+            };
+            let mut owner =
+                terminal_command("mdnotes-cloud-owner-foreign-room", &foreign_room_request);
+            owner.caller.user_id = Some("cloud-owner".into());
+            assert!(
+                router.dispatch(owner, foreign_room_request).await.is_err(),
+                "Owner alias must not grant another user's Room"
+            );
+            router.runtime_state().shutdown_cleanup().await.unwrap();
+        });
+}

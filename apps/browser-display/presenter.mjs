@@ -4,21 +4,22 @@ import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
-export const minimumProtocolVersion = 447;
+export const minimumProtocolVersion = 454;
 const VP9='vp09.00.10.08';
-const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
+const videoCodecs=['avc1.420033','vp8','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
 // input and changed frames wake every parked slot without waiting for a timer.
 export class IdleCredit {
   constructor(now=()=>performance.now()) { this.delay=0; this.parked=new Set();this.now=now;this.activeUntil=-Infinity;this.roundTrip=null; }
   observeRoundTrip(ms) { if(Number.isFinite(ms)&&ms>=0)this.roundTrip=this.roundTrip===null?ms:this.roundTrip*.8+ms*.2; }
   wake() { this.delay=0;this.activeUntil=this.now()+300;for(const wake of this.parked)wake(); }
+  changed() { this.delay=Math.min(this.delay,33); }
   wait() {
     const active=this.now()<this.activeUntil;
     // Fast retries help a short local credit loop; on a slow link they add
     // encrypted control traffic and TCP loss exposure without hiding its RTT.
     const fast=active&&this.roundTrip!==null&&this.roundTrip<40;
-    this.delay=Math.min(active?(fast?8:33):100,Math.max(active?8:32,this.delay*2));
+    this.delay=Math.min(active?(fast?8:33):4000,Math.max(active?8:32,this.delay*2));
     return new Promise(resolve=>{
       const wake=()=>{clearTimeout(timer);this.parked.delete(wake);resolve();};
       const timer=setTimeout(wake,this.delay);this.parked.add(wake);
@@ -228,7 +229,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       idle.observeRoundTrip(performance.timeOrigin+performance.now()-at);
       onTiming('frame_credit_round_trip', at);
       if (!receipt.frame_sent) return false;
-      idle.wake();
+      // A frame advances its own slot. It must not awaken every empty slot or
+      // classify an autonomous update as fresh human input; idle views back off.
+      idle.changed();
       let timer;
       const item = await Promise.race([receive(), new Promise((_,reject) => {
         timer=setTimeout(() => reject(Error('MD-DISPLAY: window event timeout')),30000);

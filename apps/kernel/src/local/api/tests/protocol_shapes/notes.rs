@@ -79,7 +79,7 @@ fn notes_protocol_443_shapes_and_rejected_authority_claims() {
 #[test]
 fn notes_protocol_443_response_snapshots() {
     use crate::local::{NoteRecord, NoteReply, NoteSelection, NoteSummary};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 447);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 454);
     let window = NoteWindow::Panel {
         window_id: "message-42".into(),
     };

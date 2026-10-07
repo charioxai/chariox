@@ -10,7 +10,7 @@ export type KernelBrowserCommand =
   | { op: "subscribe_grants"; after: number; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2 }
-  | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[] }
+  | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; after_chunk?: number; drift_nodes: string[] }
   | { op: "mirror_close"; subscription_id: string; generation: number }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }

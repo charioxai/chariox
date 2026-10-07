@@ -30,9 +30,9 @@ test('MP-08: semantic hash survives Rust map ordering and removed-node patches',
  const p=packet(),base=validateMirrorPacket(p,new Map());const next=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,text:'changed'}]},base)
  assert.equal(next.get('n1')?.text,'changed');assert.equal(base.get('n1')?.text,undefined)
 })
-test('MP-08: protocol 443/unknown rejects before allocating a subscription or frame',async()=>{
- assert.equal(browserMirrorMinimumProtocolVersion,443)
- for(const protocolVersion of [435,442,0,NaN])await assert.rejects(attachBrowserMirror({protocolVersion,request:async()=>assert.fail('must not request')},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},()=>{}),/protocol 443/)
+test('MP-08: protocol 432/unknown rejects before allocating a subscription or frame',async()=>{
+ assert.equal(browserMirrorMinimumProtocolVersion,454)
+ for(const protocolVersion of [453,443,432,427,0,NaN])await assert.rejects(attachBrowserMirror({protocolVersion,request:async()=>assert.fail('must not request')},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},()=>{}),/protocol 454/)
 })
 
 test('MP-11: admitted nodes do not retain mutable transport-owned references',()=>{
@@ -48,6 +48,17 @@ test('MP-08/MP-11: cached tree hash preserves canonical bytes across retained an
  const changed=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,style:{color:'rgb(1, 2, 3)'}}]},base);tree.nodes=[...changed.values()];
  assert.equal(mirrorTreeCanonicalJson(tree,cache),mirrorCanonicalJson(tree));
 });
+test('inert word-break opportunities preserve inline flow without admitting active markup',()=>{
+ validateMirrorNode({id:'n1',parent:null,children:[],kind:'element',tag:'wbr'});
+});
+test('hidden geometry cannot rasterize its public parent; becoming visible restores the drift fence',()=>{
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ const child={id:'n2',parent:'n1',children:[],kind:'element',tag:'span',box:{x:0,y:0,width:20,height:20},style:{visibility:'hidden'}};
+ const parent={id:'n1',parent:null,children:['n2'],kind:'element',tag:'div'};
+ const node={getBoundingClientRect:()=>({x:1,y:0,width:20,height:20}),ownerDocument:{defaultView:{getComputedStyle:()=>({getPropertyValue:()=>''})}}};
+ Object.assign(renderer,{records:new Map<string,unknown>([['n1',parent],['n2',child]]),dom:new Map([['n2',node]]),timings:[]});
+ assert.deepEqual(renderer.driftNodes(),[]);child.style.visibility='visible';assert.deepEqual(renderer.driftNodes(),['n2']);
+});
 
 test('MP-08/MP-11: sorted Rust style maps cannot reset vendor paint properties after assignment',()=>{
  const properties=new Map<string,string>();const element={removeAttribute(){properties.clear()},style:{setProperty(key:string,value:string){if(key==='all')properties.clear();properties.set(key,value)}}} as unknown as HTMLElement;
@@ -60,8 +71,8 @@ test('MP-08/MP-11: nested event listeners bind once per Document independent of 
  const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
  Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:8,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
  for(let packet=0;packet<8;packet++)renderer.bindEvents(doc);
- for(const [kind,extra]of [['click',{}],['beforeinput',{inputType:'insertText',data:'Q',isComposing:false}],['keydown',{key:'Enter'}],['wheel',{deltaX:0,deltaY:20}] ] as const){const event=new Event(kind);Object.assign(event,extra);Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event)}
- await renderer.inputChain;assert.equal(actions.length,4);assert.equal(renderer.documentBindings.size,1);assert.equal(renderer.documentBindings.get(doc).length,8);
+ for(const [kind,extra]of [['click',{}],['beforeinput',{inputType:'insertText',data:'Q',isComposing:false}],['keydown',{key:'Enter'}],['wheel',{deltaX:0,deltaY:20,clientX:10,clientY:15}] ] as const){const event=new Event(kind);Object.assign(event,extra);Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event)}
+ await renderer.inputChain;assert.equal(actions.length,4);assert.deepEqual(actions[3],{kind:'coordinate',input:{kind:'scroll',x:10,y:15,delta_x:0,delta_y:20}});assert.equal(renderer.documentBindings.size,1);assert.equal(renderer.documentBindings.get(doc).length,8);
  renderer.releaseDocuments(new Set());assert.equal(renderer.documentBindings.size,0);const event=new Event('click');Object.defineProperty(event,'composedPath',{value:()=>[node]});doc.dispatchEvent(event);await renderer.inputChain;assert.equal(actions.length,4);
 });
 
@@ -89,9 +100,30 @@ test('MP-08/MP-11: keys following native focus progress use the guarded native i
  const event=(kind:string,extra:Record<string,unknown>)=>{const e=new Event(kind);Object.assign(e,extra);Object.defineProperty(e,'composedPath',{value:()=>[node]});listeners.get(kind)!(e)};
  event('keydown',{key:'Tab'});await renderer.inputChain;
  // The host has captured B at sequence2 but its delayed response has not painted.
- event('keydown',{key:'Backspace'});event('keydown',{key:'ArrowLeft'});event('keydown',{key:'Tab'});event('keydown',{key:'Enter'});
+ event('keydown',{key:'Backspace'});event('keydown',{key:'ArrowLeft'});event('keydown',{key:'Tab',shiftKey:true});event('keydown',{key:'Enter'});
  event('beforeinput',{inputType:'insertText',data:'Q',isComposing:false});await renderer.inputChain;
- assert.deepEqual(actions,[{kind:'key',key:'Tab'},...['Backspace','ArrowLeft','Tab','Enter'].map(key=>({kind:'coordinate',input:{kind:'key',key}})),{kind:'coordinate',input:{kind:'text',text:'Q'}}]);
+ assert.deepEqual(actions,[{kind:'key',key:'Tab'},...['Backspace','ArrowLeft','Shift+Tab','Enter'].map(key=>({kind:'coordinate',input:{kind:'key',key}})),{kind:'coordinate',input:{kind:'text',text:'Q'}}]);
  event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
  assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
+});
+
+test('MD-454: visible initial paint forwards its exact renderer epoch before next settles',async t=>{
+ const frame={setAttribute(){},style:{},addEventListener(){},remove(){}};
+ const container={ownerDocument:{createElement(){return frame}},append(){}} as unknown as HTMLElement;
+ t.mock.method(BrowserMirrorRenderer.prototype,'ready',async()=>{});
+ t.mock.method(BrowserMirrorRenderer.prototype,'close',()=>{});
+ const sent:any[]=[];
+ const attachment=await attachBrowserMirror({protocolVersion:454,request:async r=>{sent.push(r);return {KernelBrowser:{result:{subscription_id:'s'}}}}},container,{tab_id:'t',generation:1,device_scale_factor:1},()=>{});
+ try{
+  await assert.rejects(async()=>attachment.input({kind:'click',node_id:'n1'}),/no observed document/);
+  await Reflect.get(attachment.renderer,'input')({kind:'click',node_id:'n1'},{sequence:1,document_id:'d'});
+  assert.deepEqual(sent.at(-1).KernelBrowser.command,{op:'mirror_input',tab_id:'t',generation:1,device_scale_factor:1,document_id:'d',subscription_id:'s',sequence:1,action:{kind:'click',node_id:'n1'}});
+ }finally{await attachment.close()}
+});
+
+test('MD-454: static Retina resources use chunked bounds while animated media and fonts keep small caps',()=>{
+ const data_base64='A'.repeat(700004);
+ for(const mime_type of ['image/png','image/jpeg'])validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64}]},new Map());
+ for(const mime_type of ['image/gif','image/webp','font/woff','font/woff2'])assert.throws(()=>validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64}]},new Map()));
+ for(const mime_type of ['image/png','image/jpeg'])assert.throws(()=>validateMirrorPacket({...packet(),resources:[{resource_id:'b'.repeat(64),mime_type,data_base64:'A'.repeat(4194305)}]},new Map()));
 });

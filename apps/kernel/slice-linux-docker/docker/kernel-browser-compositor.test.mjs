@@ -10,7 +10,7 @@ function fixture(){
  const tab={target_id:'target',tab_id:'tab',document_id:'doc'},policy={values:[],targets:[],unknown:false};let current=policy;
  const emit=(method,params={},sessionId='session')=>{for(const h of handlers)h({method,params,sessionId})};
  const connection={subscribe:h=>{handlers.add(h);return()=>handlers.delete(h)},send:async(method,params)=>{calls.push(method);if(method==='Page.startScreencast')emit('Page.screencastFrame',{data,sessionId:1});if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:'doc'}}};return {}}};
- const source=new CompositorSource({connection,sessionId:'session',tab,scale:1,policy,width:8,height:8,hasher:{hash:async data=>({signature:createHash('sha256').update(decodePng(data).pixels).digest('hex'),width:8,height:8}),close:async()=>{}},screenshot:async()=>({data_base64:data}),allowed:p=>p===current&&!p.unknown&&!p.values.length&&!p.targets.length});
+ const source=new CompositorSource({connection,sessionId:'session',tab,scale:1,policy,width:8,height:8,hasher:{hash:async data=>({signature:createHash('sha256').update(decodePng(data).pixels).digest('hex'),width:decodePng(data).width,height:decodePng(data).height}),close:async()=>{}},screenshot:async()=>({data_base64:data}),allowed:p=>p===current&&!p.unknown&&!p.values.length&&!p.targets.length});
  return {source,emit,calls,handlers,policy,setPolicy:p=>current=p,setData:p=>data=p};
 }
 test('MD-DISPLAY compositor is attested, latest-only and ACKs without viewer credit',async()=>{
@@ -69,4 +69,27 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  release({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});await new Promise(r=>setTimeout(r,0));
  assert.equal(f.source.sample().data_base64,black);assert.equal(captures,2);
  await f.source.close();
+});
+
+test('MP-11 capture finishing after compositor close cannot restart its retired encoder',async()=>{
+ let finish,hashes=0,closes=0;
+ const protectedCapture=new Promise(resolve=>finish=resolve);
+ const source=new CompositorSource({connection:{send:async()=>({})},sessionId:'s',tab:{},policy:{},allowed:()=>true,
+  protect:()=>protectedCapture,hasher:{hash:async()=>{hashes++;return {width:1280,height:800,signature:'x'}},close:async()=>{closes++}}});
+ source.pendingImage={data:'wake',format:'png',receivedAt:0};
+ const active=source.processLatest();await source.close();finish({data_base64:'late'});await active;
+ assert.equal(hashes,0,'A late protected observation cannot spawn another codec child');assert.equal(closes,1);
+});
+
+test('MP-11 smaller screencast wakes verified Retina capture and bounded protected stripe raster',async()=>{
+ const f=fixture(),pixels=Buffer.alloc(16*16*4);for(let i=0;i<pixels.length;i+=4){pixels[i]=20;pixels[i+1]=85;pixels[i+2]=184;pixels[i+3]=255}
+ const protectedPng=encodePng(16,16,pixels);f.source.width=16;f.source.height=16;f.source.scale=2;
+ f.source.protect=async()=>({data_base64:protectedPng});f.source.screenshot=f.source.protect;
+ try{await f.source.start();const sample=f.source.sample();assert.equal(sample.data_base64,protectedPng);assert.equal(sample.raw.width,16);assert.equal(sample.raw.height,16);assert.equal(sample.raw.length,pixels.length);assert.deepEqual(Array.from(sample.raw.pixels.subarray(0,4)),[184,85,20,255]);assert.equal(sample.raw.format,'bgr0')}finally{await f.source.close()}
+});
+test('MP-11 protected capture admits live motion without comparing two different paint times',async()=>{
+ const f=fixture();f.source.protect=async()=>({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});
+ // A later paint can differ. It is not the reference for already-verified pixels.
+ f.source.screenshot=async()=>({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,0))});
+ try{await f.source.start();assert(f.source.sample());assert.equal(f.source.sample().raw.pixels[0],255)}finally{await f.source.close()}
 });

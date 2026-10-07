@@ -76,7 +76,7 @@ fn detached_passkey_is_redacted_from_kernel_command_and_debug() {
 #[test]
 fn user_app_view_protocol_443_kernel_browser_host_selection_snapshot() {
     use crate::runtime::browser_controller_app_view::BrowserAppViewRequest;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 447);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 454);
     let request = LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
         installation_id: "todo".into(),
         host: Some(UserAppViewHost::KernelBrowser),

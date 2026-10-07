@@ -52,7 +52,7 @@ pub(crate) struct KernelBrowserAdmission {
 }
 
 impl KernelBrowserAdmission {
-    /// Focus epochs have no authority callback. While holding the actor model,
+    /// Grant epochs have no authority callback. While holding the actor model,
     /// check only atomic revocation: callbacks may acquire the host lock, whose
     /// retirement path takes host then model. Full authority is checked outside.
     fn revoked_in_actor_lock(&self) -> bool {

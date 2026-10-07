@@ -75,7 +75,7 @@ test("MP-11: protected targets refuse every text-producing input in both grant m
     {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
   ]) {
     const {browser,sent}=fixture(true);
-    await assert.rejects(inputHostTab(browser,tab,input,{retained}), {code:'user_domain_sensitive_requires_focus'});
+    await assert.rejects(inputHostTab(browser,tab,input,{retained}), {code:"user_domain_sensitive_requires_focus"});
     assert.equal(sent.filter(({method})=>method.startsWith('Input.')).length,0);
   }
 });
@@ -87,6 +87,7 @@ test("MP-08/MP-11: protected targets retain non-text navigation", async () => {
   }
 });
 
+// MP-08/MP-11: dispatch waits for the live mirror guard after focus capture.
 test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()=>{
   let release,entered,dispatches=0,guards=0,captured=false;
   const held=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
@@ -101,9 +102,26 @@ test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()
 test('MP-08/MP-11: native navigation and editing keys carry their Chromium virtual key codes',async()=>{
  const codes={Tab:9,Enter:13,Escape:27,Backspace:8,Delete:46,ArrowLeft:37,ArrowRight:39,ArrowUp:38,ArrowDown:40,Home:36,End:35};
  for(const [key,code]of Object.entries(codes)){
-   const events=[];const connection={async send(method,params){if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};if(method==='Input.dispatchKeyEvent'){events.push(params);return {}};if(method==='Page.createIsolatedWorld')return {executionContextId:7};if(method==='Runtime.evaluate')return {result:{value:false}};throw Error(`unexpected ${method}`)}};
-   const browser={async resolvePageTarget(){return {connection,sessionId:'s'}},inputCapture:{run(_c,_s,fn){return fn()}}};
-   await inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'key',key});
+   const {browser,sent}=fixture(false);
+   await inputHostTab(browser,tab,{kind:'key',key});
+   const events=sent.filter(call=>call.method==='Input.dispatchKeyEvent').map(call=>call.params);
    assert.deepEqual(events.map(e=>e.windowsVirtualKeyCode),[code,code]);assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
  }
+});
+test('MD-454: batched wheel deltas use the live mirror fence; direct input keeps its bound',async()=>{
+ const {browser,sent}=fixture(),wheel={kind:'scroll',x:10,y:10,delta_x:0,delta_y:192000};let guarded=0;
+ await inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input:wheel,guard:async()=>guarded++})});
+ assert.equal(guarded,1);assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent')[0].params.deltaY,192000);
+ await assert.rejects(inputHostTab(browser,tab,wheel),/unsupported input/);
+ await assert.rejects(inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input:{...wheel,delta_y:1000001},guard:async()=>guarded++})}),/unsupported input/);
+ assert.equal(sent.filter(e=>e.method==='Input.dispatchMouseEvent').length,1);
+});
+
+for(const scale of [.5,1,2])test('MD-454: canonical CSS pointer is dispatched at the headed emulation scale '+scale,async()=>{
+ const {browser,sent}=fixture();let guarded=0;
+ await inputHostTab(browser,tab,{kind:'mirror'},{coordinateScale:scale,resolveMirror:async()=>({input:{kind:'click',x:88,y:112},guard:async()=>guarded++})});
+ const clicks=sent.filter(e=>e.method==='Input.dispatchMouseEvent');assert.equal(guarded,2);
+ assert.deepEqual(clicks.map(e=>[e.params.x,e.params.y]),[[88*scale,112*scale],[88*scale,112*scale]]);
+ await inputHostTab(browser,tab,{kind:'scroll',x:88,y:112,delta_x:3,delta_y:8000},{coordinateScale:scale});
+ const wheel=sent.at(-1).params;assert.equal(wheel.x,88*scale);assert.equal(wheel.y,112*scale);assert.equal(wheel.deltaY,8000,'Wheel distances remain in CSS pixels');
 });

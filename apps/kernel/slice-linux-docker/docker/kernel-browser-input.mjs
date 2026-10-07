@@ -4,10 +4,11 @@ import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
-const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
+const keyCodes = { Tab: 9, Enter: 13, Space: 32, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, coordinateScale = 1 } = {}) {
     assertNotCancelled(signal);
+    if(![.5,1,2].includes(coordinateScale))throw new Error('MD-2: unsupported native pointer scale');
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
     const check = async () => {
@@ -43,13 +44,18 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
-      await mirrorGuard?.();
       if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
         await checkTextTarget();
         await check();
       }
+      await mirrorGuard?.();
       onDispatch?.();
-      const result = await connection.send(method, params, sessionId);
+      // Headed raster density uses Emulation.scale on the canonical DPR1 host.
+      // CDP pointer positions address that scaled viewport; semantic admission
+      // above always uses the original CSS coordinates. Wheel deltas stay CSS.
+      const nativeParams=method==='Input.dispatchMouseEvent'&&coordinateScale!==1
+        ? {...params,x:params.x*coordinateScale,y:params.y*coordinateScale}:params;
+      const result = await connection.send(method, nativeParams, sessionId);
       assertNotCancelled(signal);
       return result;
     };
@@ -73,11 +79,11 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
-        if (!printable && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const name = input.key === "Shift+Tab" ? "Tab" : input.key;
+        if (!printable && !Object.hasOwn(keyCodes, name)) throw new Error("MD-2: unsupported key");
         const key = { key: name === "Space" ? " " : name, code: name,
           ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
-          windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
+          windowsVirtualKeyCode: keyCodes[name] };
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
         // MP-08: paired releases keep document and live cancellation checks.
@@ -87,7 +93,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         if (input.kind === "click") {
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
-        } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
+        } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= (mirrorGuard ? 1000000 : 10000) && Math.abs(input.delta_y) <= (mirrorGuard ? 1000000 : 10000)) {
           await sendInput("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y });
         } else throw new Error("MD-2: unsupported input");
       }

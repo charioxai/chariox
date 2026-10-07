@@ -1,5 +1,5 @@
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostDisplayScale} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -10,16 +10,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
-import { HostChromium } from "./kernel-browser-process.mjs";
+import { HostChromium, HostChromiumSandboxError } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureProtectedPage, wholeFrameMask, decodePng } from "./kernel-browser-pixels.mjs";
 
-import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
+import { MirrorService, MirrorInputEpochRefusal, MirrorFrameChanged } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
-import { CompositorSource } from './kernel-browser-compositor.mjs';
+import { CompositorSource, jpegDimensions } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
 import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
@@ -127,6 +127,7 @@ export class KernelBrowserHost {
     const connection = await this.chromium.start();
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    assertNotCancelled(signal);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
     // Publish the new generation before any restoration, so old references never revive.
@@ -166,7 +167,7 @@ export class KernelBrowserHost {
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      let source=await selectNativeCapture({display:this.chromium.display,create:async()=>{
+      let source=await selectNativeCapture({display:this.chromium.display,scale:stream.device_scale_factor,create:async()=>{
         if(this.tabs.size!==1)throw Error('native tab scope');
         const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         return await source.start();
@@ -272,6 +273,9 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
+    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
+    let captureDimensionError;
     const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
@@ -279,17 +283,25 @@ export class KernelBrowserHost {
         const sample = async () => {
           const compositor=this.compositors.get(tab.tab_id)?.source;
           if(clip)compositor?.pause();
+          // Always capture the page surface. Window snapshots include browser
+          // chrome and ignore emulation/clips, invalidating protection geometry.
           try{return await connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
           finally{if(clip)compositor?.resume()}
         };
         const policy=this.protection;
         const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
         this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
+        try {
+          const encoded = Buffer.from(data, 'base64');
+          const dimensions = format === 'png' ? decodePng(data, scale) : format === 'jpeg' ? jpegDimensions(encoded) : null;
+          if (!dimensions || dimensions.width !== width || dimensions.height !== height) throw new Error('MD-2: capture dimensions changed; retry after the page settles');
+        } catch (error) { captureDimensionError = error; throw error; }
         return data;
       }, scale, clip);
+    // The generic protection masker may synthesize an opaque frame after a
+    // capture failure. A geometry mismatch must still refuse this screenshot.
+    if (captureDimensionError) throw captureDimensionError;
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
-    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
     const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
     this.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
@@ -390,7 +402,7 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
-    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);return {closed:true};}
+    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
@@ -530,7 +542,7 @@ export class KernelBrowserHost {
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, mobile: false }, sessionId);
+      if(!scale)await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, scale:this.chromium.display?command.device_scale_factor/hostDisplayScale:1, mobile: false }, sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
@@ -578,7 +590,7 @@ export class KernelBrowserHost {
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
-        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, coordinateScale:this.chromium?.display?(this.scales.get(tab.tab_id)??geometry.dpr)/hostDisplayScale:1, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
         this.timing('cdp_input', at);
       }
@@ -660,13 +672,14 @@ export class KernelBrowserHost {
       }
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
+      if (error instanceof HostChromiumSandboxError) return {id:request.id,ok:false,error:{code:"kernel_browser_failed",message:error.message}};
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id) await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+        return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof MirrorFrameChanged ? "MP-11: mirror frame changed before commit" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 

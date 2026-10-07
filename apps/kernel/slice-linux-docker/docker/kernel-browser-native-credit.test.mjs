@@ -59,3 +59,10 @@ test('MP-11 a region fence emits nothing while preserving only exact-canvas book
  f.source.valid=()=>true;f.source.tab.document_id='next';assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
  f.source.tab.document_id='d';f.source.policy={};assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
 });
+
+// CDP fallback is attested too, but has no private native validity fence.
+test('MP-11 attested compositor fallback cannot enter native-only shortcuts',()=>{
+ const f=fixture();delete f.source.valid;f.source.tab={tab_id:'t',document_id:'d'};
+ assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
+ assert.equal(nativeRegionBaseCurrent({...f.stream,exact:true},f.source,'d',f.policy),false);
+});

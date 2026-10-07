@@ -1,33 +1,16 @@
-# MD-DISPLAY-02/04: kernel browser display implementation and history
+# Staging 454 display integration
 
-MD-DISPLAY-02/04: current transport uses reserved local 441 / relay 84; dependent
-video requires the explicit `chariox-video-dependencies-v1` codec capability.
-Legacy offers retain independent frames. The client minimum is 441.
+The staging union uses local protocol 454 and relay peer 94. Display source
+through `78a43bb304dfd017def21b292aceb2909cc231e9` is integrated, including
+masking, opaque-bootstrap native-chain retirement, exact presentation metrics,
+and reduced software motion before color conversion. Whole-frame software
+motion may reduce resolution; protected/striped frames retain native geometry
+and lossless repair restores settled pixels. No performance or live acceptance
+is implied. Historical phase reports stay omitted from the staging union.
 
-Current Phase 10 native motion prefers negotiated H.264, with realtime VP9 fallback,
-three default display credits, bounded reference recovery and exact PNG damage
-repair. PyAV needs libx264/libvpx; optional FFmpeg plus an accessible render device
-can attempt VAAPI, falling back on actual failure. Builder evidence is software
-only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
-coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
-and reduced software motion scale are implemented; exact settled pixels stay
-native DPR. Current results remain RED and the flag stays off. See the source-bound
-Phase 10 matrix and integration limits in the performance doc.
+The 419 implementation notes below are historical.
 
-MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
-1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
-Resizing precedes color conversion. Reduced video certifies no native pixels;
-lossless repair restores native resolution. Protected, striped and hardware
-frames retain native geometry. Capture manually redirects the owned window on
-its private X server, avoiding composition onto an unused root, and falls back
-to automatic redirection when another capture owns the manual redirect.
-These changes do not establish performance or live acceptance.
-
-The historical427/74 configuration, pipeline, client and Phase7 evidence are
-in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
-The sections below record earlier419-era implementation and receipts; their
-codec, source, pacing and credit descriptions are historical, not current
-configuration. Their source identities and limitations remain unchanged.
+# MD-DISPLAY-02/04: experimental kernel browser display, protocol 419
 
 This implements the Phase-2 recommendation as an opt-in, removable adapter.
 It does not close an MD or MP acceptance item. The owner still decides the final

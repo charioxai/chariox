@@ -125,6 +125,63 @@ impl Drop for NativeInput {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
+fn md900_native_retained_tabless_stop_cannot_stop_other_agents_or_owner_tabs() {
+    let fixture = NativeInput::new(r#"<input id="field" style="height:30px">"#);
+    fixture.host.set_focus("owner", Some("empty"));
+    fixture.host.load("owner", "empty").unwrap();
+    fixture.host.set_focus("owner", Some("second"));
+    fixture.host.load("owner", "second").unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    fixture
+        .host
+        .protected_request(
+            "owner",
+            Some("second"),
+            "host.browser",
+            json!({"op":"open","url":"about:blank"}),
+            policy.clone(),
+        )
+        .unwrap();
+    let before = fixture
+        .host
+        .protected_request(
+            "owner",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    assert_eq!(before["tabs"].as_array().unwrap().len(), 2);
+    for agent in ["first", "empty"] {
+        let error = fixture
+            .host
+            .protected_request(
+                "owner",
+                Some(agent),
+                "host.browser",
+                json!({"op":"stop"}),
+                policy.clone(),
+            )
+            .unwrap_err();
+        assert!(error.contains("not_focused_agent"), "{error}");
+        let after = fixture
+            .host
+            .protected_request(
+                "owner",
+                None,
+                "host.browser",
+                json!({"op":"state"}),
+                policy.clone(),
+            )
+            .unwrap();
+        assert_eq!(after["generation"], before["generation"]);
+        assert_eq!(after["tabs"], before["tabs"]);
+    }
+}
+
+#[test]
+#[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
 fn mdaccess_native_retained_enter_dispatches_like_focused() {
     let fixture = NativeInput::new(
         r#"<form><input id="field" type="text" style="height:30px"><button id="pay" type="submit">Pay</button></form>"#,

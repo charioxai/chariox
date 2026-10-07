@@ -32,3 +32,12 @@ test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordi
  assert(launchArguments('/private',false,true).includes('--disable-lcd-text'));
  assert(!launchArguments('/private',false,false).includes('--disable-lcd-text'));
 });
+
+test('MD-454: canonical physical scale keeps native font geometry representable at both viewer densities',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
+ const args=launchArguments('/private',false,true);
+ assert(args.includes('--force-device-scale-factor=1'));
+ assert(args.includes(`--window-size=${displayGeometry.width*displayGeometry.dpr},${displayGeometry.height*displayGeometry.dpr+87}`));
+ assert(!args.some(arg=>arg==='--no-sandbox'));
+});
