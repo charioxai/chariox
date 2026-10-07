@@ -16,6 +16,8 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
+    if(method==='Browser.getWindowForTarget')return {windowId:1};
+    if(method==='Browser.setWindowBounds')return {};
     if(method==='Runtime.releaseObjectGroup')return {};
     if(method==='Runtime.evaluate'&&params.expression.includes('.customHosts()'))return {result:{value:null}};
     if(method==='Runtime.evaluate'&&params.expression.includes('.fontKeys()'))return {result:{value:[]}};
@@ -26,6 +28,14 @@ function fixture() {
   return {host,state,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
+test('MP-11: headed tile capture keeps the native viewport unchanged',async()=>{
+ const {service,state,host}=fixture();host.chromium={display:{}};
+ const control=state.snapshot.nodes[0];Object.assign(control,{parent:'n0',kind:'tile',tag:'button',reason:'native_control'});
+ state.snapshot.root='n0';state.snapshot.nodes.unshift({id:'n0',parent:null,children:[control.id],kind:'element',tag:'html'});
+ const screenshot=host.screenshot;host.screenshot=async(tab,clip)=>{assert.equal(clip,null,'Headed CDP crops resize the viewport during observation');return screenshot(tab,clip)};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const packet=await service.next(next(sub.subscription_id),'a');assert.equal(packet.tiles.length,1);
+});
 test('MP-11: guessed stream IDs never authorize another terminal, expired or recovered browser',async()=>{
  const {service,host}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'terminal:a');
  await assert.rejects(service.next(next(s.subscription_id),'terminal:b'),/foreign/);

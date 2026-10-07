@@ -1,4 +1,5 @@
 import {inspectMirrorCustomElements} from './kernel-browser-mirror-custom-elements.mjs';
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
 import {mirrorChunks,mirrorFrameBytes} from './kernel-browser-mirror-wire.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
@@ -63,7 +64,11 @@ export class MirrorService {
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,mobile:false},sessionId);
+    if(this.host.chromium?.display){
+      const {windowId}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});
+      await connection.send('Browser.setWindowBounds',{windowId,bounds:{width:1280*command.device_scale_factor/geometry.dpr,height:800*command.device_scale_factor/geometry.dpr+87}});
+    }
+    await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,...(this.host.chromium?.display?{scale:command.device_scale_factor/geometry.dpr}:{}),mobile:false},sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],inputCustomFingerprint:'[]',previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
@@ -221,7 +226,9 @@ export class MirrorService {
       // credit performs native full-frame verification/refinement, as display
       // does. Chromium's DPR2 cropped raster can differ at glyph/shape edges.
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
-      const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&stream.nativeRasterKey===nativeRasterKey;
+      // Headed CDP crop capture temporarily resizes the native viewport, which
+      // changes the observer epoch. Capture the full viewport and crop locally.
+      const refine=Boolean(this.host.chromium?.display)||stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&stream.nativeRasterKey===nativeRasterKey;
       const clip=refine?{x:0,y:0,width:1280,height:800,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
       const masks=await captureRegionMasks(world.connection,world.sessionId,{mirrorStructured:true});
       mark('tile_masks_before');
