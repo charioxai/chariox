@@ -109,11 +109,11 @@ export class LinuxCapture {
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
-   let at=performance.timeOrigin+performance.now();
-   await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);this.timing('native_document_fence',at);
-   at=performance.timeOrigin+performance.now();
-   const visibility=await this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId);
-   this.timing('native_visibility_fence',at);
+   let at=performance.timeOrigin+performance.now();const fenced=at;
+   // Both fences follow this readback; each must pass. Concurrent, not skipped.
+   const [,visibility]=await Promise.all([
+    assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id).then(()=>this.timing('native_document_fence',fenced)),
+    this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId).then(value=>{this.timing('native_visibility_fence',fenced);return value})]);
    if(visibility.result?.value!=='visible')throw Error('native source not visible');
    at=performance.timeOrigin+performance.now();let regions;
    try{

@@ -35,17 +35,30 @@ impl ExactPlan {
                 )?)
                 .into();
         }
-        let mut tiles = Vec::new();
-        for [x, y, right, bottom] in self.rectangles {
+        // MP-08/MP-10: settle latency, not CPU: up to four PNG threads, in order.
+        let (pixels, w) = (&self.pixels, self.w);
+        let encode = |&[x, y, right, bottom]: &[i32; 4]| -> Result<Value, String> {
             let (width, height) = (right - x, bottom - y);
             let bytes = raster::png(
-                &self.pixels[((y * self.w + x) * 4) as usize..],
+                &pixels[((y * w + x) * 4) as usize..],
                 width as u32,
                 height as u32,
-                self.w as usize * 4,
+                w as usize * 4,
             )?;
-            tiles.push(json!({"x":x,"y":y,"width":width,"height":height,"data_base64":STANDARD.encode(bytes)}));
-        }
+            Ok(json!({"x":x,"y":y,"width":width,"height":height,"data_base64":STANDARD.encode(bytes)}))
+        };
+        let part = self.rectangles.len().div_ceil(4).max(1);
+        let tiles = std::thread::scope(|scope| {
+            let workers = self
+                .rectangles
+                .chunks(part)
+                .map(|rects| scope.spawn(move || rects.iter().map(encode).collect::<Result<Vec<_>, _>>()))
+                .collect::<Vec<_>>();
+            workers.into_iter().try_fold(Vec::new(), |mut tiles, worker| {
+                tiles.extend(worker.join().map_err(|_| "MP-10: exact PNG worker")??);
+                Ok::<_, String>(tiles)
+            })
+        })?;
         value[if self.patch {
             "native_tiles"
         } else {

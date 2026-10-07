@@ -476,7 +476,7 @@ export class KernelBrowserHost {
         if(patchable){
           stream.producer.retireUnsent();
           const adjacent=sample.serial===stream.compositorSerial+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
-          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],limit:exactPatchLimit(stream.bitrate),patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
+          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
           source={...sample,...patch,motion:false,generation:this.generation};
         }
         else if(encoded){source={...encoded,generation:this.generation};}

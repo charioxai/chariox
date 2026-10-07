@@ -36,7 +36,7 @@ export class MotionEncoder {
     if(this.closed||!this.valid()||revision!==this.revision)continue;
     let png=sample.data_base64;
     if(sample.raw?.nativeExact){
-     const raw=sample.raw,exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],limit:192000,patch:false});
+     const raw=sample.raw,exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],patch:false});
      png=exact.data_base64;
     }else if(sample.raw){
      const raw=sample.raw,pixels=Buffer.from(raw.pixels);

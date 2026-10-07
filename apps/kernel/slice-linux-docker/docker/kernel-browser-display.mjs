@@ -255,6 +255,17 @@ export class DisplayStream {
       payload = { kind:'video', codec:this.codec, ...(typeof encoded === 'string' ? {key:true,data_base64:encoded} : encoded.packet ? {key:encoded.key,native_packet:encoded.packet} : encoded) };
       }
     }
+    // MP-11: a rejected first codec frame may have no compositor base and
+    // its protected PNG may exceed the wire bound. Admit an opaque black PNG
+    // first, then repair the SAME protected raster with ordinary tile credits.
+    // No lossy pixels or partial canvas can authorize this bootstrap.
+    if (payload.kind === 'png' && JSON.stringify(payload).length > 700_000) {
+      const remaining = source.repair_tiles ?? await this.pixels.run('tiles',{previous:null,current,all:true});
+      const black = Buffer.alloc(current.width*current.height*4);
+      for(let n=3;n<black.length;n+=4)black[n]=255;
+      payload={kind:'png',data_base64:encodePng(current.width,current.height,black)};
+      repair=remaining;
+    }
     this.timing('select_encode', at); at = timestamp();
     const packet = { ...payload, subscription_id: this.subscription_id, tab_id: this.tab_id,
       generation: source.generation, document_id: documentId, sequence: this.sequence + 1,

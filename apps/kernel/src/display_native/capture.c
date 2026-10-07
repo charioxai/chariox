@@ -23,8 +23,11 @@ struct Capture {
     XShmSegmentInfo shm;
     int attached, event, width, height, window_height, offset;
     unsigned long owner;
-    uint8_t *previous,*captured;
-    int initialized,captured_initialized,motion_height;
+    uint8_t *previous;
+    /* The slot holding the latest readback. Only this worker writes slots,
+     * and a slot is compared before it can be overwritten by a new readback. */
+    const uint8_t *last;
+    int initialized,motion_height;
     double cpu[3];
     int tile_count,tiles[128][4],adjacent_count,adjacent[128][4];
 };
@@ -49,7 +52,7 @@ void cx_capture_close(struct Capture *c) {
     if (c->shm.shmaddr && c->shm.shmaddr != (void *)-1) shmdt(c->shm.shmaddr);
     if (c->shm.shmid >= 0) shmctl(c->shm.shmid,IPC_RMID,NULL);
     if (c->display) XCloseDisplay(c->display);
-    free(c->previous); free(c->captured); free(c);
+    free(c->previous); free(c);
 }
 struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     struct Capture *c = calloc(1,sizeof(*c));
@@ -83,8 +86,8 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     if (!XShmAttach(c->display,&c->shm)) goto fail;
     c->attached=1; XSync(c->display,False);
     if (shmctl(c->shm.shmid,IPC_RMID,NULL)) goto fail;
-    c->previous=malloc(size);c->captured=malloc(size);
-    if (!c->previous||!c->captured) goto fail;
+    c->previous=malloc(size);
+    if (!c->previous) goto fail;
     c->damage=XDamageCreate(c->display,c->window,XDamageReportRawRectangles);
     return c;
 fail:
@@ -147,9 +150,9 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
     int adjacent_bounds[4];
-    c->adjacent_count=cx_capture_difference(raw,c->captured_initialized?c->captured:NULL,c->width,c->height,adjacent_bounds,(int*)c->adjacent,&c->motion_height);
+    c->adjacent_count=cx_capture_difference(raw,c->last,c->width,c->height,adjacent_bounds,(int*)c->adjacent,&c->motion_height);
     if(c->adjacent_count==0){
-        c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;return 0;
+        c->cpu[1]=capture_cpu()-at;at=capture_cpu();memcpy(out,raw,size);c->last=out;c->cpu[2]=capture_cpu()-at;return 0;
     }
     /* MP-08/MP-10/MP-11: dense motion needs no second full-frame comparison.
      * Sparse cumulative damage alone checks the complete delivered exact base.
@@ -158,9 +161,8 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     if(c->adjacent_count>0)c->tile_count=cx_capture_difference(raw,c->initialized?c->previous:NULL,c->width,c->height,bounds,(int*)c->tiles,NULL);
     else {bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;}
     if(c->tile_count==0){/* Pixels returned to the exact base; ship a conservative full update. */bounds[0]=bounds[1]=0;bounds[2]=c->width;bounds[3]=c->height;c->tile_count=-1;}
-    memcpy(c->captured,raw,size);c->captured_initialized=1;
     c->cpu[1]=capture_cpu()-at;at=capture_cpu();
-    memcpy(out,raw,size);c->cpu[2]=capture_cpu()-at;
+    memcpy(out,raw,size);c->last=out;c->cpu[2]=capture_cpu()-at;
     return 1;
 }
 

@@ -33,7 +33,6 @@ pub(super) struct Exact {
     pub encoder: String,
     pub serial: u64,
     pub regions: Vec<Region>,
-    pub limit: usize,
     pub patch: bool,
     #[serde(default)]
     pub adjacent: bool,
@@ -314,9 +313,6 @@ impl Sessions {
         let (w, h) = (self.w, self.h);
         let started = epoch();
         session_name(&q.encoder)?;
-        if q.limit < 24000 || q.limit > 192000 {
-            return Err("MP-11: native repair budget".into());
-        }
         let regions = raster::regions(&q.regions, w, h)?;
         let pixels = raster::masked(slot.bytes(), w, h, &regions);
         let mut rectangles = Vec::new();
