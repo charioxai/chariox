@@ -414,6 +414,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
+mod leased_profile_transition_runtime;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]

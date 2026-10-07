@@ -333,18 +333,20 @@ impl KernelRuntimeState {
         effort: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
-        let leased_agent_id = leased_agent_id.to_string();
+        let id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.update_leased_agent_profile(
-                &leased_agent_id,
+            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&id)
+        })
+        .await?;
+        self.apply_leased_profile_transition(
+            leased_agent_id,
+            crate::transport::relay_peer::RelayAgentExecutionProfile {
                 provider,
                 account_profile,
                 model,
                 effort,
-            )
-        })
+            },
+        )
         .await
     }
 
@@ -656,7 +658,9 @@ impl KernelRuntimeState {
             }
         }
 
-        let profile = expected_profile.clone();
+        let profile_update = self
+            .apply_leased_profile_transition(&leased_agent_id, expected_profile.clone())
+            .await;
         let replay_leased_agent_id = leased_agent_id.clone();
         let replay_git_context = git_context.clone();
         let profile_home_prompt_id = home_prompt_id.clone();
@@ -666,13 +670,7 @@ impl KernelRuntimeState {
                 let mut runtime = RemoteLeaseRuntime::new(app);
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
-                if let Err(error) = runtime.update_leased_agent_profile(
-                    &replay_leased_agent_id,
-                    profile.provider,
-                    profile.account_profile,
-                    profile.model,
-                    profile.effort,
-                ) {
+                if let Err(error) = profile_update {
                     if let Some(home_prompt_id) = profile_home_prompt_id
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
