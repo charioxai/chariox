@@ -364,6 +364,9 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        if let Err(error) = self.sweep_agent_wakes(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
+        }
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {

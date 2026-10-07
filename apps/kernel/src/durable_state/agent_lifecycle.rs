@@ -9,6 +9,9 @@ mod supervision;
 mod tests;
 mod transitions;
 mod types;
+#[cfg(test)]
+mod wake_tests;
+mod wakes;
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -16,7 +19,7 @@ use serde::Serialize;
 use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
-pub use types::{AgentObligation, AgentTaskExecution, AgentWait, ExecutionState};
+pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
 pub(crate) use types::{InboxEvent, Operation, Outcome, Registration};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
@@ -64,6 +67,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    wakes::initialize(db)?;
     migration::migrate(db)
 }
 impl DurableKernelStateStore {

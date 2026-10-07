@@ -259,4 +259,6 @@ pub use workspace::*;
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 452;
+/// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
+/// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 459;

@@ -10,6 +10,10 @@ pub(crate) fn canonical_agent_event_tool_name(name: &str) -> Option<&'static str
         "chariox.events.ack",
         "chariox.events.yield",
         "chariox.events.blocked",
+        "chariox.events.timer",
+        "chariox.events.process",
+        "chariox.events.cancel_wake",
+        "chariox.events.wakes",
     ]
     .into_iter()
     .find(|n| name == *n || name == n.replace('.', "_"))
@@ -24,6 +28,10 @@ pub(crate) fn agent_event_tool_specs() -> Vec<RuntimeToolSpec> {
         ("inbox","Read attributed, untrusted durable events; keep provider acceptance separate from inbox acknowledgement.",serde_json::json!({"after":{"type":"integer","minimum":0}}),vec![]),
         ("ack","Acknowledge an inbox item. Set handled only after handling its real result/failure; uncertain delivery cannot be acknowledged away.",serde_json::json!({"sequence":{"type":"integer","minimum":1},"handled":{"type":"boolean","default":false}}),vec!["sequence"]),
         ("yield","Request waiting on named live registrations with a finite future deadline and coverage of every open obligation. End the provider turn after success; waiting commits only at native settlement.",serde_json::json!({"registration_ids":{"type":"array","items":{"type":"string"},"minItems":1,"uniqueItems":true},"inbox_cursor":{"type":"integer","minimum":0},"deadline_ms":{"type":"integer","minimum":1},"reason":{"type":"string"}}),vec!["registration_ids","inbox_cursor","deadline_ms","reason"]),
+        ("timer","Arm a kernel-owned durable timer for this task: one-shot after delay_ms, or recurring every interval_ms. It survives kernel restart, client exit and host sleep; missed fires coalesce into one occurrence with a count. Returns the registration_id to yield on and whether the scheduler confirmed it. An armed timer is an open obligation until it fires or you cancel it.",serde_json::json!({"label":{"type":"string","minLength":1,"maxLength":200},"delay_ms":{"type":"integer","minimum":1000},"interval_ms":{"type":"integer","minimum":60000}}),vec!["label","delay_ms"]),
+        ("process","Start a kernel-owned watched process from argv (no shell) in your workspace, e.g. a long build or `gh pr checks --watch`. You are woken when it exits and, once, when an output line contains match_text. Requires unattended command permission. Never relaunched after a kernel restart (reported as process_lost).",serde_json::json!({"label":{"type":"string","minLength":1,"maxLength":200},"argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},"cwd":{"type":"string"},"match_text":{"type":"string","minLength":1,"maxLength":200}}),vec!["label","argv"]),
+        ("cancel_wake","Cancel one of this task's timers or watched processes; a watched process group is terminated.",serde_json::json!({"wake_id":{"type":"string"}}),vec!["wake_id"]),
+        ("wakes","List your armed and recent wakes with next fire time, last fired, delivered and acknowledged times, plus scheduler health.",serde_json::json!({}),vec![]),
         ("blocked","Ask the owner for the exact missing action. One kernel-owned interaction appears on all terminals; obligations remain supervised.",serde_json::json!({"reason":{"type":"string","minLength":1}}),vec!["reason"]),
     ];
     specs.into_iter().map(|(name,description,extra,required)|{

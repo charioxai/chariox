@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -323,7 +323,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
 #[test]
 fn workflow_turn_context_shape_is_versioned() {
     // Protocol 365 removed the event context and action capabilities.
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
     let context = crate::execution_lease::RemoteWorkflowTurnContext {
         home_kernel_id: "home".to_string(),
         home_session_id: "room".to_string(),

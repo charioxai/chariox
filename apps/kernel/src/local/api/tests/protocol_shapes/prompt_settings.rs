@@ -28,7 +28,7 @@ fn setting() -> crate::prompt_assembly::PromptSettingRecord {
 
 #[test]
 fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 459);
     let requests = vec![
         LocalDaemonRequest::ListPromptSettings(ListPromptSettingsRequest),
         LocalDaemonRequest::GetPromptSetting(GetPromptSettingRequest {

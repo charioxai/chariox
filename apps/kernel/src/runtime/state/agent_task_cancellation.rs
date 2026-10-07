@@ -168,6 +168,21 @@ impl KernelRuntimeState {
                             }
                         }
                     }
+                    "timer" | "process" => {
+                        if let Err(error) =
+                            self.owned
+                                .durable_state_store
+                                .agent_lifecycle(Operation::CancelWake {
+                                    id: resource.clone(),
+                                    task: task.task_id.clone(),
+                                    prompt: None,
+                                })
+                        {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                        self.owned.agent_wakes.processes.terminate(resource);
+                    }
                     _ => {}
                 }
             }

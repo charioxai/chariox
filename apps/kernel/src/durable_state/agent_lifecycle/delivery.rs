@@ -72,6 +72,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.provider_run_id = run;
             e.attempted_at_ms = Some(now);
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
             for mut t in tasks(tx)? {
                 if t.room_id == room
@@ -106,6 +107,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             e.state = "expired".into();
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             Ok(Outcome::Event(e))
         }
         Operation::Defer {
@@ -120,6 +122,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             e.attempted_at_ms = Some(now);
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             Ok(Outcome::Event(e))
         }
         Operation::BindAttempt {
@@ -167,6 +170,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }
@@ -188,6 +192,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             e.state = if handled { "handled" } else { "acknowledged" }.into();
             save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
             if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
                 for mut t in tasks(tx)? {
                     if t.room_id != room || t.agent_id != agent {

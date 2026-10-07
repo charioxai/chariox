@@ -172,7 +172,9 @@ impl KernelRuntimeState {
 
 impl KernelRuntimeOwnedState {
     pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
-        let active_turn_count = self.active_turns.snapshot().len();
+        // MP-09 A03: a live owned process is work; a future timer alone is not.
+        let active_turn_count =
+            self.active_turns.snapshot().len() + self.agent_wakes.processes.count();
         let sessions = self
             .session_store
             .list_non_ended_sessions_including_hidden();

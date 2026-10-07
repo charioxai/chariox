@@ -264,6 +264,7 @@ struct KernelRuntimeOwnedState {
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
+    agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
@@ -879,6 +880,7 @@ impl KernelRuntimeState {
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
+                agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
                 relay_state,
                 notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -1165,7 +1167,9 @@ mod room_agent_admission;
 
 mod agent_inbox_delivery;
 mod agent_lifecycle_runtime;
+mod agent_process_watch;
 mod agent_task_cancellation;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_wake_scheduler;
 mod room_dispatch_obligation;
