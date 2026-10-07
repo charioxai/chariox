@@ -122,8 +122,6 @@ const evidence = { from, to, placement, facts, started_at_ms: Date.now(), turns:
 const client = new LocalIpcClient(kernelUrl)
 let sessionId = null
 let scratch = null
-let ask = null
-let fileProbeAttempted = false
 try {
   const created = variant(await client.send(createSessionRequest(workspace, workspace, `ctxswitch-${Date.now()}`, {
     provider: from.provider, model: from.model, effort: from.effort, account_profile: from.accountProfile,
@@ -148,7 +146,7 @@ try {
     variant(await client.send(submitPromptRequest(sessionId, attachment.id, agentId, `${marker} ${prompt}`, files)), "PromptSubmitted")
     return marker
   }
-  ask = async (label, prompt, files = [], followUp = null) => {
+  const ask = async (label, prompt, files = [], followUp = null) => {
     const marker = await submit(label, prompt, files)
     const followUpMarker = followUp && await submit(`${label}-follow-up`, followUp)
     const result = await turnOutput(client, sessionId, agentId, marker, timeoutMs)
@@ -183,10 +181,24 @@ try {
   }
   if (richProbes) {
     await ask("decision-new", `Decision changed: we will use ${facts.cache_database} for the cache instead of SQLite. Our current task is ${facts.current_task}, and the next step is ${facts.next_step}. Do not use tools. Reply with just OK.`)
-    fileProbeAttempted = true
-    const file = await ask("file", `In your current workspace, use one shell command to create the relative file ${facts.created_file} containing the line ${facts.codename}, then read that file back with cat. Reply with just the line read from the file.`)
-    assertToolProbe(file, facts.codename, "file creation/readback")
-    evidence.file_probe = { filename: facts.created_file, workspace_relative: true, verified: true }
+    try {
+      const file = await ask("file", `In your current workspace, use one shell command to create the relative file ${facts.created_file} containing the line ${facts.codename}, then read that file back with cat. Reply with just the line read from the file.`)
+      assertToolProbe(file, facts.codename, "file creation/readback")
+      evidence.file_probe = { filename: facts.created_file, workspace_relative: true, verified: true }
+    } finally {
+      // Remove the file on its creating profile and placement before switching.
+      // Attempt this even if creation/readback failed after writing the file.
+      try {
+        const removed = await ask("file-cleanup", `In your current workspace, use one shell command to remove only the relative file ${facts.created_file}, verify that it no longer exists, and print CTXSWITCH_FILE_REMOVED. Reply with just that marker.`)
+        assertToolProbe(removed, "CTXSWITCH_FILE_REMOVED", "file cleanup")
+        evidence.file_cleanup = { filename: facts.created_file, verified: true }
+      } catch (error) {
+        evidence.file_cleanup = { filename: facts.created_file, verified: false, failure: error.message }
+        console.error(`file cleanup failed: ${error.message}`)
+      }
+    }
+    // Preserve a creation/readback exception if both steps failed.
+    if (!evidence.file_cleanup.verified) throw new Error(`file cleanup failed: ${evidence.file_cleanup.failure}`)
     const [a, b] = [randomInt(1000, 9999), randomInt(1000, 9999)]
     facts.python_output = String(a * b)
     await ask("tool", `Run the shell command python3 -c "print(${a}*${b})" and reply with just its output.`)
@@ -251,19 +263,6 @@ try {
   process.exitCode = 1
 } finally {
   evidence.session_id = sessionId
-  // Use the execution agent's filesystem before ending its home-owned session.
-  if (fileProbeAttempted && ask) {
-    try {
-      const removed = await ask("file-cleanup", `In your current workspace, use one shell command to remove only the relative file ${facts.created_file}, verify that it no longer exists, and print CTXSWITCH_FILE_REMOVED. Reply with just that marker.`)
-      assertToolProbe(removed, "CTXSWITCH_FILE_REMOVED", "file cleanup")
-      evidence.file_cleanup = { filename: facts.created_file, verified: true }
-    } catch (error) {
-      evidence.file_cleanup = { filename: facts.created_file, verified: false, failure: error.message }
-      evidence.passed = false
-      evidence.failure ??= `file cleanup failed: ${error.message}`
-      process.exitCode = 1
-    }
-  }
   if (sessionId && !process.argv.includes("--keep-session")) {
     await client.send(deleteSessionRequest(sessionId, workspace)).catch(() => {})
   }
@@ -275,4 +274,4 @@ try {
 await mkdir(evidenceRoot, { recursive: true })
 const evidencePath = path.join(evidenceRoot, evidenceName(from, to, Date.now()))
 await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8")
-console.log(`model switch drill ${evidence.passed ? "passed" : "failed"}: ${JSON.stringify(evidence.recalled ?? evidence.failure)}; evidence: ${evidencePath}`)
+console.log(`model switch drill ${evidence.passed ? "passed" : "failed"}: ${JSON.stringify(evidence.failure ?? evidence.recalled)}; evidence: ${evidencePath}`)
