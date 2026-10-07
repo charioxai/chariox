@@ -12,8 +12,8 @@ pub(crate) fn finish_response(
     if command.external_grant_id().is_none() {
         return result;
     }
-    // Parser/provider errors can echo stored values. Admission errors remain
-    // specific because they are returned before executor dispatch.
+    // Parser/provider diagnostics can echo stored values. Preserve the shared
+    // mapper's public code/retryability before discarding those diagnostics.
     let response = result.map_err(protect_error)?;
     project(response)
 }
@@ -26,7 +26,11 @@ fn protect_error(error: DaemonError) -> DaemonError {
     {
         return error;
     }
-    denied()
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    DaemonError::ExternalRequestFailed {
+        code: mapped.code,
+        retryable: mapped.retryable,
+    }
 }
 
 pub(crate) fn public_error_message(message: &str) -> bool {

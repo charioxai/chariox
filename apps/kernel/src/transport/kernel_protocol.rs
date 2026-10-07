@@ -799,6 +799,9 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
+        DaemonError::ExternalRequestFailed { code, retryable } => {
+            kernel_error(code, error, *retryable)
+        }
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

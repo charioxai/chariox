@@ -6,6 +6,116 @@ use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 
 const CANARY: &str = "MP-11-generated-test-only-secret";
 
+// MP-08 / MP-11: exercise executor projection BEFORE transport mapping for
+// both external grants and the sudo MCP caller, including nested cleanup.
+#[test]
+fn external_response_preserves_executor_error_codes_and_retryability() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let caller = command(class);
+        let errors = vec![
+            DaemonError::SessionNotFound {
+                session_id: CANARY.into(),
+            },
+            DaemonError::AttachmentNotFound {
+                attachment_id: CANARY.into(),
+            },
+            DaemonError::AttachmentNotInSession {
+                session_id: CANARY.into(),
+                attachment_id: CANARY.into(),
+            },
+            DaemonError::NoActiveProviderRun {
+                session_id: CANARY.into(),
+            },
+            DaemonError::ProviderRunNotFound {
+                provider_run_id: CANARY.into(),
+            },
+            DaemonError::WorkspaceClaimConflict {
+                workspace_id: CANARY.into(),
+                worktree_id: CANARY.into(),
+                existing_session_id: CANARY.into(),
+                existing_operation: Box::new(CANARY.into()),
+                requested_session_id: CANARY.into(),
+                requested_operation: Box::new(CANARY.into()),
+            },
+            DaemonError::ProviderAdapterNotFound {
+                adapter_key: CANARY.into(),
+            },
+            DaemonError::ProviderProtocol {
+                provider_run_id: CANARY.into(),
+                operation: CANARY,
+                message: CANARY.into(),
+            },
+            DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: CANARY.into(),
+            },
+            DaemonError::LocalTransport {
+                operation: CANARY,
+                message: CANARY.into(),
+            },
+            DaemonError::RelayTransport {
+                operation: CANARY,
+                code: CANARY.into(),
+                message: CANARY.into(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: CANARY,
+                code: CANARY.into(),
+                message: CANARY.into(),
+                retryable: true,
+            },
+            DaemonError::RelayPeerCleanupAbsent {
+                worker_kernel_id: CANARY.into(),
+                resource_id: CANARY.into(),
+                code: CANARY,
+            },
+            DaemonError::PtySpawn {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyCleanup {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyWrite {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyResize {
+                provider_run_id: CANARY.into(),
+                cols: 80,
+                rows: 24,
+                message: CANARY.into(),
+            },
+            DaemonError::AgentNotFound {
+                agent_id: CANARY.into(),
+            },
+            DaemonError::AgentWorkerCleanup {
+                agent_id: CANARY.into(),
+                source: Box::new(DaemonError::SessionNotFound {
+                    session_id: CANARY.into(),
+                }),
+            },
+        ];
+        for error in errors {
+            let original = map_kernel_error(&error);
+            let protected = finish_response(&caller, Err(error)).unwrap_err();
+            let projected = map_kernel_error(&protected);
+            assert_eq!(
+                (projected.code, projected.retryable),
+                (original.code, original.retryable)
+            );
+            assert!(!protected.to_string().contains(CANARY));
+            assert!(!format!("{protected:?}").contains(CANARY));
+        }
+    }
+}
+
 fn credential() -> UserCredentialConfig {
     UserCredentialConfig {
         id: format!("response-canary-{:016x}", rand::random::<u64>()),
@@ -27,7 +137,11 @@ fn command(class: KernelConnectionClass) -> KernelCommand {
     let request = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
     let mut command = KernelCommand::from_local_request("response-test", None, None, &request);
     command.caller.connection_class = Some(class);
-    command.caller.caller_id = "sudo:test".into();
+    command.caller.caller_id = match class {
+        KernelConnectionClass::KernelAgent => "sudo:test",
+        _ => "grant:test",
+    }
+    .into();
     command
 }
 

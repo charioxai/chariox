@@ -2,6 +2,43 @@
 use super::*;
 pub(super) const CANARY: &str = "MP-11-worker-admission-test-only";
 
+// MP-08 / MP-11: real router -> executor -> mapper -> Unix socket delivery,
+// not an already-mapped frame injected into the outbound policy.
+#[tokio::test]
+async fn kernel_access_executor_errors_keep_codes_and_retryability_over_unix() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let cases = [
+        (
+            serde_json::json!({"GetSessionState":{"session_id":CANARY}}),
+            "session_not_found",
+            false,
+        ),
+        (
+            serde_json::json!({"GetWorkspaceFileContent":{
+                "workspace_id":"workspace", "worktree_id":kernel.root.join("worktree"), "path":CANARY
+            }}),
+            "local_transport_error",
+            true,
+        ),
+    ];
+    for (request, code, retryable) in cases {
+        // Prove the normal executor really emitted this diagnostic and semantics.
+        let owner = kernel.request(request.clone()).await;
+        assert!(owner["error"]["message"].as_str().unwrap().contains(CANARY));
+        assert_eq!(owner["error"]["code"], code);
+        assert_eq!(owner["error"]["retryable"], retryable);
+        let delivered = holder.request(request);
+        assert_eq!(delivered["error"]["code"], code);
+        assert_eq!(delivered["error"]["retryable"], retryable);
+        assert!(!delivered["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(CANARY));
+    }
+}
+
 async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
     reply_id: &str,
