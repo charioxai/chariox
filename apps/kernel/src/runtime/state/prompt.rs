@@ -549,6 +549,7 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 agent_id,
                 &provider_run,
+                started_next.id(),
                 started_next.prompt(),
                 false,
             );

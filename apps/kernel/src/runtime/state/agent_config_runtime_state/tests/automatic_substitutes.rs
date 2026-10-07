@@ -729,6 +729,7 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
         &turn.session_id,
         &turn.agent_id,
         &next_run,
+        "prompt-next",
         "implement that solution",
         false,
     );

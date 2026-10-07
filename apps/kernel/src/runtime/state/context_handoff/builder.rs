@@ -27,11 +27,16 @@ pub(super) fn load_agent_conversation(
     history_store: &OperationalHistoryStore,
     session_id: &str,
     agent_id: &str,
+    dispatching_prompt_id: Option<&str>,
     protection: &super::super::room_secret_observation::RoomSecretObservations,
 ) -> Result<AgentConversation, DaemonError> {
     let events = history_store.load_session_events(session_id, Some(agent_id))?;
     let events = protection.protect_history_events(events);
-    Ok(AgentConversation::from_events(&events))
+    let conversation = AgentConversation::from_events(&events);
+    Ok(match dispatching_prompt_id {
+        Some(prompt_id) => conversation.before_prompt(prompt_id),
+        None => conversation,
+    })
 }
 
 impl AgentConversation {
@@ -39,6 +44,20 @@ impl AgentConversation {
         Self {
             turns: collect_turns(events),
         }
+    }
+
+    /// The conversation a dispatch of `prompt_id` continues. History records a
+    /// prompt before its dispatch, and the provider receives that prompt as the
+    /// request itself.
+    pub(super) fn before_prompt(mut self, prompt_id: &str) -> Self {
+        if self
+            .turns
+            .last()
+            .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
+        {
+            self.turns.pop();
+        }
+        self
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -81,6 +100,7 @@ impl AgentConversation {
 
 #[derive(Debug, Clone, Default)]
 struct HandoffTurn {
+    prompt_id: Option<String>,
     user_prompt: String,
     assistant_outputs: Vec<String>,
     latest_details: Vec<String>,
@@ -95,6 +115,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
             HistoryEventKind::UserPrompt => {
                 if let Some(content) = non_empty_content(&event) {
                     turns.push(HandoffTurn {
+                        prompt_id: event.prompt_id.clone(),
                         user_prompt: content,
                         assistant_outputs: Vec::new(),
                         latest_details: Vec::new(),
@@ -380,6 +401,47 @@ mod tests {
         assert!(handoff.len() <= MAX_HANDOFF_BYTES);
     }
 
+    #[test]
+    fn the_dispatching_prompt_leaves_the_last_completed_turn_latest() {
+        let mut active = user_event(5, "session", "agent", "the request being dispatched");
+        active.prompt_id = Some("prompt-active".to_string());
+        let events = vec![
+            user_event(1, "session", "agent", "older prompt"),
+            output_event(2, "session", "agent", "run-1", "older answer"),
+            user_event(3, "session", "agent", "run the migration"),
+            error_event(
+                4,
+                "session",
+                "agent",
+                "run-1",
+                "auth failed: quota exhausted",
+            ),
+            active,
+        ];
+
+        let handoff = AgentConversation::from_events(&events)
+            .before_prompt("prompt-active")
+            .render(MAX_HANDOFF_BYTES)
+            .expect("handoff should be built");
+
+        assert!(
+            !handoff.contains("the request being dispatched"),
+            "{handoff}"
+        );
+        let latest = handoff
+            .split(LATEST_TURN_HEADER)
+            .nth(1)
+            .expect("latest turn");
+        assert!(latest.starts_with("- User: run the migration"), "{handoff}");
+        assert!(
+            latest.contains("error: auth failed: quota exhausted"),
+            "{handoff}"
+        );
+        assert!(AgentConversation::from_events(&events[4..])
+            .before_prompt("prompt-active")
+            .is_empty());
+    }
+
     fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {
         AgentConversation::from_events(events).render(max_bytes)
     }
@@ -468,6 +530,27 @@ mod tests {
                 TerminalOutputKind::ProviderOutput,
                 None,
                 output,
+            ),
+            HistoryEventTurnContext::default(),
+        )
+    }
+
+    fn error_event(
+        sequence: u64,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        error: &str,
+    ) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                TerminalOutputKind::ProviderError,
+                None,
+                error,
             ),
             HistoryEventTurnContext::default(),
         )

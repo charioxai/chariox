@@ -222,7 +222,9 @@ impl super::KernelRuntimeOwnedState {
     ) {
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
-        if let Some(conversation) = self.agent_conversation(session_id, source_history_agent_id) {
+        if let Some(conversation) =
+            self.agent_conversation(session_id, source_history_agent_id, None)
+        {
             self.pending_agent_context_handoffs.set(
                 session_id,
                 agent_id,
@@ -239,11 +241,17 @@ impl super::KernelRuntimeOwnedState {
         }
     }
 
-    fn agent_conversation(&self, session_id: &str, agent_id: &str) -> Option<AgentConversation> {
+    fn agent_conversation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        dispatching_prompt_id: Option<&str>,
+    ) -> Option<AgentConversation> {
         load_agent_conversation(
             &self.operational_history_store,
             session_id,
             agent_id,
+            dispatching_prompt_id,
             &self.room_secret_observations,
         )
         .map(|conversation| (!conversation.is_empty()).then_some(conversation))
@@ -273,6 +281,7 @@ impl super::KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         target_run: &RuntimeProviderRun,
+        prompt_id: &str,
         steering: bool,
     ) -> Option<PendingAgentContextHandoff> {
         if steering {
@@ -322,29 +331,51 @@ impl super::KernelRuntimeOwnedState {
                         || self
                             .operational_history_store
                             .provider_session_answered_agent(session_id, agent_id, run_session)
-                            .unwrap_or(true)
+                            .unwrap_or_else(|error| {
+                                crate::logging::warn_with_fields(
+                                    "daemon.provider_context_handoff",
+                                    "failed to check whether the provider session answered the agent",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "agent_id": agent_id,
+                                        "provider_session_id": run_session,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                                true
+                            })
                 })
         };
-        let Some(latest) = latest.filter(|latest| !holds_conversation(latest)) else {
+        // An agent no provider ever answered has its prompts and errors to
+        // carry; only an empty conversation leaves nothing to transfer.
+        let conversation = match &latest {
+            Some(latest) if holds_conversation(latest) => None,
+            _ => self.agent_conversation(session_id, agent_id, Some(prompt_id)),
+        };
+        let Some(conversation) = conversation else {
             self.pending_agent_context_handoffs
                 .note_run_holds_conversation(session_id, agent_id, target_run.id());
             return None;
         };
-        let conversation = self.agent_conversation(session_id, agent_id)?;
+        let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
             "transferring the agent conversation to a new provider session",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
-                "source_provider_run_id": latest.provider_run_id,
-                "source_provider_session_id": latest.provider_session_id,
+                "source_provider_run_id": latest.and_then(|latest| latest.provider_run_id.as_deref()),
+                "source_provider_session_id": latest.and_then(|latest| latest.provider_session_id.as_deref()),
                 "target_provider_run_id": target_run.id(),
             }),
         );
         Some(PendingAgentContextHandoff {
-            source_provider: latest.provider.unwrap_or_default(),
-            source_model: latest.model.unwrap_or_default(),
+            source_provider: latest
+                .and_then(|latest| latest.provider.clone())
+                .unwrap_or_default(),
+            source_model: latest
+                .and_then(|latest| latest.model.clone())
+                .unwrap_or_default(),
             target_provider_run_id: Some(target_run.id().to_string()),
             target_provider: target_run.provider().to_string(),
             target_account_profile: target_run.account_profile().to_string(),
@@ -358,10 +389,11 @@ impl super::KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         target_run: &RuntimeProviderRun,
+        prompt_id: &str,
         prompt: &str,
         steering: bool,
     ) -> String {
-        self.context_handoff_for_dispatch(session_id, agent_id, target_run, steering)
+        self.context_handoff_for_dispatch(session_id, agent_id, target_run, prompt_id, steering)
             .map(|handoff| inject_context_handoff(prompt, &handoff))
             .unwrap_or_else(|| prompt.to_string())
     }
@@ -663,9 +695,47 @@ mod tests {
                     &self.agent_id,
                     prompt,
                 ),
-                crate::history::HistoryEventTurnContext::default(),
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some(format!("prompt-{sequence}")),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
                 None,
             );
+        }
+
+        fn error(&self, sequence: u64, run_id: &str, text: &str) {
+            self.append(
+                sequence,
+                crate::history::SessionHistoryEntry::provider_output(
+                    &self.session_id,
+                    run_id,
+                    Some(&self.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderError,
+                    None,
+                    text,
+                ),
+                crate::history::HistoryEventTurnContext {
+                    provider: Some("codex".to_string()),
+                    provider_run_id: Some(run_id.to_string()),
+                    prompt_id: Some(format!("prompt-{}", sequence - 1)),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
+                None,
+            );
+        }
+
+        /// The handoff a dispatch of the prompt recorded at `sequence` carries.
+        fn dispatch(&self, run: &RuntimeProviderRun, sequence: u64) -> Option<String> {
+            self.runtime
+                .owned
+                .context_handoff_for_dispatch(
+                    &self.session_id,
+                    &self.agent_id,
+                    run,
+                    &format!("prompt-{sequence}"),
+                    false,
+                )
+                .and_then(|handoff| handoff.render(MAX_HANDOFF_BYTES))
         }
 
         fn output(
@@ -736,6 +806,7 @@ mod tests {
                 &self.session_id,
                 &self.agent_id,
                 run,
+                "prompt-next",
                 "next",
                 false,
             )
@@ -848,6 +919,7 @@ mod tests {
                 &fixture.session_id,
                 &fixture.agent_id,
                 &fresh,
+                "prompt-next",
                 steering,
             )
         };
@@ -877,7 +949,13 @@ mod tests {
         let handoff = fixture
             .runtime
             .owned
-            .context_handoff_for_dispatch(&fixture.session_id, &fixture.agent_id, &fresh, false)
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fresh,
+                "prompt-next",
+                false,
+            )
             .expect("the new session receives the conversation");
 
         for room in [0, 100, 1_000, 9_000, 18_000, 48_000] {
@@ -896,6 +974,53 @@ mod tests {
             }
         }
         assert!(handoff.render_hidden(18_000).contains("prior prompt 59"));
+    }
+
+    #[tokio::test]
+    async fn the_dispatching_prompt_travels_once_as_the_request() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        fixture.output(
+            2,
+            "run-old",
+            "codex",
+            Some("thread-old"),
+            "OK, amber-kestrel noted",
+        );
+        fixture.user(3, "what is the codename?");
+
+        let handoff = fixture
+            .dispatch(&fixture.run("run-new", "claude", None), 3)
+            .expect("the new session receives the conversation");
+
+        assert!(!handoff.contains("what is the codename?"), "{handoff}");
+        assert!(
+            handoff.contains("Latest turn:\n- User: remember the codename amber-kestrel"),
+            "{handoff}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_no_provider_answered_still_transfers() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "first request");
+        assert_eq!(
+            fixture.dispatch(&fixture.run("run-old", "codex", None), 1),
+            None
+        );
+        fixture.error(2, "run-old", "codex login expired");
+        fixture.user(3, "migrate the schema to v7");
+        fixture.error(4, "run-old", "quota exhausted until 18:00");
+        fixture.user(5, "try again on claude");
+
+        let handoff = fixture
+            .dispatch(&fixture.run("run-new", "claude", None), 5)
+            .expect("the failed turns travel to the new session");
+
+        assert!(handoff.contains("first request"), "{handoff}");
+        assert!(handoff.contains("migrate the schema to v7"), "{handoff}");
+        assert!(handoff.contains("quota exhausted until 18:00"), "{handoff}");
+        assert!(!handoff.contains("try again on claude"), "{handoff}");
     }
 
     fn test_run_in_session(

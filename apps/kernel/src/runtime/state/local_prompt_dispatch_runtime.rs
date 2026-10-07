@@ -3593,6 +3593,7 @@ impl KernelRuntimeState {
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &provider_run,
+                &dispatch.prompt_id,
                 &dispatch.prompt,
                 dispatch.steering,
             );
@@ -3660,6 +3661,7 @@ impl KernelRuntimeState {
             &dispatch.session_id,
             &dispatch.agent_id,
             &provider_run,
+            &dispatch.prompt_id,
             dispatch.steering,
         );
         // Claude native turns carry the handoff as hidden context, sized to
