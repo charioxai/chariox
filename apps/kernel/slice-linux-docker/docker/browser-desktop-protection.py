@@ -11,13 +11,36 @@ from collections import deque
 
 MAX_NODES = 2048
 MAX_DEPTH = 24
+MAX_DOCUMENTS = 64
 PAD_DIP = 4      # Matches CDP image masking: borders, shadows, outward rounding.
 STATUS_DIP = 24  # Link-status bubble over the content bottom.
 
 
-def document_rects(app, pyatspi):
-    """Every sized web document of one browser application (desktop pixels)."""
-    docs = []
+def _top_documents(app, pyatspi):
+    """Outermost web documents: one in-process AT-SPI collection query."""
+    collection = app.queryCollection()
+    rule = collection.createMatchRule(pyatspi.StateSet(), collection.MATCH_NONE, '', collection.MATCH_NONE,
+                                      [pyatspi.ROLE_DOCUMENT_WEB], collection.MATCH_ANY, '', collection.MATCH_NONE, False)
+    matches = collection.getMatches(rule, collection.SORT_ORDER_CANONICAL, MAX_DOCUMENTS+1, True)
+    if len(matches) > MAX_DOCUMENTS:
+        raise ValueError('browser document search exhausted')
+    documents = []
+    for node in matches:
+        parent, depth = node.parent, 0
+        while parent is not None and parent.getRoleName() not in ('application', 'document web'):
+            parent, depth = parent.parent, depth+1
+            if depth > MAX_NODES:
+                raise ValueError('browser document ancestry unbounded')
+        # Frame documents nest inside a page document; popup widgets may be
+        # parentless top-level frames.
+        if parent is None or parent.getRoleName() == 'application':
+            documents.append(node)
+    return documents
+
+
+def _breadth_documents(app):
+    """Fallback without the collection interface: bounded walk of browser UI."""
+    documents = []
     pending = deque([(app, 0)])
     seen = 0
     while pending:
@@ -26,10 +49,7 @@ def document_rects(app, pyatspi):
         if seen > MAX_NODES:
             raise ValueError('browser document search exhausted')
         if node.getRoleName() == 'document web':
-            rect = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-            if rect.width > 0 and rect.height > 0:
-                docs.append({'uri': node.queryDocument().getAttributeValue('URI') or '',
-                             'rect': [rect.x, rect.y, rect.width, rect.height]})
+            documents.append(node)
             continue  # Web content is measured through CDP, never AT-SPI.
         if node.childCount and depth >= MAX_DEPTH:
             raise ValueError('browser document search too deep')
@@ -37,6 +57,21 @@ def document_rects(app, pyatspi):
             child = node.getChildAtIndex(index)
             if child is not None:
                 pending.append((child, depth+1))
+    return documents
+
+
+def document_rects(app, pyatspi):
+    """Every sized outermost web document of one browser application (desktop pixels)."""
+    try:
+        nodes = _top_documents(app, pyatspi)
+    except NotImplementedError:
+        nodes = _breadth_documents(app)
+    docs = []
+    for node in nodes:
+        rect = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        if rect.width > 0 and rect.height > 0:
+            docs.append({'uri': node.queryDocument().getAttributeValue('URI') or '',
+                         'rect': [rect.x, rect.y, rect.width, rect.height]})
     return docs
 
 
