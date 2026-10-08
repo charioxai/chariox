@@ -100,14 +100,17 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
+/// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
+/// MP-08/MP-11: reserved peer89 shares the owned-desktop local contract.
+/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes.
+/// MP-08/MP-11: version 92 adds Room AT-SPI target actions and owner Computer revoke.
 /// Older worker contracts are rejected before dispatch.
 /// MP-08/MP-10/MP-11: version 96 offers opaque binary relay event framing.
 /// Transport falls back to JSON/base64 when the relay or receiver is older.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 96;
 /// MP-08/MP-10/MP-11: peer96 changes only negotiated transport. Keep the
-/// pre-existing peer90 runtime/security admission floor for legacy workers.
-pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 90;
+/// peer92 runtime/security admission floor for legacy workers.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = 92;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -2108,12 +2111,15 @@ mod mp08_transport_compatibility_tests {
     #[test]
     fn mp08_peer96_transport_preserves_legacy_worker_runtime_admission() {
         assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 96);
-        // MP-08/MP-10/MP-11: real remote-binding admission keeps the existing
-        // security floor. Unknown/pre90 workers fail; peer94 stays compatible.
+        // MP-08/MP-10/MP-11: real remote-binding admission keeps the base
+        // peer92 security floor (Room AT-SPI target actions, owner Computer
+        // revoke). Unknown and peer90/91 stripe-only workers fail.
         for (version, compatible) in [
             (None, false),
             (Some(89), false),
-            (Some(90), true),
+            (Some(90), false),
+            (Some(91), false),
+            (Some(92), true),
             (Some(94), true),
             (Some(96), true),
         ] {
