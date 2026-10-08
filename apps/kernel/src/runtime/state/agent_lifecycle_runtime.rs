@@ -421,7 +421,7 @@ impl KernelRuntimeState {
                         }
                         _ => Some(false),
                     },
-                    "workflow" => session
+                    _ if obligation.tracks_workflow_run() => session
                         .workflow_runs()
                         .iter()
                         .find(|r| r.id() == source)

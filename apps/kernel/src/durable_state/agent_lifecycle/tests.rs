@@ -2649,3 +2649,65 @@ fn a02_security_f4_cancelled_parent_does_not_bind_or_reject_accepted_child() {
     assert_eq!(f.task().state, ExecutionState::Cancelled);
     assert!(f.task().obligations[0].completion_task_id.is_none());
 }
+
+#[test]
+fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
+    for early in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some("workflow-ref".into()),
+            now: 1,
+        });
+        let completed = || Operation::SourceOutcome {
+            public_answer: None,
+            room: "room".into(),
+            source: "completed-run".into(),
+            occurrence: "terminal-run".into(),
+            success: true,
+            now: 2,
+        };
+        if early {
+            f.apply(completed());
+        }
+        f.apply(Operation::DispatchReceipt {
+            id: "workflow-obligation".into(),
+            accepted: true,
+            resource: Some("completed-run".into()),
+        });
+        let regs = f.store.agent_registrations("p").unwrap();
+        assert_eq!(
+            regs.len(),
+            1,
+            "MP-08 / MP-10 / MP-11 G11: actual workflow_run kind needs completion registration"
+        );
+        assert_eq!(regs[0].source_id, "completed-run");
+        if !early {
+            f.apply(completed());
+        }
+        assert_eq!(f.task().obligations[0].status, "settling");
+        let event = f
+            .store
+            .agent_inbox("room", "parent", 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            handled: true,
+            now: 3,
+        });
+        f.settle("p", true);
+        assert_eq!(f.task().state, ExecutionState::Done);
+        assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
+    }
+}

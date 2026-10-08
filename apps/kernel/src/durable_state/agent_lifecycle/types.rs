@@ -44,6 +44,9 @@ pub struct AgentObligation {
     pub dispatch_state: String,
 }
 impl AgentObligation {
+    pub(crate) fn tracks_workflow_run(&self) -> bool {
+        matches!(self.kind.as_str(), "workflow" | "workflow_run")
+    }
     pub(crate) fn completion_source(&self) -> Option<&str> {
         self.completion_task_id
             .as_deref()

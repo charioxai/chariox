@@ -713,4 +713,90 @@ mod tests {
         drop(runtime);
         cleanup(f);
     }
+    #[tokio::test]
+    async fn a02_security_g11_retained_workflow_run_without_live_registration_is_reconciled() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        for status in [
+            crate::session::WorkflowRunStatus::Completed,
+            crate::session::WorkflowRunStatus::Failed,
+            crate::session::WorkflowRunStatus::Stopped,
+        ] {
+            let mut f = Fixture::new();
+            let (workflow, _, _) = f.workflow("g11");
+            let runtime = runtime(&mut f);
+            let mut config = runtime.owned.config_projection.snapshot();
+            config.room_agent_tools = true;
+            runtime.owned.config_projection.update(config);
+            let now = crate::session::unix_epoch_ms();
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    id: "g11-workflow".into(),
+                    kind: "workflow_run".into(),
+                    resource: Some("completed-run".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: "g11-workflow".into(),
+                    accepted: true,
+                    resource: Some("completed-run".into()),
+                })
+                .unwrap();
+            // Retained pre-fix workflow_run rows had no live completion registration.
+            for reg in f.store.agent_registrations("g11-retained").unwrap() {
+                f.store
+                    .agent_lifecycle(Operation::Unsubscribe {
+                        task: "g11-retained".into(),
+                        prompt: "g11-retained".into(),
+                        registration: reg.id,
+                    })
+                    .unwrap();
+            }
+            f.store
+                .agent_lifecycle(Operation::Block {
+                    task: "g11-retained".into(),
+                    prompt: "g11-retained".into(),
+                    reason: "reconcile missing workflow completion".into(),
+                })
+                .unwrap();
+            f.complete(&workflow, "completed-run", None, status, "fixture output");
+            runtime
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            runtime.sweep_agent_lifecycle().await.unwrap();
+            let task = f
+                .store
+                .agent_tasks(Some(&f.session), Some("agent"))
+                .unwrap()
+                .into_iter()
+                .find(|t| t.task_id == "g11-retained")
+                .unwrap();
+            assert_ne!(task.obligations[0].status,"open","MP-08 / MP-10 / MP-11 G11: terminal actual workflow_run obligation must be reconciled");
+            assert_eq!(
+                task.state,
+                ExecutionState::Blocked,
+                "explicit owner block remains authoritative"
+            );
+            drop(runtime);
+            cleanup(f);
+        }
+    }
 }
