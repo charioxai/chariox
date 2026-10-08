@@ -114,15 +114,20 @@ static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
 }
 /* MP-08/MP-10/MP-11: motion is native resolution. Only a session opened as
  * the measured-contention fallback reduces unprotected whole-frame software
- * motion to a geometry the presenter admits. Native exact repair restores
- * the original raster; scaled reconstruction certifies no native pixels. */
+ * motion to a geometry the presenter admits; working hardware stays native.
+ * Native exact repair restores the original raster; scaled reconstruction
+ * certifies no native pixels. */
 static void motion_geometry(struct Codec *c,int protected) {
     c->enc_width=c->width;c->enc_height=c->height;
-    if(c->row_count!=1||protected||c->device||!c->reduced)return;
+    if(c->row_count!=1||protected||(c->device&&!c->fallback)||!c->reduced)return;
     if(c->width==1920&&c->height==1080){c->enc_width=1280;c->enc_height=720;}
     else if(c->width==2560&&c->height==1600){c->enc_width=1280;c->enc_height=800;}
 }
 static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
+    int rate=(int)((double)c->bitrate*.45*h/c->height/1000);
+    if (rate<16)rate=16;
+    /* A failed h264_vaapi init is software from this first key onward. */
+    if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);motion_geometry(c,protected);}}
     x264_param_t p;
     if (x264_param_default_preset(&p,"ultrafast","zerolatency")) return -1;
     int ew=c->row_count==1?c->enc_width:c->width,eh=c->row_count==1?c->enc_height:h;
@@ -133,15 +138,12 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     p.i_fps_num=60;p.i_fps_den=1;p.i_timebase_num=1;p.i_timebase_den=60;
     p.i_keyint_max=120;p.i_scenecut_threshold=0;p.i_bframe=0;p.b_repeat_headers=1;p.b_annexb=1;p.i_log_level=X264_LOG_NONE;
     p.vui.b_fullrange=0;p.i_level_idc=51;
-    int rate=(int)((double)c->bitrate*.45*h/c->height/1000);
-    if (rate<16)rate=16;
     /* MP-08/MP-10: bound recovery keys as well as deltas. CQP clamps
      * per-picture quantizers and cannot honor the paced link budget. */
     p.rc.i_rc_method=X264_RC_CRF;p.rc.f_rf_constant=23;
     p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;
     p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
     if (x264_param_apply_profile(&p,"baseline")) return -1;
-    if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);}}
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,ew,eh)) return -1;
     row->allocated=1;row->width=ew;row->height=eh;

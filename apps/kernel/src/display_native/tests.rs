@@ -346,6 +346,8 @@ fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
             1
         );
         assert!(rows[0].key != 0 && rows[0].sequence == 1);
+        let packet = unsafe { std::slice::from_raw_parts(rows[0].bytes, rows[0].length) };
+        assert_eq!(sps_size(packet), (1920, 1088), "the native 1080p key");
         // Twice the 50ms VBV budget leaves headers room without a 300ms key.
         assert!(
             rows[0].length <= 45000,
@@ -445,6 +447,11 @@ fn mp08_contention_fallback_motion_encodes_the_client_admitted_reduced_geometry(
             )
         };
         assert_eq!(count, rows);
+        // A render node whose h264_vaapi init failed encodes software and
+        // takes the fallback geometry; only working hardware stays native.
+        if unsafe { ffi::cx_codec_backend(codec.0) } == 1 {
+            return None;
+        }
         let packet = unsafe { std::slice::from_raw_parts(results[0].bytes, results[0].length) };
         let mut bounds = [0; 4];
         unsafe {
@@ -481,9 +488,11 @@ fn mp08_contention_fallback_motion_encodes_the_client_admitted_reduced_geometry(
                 "scaled video cannot certify even the last native tile"
             );
         }
-        (sps_size(packet), bounds)
+        Some((sps_size(packet), bounds))
     };
-    let (size, bounds) = encode(1920, 1080, 1, &[]);
+    let Some((size, bounds)) = encode(1920, 1080, 1, &[]) else {
+        return;
+    };
     assert_eq!(size, (1280, 720), "1080p whole-frame motion is 720p");
     assert_eq!(
         bounds,
@@ -491,11 +500,11 @@ fn mp08_contention_fallback_motion_encodes_the_client_admitted_reduced_geometry(
         "a client-scaled frame certifies nothing"
     );
     assert_eq!(
-        encode(2560, 1600, 1, &[]).0,
+        encode(2560, 1600, 1, &[]).unwrap().0,
         (1280, 800),
         "Retina motion is CSS size"
     );
-    let (size, bounds) = encode(1280, 800, 1, &[]);
+    let (size, bounds) = encode(1280, 800, 1, &[]).unwrap();
     assert_eq!(size, (1280, 800));
     assert!(bounds[0] >= bounds[2], "native white remains certified");
     let protected = [Rect {
@@ -505,11 +514,15 @@ fn mp08_contention_fallback_motion_encodes_the_client_admitted_reduced_geometry(
         bottom: 200,
     }];
     assert_eq!(
-        encode(1920, 1080, 1, &protected).0,
+        encode(1920, 1080, 1, &protected).unwrap().0,
         (1920, 1088),
         "protected motion stays native"
     );
-    assert_eq!(encode(1920, 1080, 8, &[]).0 .0, 1920, "stripes stay native");
+    assert_eq!(
+        encode(1920, 1080, 8, &[]).unwrap().0 .0,
+        1920,
+        "stripes stay native"
+    );
 }
 
 fn webp_rgb(data: &[u8]) -> (i32, i32, Vec<u8>) {
