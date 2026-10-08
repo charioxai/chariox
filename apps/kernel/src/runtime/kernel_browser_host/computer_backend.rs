@@ -5,6 +5,8 @@
 use super::*;
 use crate::error::HostFailure;
 
+pub(super) type ComputerSeat = Arc<Mutex<dyn ComputerBackend>>;
+
 pub(crate) trait ComputerBackend: Send {
     fn ready(&mut self) -> bool;
     fn start(&mut self) -> Result<(), String>;
@@ -54,13 +56,24 @@ impl ComputerBackend for BrowserControllerProcessStdioBackend {
 }
 
 impl KernelBrowserHost {
-    /// Registers a native seat for `user`. The host owns at most one personal
-    /// seat: another user cannot adopt or take it from its live owner.
-    pub(crate) fn register_computer_seat(
+    #[cfg(any(test, target_os = "macos"))]
+    pub(super) fn require_computer_owner(user: &str) -> Result<(), String> {
+        // Cloud owner requests have already been mapped to this canonical ID.
+        // Room membership and arrival order never confer the personal Mac seat.
+        if user != crate::session::DEFAULT_LOCAL_USER_ID {
+            return Err("MP-11: the Computer seat requires the kernel authority owner".into());
+        }
+        Ok(())
+    }
+
+    /// Admit the owner before configuration and serialize first-use creation.
+    #[cfg(any(test, target_os = "macos"))]
+    pub(super) fn computer_seat_or_create(
         &self,
         user: &str,
-        seat: Arc<Mutex<dyn ComputerBackend>>,
-    ) -> Result<(), String> {
+        create: impl FnOnce() -> Result<Option<ComputerSeat>, String>,
+    ) -> Result<Option<ComputerSeat>, String> {
+        Self::require_computer_owner(user)?;
         let mut state = self
             .inner
             .lock()
@@ -68,17 +81,33 @@ impl KernelBrowserHost {
         if state.stopped {
             return Err("MD integration: browser host is shut down".into());
         }
-        if state.seats.keys().any(|owner| owner != user) {
-            return Err("MP-11: the Computer seat belongs to another user".into());
+        if let Some(seat) = state.seats.get(user) {
+            return Ok(Some(seat.clone()));
         }
-        state.seats.insert(user.into(), seat);
-        Ok(())
+        let seat = create()?;
+        if let Some(seat) = &seat {
+            state.seats.insert(user.into(), seat.clone());
+        }
+        Ok(seat)
     }
 
-    pub(super) fn computer_backend(
+    #[cfg(test)]
+    pub(crate) fn register_computer_seat(
         &self,
         user: &str,
-    ) -> Result<Arc<Mutex<dyn ComputerBackend>>, String> {
+        seat: ComputerSeat,
+    ) -> Result<(), String> {
+        self.computer_seat_or_create(user, || Ok(Some(seat)))
+            .map(drop)
+    }
+
+    pub(super) fn computer_backend(&self, user: &str) -> Result<ComputerSeat, String> {
+        #[cfg(target_os = "macos")]
+        let seat = self.computer_seat_or_create(user, || {
+            super::mac_helper::MacComputerHelper::configured(&self.root)
+                .map(|helper| helper.map(|helper| Arc::new(Mutex::new(helper)) as ComputerSeat))
+        })?;
+        #[cfg(not(target_os = "macos"))]
         let seat = self
             .inner
             .lock()
@@ -89,22 +118,14 @@ impl KernelBrowserHost {
         if let Some(seat) = seat {
             return Ok(seat);
         }
-        #[cfg(target_os = "macos")]
-        if let Some(helper) = super::mac_helper::MacComputerHelper::configured(&self.root)? {
-            let seat: Arc<Mutex<dyn ComputerBackend>> = Arc::new(Mutex::new(helper));
-            self.register_computer_seat(user, seat.clone())?;
-            return Ok(seat);
-        }
         Ok(self.backend(user)?)
     }
 
-    /// Explicit Stop for a personal seat: fences the helper and ends its epoch.
-    /// The Linux desktop keeps its own browser-host lifecycle.
-    pub(super) fn stop_seat(seat: Option<Arc<Mutex<dyn ComputerBackend>>>) {
+    /// Stop completes before Revoke all returns, so the next start is fresh.
+    /// Backends may reap an already fenced helper asynchronously.
+    pub(super) fn stop_seat(seat: Option<ComputerSeat>) {
         if let Some(seat) = seat {
-            std::thread::spawn(move || {
-                let _ = seat.lock().unwrap_or_else(|e| e.into_inner()).stop();
-            });
+            let _ = seat.lock().unwrap_or_else(|e| e.into_inner()).stop();
         }
     }
 }

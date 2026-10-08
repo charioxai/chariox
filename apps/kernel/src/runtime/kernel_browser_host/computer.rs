@@ -8,6 +8,8 @@ impl KernelBrowserHost {
         mut params: Value,
         policy: Value,
     ) -> Result<Value, crate::error::HostFailure> {
+        #[cfg(target_os = "macos")]
+        Self::require_computer_owner(user)?;
         self.check_admission(admission)?;
         if admission.is_some_and(|a| {
             a.user != user

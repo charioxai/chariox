@@ -262,6 +262,16 @@ final class FakeSource: NativeSource {
         }
         let pinned = try kernelRequirement(["CharioxDrillKernelCDHash": String(repeating: "A", count: 40)])
         precondition(pinned == "cdhash H\"" + String(repeating: "a", count: 40) + "\"")
+        // A real local socket supplies the audit token of this test kernel.
+        // The helper accepts its UID/PID but refuses a foreign code pin.
+        var sockets: [Int32] = [-1, -1]
+        precondition(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0)
+        defer { close(sockets[0]); close(sockets[1]) }
+        var peer = audit_token_t(), peerLength = socklen_t(MemoryLayout<audit_token_t>.size)
+        precondition(getsockopt(sockets[0], 0, 6, &peer, &peerLength) == 0)
+        precondition(peer.val.1 == getuid() && peer.val.5 == getpid())
+        precondition(peerSatisfies(peer, "always") && !peerSatisfies(peer, pinned))
+        print("PASS helper refuses a real socket peer with a foreign kernel code pin")
         print("PASS pairing requires an allowlisted kernel identity")
     }
 }

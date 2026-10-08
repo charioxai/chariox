@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 pub mod account_profile;
 pub mod agent;
 pub mod app;

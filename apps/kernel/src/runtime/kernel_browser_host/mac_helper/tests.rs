@@ -117,12 +117,15 @@ fn m1_paired_seat_reports_kernel_epoch_and_stop_cleans_up() {
         .iter()
         .any(|m| m == "heartbeat")));
     seat.stop().unwrap();
-    assert!(!seat.ready() && !dir.exists());
+    assert!(!seat.ready());
+    assert!(wait(|| !dir.exists()));
     assert_eq!(seen.lock().unwrap().last().unwrap(), "stop");
     assert!(state(&mut seat).is_err());
     seat.start().unwrap();
     assert_ne!(state(&mut seat).unwrap()["generation"], first["generation"]);
+    let dir = seat.link.as_ref().unwrap().dir.clone();
     drop(seat);
+    assert!(wait(|| !dir.exists()));
     std::fs::remove_dir_all(root).unwrap();
 }
 

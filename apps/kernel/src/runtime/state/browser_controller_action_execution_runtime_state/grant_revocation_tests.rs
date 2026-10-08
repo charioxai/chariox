@@ -182,7 +182,8 @@ async fn mp08_room_computer_revoke_denies_queued_and_new_input_and_regrants() {
     let owner_runtime = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
         std::sync::Arc::clone(&room.runtime.app),
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
-    ).runtime_state();
+    )
+    .runtime_state();
     room.runtime
         .reconcile_room_environment_actors(&room.session_id, None)
         .unwrap();

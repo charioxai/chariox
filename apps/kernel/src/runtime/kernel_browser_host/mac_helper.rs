@@ -355,7 +355,9 @@ impl ComputerBackend for MacComputerHelper {
     fn stop(&mut self) -> Result<(), String> {
         if let Some(link) = self.link.take() {
             let _ = link.call("stop", json!({}), LEASE);
-            link.retire();
+            // End this epoch under the seat lock. Only reaping may outlive Stop.
+            link.fence();
+            std::thread::spawn(move || link.retire());
         }
         Ok(())
     }

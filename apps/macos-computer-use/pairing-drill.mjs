@@ -126,6 +126,18 @@ try {
   const denied = await refused({ op: 'start' }, /pairing refused/, 'foreign helper identity refused');
   await until(() => helperPids().length === 0, 'refused helper exits', 5000);
   assert.equal(rendezvous().length, 0); check('pairing-denied-for-foreign-helper-identity', { denied });
+  await stopKernel();
+
+  // Reverse denial: the kernel admits this helper build, but the helper pins a
+  // foreign kernel and exits before sending its bootstrap token.
+  execFileSync('bash', [path.join(here, 'build.sh')], { env: { ...process.env,
+    CUMAC_BUILD_DIR: path.join(root, 'install'), CHARIOX_DRILL_KERNEL_CDHASH: '0'.repeat(40) }, stdio: 'ignore' });
+  const rejectingHelperHash = hashOf(app);
+  rendezvous = await startKernel(rejectingHelperHash);
+  const foreignKernel = await refused({ op: 'start' }, /pairing refused/, 'helper refuses foreign kernel identity');
+  await until(() => helperPids().length === 0, 'helper rejecting kernel exits', 5000);
+  assert.equal(rendezvous().length, 0);
+  check('pairing-denied-for-foreign-kernel-identity', { denied: foreignKernel, helper_cdhash: rejectingHelperHash });
   report.status = 'PASS';
 } catch (error) {
   report.failure = String(error?.message ?? error).slice(0, 2000); process.exitCode = 1;

@@ -1,5 +1,6 @@
 //! MP-08 / MP-11: fail-first desktop grants and Browser/Computer arbitration.
 use super::*;
+use crate::session::DEFAULT_LOCAL_USER_ID as OWNER;
 use serde_json::json;
 #[test]
 fn mp11_desktop_grant_is_explicit_retained_scoped_and_epoch_fenced() {
@@ -147,11 +148,11 @@ fn seat_host() -> (KernelBrowserHost, Arc<Mutex<FakeSeat>>) {
     let root = std::env::temp_dir().join(format!("cumac-seat-{:032x}", rand::random::<u128>()));
     let host = KernelBrowserHost::new(root);
     let seat = Arc::new(Mutex::new(FakeSeat::default()));
-    host.register_computer_seat("owner", seat.clone()).unwrap();
+    host.register_computer_seat(OWNER, seat.clone()).unwrap();
     (host, seat)
 }
 fn computer(host: &KernelBrowserHost, op: Value) -> Result<Value, String> {
-    host.protected_request_admitted("owner", None, "host.computer", op, Value::Null)
+    host.protected_request_admitted(OWNER, None, "host.computer", op, Value::Null)
         .map_err(|e| e.to_string())
 }
 #[test]
@@ -173,15 +174,15 @@ fn m1_registered_seat_backs_the_shared_adapter_for_one_owner() {
 #[test]
 fn m1_agent_cannot_start_a_personal_seat() {
     let (host, seat) = seat_host();
-    host.set_focus("owner", Some("a"));
-    host.load_for("owner", "a", KernelBrowserCapability::Computer)
+    host.set_focus(OWNER, Some("a"));
+    host.load_for(OWNER, "a", KernelBrowserCapability::Computer)
         .unwrap();
     let admission = host
-        .admit_for("owner", "a", KernelBrowserCapability::Computer)
+        .admit_for(OWNER, "a", KernelBrowserCapability::Computer)
         .unwrap();
     assert!(host
         .protected_request_admitted(
-            "owner",
+            OWNER,
             Some(&admission),
             "host.computer",
             json!({"op":"start"}),
@@ -210,17 +211,99 @@ fn m1_crash_requires_explicit_restart_and_old_epoch_is_stale() {
 fn m1_revoke_all_and_shutdown_stop_the_seat_but_one_agent_does_not() {
     let (host, seat) = seat_host();
     computer(&host, json!({"op":"start"})).unwrap();
-    host.revoke_grants("owner", Some("a"));
-    std::thread::sleep(Duration::from_millis(100));
+    host.revoke_grants(OWNER, Some("a"));
     assert!(seat.lock().unwrap().live);
-    host.revoke_grants("owner", None);
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while seat.lock().unwrap().live && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    host.revoke_grants(OWNER, None);
     assert!(!seat.lock().unwrap().live);
     assert!(computer(&host, json!({"op":"state"})).is_err());
     computer(&host, json!({"op":"start"})).unwrap();
     host.shutdown().unwrap();
     assert!(!seat.lock().unwrap().live);
+}
+#[test]
+fn m1_non_owner_first_cannot_take_the_seat() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("cumac-ff"));
+    let seat: Arc<Mutex<dyn computer_backend::ComputerBackend>> =
+        Arc::new(Mutex::new(FakeSeat::default()));
+    assert!(host.register_computer_seat("intruder", seat).is_err());
+}
+#[test]
+fn m1_restart_right_after_revoke_all_gets_a_fresh_epoch() {
+    let (host, _) = seat_host();
+    for _ in 0..20 {
+        let old = computer(&host, json!({"op":"start"})).unwrap();
+        host.revoke_grants(OWNER, None);
+        let fresh = computer(&host, json!({"op":"start"})).unwrap();
+        assert_ne!(fresh["generation"], old["generation"]);
+    }
+}
+#[test]
+fn m1_second_first_use_keeps_the_started_seat() {
+    let (host, seat) = seat_host();
+    computer(&host, json!({"op":"start"})).unwrap();
+    let other: Arc<Mutex<dyn computer_backend::ComputerBackend>> =
+        Arc::new(Mutex::new(FakeSeat::default()));
+    host.register_computer_seat(OWNER, other).unwrap();
+    let first: Arc<Mutex<dyn computer_backend::ComputerBackend>> = seat;
+    assert!(Arc::ptr_eq(&host.computer_backend(OWNER).unwrap(), &first));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn m1_non_owner_backend_and_actor_requests_are_refused_before_configuration() {
+    let (host, seat) = seat_host();
+    assert!(host
+        .computer_backend("intruder")
+        .err()
+        .unwrap()
+        .contains("kernel authority owner"));
+    for op in ["start", "state", "actors", "takeover", "release", "input"] {
+        let error = host
+            .protected_request_admitted(
+                "intruder",
+                None,
+                "host.computer",
+                json!({"op":op}),
+                Value::Null,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("kernel authority owner"),
+            "{op}: {error}"
+        );
+    }
+    assert!(seat.lock().unwrap().calls.is_empty());
+    assert!(!host.inner.lock().unwrap().actors.contains_key("intruder"));
+}
+
+#[test]
+fn m1_owner_admission_precedes_the_factory_and_concurrent_first_use_creates_once() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("cumac-owner-factory"));
+    assert!(host
+        .computer_seat_or_create("intruder", || panic!(
+            "foreign user reached helper configuration"
+        ))
+        .is_err());
+    let created = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let threads = (0..2)
+        .map(|_| {
+            let (host, created, barrier) = (host.clone(), created.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                host.computer_seat_or_create(OWNER, || {
+                    created.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Some(Arc::new(Mutex::new(FakeSeat::default()))))
+                })
+                .unwrap()
+                .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let seats = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+    assert!(Arc::ptr_eq(&seats[0], &seats[1]));
+    assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
