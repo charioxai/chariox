@@ -47,30 +47,23 @@ def capture(mask, uncovered=()):
 def input_action(action, processes=None):
     kind = action['kind']
     guard=None
-    if processes is not None and kind in ('text','key','hold'):
-        accessibility=load('native-accessibility')
-        guard=accessibility.input_guard(processes)
     if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
         raise ValueError('native paste/repeat requires human or Vault input')
+    if processes is not None and kind in ('text','key','click'):
+        # MP-11: any agent key, text or click may reach a Paste control
+        # (chord, menu mnemonic, focused button). Gate on clipboard owner.
+        accessibility=load('native-accessibility')
+        admit_clipboard=load('native-clipboard').input_admission(processes,accessibility)
+        admit_focus=accessibility.input_guard(processes) if kind!='click' else lambda:None
+        def guard():
+            admit_focus()
+            admit_clipboard()
     if kind == 'text': keyboard.type_text(action['text'],before_press=guard); return
     if kind=='pointer_hold':
         keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):
-        key = action['key'].replace('Enter', 'Return')
-        clipboard=load('native-clipboard')
-        if processes is not None and clipboard.is_paste_chord(key):
-            admit_clipboard=clipboard.paste_guard(processes,accessibility)
-            admit_focus=guard
-            def guard():
-                admit_focus()
-                admit_clipboard()
-        keyboard.hold_input('key', key, action.get('duration_ms', 1),before_press=guard); return
+        keyboard.hold_input('key', action['key'].replace('Enter', 'Return'), action.get('duration_ms', 1),before_press=guard); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
-    if processes is not None and kind=='click':
-        # MP-11 review R1: pointers may activate any app's Paste control.
-        accessibility=load('native-accessibility')
-        guard=load('native-clipboard').paste_guard(processes,accessibility)
-        guard()
     connection = load('native-x11').open_display(display)
     try:
         screen = connection.screen()

@@ -49,4 +49,46 @@ class ProtectionTests(unittest.TestCase):
             result=module.main({'op':'screenshot','mask':False,'processes':[]})
             image=module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64'])))
             self.assertEqual(image.getpixel((4,2)),(0,0,0))
+
+class AgentInputClipboardTests(unittest.TestCase):
+    """MP-11 #904 review 1/3: every agent mutation is gated on CLIPBOARD owner provenance only."""
+    def run_input(self,action,owner_pid=None,owners=None,tree=None):
+        tree=tree or {'available':True,'complete':False,'protected':False,'uncovered':[[0,0,4,4]],
+            'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True,'name':'[protected]'}]}
+        accessibility=SimpleNamespace(snapshot=lambda *args:tree,alive=lambda process:True,input_guard=lambda processes:(lambda:None),NativeInputDenied=type('NativeInputDenied',(ValueError,),{}))
+        owner=SimpleNamespace(id=99,get_full_property=lambda *args:None)
+        connection=SimpleNamespace(intern_atom=lambda name:name,close=lambda:None,sync=lambda:None,
+            get_selection_owner=lambda atom:(owners.pop(0) if owners else (owner if owner_pid else 0)),
+            has_extension=lambda name:True,res_query_version=lambda:SimpleNamespace(server_major=1,server_minor=2),
+            res_query_client_ids=lambda specs:SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[owner_pid])]),
+            screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100))
+        events=[]
+        def press(kind,value,duration,*args,before_press=None):
+            before_press();events.append((kind,value))
+        def type_text(text,before_press=None):
+            before_press();events.append(('text',text))
+        loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11}
+        with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),\
+             patch.object(module.xtest,'fake_input',side_effect=lambda c,kind,*args,**kw:events.append(kind)),\
+             patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=type_text):
+            try:module.input_action(action,[{'pid':77,'started':'1'}])
+            except accessibility.NativeInputDenied:return None
+        return events
+
+    def test_empty_clipboard_admits_clicks_while_browser_and_popups_are_masked(self):
+        self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5}))
+
+    def test_proved_public_owner_admits_clicks_while_other_windows_are_masked(self):
+        self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5},owner_pid=77))
+
+    def test_unproved_or_protected_owner_refuses_every_mutating_input_before_events(self):
+        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'p'},{'kind':'key','key':'Return'},
+                       {'kind':'key','key':'alt+e'},{'kind':'key','key':'shift+F10'},{'kind':'text','text':'p'}]:
+            for pid in (90,123):
+                self.assertIsNone(self.run_input(action,owner_pid=pid),(action,pid))
+
+    def test_owner_taken_after_admission_refuses_the_press(self):
+        owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
+        self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
+        self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
 if __name__=='__main__':unittest.main()

@@ -229,6 +229,14 @@ class PhysicalChordTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.main(['key-repeat','2'],io.BytesIO(key.encode()))
                 repeat.assert_not_called()
 
+    def test_mp11_agent_room_key_and_text_check_clipboard_owner_for_every_key(self):
+        m,c=self.native()
+        for args,data in [(['key-repeat','1'],b's'),(['key-repeat','1'],b'Return'),(['key-repeat','1'],b'alt+e'),([],b'p')]:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None), patch.object(m,'room_clipboard_guard',side_effect=ValueError('unknown clipboard source')), patch.object(m,'focused_target',return_value={}), patch.object(m,'assert_secret_target'), patch.object(m.time,'sleep'), patch.object(m.signal,'signal'), patch.object(m.xtest,'fake_input') as inject:
+                try:m.main(args,io.BytesIO(data))
+                except ValueError:pass
+            inject.assert_not_called()
+
     def test_mp11_approved_room_vault_input_bypasses_ordinary_native_admission(self):
         m,c=self.native()
         target={'focus_window':10,'active_window':10,'geometry':[0,0,10,10],'window_geometry':[0,0,10,10]}

@@ -84,20 +84,12 @@ test('MP-11 R1 agent pointer holds require the same human admission as keyboard 
   assert.equal(calls,0);
 });
 
-test('MP-11 R2 unknown clipboard never reaches an agent paste shortcut',async()=>{
+test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-owner gate, not the read policy',async()=>{
   const calls=[];
-  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{calls.push(request.op);return {text:'[protected]'};}});
-  for(const key of ['CTRL+V','SHIFT+Insert','Control_L+Shift+v','Super+v']){
-    await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'key',key}},{}),error=>error.code==='user_domain_sensitive_requires_focus');
-  }
-  assert.deepEqual(calls,['clipboard_read','clipboard_read','clipboard_read','clipboard_read']);
-});
-
-test('MP-11 review R1 agent clicks cannot invoke Paste with an unproved clipboard',async()=>{
-  const calls=[];
-  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{calls.push(request.op);return {text:'[protected]'};}});
-  for(const button of [1,3])await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',button,x:10,y:10}},{}),error=>error.code==='user_domain_sensitive_requires_focus');
-  assert.deepEqual(calls,['clipboard_read','clipboard_read']);
-  await adapter.request({op:'input',surface_id:'surface',generation:'generation',input:{kind:'click',x:10,y:10}},{});
-  assert.equal(calls.at(-1),'input','MP-11 human click preserves existing admission');
+  const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
+  const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return request.op==='clipboard_read'?{text:'[protected]'}:{applied:true};}});
+  for(const input of [{kind:'click',button:1,x:10,y:10},{kind:'click',button:3,x:10,y:10},{kind:'key',key:'CTRL+V'},{kind:'key',key:'p'},{kind:'key',key:'alt+e'},{kind:'text',text:'p'}])
+    await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+  assert.deepEqual(calls.map(request=>request.op),Array(6).fill('input'));
+  assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
 });
