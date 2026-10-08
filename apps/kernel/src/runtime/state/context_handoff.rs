@@ -946,6 +946,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_model_switch_keeps_user_next_step_and_later_assistant_risk_distinct() {
+        let fixture = DerivedHandoffFixture::new().await;
+        // Shape of the real Codex audit: an explicit next step followed by a
+        // later assistant risk summary, then a no-tool recall after a model
+        // change. The observed paraphrase must not be mistaken for a brief
+        // dropping or superseding the user's words.
+        let next_step = "Next step: check queued delivery ordering. Inspect queued-prompt promotion logic and summarize the ownership guard.";
+        let risk = "With restart continuity prioritized, the main audit risks remain launch-policy ID clearing and unverified serialization between profile changes and queued promotion; persisted metadata and history provide supporting source evidence, not live recall proof.";
+        fixture.user(1, next_step);
+        fixture.output(2, "run-source", "codex", Some("thread-audit"), "These checks guard against stale delivery, but the inspected source does not establish serialization with profile changes.");
+        fixture.user(3, "Assess the documented protocol contract and list the remaining audit risks.");
+        fixture.output(4, "run-source", "codex", Some("thread-audit"), risk);
+        fixture.user(5, "Without tools or reading any file, recall our audit conversation. Preserve the original short decision phrases; do not infer missing facts.");
+
+        let resumed = test_run_in_session(
+            "run-target",
+            &fixture.agent_id,
+            "codex",
+            "gpt-6-sol",
+            Some("thread-audit"),
+        );
+        assert!(fixture.dispatch(&resumed, 5).is_none());
+
+        // A genuinely fresh session would instead receive both statements in
+        // their original order, without treating the risk as a user update.
+        let fresh = fixture.run("run-fresh", "codex", None);
+        let packet = fixture.dispatch(&fresh, 5).unwrap();
+        assert!(packet.contains(next_step), "{packet}");
+        assert!(packet.contains(risk), "{packet}");
+        assert!(packet.find(next_step).unwrap() < packet.find(risk).unwrap());
+    }
+
+    #[tokio::test]
     async fn new_provider_session_receives_the_conversation_until_it_answers() {
         let fixture = DerivedHandoffFixture::new().await;
         fixture.user(1, "remember the codename amber-kestrel");
