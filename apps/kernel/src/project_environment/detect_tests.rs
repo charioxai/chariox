@@ -50,6 +50,45 @@ fn envp02a_secret_examples_names_only_no_value_or_digest_or_execution() {
     assert!(!root.path().join("MUST_NOT_EXIST").exists());
     assert!(result.code_folders.contains("folder"));
 }
+
+#[test]
+fn envp02a_ambiguous_configuration_values_never_supply_hashes_or_gui_hints() {
+    let root = TestWorktree::new("envp02a-ambiguous-values");
+    let populate = |value: &str| {
+        write(&root, ".env.example", &format!("CUSTOM={value}\n"));
+        write(
+            &root,
+            ".mcp.json",
+            &format!(
+                r#"{{"mcpServers":{{"docs":{{"command":"echo","env":{{"CUSTOM":"{value}"}}}}}}}}"#
+            ),
+        );
+        write(
+            &root,
+            "compose.yaml",
+            &format!("services:\n  docs:\n    environment:\n      CUSTOM: {value}\n"),
+        );
+        write(
+            &root,
+            ".devcontainer/devcontainer.json",
+            &format!(r#"{{"image":"node:22","containerEnv":{{"CUSTOM":"{value}"}}}}"#),
+        );
+    };
+    populate("Notion-private-one");
+    let first = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert!(!first.proposals.iter().any(|p| matches!(&p.requirement.spec, RequirementSpec::Software { identity, .. } if identity == "Notion")));
+    for proposal in &first.proposals {
+        if let RequirementSpec::Files { entries, .. } = &proposal.requirement.spec {
+            assert!(entries
+                .iter()
+                .all(|entry| entry.content_digest.is_none() && entry.byte_count.is_none()));
+        }
+    }
+    populate("Canva-another-private-value");
+    let changed = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert_eq!(first.evidence_digest, changed.evidence_digest);
+    assert_eq!(first.proposals, changed.proposals);
+}
 #[test]
 fn envp02a_non_code_metadata_no_default_model_and_large_binary_visible_skip() {
     let root = TestWorktree::new("envp02a-campaign");
