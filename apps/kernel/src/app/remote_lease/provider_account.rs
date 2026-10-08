@@ -66,7 +66,11 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
-        crate::account_profile::validate_copy_source_kernel(&materialization, &lease.home_kernel_id)?;
+        crate::account_profile::validate_copy_source_kernel(
+            &materialization,
+            &lease.home_kernel_id,
+        )?;
+        crate::account_profile::validate_claude_transfer_artifacts(&materialization)?;
         self.app
             .provider_account_profile_registry()
             .reconcile_materialized_replica_rollback(
@@ -253,30 +257,85 @@ mod tests {
         let root = crate::test_support::TestWorktree::new("lease-copy-source");
         let (mut app, context) = remote_account_fixture(root.path());
         let materialization = ProviderAccountMaterialization {
-            copy_source: Some(crate::account_profile::ProviderAccountCopySource { machine_id: "source-machine".into(), kernel_id: "other-home-kernel".into() }),
-            profile: crate::account_profile::ProviderAccountReplicaMetadata { owner_user_id: "owner-a".into(), provider: "claude".into(), profile_id: "spoofed-copy".into(), label: "Spoofed source".into(), origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated, is_default: false },
-            files: Vec::new(), generated_at_ms: 1,
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "source-machine".into(),
+                kernel_id: "other-home-kernel".into(),
+            }),
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".into(),
+                provider: "claude".into(),
+                profile_id: "spoofed-copy".into(),
+                label: "Spoofed source".into(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: Vec::new(),
+            generated_at_ms: 1,
         };
-        let result = RemoteLeaseRuntime::new(&mut app).ensure_remote_provider_account(context, materialization);
-        assert!(result.is_err(), "lease accepted another home's source provenance");
-        assert!(app.provider_account_profile_registry().get("owner-a", "claude", "spoofed-copy").is_err());
+        let result = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, materialization);
+        assert!(
+            result.is_err(),
+            "lease accepted another home's source provenance"
+        );
+        assert!(app
+            .provider_account_profile_registry()
+            .get("owner-a", "claude", "spoofed-copy")
+            .is_err());
     }
 
     #[test]
     fn secrev_f6_claude_aliases_reject_nonrefreshable_artifacts_before_installation() {
         use base64::Engine;
         for provider in ["claude-headless", "claude-p"] {
-            assert_eq!(crate::provider::canonical_provider_family(provider), Some("claude"));
+            assert_eq!(
+                crate::provider::canonical_provider_family(provider),
+                Some("claude")
+            );
             let root = crate::test_support::TestWorktree::new("lease-claude-alias");
             let (mut app, context) = remote_account_fixture(root.path());
             let materialization = ProviderAccountMaterialization {
-                copy_source: Some(crate::account_profile::ProviderAccountCopySource { machine_id: "source-machine".into(), kernel_id: context.home_kernel_id.clone() }),
-                profile: crate::account_profile::ProviderAccountReplicaMetadata { owner_user_id: "owner-a".into(), provider: provider.into(), profile_id: "bad-claude".into(), label: "Invalid Claude".into(), origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated, is_default: false },
-                files: vec![crate::account_profile::ProviderAccountMaterializationFile { relative_path: ".credentials.json".into(), contents_base64: base64::engine::general_purpose::STANDARD.encode(br#"{"claudeAiOauth":{"accessToken":"synthetic","refreshToken":""}}"#) }], generated_at_ms: 1,
+                copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                    machine_id: "source-machine".into(),
+                    kernel_id: context.home_kernel_id.clone(),
+                }),
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner-a".into(),
+                    provider: provider.into(),
+                    profile_id: "bad-claude".into(),
+                    label: "Invalid Claude".into(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                    is_default: false,
+                },
+                files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                    relative_path: ".credentials.json".into(),
+                    contents_base64: base64::engine::general_purpose::STANDARD.encode(
+                        br#"{"claudeAiOauth":{"accessToken":"synthetic","refreshToken":""}}"#,
+                    ),
+                }],
+                generated_at_ms: 1,
             };
-            let result = RemoteLeaseRuntime::new(&mut app).ensure_remote_provider_account(context, materialization);
-            assert!(result.is_err(), "{provider} installed a nonrefreshable Claude artifact");
-            assert!(app.provider_account_profile_registry().get("owner-a", "claude", "bad-claude").is_err());
+            let result = RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), materialization.clone());
+            assert!(
+                result.is_err(),
+                "{provider} installed a nonrefreshable Claude artifact"
+            );
+            assert!(app
+                .provider_account_profile_registry()
+                .get("owner-a", "claude", "bad-claude")
+                .is_err());
+            let mut vault_only = materialization.clone();
+            vault_only.files.clear();
+            RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), vault_only)
+                .expect("empty artifact list must retain the separate Vault path");
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .ensure_remote_provider_account(context, materialization)
+                    .is_err(),
+                "{provider} bypassed validation by reusing an existing profile"
+            );
         }
     }
 

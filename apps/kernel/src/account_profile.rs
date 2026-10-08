@@ -2999,11 +2999,7 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         let provider = normalize_provider(&materialization.profile.provider)?;
-        // Gate the canonical family at the shared installer, before provisioning.
-        // An empty file list remains available only to the separate Vault path.
-        if provider == "claude" && !materialization.files.is_empty() {
-            validate_managed_context_materialization_shape(provider, materialization)?;
-        }
+        validate_claude_transfer_artifacts(materialization)?;
         let profile_id = validate_profile_id(&materialization.profile.profile_id)?;
         let allowed = match provider {
             "codex" => "auth.json",
@@ -3596,6 +3592,19 @@ fn managed_context_default_can_be_replaced(
         && stored.public.origin == ProviderAccountProfileOrigin::Default
         && stored.public.is_default
         && materialization.profile.is_default
+}
+
+/// Apply the same Claude policy before installation or an existing-profile return.
+/// Empty artifact lists preserve the separate Vault launch path.
+pub(crate) fn validate_claude_transfer_artifacts(
+    materialization: &ProviderAccountMaterialization,
+) -> Result<(), DaemonError> {
+    if normalize_provider(&materialization.profile.provider)? == "claude"
+        && !materialization.files.is_empty()
+    {
+        validate_managed_context_materialization_shape("claude", materialization)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_managed_context_materialization_shape(
@@ -8445,7 +8454,7 @@ mod tests {
             (
                 "context-claude-extra",
                 with_extra_file,
-                "provider homes transfer credentials only",
+                "managed-context credential allowlist",
             ),
         ] {
             let (target_root, target) = fixture();
