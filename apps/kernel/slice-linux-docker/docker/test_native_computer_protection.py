@@ -68,7 +68,7 @@ class AgentInputClipboardTests(unittest.TestCase):
         def type_text(text,before_press=None):
             before_press();events.append(('text',text))
         loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11}
-        with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),\
+        with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),\
              patch.object(module.xtest,'fake_input',side_effect=lambda c,kind,*args,**kw:events.append(kind)),\
              patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=type_text):
             try:module.input_action(action,[{'pid':77,'started':'1'}])
