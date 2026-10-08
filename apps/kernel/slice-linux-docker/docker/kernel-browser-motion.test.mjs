@@ -203,3 +203,19 @@ test('MP-08/MP-10/MP-11 rejected native codec carries indexed exact PNG through 
   assert.equal(exactCalls,1);assert.equal(frame.kind,'png');assert.equal(frame.data_base64,indexed);assert.equal(stream.exact,true);assert.equal(exact.raw,undefined);
  }finally{await motion.close();await stream.close()}
 });
+test('MP-11 an exact encode overlapping the producer skips one sample instead of failing motion',async()=>{
+ const {BrowserEncoder}=await import('./kernel-browser-webcodecs.mjs');
+ let latest,offer,release;const held=new Promise(r=>release=r),calls=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder=new BrowserEncoder({},'target',{async encode(image,b,key){calls.push([image,key]);if(image==='exact')await held;return {key,data_base64:'AA=='}},close:async()=>{}});
+ encoder.fallbackOnly=true;
+ const m=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000});
+ try{
+  const exact=encoder.encode('exact',8000000,true,'avc1.420033');
+  latest={serial:1,data_base64:'1'};offer(latest);await m.active;
+  assert.equal(m.take(),null);assert.equal(m.failure,undefined,'busy is transient');
+  release();await exact;
+  latest={serial:2,data_base64:'2'};offer(latest);await m.active;
+  assert.equal(m.take().encoded.key,true);assert.deepEqual(calls.map(c=>c[0]),['exact','2']);
+ }finally{await m.close();await encoder.close()}
+});

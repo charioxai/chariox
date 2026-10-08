@@ -111,7 +111,7 @@ export class PortableEncoder {
         } catch { fail(); }
       });
     }
-    if (this.pending) throw new Error('MD-DISPLAY: encoder busy');
+    if (this.pending) throw Object.assign(new Error('MD-DISPLAY: encoder busy'),{busy:true});
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
