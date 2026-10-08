@@ -142,7 +142,7 @@ export class LinuxCapture {
  // MP-08/MP-10: notch wheel input on the owned private X display (native
  // smooth scrolling). CSS coordinates; callers fence document and actor first.
  wheel(x,y,dx,dy){
-  if(!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
   return this.control({wheel:[px,py,dx,dy]},true);
@@ -150,7 +150,7 @@ export class LinuxCapture {
  // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
  // them only while a viewer canvas is exact and unprotected.
  plans(enabled){
-  enabled=Boolean(enabled);if(enabled===this.planning||!this.valid()||!this.child||this.child.stdin.destroyed)return;
+  enabled=Boolean(enabled);if(!this.nativeWorker||enabled===this.planning||!this.valid()||!this.child||this.child.stdin.destroyed)return;
   this.planning=enabled;this.control({plans:enabled});
  }
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
