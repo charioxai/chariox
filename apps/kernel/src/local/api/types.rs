@@ -255,7 +255,6 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 470 adds structured OS requester identity to access decisions.
-
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;

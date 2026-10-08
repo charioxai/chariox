@@ -79,8 +79,10 @@ async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 other => panic!("MP-11 expected snapshot: {other:?}"),
             }
             // Watcher events and command replies may arrive in either order.
-            if acknowledged && snapshot.is_some() {
-                return snapshot.unwrap();
+            if acknowledged {
+                if let Some(snapshot) = snapshot {
+                    return snapshot;
+                }
             }
         }
     })

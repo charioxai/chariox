@@ -144,32 +144,6 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt)))
 }
 
-#[cfg(test)]
-mod registry_tests {
-    use super::*;
-
-    #[test]
-    fn sudo_refuses_raw_registry_credentials_and_provider_imports() {
-        for request in [
-            LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
-            LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
-                workspace_id: None,
-                name: "literal-secret".into(),
-            }),
-            LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
-                workspace_id: None,
-            }),
-            LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
-                workspace_id: None,
-                provider: "codex".into(),
-                name: None,
-            }),
-        ] {
-            assert!(sudo_request_forbidden(&request));
-        }
-    }
-}
-
 pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
     parse_sudo_prompt(prompt).is_some()
 }
@@ -197,4 +171,30 @@ pub(super) fn requester_grant_live(
                 && grant.holder.alive()
         })
     })
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_refuses_raw_registry_credentials_and_provider_imports() {
+        for request in [
+            LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
+            LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
+                workspace_id: None,
+                name: "literal-secret".into(),
+            }),
+            LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
+                workspace_id: None,
+                provider: "codex".into(),
+                name: None,
+            }),
+        ] {
+            assert!(sudo_request_forbidden(&request));
+        }
+    }
 }

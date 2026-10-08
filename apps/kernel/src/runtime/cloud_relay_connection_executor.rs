@@ -434,8 +434,10 @@ mod tests {
 
     #[test]
     fn keyed_terminal_renewal_keeps_the_requested_subject_without_repairing_it() {
-        let mut profile = crate::config::PersistedCloudRelayProfile::default();
-        profile.client_id = Some("kernel-login-client".into());
+        let profile = crate::config::PersistedCloudRelayProfile {
+            client_id: Some("kernel-login-client".into()),
+            ..Default::default()
+        };
         let request = IssueCloudRelayClientTokenRequest {
             target_daemon_alias: "kernel-target".into(),
             client_id: "paired-terminal".into(),

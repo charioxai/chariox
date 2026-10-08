@@ -603,7 +603,7 @@ impl Kernel {
                     let event = &frame["event"];
                     if event["event"] == "passkey_prompts_changed" {
                         for prompt in event["prompts"].as_array().into_iter().flatten() {
-                            if let Some(id) = prompt["interaction_id"]
+                            if let Some(_id) = prompt["interaction_id"]
                                 .as_str()
                                 .filter(|id| id.ends_with(suffix))
                             {
