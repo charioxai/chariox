@@ -136,7 +136,6 @@ const evidenceRoot = retainedProviderRoot ? path.join(retainedProviderRoot, "exe
 const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const userCredentialId = `${runId}-user-computer`
-const generatedCredentialId = `${runId}-generated-computer`
 const userSecret = `room-computer-secret-${process.pid}-${Date.now()}`
 const vaultPassphrase = `room-vault-passphrase-${process.pid}-${Date.now()}`
 const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line\n`
@@ -191,7 +190,6 @@ const sensitiveValues = [
   ...clipboardValues,
 ]
 let webGestureOrigin = null
-const generatedSecretLength = 24
 const { kernelPort, relayPort } = await makeAvailablePorts({
   candidateFactory: () => {
     const kernelPort = 20000 + Math.floor(Math.random() * 4000)
@@ -840,9 +838,10 @@ async function run() {
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
       "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
-      "slice-bound agent created user-entered and generated Computer credentials in the encrypted home vault",
-      "home-kernel approvals released each credential only after the password field had focus",
-      "worker typed both credentials through the Room Computer action path into the shared headed desktop",
+      "slice-bound agent created a user-entered Computer credential in the encrypted home vault",
+      "A06: /sudo and Vault generation were refused for the slice-bound agent",
+      "home-kernel approval released the credential only after the password field had focus",
+      "worker typed the credential through the Room Computer action path into the shared headed desktop",
       "Computer secret actions were attributed, argument-free, visible in both TUIs, and absent from clipboard, screenshots, logs, history, and relay output",
       "slice-bound agent moved, single-clicked, right-clicked, double-clicked, dragged, and scrolled the physical X11 desktop through Room authority",
       "pointer drag selected text without moving the Chromium window",
@@ -1900,7 +1899,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
 }
 
 async function exerciseComputerSecretInput() {
-  const { agent, providerRun } = await launchComputerSecretAgent()
+  const { agent, providerRun, attachmentId: secretAttachmentId } = await launchComputerSecretAgent()
   secretAgent = agent
   secretProviderRun = providerRun
 
@@ -1960,25 +1959,25 @@ async function exerciseComputerSecretInput() {
   assert.equal(requested.content?.credential?.id ?? requested.content?.credential_id, userCredentialId)
   assertNoSecretProperties(requested.raw, "user credential creation")
 
-  const generated = await mcpToolCall(providerRun, "create_generated_credential", {
-    credential: {
-      id: generatedCredentialId,
-      description: "Room Computer generated credential drill",
-      allowed_hosts: [],
-      allowed_uses: ["computer"],
-      injection: { kind: "computer" },
-    },
-    generator: {
-      kind: "password",
-      length: generatedSecretLength,
-      symbols: false,
-      avoid_ambiguous: true,
-    },
-    overwrite: false,
-  })
-  assert.equal(generated.ok, true, JSON.stringify(generated))
-  assert.equal(generated.content?.credential?.id ?? generated.content?.credential_id, generatedCredentialId)
-  assertNoSecretProperties(generated.raw, "generated credential creation")
+  // MP-08/MP-10/MP-11 A06: only a local regular agent's sudo window may generate a
+  // Vault password, and it is browser-only; a slice-bound agent gets neither.
+  await assert.rejects(
+    client.send(requests.submitPromptRequest(
+      sessionId,
+      secretAttachmentId,
+      agent.id,
+      "/sudo Generate a Computer password in my Vault.",
+      [],
+    )),
+    /sudo requires a local regular agent/,
+  )
+  for (const [tool, args] of [
+    ["chariox.vault.generate", { request_id: `${runId}-slice`, origin: `http://host.docker.internal:${fixture.port}` }],
+    ["create_generated_credential", { credential: { id: `${runId}-generated-computer`, allowed_hosts: [], allowed_uses: ["computer"], injection: { kind: "computer" } } }],
+  ]) {
+    const refused = await mcpToolCall(providerRun, tool, args)
+    assert.equal(refused.ok, false, `${tool} must be refused: ${JSON.stringify(refused.raw)}`)
+  }
 
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/secret`])
   await waitForBrowserText("ROOM_COMPUTER_SECRET_READY", 30_000, "secret fixture did not load")
@@ -1991,10 +1990,6 @@ async function exerciseComputerSecretInput() {
   const userPaste = await pasteComputerCredential(providerRun, userCredentialId)
   await waitForBrowserText("USER_SECRET_OK", 20_000, "user-entered Computer secret did not reach the field")
 
-  await sliceScreen(["browser-click", "#generated-secret"])
-  const generatedPaste = await pasteComputerCredential(providerRun, generatedCredentialId)
-  await waitForBrowserText("GENERATED_SECRET_OK", 20_000, "generated Computer secret did not reach the field")
-
   const browserText = await sliceScreen(["browser-text"])
   assert.equal(browserText.includes(userSecret), false, "browser projection leaked the user secret")
   assert.equal(browserText.includes(vaultPassphrase), false, "browser projection leaked the vault passphrase")
@@ -2006,10 +2001,10 @@ async function exerciseComputerSecretInput() {
     "RoomEnvironmentState",
   ).environment
   const secretActions = environment.actions.filter((action) => action.kind === "secret_input")
-  assert.equal(secretActions.length, 2)
+  assert.equal(secretActions.length, 1)
   assert.deepEqual(
     secretActions.map((action) => action.action_id),
-    [userPaste.content.action_id, generatedPaste.content.action_id],
+    [userPaste.content.action_id],
   )
   assert.ok(secretActions.every((action) => action.arguments == null))
   assert.ok(secretActions.every((action) => action.state === "completed"))
@@ -2028,14 +2023,13 @@ async function exerciseComputerSecretInput() {
   await assertNoPlaintextSecretInTree(evidenceRoot, [userSecret, vaultPassphrase])
 
   await client.send(requests.deleteCredentialSecretRequest(userCredentialId))
-  await client.send(requests.deleteCredentialSecretRequest(generatedCredentialId))
-
   return {
     agentId: agent.id,
     providerRunId: providerRun.id,
-    credentialKinds: ["user-entered", "generated"],
+    credentialKinds: ["user-entered"],
+    sliceSudoRefused: true,
+    sliceVaultGenerateRefused: true,
     userActionId: userPaste.content.action_id,
-    generatedActionId: generatedPaste.content.action_id,
     actorId: userPaste.content.actor_id,
     clipboardPreserved: true,
     browserProjectionRedacted: true,
@@ -2119,7 +2113,7 @@ async function launchComputerSecretAgent() {
   const providerRun = bindProviderMcpFixture({ ...ready.providerRun, id: `leased:${remote.leased_agent_id}:${workerProviderRunId}` }, {
     client, requests, sessionId, attachmentId: attachment.id,
   })
-  return { agent: spawned, providerRun }
+  return { agent: spawned, providerRun, attachmentId: attachment.id }
 }
 
 async function mcpToolCall(providerRun, name, argumentsValue) {
@@ -2638,14 +2632,10 @@ async function startFixture() {
       </style></head><body><main><h1>ROOM_COMPUTER_SECRET_READY</h1>
         <label for="user-secret">User-entered credential</label><input id="user-secret" type="password" autocomplete="off">
         <div class="status" id="user-status">USER_SECRET_WAITING</div>
-        <label for="generated-secret">Generated credential</label><input id="generated-secret" type="password" autocomplete="off">
-        <div class="status" id="generated-status">GENERATED_SECRET_WAITING</div>
       </main><script>
         const expectedUserDigest=${JSON.stringify(expectedUserDigest)};
-        const generatedLength=${generatedSecretLength};
         function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
         document.querySelector("#user-secret").addEventListener("input",(event)=>{document.querySelector("#user-status").textContent=fnv1a64(event.target.value)===expectedUserDigest?"USER_SECRET_OK":"USER_SECRET_WAITING"});
-        document.querySelector("#generated-secret").addEventListener("input",(event)=>{document.querySelector("#generated-status").textContent=event.target.value.length===generatedLength?"GENERATED_SECRET_OK":"GENERATED_SECRET_WAITING"});
       </script></body></html>`)
       return
     }
@@ -3318,7 +3308,6 @@ async function cleanup() {
   }
   if (client && requests) {
     await withTimeout(client.send(requests.deleteCredentialSecretRequest(userCredentialId)), 2_000, "cleanup credential").catch(() => undefined)
-    await withTimeout(client.send(requests.deleteCredentialSecretRequest(generatedCredentialId)), 2_000, "cleanup generated credential").catch(() => undefined)
   }
   if (client && requests && sessionId) {
     await withTimeout(client.send(requests.stopRoomEnvironmentRequest(sessionId)), 2_000, "cleanup StopRoomEnvironment").catch(() => undefined)
