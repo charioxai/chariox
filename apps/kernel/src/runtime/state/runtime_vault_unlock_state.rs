@@ -46,18 +46,52 @@ impl KernelRuntimeState {
         request: crate::provider::LaunchProviderRequest,
         operation: &'static str,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        self.prepare_provider_launch_request_in_account_scope_with_vault(
+            request,
+            operation,
+            crate::account_profile::ProviderAccountLaunchScope::Home,
+        )
+        .await
+    }
+
+    pub(super) async fn prepare_leased_provider_launch_request_with_vault(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        operation: &'static str,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        self.prepare_provider_launch_request_in_account_scope_with_vault(
+            request,
+            operation,
+            crate::account_profile::ProviderAccountLaunchScope::LeaseReplica,
+        )
+        .await
+    }
+
+    async fn prepare_provider_launch_request_in_account_scope_with_vault(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        operation: &'static str,
+        scope: crate::account_profile::ProviderAccountLaunchScope,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let _vault_unlock = self
-            .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
+            .ensure_provider_account_vault_unlocked_for_launch(&request, operation, scope)
             .await?;
         let config = self.owned.config_projection.snapshot();
-        self.owned
-            .prepare_provider_launch_request(request, config.runtime_mcp_url())
+        match scope {
+            crate::account_profile::ProviderAccountLaunchScope::Home => self
+                .owned
+                .prepare_provider_launch_request(request, config.runtime_mcp_url()),
+            crate::account_profile::ProviderAccountLaunchScope::LeaseReplica => self
+                .owned
+                .prepare_leased_provider_launch_request(request, config.runtime_mcp_url()),
+        }
     }
 
     async fn ensure_provider_account_vault_unlocked_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
         operation: &'static str,
+        scope: crate::account_profile::ProviderAccountLaunchScope,
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         if config.user_config.credential_vault.backend
@@ -80,11 +114,7 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|agent| agent.owner_user_id())
             .unwrap_or_else(|| session.owner_user_id());
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                runtime_owner_user_id,
-            );
+        let account_owner_user_id = scope.owner_user_id(&config, runtime_owner_user_id);
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             &request.provider,
@@ -124,15 +154,20 @@ impl KernelRuntimeState {
         if let Some(agent_id) = run.agent_instance_id() {
             request = request.with_agent_id(agent_id.to_string());
         }
+        let scope = if self
+            .owned
+            .provider_run_projection
+            .is_leased_provider_run(run.id())
+        {
+            crate::account_profile::ProviderAccountLaunchScope::LeaseReplica
+        } else {
+            crate::account_profile::ProviderAccountLaunchScope::Home
+        };
         let _vault_unlock = self
-            .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
+            .ensure_provider_account_vault_unlocked_for_launch(&request, operation, scope)
             .await?;
         let config = self.owned.config_projection.snapshot();
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                run.owner_user_id(),
-            );
+        let account_owner_user_id = scope.owner_user_id(&config, run.owner_user_id());
         crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
@@ -180,7 +215,11 @@ impl KernelRuntimeState {
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_agent_id(agent.id().to_string());
         let _vault_unlock = self
-            .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
+            .ensure_provider_account_vault_unlocked_for_launch(
+                &request,
+                operation,
+                crate::account_profile::ProviderAccountLaunchScope::Home,
+            )
             .await?;
         let mut environment = crate::provider::resolve_provider_account_credentials(
             &config,

@@ -46,7 +46,7 @@ impl KernelRuntimeState {
                 provider_launch_credential,
             )?;
             let launch_request = self
-                .prepare_provider_launch_request_with_vault(
+                .prepare_leased_provider_launch_request_with_vault(
                     launch_request,
                     "launch remote lease provider run",
                 )
