@@ -274,6 +274,6 @@ pub use workspace::*;
 /// (MP-08/MP-10/MP-11 A04).
 /// Version 462 adds user-requested capability grant causes, absolute grant
 /// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
-/// Version 469 combines 460 and 462 and adds Vault-generated credential
-/// handles and kernel protected login for elevated agents (MP-08/MP-10/MP-11 A06).
+/// Version 469 combines 460 and 462; A06 Vault generation and login add no
+/// wire shape (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 469;

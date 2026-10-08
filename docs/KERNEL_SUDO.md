@@ -88,6 +88,30 @@ are refused, and the window ends when the requester's grant ends. Shell CLI
 calls use the tracked provider's OS process tree; descendants that existed
 before the window are excluded. Leased sudo execution remains a separate leg.
 
+## Vault generation and protected login (A06)
+
+MP-08 / MP-10 / MP-11 A06. During a live window the agent also sees
+`chariox.vault.generate`: it supplies a `request_id`, the site `origin`
+(`https`, or `http` on loopback) and an optional description, length (16-128,
+default 24) and symbol choice. The kernel CSPRNG creates a password and writes
+it straight into the owner's Vault, bound to that site's `host[:port]` and to
+browser input only. The result is `{credential_id, origin, created}`; the value
+never enters the tool call, result, transcript, events or logs. Retrying the same
+`request_id` returns the same committed handle (`created: false`), never a new
+value, and cannot rebind it to another site. Ordinary agents cannot generate
+credentials; the former `chariox.create_generated_credential` tool is removed.
+
+To log in, the elevated agent uses `chariox.kernel_browser_paste_secret` on a
+tab of its retained browser grant without needing focus, then clicks the
+observed submit button with ordinary input. The kernel fills the field; the
+model never types a password. Before inserting, the kernel rechecks after
+the Vault unlock wait: the same window is still live, the target document and
+password field are unchanged, the credential is allowed for the document's
+host, a generated handle belongs to this session, and the observation
+protection did not change meanwhile. An elevated fill also requires a
+credential bound to its site. Ending the window withdraws a pending unlock
+prompt. Focused (human-approved) fills keep working without sudo.
+
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
 provider (see the lane evidence).

@@ -60,6 +60,14 @@ grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
 
+### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
+
+Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
+86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+`chariox.vault.generate` replaces `chariox.create_generated_credential`, and
+`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
+focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 
 With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner

@@ -1,5 +1,3 @@
-use rand::Rng;
-
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -137,42 +135,6 @@ pub(super) fn stamp_runtime_credential_metadata_for_agent(
         updated_at_ms: Some(now_ms),
     });
     credential
-}
-
-pub(super) fn generate_credential_secret(
-    generator: &crate::transport::runtime_tools::GeneratedCredentialSecretGeneratorArgs,
-) -> Result<String, DaemonError> {
-    if generator.kind != "password" {
-        return Err(DaemonError::LocalTransport {
-            operation: "runtime_tool_create_generated_credential",
-            message: format!("unsupported generator kind `{}`", generator.kind),
-        });
-    }
-    if !(12..=256).contains(&generator.length) {
-        return Err(DaemonError::LocalTransport {
-            operation: "runtime_tool_create_generated_credential",
-            message: "generated password length must be between 12 and 256".to_string(),
-        });
-    }
-    let letters = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let ambiguous = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let symbols = "!#$%&*+-=?@^_";
-    let mut alphabet = if generator.avoid_ambiguous {
-        letters.to_string()
-    } else {
-        ambiguous.to_string()
-    };
-    if generator.symbols {
-        alphabet.push_str(symbols);
-    }
-    let chars = alphabet.chars().collect::<Vec<_>>();
-    let mut rng = rand::rngs::OsRng;
-    Ok((0..generator.length)
-        .map(|_| {
-            let index = rng.gen_range(0..chars.len());
-            chars[index]
-        })
-        .collect())
 }
 
 #[cfg(test)]

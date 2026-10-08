@@ -487,16 +487,21 @@ impl KernelRuntimeState {
         }
         let agent = self.user_domain_tool_agent(run).await?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        if name == PASTE && !host.is_focused(&user, agent.id()) {
-            return Err(host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()));
-        }
+        // MP-08/MP-10/MP-11 A06: a live sudo window authorizes a Vault fill into
+        // its retained grant without focus; ordinary agents still need focus.
+        let sudo_entry = if name == PASTE && !host.is_focused(&user, agent.id()) {
+            Some(self.sudo_for_auth_token(token).map_err(|_| host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()))?.entry_id)
+        } else {
+            None
+        };
         let authority = self.clone();
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
         let sensitive = name == PASTE;
+        let authority_entry = sudo_entry.clone();
         let authority_owner = user.clone();
         let authority_agent = agent.id().to_string();
-        let admission = host
+        let mut admission = host
             .admit(&user, agent.id())
             .map_err(host_error)?
             .with_authority(move || {
@@ -510,11 +515,17 @@ impl KernelRuntimeState {
                 current.id() == run_id
                     && authority.kernel_browser_agent(current).is_some()
                     && (!sensitive
-                        || authority
-                            .owned
-                            .kernel_browser_host
-                            .is_focused(&authority_owner, &authority_agent))
+                        || match &authority_entry {
+                            Some(entry) => authority.sudo_entry_live(entry),
+                            None => authority
+                                .owned
+                                .kernel_browser_host
+                                .is_focused(&authority_owner, &authority_agent),
+                        })
             });
+        if sudo_entry.is_some() {
+            admission = admission.elevated();
+        }
         if name == SHARE {
             return self.kernel_browser_share(&agent, arguments, &admission);
         }
@@ -523,7 +534,13 @@ impl KernelRuntimeState {
                 &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             );
             return self
-                .kernel_browser_paste_secret(run.session_id(), &agent, arguments, admission)
+                .kernel_browser_paste_secret(
+                    run.session_id(),
+                    &agent,
+                    arguments,
+                    admission,
+                    sudo_entry.as_deref(),
+                )
                 .await
                 .map_err(|error| {
                     self.owned

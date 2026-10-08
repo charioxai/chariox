@@ -15,7 +15,7 @@ pub(super) struct Fixture {
     pub(super) run: RuntimeProviderRun,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     fixture_with_provider(None)
 }
 

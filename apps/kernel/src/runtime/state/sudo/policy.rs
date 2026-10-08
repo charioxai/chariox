@@ -105,6 +105,18 @@ impl KernelRuntimeState {
         Ok(turn)
     }
 
+    /// Re-evaluates one window without sweeping; safe inside browser input authority.
+    pub(crate) fn sudo_entry_live(&self, entry_id: &str) -> bool {
+        let turn = self
+            .owned
+            .sudo_turns
+            .lock()
+            .expect("access state poisoned")
+            .get(entry_id)
+            .cloned();
+        turn.is_some_and(|turn| turn.prompt_id.is_some() && self.sudo_live(&turn))
+    }
+
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
         let runs = self
             .owned

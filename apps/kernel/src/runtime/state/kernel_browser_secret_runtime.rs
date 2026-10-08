@@ -21,7 +21,7 @@ struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable password field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable password field in a user-domain tab (needs focus or a sudo window). Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -189,6 +189,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
+        sudo_entry: Option<&str>,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
@@ -204,32 +205,52 @@ impl KernelRuntimeState {
         let url = self
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
-        self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_entry.is_some(),
+        )?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
         let current = self.owned.agent_store.get_agent(agent.id())?;
+        let authorized = match sudo_entry {
+            Some(entry) => self.sudo_entry_live(entry),
+            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
+        };
         if current.session_id() != session
             || current.owner_user_id() != agent.owner_user_id()
-            || self.owned.session_snapshot(session)?.focused_agent_id() != Some(agent.id())
+            || !authorized
         {
             return Err(host_error(
-                "MD-3: current local focus required after Vault wait".into(),
+                "MD-3: current local focus or sudo window required after Vault wait".into(),
             ));
         }
         require_vault_owner(
             &self.provider_account_authority_owner_user_id(current.owner_user_id()),
         )?;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "MP-11: observation protection changed during the Vault wait; observe the page again".into(),
+            ));
+        }
         let url = self
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_entry.is_some(),
+        )?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
         );
