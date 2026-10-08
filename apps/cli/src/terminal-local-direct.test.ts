@@ -14,7 +14,7 @@ import { LocalIpcClient } from "./ipc.js"
 // identities for this fixture, never read a linked provider profile.
 const identity = () => { const ec = createECDH("prime256v1"); ec.generateKeys(); return new RelayClientIdentity(ec.getPrivateKey()) }
 
-test("MP-08 detached and native clients automatically authenticate the shared direct carrier", async (t) => {
+test("MP-08 detached and native clients send the paired Origin in Node and compiled Bun transport", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "chariox-terminal-direct-"))
   const previous = process.env.CHARIOX_HOME
   process.env.CHARIOX_HOME = root

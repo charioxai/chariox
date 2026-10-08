@@ -3292,3 +3292,9 @@ never selects a route, grants access, proves locality, or shows a Local indicato
 The notice appears only while there is no direct connection, is dismissible, and
 remembers dismissal per browser profile. V1 remains literal loopback `ws://`;
 per-kernel publicly trusted `wss://` certificates belong to V2.
+
+MP-08 / MP-10 / MP-11: the compiled Bun terminal must set the paired Origin
+through explicit WebSocket headers; Bun does not preserve the Node `origin`
+option. Run `bun test apps/cli/src/terminal-local-direct.test.ts` alongside the
+Node socket regression and the built-terminal hosted drill. The socket test
+checks the actual upgrade header; it does not substitute for live acceptance.

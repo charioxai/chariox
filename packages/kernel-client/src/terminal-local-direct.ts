@@ -129,7 +129,7 @@ export class TerminalLocalDirect {
 
   private prove(grant: Grant, expectedKey: string): Promise<WebSocket> {
     let challenge: string | null = null
-    return this.exchange(grant.endpoint, { origin: grant.paired_origin }, (socket, frame, resolve, reject) => {
+    return this.exchange(grant.endpoint, { headers: { Origin: grant.paired_origin } }, (socket, frame, resolve, reject) => {
       if (frame.kind === "local_challenge" && challenge === null) {
         if (frame.kernel_id !== grant.kernel_id || frame.endpoint_epoch !== grant.endpoint_epoch || typeof frame.challenge !== "string") { reject(Error("terminal endpoint identity mismatch")); return }
         challenge = frame.challenge

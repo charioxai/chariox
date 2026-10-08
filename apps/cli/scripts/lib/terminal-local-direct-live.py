@@ -1,5 +1,5 @@
 # MP-08/MP-10/MP-11: owned PTY driver for the real compiled Chariox TUI.
-import os,sys,json,pty,fcntl,termios,struct,subprocess,select,socket,time,signal,re,threading
+import os,sys,json,pty,fcntl,termios,struct,subprocess,select,socket,time,signal,re,threading,html
 from pathlib import Path
 spec=json.loads(sys.stdin.read());root=Path(spec['root']);out=Path(spec['evidence']);master,slave=pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,144,0,0));auto=root/'automation.sock'
@@ -41,9 +41,36 @@ try:
  text=stream.decode('utf8','replace').replace(spec['token'],'[redacted]')
  # Keep real terminal output; no auth values, tokens or environment are retained.
  text=re.sub(r'\x1b\][^\x07]*(?:\x07|\x1b\\)','',text);text=re.sub(r'\x1bP.*?\x1b\\','',text,flags=re.S)
- (out/'terminal-pty.txt').write_text(text)
+ # Render the final captured terminal cell grid, including cursor addressing.
+ screen=[[' ']*144 for _ in range(45)];row=0;col=0;i=0
+ while i<len(text):
+  if text[i:i+2]=='\x1b[':
+   m=re.match(r'\x1b\[([0-9;?<>]*)([ -/]*)([@-~])',text[i:])
+   if m:
+    a=[int(v or '0') for v in m[1].lstrip('?<>').split(';')];op=m[3];n=a[0] or 1
+    if op in ('H','f'):row=max(0,min(44,n-1));col=max(0,min(143,(a[1] if len(a)>1 and a[1] else 1)-1))
+    elif op=='A':row=max(0,row-n)
+    elif op=='B':row=min(44,row+n)
+    elif op=='C':col=min(143,col+n)
+    elif op=='D':col=max(0,col-n)
+    elif op=='G':col=max(0,min(143,n-1))
+    elif op=='d':row=max(0,min(44,n-1))
+    elif op=='J' and a[0] in (2,3):screen=[[' ']*144 for _ in range(45)]
+    elif op=='K':
+     for c in range(0 if a[0] in (1,2) else col,144 if a[0] in (0,2) else col+1):screen[row][c]=' '
+    i+=len(m[0]);continue
+  c=text[i];i+=1
+  if c=='\r':col=0
+  elif c=='\n':row=min(44,row+1)
+  elif c=='\b':col=max(0,col-1)
+  elif c.isprintable():screen[row][col]=c;col=min(143,col+1)
+ text='\n'.join(''.join(line).rstrip() for line in screen)
+ # Retain only the carrier strip; linked-profile history is outside this drill.
+ text=text.splitlines()[-1]
+ (out/'terminal-cells.txt').write_text(text+'\n')
+ (out/'terminal-cells.html').write_text('<meta charset="utf-8"><body style="background:#111;color:#ddd"><p>MP-08 / MP-10 / MP-11 — captured real TUI cells</p><pre style="font:12px monospace">'+html.escape(text)+'</pre></body>')
  label='Local connect' if spec['expectLocal'] else 'Relay connect'
- assert label in text,'expected carrier indicator absent'
+ assert label in text,'expected current carrier indicator absent'
  result['status']='PASS';result['expectedLocal']=spec['expectLocal']
 except Exception:
  result['failure']='real detached TUI did not retain the expected carrier and connection';raise
