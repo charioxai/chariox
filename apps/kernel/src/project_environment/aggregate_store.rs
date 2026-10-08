@@ -22,6 +22,13 @@ impl ProjectEnvironmentStore {
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
         let _lock = self.try_lock(project.id())?;
+        self.snapshot_locked(project)
+    }
+
+    pub(crate) fn snapshot_locked(
+        &self,
+        project: &crate::session::RuntimeProject,
+    ) -> Result<ProjectEnvironment, DaemonError> {
         let path = self.path(project.id()).with_extension("identity.json");
         let mut options = OpenOptions::new();
         options.read(true);
@@ -115,6 +122,7 @@ impl ProjectEnvironmentStore {
             legacy.as_ref(),
         );
         self.attach_detection(&mut snapshot)?;
+        self.attach_revision(&mut snapshot)?;
         Ok(snapshot)
     }
 }

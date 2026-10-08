@@ -42,3 +42,18 @@ test("ENV P02a TUI Detect is read-only, uses kernel folders and shows evidence s
   assert.deepEqual(requests[2].DetectProjectEnvironment.allowModelFolders, [])
   assert.equal(requests.some(r => r.SaveProjectEnvironmentRevision), false)
 })
+
+// MP-08 / MP-10 / MP-11: first pending proposal can be accepted through the real key controller.
+test("P02b TUI accept sends one CAS save and observes its revision", async () => {
+  const requests: any[] = []
+  const environment: any = { schema_version: 1, local_project_id: "project", revision: 3, content_digest: "current", lineage: { environment_id: "env", project_id: "lineage" }, folders: [], project_requirements: [], proposals: [{ proposal_id: "proposal", requirement: { requirement_id: "node", title: "Node", scope: { kind: "project" }, origins: [], spec: { kind: "software", identity: "node", version_constraint: null, detect_only: true } } }], operations: [], delivered_capabilities: { enabled_environment_operations: ["get", "save"], supported_schema: 1 } }
+  const controller = createProjectEnvironmentReadController({ send: async request => { requests.push(request); return "SaveProjectEnvironmentRevision" in (request as any) ? { ProjectEnvironmentSaved: { environment: { ...environment, revision: 4, proposals: [] } } } : { ProjectEnvironment: { environment } } }, render() {}, pageSize: () => 100 })
+  await controller.open("project")
+  controller.handleKey({ name: "a" })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests[1].SaveProjectEnvironmentRevision.acceptedProposalIds, ["proposal"])
+  assert.equal(requests[1].SaveProjectEnvironmentRevision.expectedRevision, 3)
+  assert.deepEqual(requests[1].SaveProjectEnvironmentRevision.excludedProposalIds, [])
+  assert(controller.visibleLines().some(line => line.includes("Revision 4")))
+})

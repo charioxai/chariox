@@ -90,3 +90,5 @@ export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, 
 export * from "./project-environment-aggregate.js"
 
 export * from "./project-environment-aggregate-requests.js"
+
+export * from "./project-environment-edit.js"

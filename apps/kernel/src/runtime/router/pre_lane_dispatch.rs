@@ -310,6 +310,18 @@ impl CommandRouter {
                     .await
                     .map(Some);
             }
+            LocalDaemonRequest::PreviewEnvironmentDiff(request) => {
+                return self
+                    .runtime_state
+                    .preview_environment_diff(request.clone(), caller_user_id)
+                    .map(Some);
+            }
+            LocalDaemonRequest::SaveProjectEnvironmentRevision(request) => {
+                return self
+                    .runtime_state
+                    .save_project_environment_revision(request.clone(), caller_user_id)
+                    .map(Some);
+            }
             request if request.unsupported_environment_capability().is_some() => {
                 return Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
                     feature: request

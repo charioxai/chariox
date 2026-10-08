@@ -88,6 +88,7 @@ mod passkey_prompts;
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
 mod project_environment_detect;
+mod project_environment_revision;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
