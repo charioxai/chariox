@@ -474,18 +474,35 @@ impl AgentWorker {
         fixture: &LiveWorker,
         agent: &str,
     ) -> crate::provider::RuntimeProviderRun {
-        let projected = leased_run(fixture, &fixture.rooms[0], agent).await;
-        let leased = binding(fixture, agent).await.leased_agent_id;
-        let worker_run =
-            crate::provider::worker_provider_run_id_from_projected_leased_id(&leased, &projected)
-                .unwrap();
-        self.router
-            .app
-            .lock()
-            .await
-            .providers()
-            .get_run(&worker_run)
-            .unwrap()
+        eventually_async(
+            "the current lease projects this worker's running turn",
+            || async {
+                let leased = binding(fixture, agent).await.leased_agent_id;
+                let worker_run = fixture
+                    .home
+                    .provider_run_projection
+                    .list_for_session(&fixture.rooms[0])
+                    .into_iter()
+                    .filter(|run| {
+                        run.agent_instance_id() == Some(agent)
+                            && run.state() == crate::provider::ProviderRunState::Running
+                    })
+                    .find_map(|run| {
+                        crate::provider::worker_provider_run_id_from_projected_leased_id(
+                            &leased,
+                            run.id(),
+                        )
+                    })?;
+                self.router
+                    .app
+                    .lock()
+                    .await
+                    .providers()
+                    .get_run(&worker_run)
+                    .ok()
+            },
+        )
+        .await
     }
 }
 

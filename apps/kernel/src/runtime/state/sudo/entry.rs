@@ -279,10 +279,10 @@ impl KernelRuntimeState {
             && self
                 .owned
                 .provider_store
-            .get_run_for_agent(&entry.session_id, &entry.agent_id)
-            .is_some_and(|run| {
-                crate::provider::provider_runtime_catalog_requires_reload(run.provider())
-            });
+                .get_run_for_agent(&entry.session_id, &entry.agent_id)
+                .is_some_and(|run| {
+                    crate::provider::provider_runtime_catalog_requires_reload(run.provider())
+                });
         let attachments = crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(&entry.session_id, &entry.agent_id, request.attachments.clone())?;
         // A cold launch uses the normal provider path. No elevated authority is
         // usable until admission installs the exact prompt and run identity.

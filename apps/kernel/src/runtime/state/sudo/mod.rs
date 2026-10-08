@@ -19,10 +19,10 @@ mod process;
 mod receipts;
 mod scope;
 mod window;
-#[cfg(test)]
-pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use window::sudo_window_minutes;
+#[cfg(test)]
+pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
