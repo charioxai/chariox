@@ -6,6 +6,8 @@ pub enum LocalDaemonRequest {
     AttachWorkflowNotification(AttachWorkflowNotificationRequest),
     ListWorkflowNotifications(ListWorkflowNotificationsRequest),
     DetachWorkflowNotification(DetachWorkflowNotificationRequest),
+    AddSshMachine(AddSshMachineRequest),
+    RemoveSshMachine(RemoveSshMachineRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ExtendKernelSudo(ExtendKernelSudoRequest),

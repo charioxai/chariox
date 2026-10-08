@@ -7,6 +7,7 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
+    SshMachine { machine: SshMachineResult },
     KernelSudoRequested { agent_id: String },
     KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
