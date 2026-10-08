@@ -43,9 +43,10 @@ impl KernelRuntimeState {
                 session_id,
                 attachment_id: attachment.id().into(),
                 target_agent_id: Some(request.agent_id.clone()),
-                prompt: format!("/sudo {}", request.prompt),
+                prompt: request.prompt.clone(),
                 attachments: vec![],
             },
+            &request.prompt,
             &owner,
             "",
             Some(grant.summary),
@@ -75,7 +76,10 @@ impl KernelRuntimeState {
             .map(|grant| grant.summary.clone())
             .ok_or_else(|| error("grant revoked or expired"))?;
         let owner = grant.owner_user_id.clone();
-        self.submit_sudo_entry(request, &owner, "", Some(grant))
+        let prompt = policy::parse_sudo_prompt(&request.prompt)
+            .unwrap_or_default()
+            .to_owned();
+        self.submit_sudo_entry(request, &prompt, &owner, "", Some(grant))
             .await
     }
 

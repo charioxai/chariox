@@ -171,10 +171,12 @@ mod registry_tests {
 }
 
 pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
-    prompt
-        .trim_start()
-        .strip_prefix("/sudo")
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    parse_sudo_prompt(prompt).is_some()
+}
+
+pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
+    let rest = prompt.trim_start().strip_prefix("/sudo")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
 
 fn sudo_config_forbidden(path: &str) -> bool {
