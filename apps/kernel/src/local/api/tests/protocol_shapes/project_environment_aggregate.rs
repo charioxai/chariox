@@ -29,7 +29,7 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(contract.as_bytes())),
-        "b138bbaacaa6d8ed5af3849b66f80f018ef6b46731196284ef1ffa085f739cbb"
+        "734ac61bcc28f3aace166b06798ddbb4d56a63294413e9ca325089b80f30235c"
     );
 }
 

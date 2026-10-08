@@ -39,3 +39,8 @@ test("ENV VERSION(P01) gates the complete reserved operation family", async () =
   }
   assert.doesNotThrow(() => requireProjectEnvironmentProtocol({ ListProjects: {} }, 435))
 })
+
+test("ENV P01 provider references use the official provider IDs", () => {
+  const providers: import("./kernel-types-project-environment-aggregate.js").EnvironmentProvider[] = ["codex", "claude", "opencode"]
+  assert.deepEqual(providers, ["codex", "claude", "opencode"])
+})

@@ -153,3 +153,11 @@ fn envp01_value_fields_and_unknown_account_providers_fail_closed() {
     let files: RequirementSpec = serde_json::from_value(serde_json::json!({"kind":"files","folder_id":"folder","entries":[{"relative_path":"brief","kind":"folder","content_digest":null,"folder_id":"folder","user_selected":true,"git_ignored":true,"byte_count":123,"credential_filter_verdict":"not_checked","transfer_inclusion":"review_required","reason":null,"secret_looking":false}]})).unwrap();
     assert!(matches!(files, RequirementSpec::Files { .. }));
 }
+
+#[test]
+fn envp01_accounts_accept_only_canonical_official_provider_ids() {
+    for provider in ["codex", "claude", "opencode"] {
+        let spec: RequirementSpec = serde_json::from_value(serde_json::json!({"kind":"accounts","provider":provider,"linked_profile_ref":"linked","required_capabilities":[]})).unwrap();
+        assert_eq!(serde_json::to_value(spec).unwrap()["provider"], provider);
+    }
+}

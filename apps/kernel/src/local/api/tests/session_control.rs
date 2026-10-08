@@ -1313,7 +1313,7 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
     let target = serde_json::json!({"machine_id":"machine","target_instance_generation":"generation","slice_ref":null});
     let draft = serde_json::json!({"project_requirements":[],"folders":[]});
     let future = vec![
-        serde_json::json!({"DetectProjectEnvironment":{"projectId":"project","operationId":"op","folderIds":[],"target":target,"provider":null,"allowModelFolders":[]}}),
+        serde_json::json!({"DetectProjectEnvironment":{"projectId":"project","operationId":"op","folderIds":[],"target":target,"provider":"opencode","allowModelFolders":[]}}),
         serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"project","expectedRevision":0,"draft":draft}}),
         serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"project","expectedRevision":0,"expectedContentDigest":"digest","draft":draft,"acceptedProposalIds":[],"excludedProposalIds":[]}}),
         serde_json::json!({"PlanProjectEnvironment":{"projectId":"project","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[]}}),

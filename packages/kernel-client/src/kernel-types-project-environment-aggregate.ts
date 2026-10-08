@@ -38,7 +38,7 @@ export type EnvironmentVaultReference = { readonly service: string; readonly key
 export type EnvironmentProvider =
   | "codex"
   | "claude"
-  | "open_code"
+  | "opencode"
 
 export type AgentToolKind =
   | "mcp"

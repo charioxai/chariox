@@ -110,6 +110,7 @@ pub struct EnvironmentVaultReference {
 pub enum EnvironmentProvider {
     Codex,
     Claude,
+    #[serde(rename = "opencode")]
     OpenCode,
 }
 
