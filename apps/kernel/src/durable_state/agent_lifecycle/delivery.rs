@@ -13,6 +13,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("message source binding invalid"));
             }
             let admitted = event(tx, e)?;
+            tx.execute("INSERT INTO agent_delegation_messages VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",params![sql_integer(admitted.sequence)?,t.task_id]).map_err(sql)?;
             if admitted.reply_requested {
                 let id = format!("reply-{}", admitted.sequence);
                 if !t.obligations.iter().any(|o| o.id == id) {
@@ -195,6 +196,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 e.submit_epoch = None;
             }
             save_event(tx, &e)?;
+            super::delegation::bind_message(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }

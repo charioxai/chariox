@@ -819,6 +819,10 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
             run: Some("child-run".into()),
             now: 2,
         });
+        f.apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: prompt.into(),
+        });
     }
     assert_eq!(
         f.task().obligations[0].completion_task_id.as_deref(),
@@ -1574,7 +1578,7 @@ fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
             resource: Some("child".into()),
         });
     }
-    for prompt in ["child-task-1", "child-task-2"] {
+    for (parent, prompt) in [("parent", "child-task-1"), ("parent2", "child-task-2")] {
         f.apply(Operation::Begin {
             owner: "owner".into(),
             room: "room".into(),
@@ -1582,6 +1586,10 @@ fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
             prompt: prompt.into(),
             run: Some("child-run".into()),
             now: 2,
+        });
+        f.apply(Operation::BindDelegate {
+            parent_task: format!("{parent}-turn"),
+            child_task: prompt.into(),
         });
     }
     let bound = |agent: &str| {
@@ -1625,7 +1633,7 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
             resource: Some("child".into()),
         });
     }
-    for prompt in ["first-child", "second-child"] {
+    for (parent, prompt) in [("newer", "first-child"), ("older", "second-child")] {
         // Repeat Begin just as admission and dispatch do: never consume two parents.
         for _ in 0..2 {
             f.apply(Operation::Begin {
@@ -1635,6 +1643,10 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
                 prompt: prompt.into(),
                 run: Some("child-run".into()),
                 now: 3,
+            });
+            f.apply(Operation::BindDelegate {
+                parent_task: format!("{parent}-turn"),
+                child_task: prompt.into(),
             });
         }
     }
@@ -2469,4 +2481,139 @@ fn a02_security_f2_reused_child_id_cannot_recover_old_answer() {
     });
     assert_eq!(f.task().obligations[0].status, "open");
     assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}
+#[test]
+fn a02_security_f4_unattributed_child_task_cannot_bind_delegation() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "peer-request".into(),
+        run: Some("child-run".into()),
+        now: 2,
+    });
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "peer-request".into(),
+        occurrence: "peer-answer".into(),
+        success: true,
+        public_answer: Some(serde_json::json!("peer-controlled")),
+        now: 3,
+    });
+    assert_eq!(f.task().obligations[0].status, "open");
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}
+
+// MP-08/MP-10/MP-11 F4: exact accepted task recovery covers a fast child.
+#[test]
+fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    for prompt in ["peer-first", "parent-request"] {
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: prompt.into(),
+            run: None,
+            now: 2,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: prompt.into(),
+            occurrence: format!("{prompt}-result"),
+            success: true,
+            public_answer: Some(serde_json::json!(prompt)),
+            now: 3,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: "child".into(),
+            occurrence: format!("{prompt}-agent-result"),
+            success: true,
+            public_answer: Some(serde_json::json!(prompt)),
+            now: 3,
+        });
+    }
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::BindDelegate {
+        parent_task: "p".into(),
+        child_task: "parent-request".into(),
+    });
+    assert_eq!(
+        f.task().obligations[0].completion_task_id.as_deref(),
+        Some("parent-request")
+    );
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].payload["public_answer"], "parent-request");
+}
+#[test]
+fn a02_security_f4_accepted_parent_message_binds_exact_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    let Outcome::Event(e) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: occurrence(
+            "room",
+            "child",
+            "parent",
+            "work-message",
+            "message",
+            serde_json::json!({"message":"do the delegated work"}),
+        ),
+    }) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        prompt: "child-message-task".into(),
+        target: None,
+        run: None,
+        now: 2,
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "child-message-task".into(),
+        run: None,
+        now: 2,
+    });
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        state: "accepted".into(),
+        now: 3,
+    });
+    assert_eq!(
+        f.task().obligations[0].completion_task_id.as_deref(),
+        Some("child-message-task")
+    );
 }

@@ -97,6 +97,10 @@ pub(crate) enum Operation {
         run: Option<String>,
         now: u64,
     },
+    BindDelegate {
+        parent_task: String,
+        child_task: String,
+    },
     RegisterObligation {
         owner: String,
         room: String,
