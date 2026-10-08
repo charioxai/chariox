@@ -75,10 +75,11 @@ export function createProjectEnvironmentReadController(deps: {
         if (generation === requestGeneration) lines = [error instanceof Error ? error.message : "Proposal review failed", "r · Refresh to review the latest revision", ...viewLines(current)]
       } finally { if (savingGeneration === requestGeneration) savingGeneration = null; if (generation === requestGeneration) deps.render() }
     },
-    handleKey(event: { name: string; eventType?: string; ctrl?: boolean }) {
+    handleKey(event: { name: string; eventType?: string; ctrl?: boolean; alt?: boolean; meta?: boolean }) {
       if (!open) return false
       if (event.eventType === "release") return true
       if (event.ctrl && (event.name === "c" || event.name === "e")) return false
+      if (event.ctrl || event.alt || event.meta) return true
       if (event.name === "r" && current) { void controller.open(current.local_project_id); return true }
       if (event.name === "a" || event.name === "x") { void controller.review(event.name === "a" ? "accept" : "exclude"); return true }
       if ((event.name === "n" || event.name === "p") && current?.proposals.length) {

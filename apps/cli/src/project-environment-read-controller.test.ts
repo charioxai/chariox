@@ -57,3 +57,14 @@ test("P02b TUI accept sends one CAS save and observes its revision", async () =>
   assert.deepEqual(requests[1].SaveProjectEnvironmentRevision.excludedProposalIds, [])
   assert(controller.visibleLines().some(line => line.includes("Revision 4")))
 })
+
+// MP-08 / MP-10 / MP-11: modified terminal keys cannot authorize a review decision.
+test("P02b Ctrl+A is not proposal acceptance", async () => {
+  const requests: any[]=[]
+  const environment: any={schema_version:1,local_project_id:"project",revision:0,content_digest:"base",folders:[],project_requirements:[],proposals:[{proposal_id:"proposal",requirement:{requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true}}}],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"],supported_schema:1}}
+  const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironment:{environment}}},render(){},pageSize:()=>100})
+  await controller.open("project")
+  controller.handleKey({name:"a",ctrl:true})
+  await new Promise(resolve=>setTimeout(resolve,0))
+  assert.equal(requests.length,1,"modified keys must not save a review")
+})
