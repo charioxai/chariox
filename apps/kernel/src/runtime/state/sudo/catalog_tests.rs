@@ -223,7 +223,7 @@ enum Step {
 async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
     crate::test_support::isolated_env_test!();
     use Step::*;
-    let rows: [(&str, Kind, &'static [Step], Option<&str>); 9] = [
+    let rows: [(&str, Kind, &'static [Step], Option<&str>); 10] = [
         ("idle refresh ok", Kind::Native { room_tools: true }, &[Approve, AckCatalog], None),
         (
             "idle refresh fails",
@@ -259,6 +259,12 @@ async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
             "vault relocks between retries",
             Kind::VaultClaude,
             &[HoldLane, Approve, Sleep(1), LockVault, Sleep(1), AnswerVault, ReleaseLane, AckCatalog],
+            None,
+        ),
+        (
+            "vault relock answered after the remaining budget",
+            Kind::VaultClaude,
+            &[HoldLane, Approve, Sleep(1), LockVault, Sleep(61), AnswerVault, ReleaseLane, AckCatalog],
             None,
         ),
         (

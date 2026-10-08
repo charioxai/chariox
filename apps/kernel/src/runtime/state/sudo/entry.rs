@@ -276,10 +276,12 @@ impl KernelRuntimeState {
                 use super::super::provider_reload::ProviderReloadOutcome;
                 self.live_queued_sudo(entry)?;
                 // A relock (lease expiry, another operation's guard) prompts
-                // again, outside the budget. Release the stale guard first so
-                // its drop cannot relock the fresh unlock.
+                // again; the budget pauses while the popups are open. Release
+                // the stale guard first so its drop cannot relock the fresh
+                // unlock.
                 if !vault.as_ref().is_some_and(|guard| guard.still_unlocked()) {
-                    vault = None;
+                    drop(vault.take());
+                    let prompted = tokio::time::Instant::now();
                     let unlock =
                         self.unlock_vault_for_agent_reload(&entry.session_id, &entry.agent_id);
                     vault = Some(
@@ -287,6 +289,9 @@ impl KernelRuntimeState {
                             .await?
                             .map_err(catalog_refresh_failed)?,
                     );
+                    if let Some(deadline) = catalog_deadline.as_mut() {
+                        *deadline += prompted.elapsed();
+                    }
                 }
                 let deadline = *catalog_deadline
                     .get_or_insert(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
