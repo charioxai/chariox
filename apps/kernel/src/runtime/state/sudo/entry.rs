@@ -47,6 +47,11 @@ impl KernelRuntimeState {
         terminal: &str,
         requester: Option<KernelAccessGrant>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if policy::is_sudo_control(&request.prompt) {
+            return Err(error(
+                "use the terminal's sudo controls for status, extend or revoke",
+            ));
+        }
         if request.target_agent_id.is_none() {
             request.target_agent_id = self
                 .owned
@@ -176,7 +181,9 @@ impl KernelRuntimeState {
         let requester = match &entry.requester {
             Some(grant) => format!(
                 "External agent {} (OS pid {}, grant {})",
-                grant.holder_executable, grant.holder_pid, grant.grant_id
+                grant.holder_executable.escape_debug(),
+                grant.holder_pid,
+                grant.grant_id
             ),
             None => format!("Terminal {}", entry.terminal_id),
         };
@@ -531,14 +538,7 @@ impl KernelRuntimeState {
         started.prompt_id = turn.prompt_id.clone();
         started.provider_run_id = turn.provider_run_id.clone();
         started.task_id = turn.task_id.clone();
-        let cutoff = crate::runtime::kernel_access::process::birth_cutoff()
-            .map_err(|e| error(e.to_string()))?;
         self.audit_sudo(&started, "started")?;
-        self.owned
-            .sudo_process_cutoffs
-            .lock()
-            .expect("sudo process cutoffs poisoned")
-            .insert(entry.entry_id.clone(), cutoff);
         access.insert(entry.entry_id.clone(), started);
         Ok(())
     }

@@ -18,7 +18,7 @@ mod process;
 mod receipts;
 mod scope;
 mod window;
-pub(crate) use policy::is_sudo_prompt;
+pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 mod catalog_tests;

@@ -304,10 +304,13 @@ fn sudo_shell_cli_child() {
             .unwrap();
             socket
                 .send(Message::Text(
-                    serde_json::json!({"type":"request","request_id":"probe",
-            "command_id":"same-command-each-turn", "request":{"ListSessions":null}})
-                    .to_string()
-                    .into(),
+                    std::fs::read_to_string(root.join("probe-frame.json"))
+                        .unwrap_or_else(|_| {
+                            serde_json::json!({"type":"request","request_id":"probe",
+                            "command_id":"same-command-each-turn", "request":{"ListSessions":null}})
+                            .to_string()
+                        })
+                        .into(),
                 ))
                 .await
                 .unwrap();
@@ -577,4 +580,176 @@ async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
         assert!(f.state.sudo_for_peer(&identity).is_err());
         assert!(!f.state.sudo_peer_live(&turn.entry_id, &identity));
     }
+}
+
+// MP-08/MP-10/MP-11 F1: Unix subscriptions share the window's owner/session fence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sudo_review_shell_subscriptions_are_owner_session_bound() {
+    let scratch = ShellDrillScratch::new();
+    let executable = std::env::current_exe().unwrap();
+    let script = format!("while :; do if test -f '{0}/probe'; then rm '{0}/probe'; CHARIOX_SUDO_SHELL_PROBE_ROOT='{0}' '{1}' sudo_shell_cli_child --ignored; fi; sleep .02; done", scratch.path().display(), executable.display());
+    let f = fixture_with_provider(Some(&script));
+    let turn = running(&f);
+    let other = crate::test_support::TestWorktree::new("sudo-other-session");
+    let (other_session, guest, other_attachment) = {
+        let mut app = f.app.lock().await;
+        let mut sessions = crate::app::KernelSessionService::new(&mut app);
+        let (session, _) = sessions.create_session(other.session_request()).unwrap();
+        let attachment = sessions
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "other-owner",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let guest = sessions
+            .attach(crate::attachment::AttachRequest::for_user(
+                &turn.session_id,
+                "guest",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+                "guest",
+            ))
+            .unwrap();
+        (session, guest, attachment)
+    };
+    let socket = scratch.path().join("kernel.sock");
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.local_socket_path = socket.clone();
+    config.runtime_mcp_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    f.state.owned.config_projection.update(config);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut shutdown = ShellDrillShutdown(Some(stop));
+    let server = tokio::spawn(
+        crate::runtime_transport::run_kernel_websocket_server_with_router_on_listener(
+            Arc::new(f.router.clone()),
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+            async {
+                let _ = stopped.await;
+            },
+        ),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !socket.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut results = Vec::new();
+    for (label, session, attachment, allowed) in [
+        (
+            "own",
+            turn.session_id.as_str(),
+            f.request.attachment_id.as_str(),
+            true,
+        ),
+        (
+            "other session",
+            other_session.id(),
+            other_attachment.id(),
+            false,
+        ),
+        (
+            "guest attachment",
+            turn.session_id.as_str(),
+            guest.id(),
+            false,
+        ),
+    ] {
+        let frame = serde_json::json!({"type":"subscribe","request_id":"probe","session_id":session,"attachment_id":attachment});
+        std::fs::write(scratch.path().join("probe-frame.json"), frame.to_string()).unwrap();
+        std::fs::write(scratch.path().join("probe"), "probe").unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(&file(&scratch.path().join("result")).await).unwrap();
+        results.push((label, result["error"].is_null(), allowed));
+        std::fs::remove_file(scratch.path().join("result")).unwrap();
+    }
+    let _ = shutdown.0.take().unwrap().send(());
+    server.await.unwrap().unwrap();
+    for (label, actual, expected) in results {
+        assert_eq!(
+            actual, expected,
+            "{label}: subscription owner/session fence"
+        );
+    }
+}
+
+// MP-08/MP-10/MP-11 F5: descendants belong to the bound turn that started them.
+#[tokio::test]
+async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
+    let scratch = ShellDrillScratch::new();
+    let script = format!("while :; do for name in first next; do if test -f '{0}/start-'$name; then rm '{0}/start-'$name; sleep 300 & echo $! > '{0}/pid-'$name; fi; done; sleep .02; done", scratch.path().display());
+    let f = fixture_with_provider(Some(&script));
+    let mut turn = running(&f);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    std::fs::write(scratch.path().join("start-first"), "start").unwrap();
+    let first = file(&scratch.path().join("pid-first"))
+        .await
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    let mut children = SiblingCleanup::new(vec![first]);
+    let first_identity = inspect(first).unwrap().0;
+    assert!(f.state.sudo_for_peer(&first_identity).is_ok());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let owner = &f.state.owned.prompt_state_owner;
+    let mut projected = session.clone();
+    owner.project_into_session(&mut projected);
+    owner.restore_session_state(&projected);
+    assert!(
+        f.state.sudo_for_peer(&first_identity).is_ok(),
+        "same prompt restoration preserves the cutoff"
+    );
+    owner.hold_sudo_work(&session, &turn.agent_id, &turn.entry_id, "sudo-exact-turn");
+    owner
+        .cancel_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    assert!(owner.admit_sudo_work_prompt(
+        &session,
+        &turn.agent_id,
+        &turn.entry_id,
+        "sudo-next-turn"
+    ));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let prompt = PromptQueueItem::new(
+        "sudo-next-turn",
+        &f.request.attachment_id,
+        &turn.agent_id,
+        "continue",
+        PromptStatus::Queued,
+    );
+    owner
+        .submit_prepared_prompt_with_queue_policy(&session, prompt, false, false)
+        .unwrap();
+    assert!(owner.bind_sudo_turn(&session, &turn.agent_id, "sudo-next-turn", &turn.entry_id));
+    turn.prompt_id = Some("sudo-next-turn".into());
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn);
+    let retained_allowed = f.state.sudo_for_peer(&first_identity).is_ok();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    std::fs::write(scratch.path().join("start-next"), "start").unwrap();
+    let next = file(&scratch.path().join("pid-next"))
+        .await
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+    children.0.push(inspect(next).unwrap().0);
+    assert!(f.state.sudo_for_peer(&inspect(next).unwrap().0).is_ok());
+    assert!(
+        !retained_allowed,
+        "prior turn descendant must lose shell authority"
+    );
 }

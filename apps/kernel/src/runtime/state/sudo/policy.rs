@@ -186,7 +186,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
@@ -226,20 +226,38 @@ fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
             | LocalDaemonRequest::ResolveKernelClientConnection(_)
             | LocalDaemonRequest::ExportDebugBundle(_)
+            // MP-08/MP-10/MP-11 F6: credential enrollment remains owner input.
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::StartSliceProviderLogin(_)
+            | LocalDaemonRequest::ImportSliceProviderAuth(_)
+            | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
+            | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
+            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
     ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config) if sudo_config_forbidden(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config) if sudo_config_forbidden(&config.path))
-        || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt))
-        || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt)))
+        || matches!(request, LocalDaemonRequest::SubmitPrompt(prompt) if is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt))
+        || matches!(request, LocalDaemonRequest::SubmitPrompts(prompts) if prompts.prompts.iter().any(|prompt| is_sudo_prompt(&prompt.prompt) || is_sudo_control(&prompt.prompt)))
 }
 
-pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
+fn sudo_arguments(prompt: &str) -> Option<&str> {
     prompt
         .trim_start()
         .strip_prefix("/sudo")
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+pub(crate) fn is_sudo_control(prompt: &str) -> bool {
+    sudo_arguments(prompt)
+        .and_then(|rest| rest.split_whitespace().next())
+        .is_some_and(|command| matches!(command, "status" | "extend" | "revoke"))
+}
+
+pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
+    sudo_arguments(prompt).is_some() && !is_sudo_control(prompt)
 }
 
 fn sudo_config_forbidden(path: &str) -> bool {

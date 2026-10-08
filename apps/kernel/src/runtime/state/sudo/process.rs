@@ -52,15 +52,19 @@ impl KernelRuntimeState {
             return Err(error("sudo requires one dedicated provider process"));
         };
         let turn = self.sudo_for_provider_run(run_id)?;
+        let session = self.owned.session_store.get_session(&turn.session_id)?;
         let born_after_cutoff = self
             .owned
-            .sudo_process_cutoffs
-            .lock()
-            .expect("sudo process cutoffs poisoned")
-            .get(&turn.entry_id)
+            .prompt_state_owner
+            .sudo_bound_process_cutoff(
+                &session,
+                &turn.agent_id,
+                &turn.entry_id,
+                turn.prompt_id.as_deref().unwrap_or_default(),
+            )
             .is_some_and(|cutoff| {
                 chain[..root_index].iter().all(|identity| {
-                    crate::runtime::kernel_access::process::born_after(identity, *cutoff)
+                    crate::runtime::kernel_access::process::born_after(identity, cutoff)
                 })
             });
         born_after_cutoff

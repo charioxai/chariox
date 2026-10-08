@@ -103,8 +103,11 @@ agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it; the external client never sends or receives the
 passkey. TCP, relay, ungranted peers and targets outside the granted session
 are refused, and the window ends when the requester's grant ends. Shell CLI
-calls use the tracked provider's OS process tree; descendants that existed
-before the window are excluded. Leased sudo execution remains a separate leg.
+calls use the tracked provider's OS process tree; only descendants born after
+the current elevated turn binds are admitted. A descendant retained from an
+earlier turn has no authority in a later turn. Unix terminal subscriptions are
+limited to the window session and owner attachments. Leased sudo execution
+remains a separate leg.
 
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
