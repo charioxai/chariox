@@ -249,11 +249,7 @@ impl KernelRuntimeOwnedState {
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            &target_agent,
-            "submit remote prompt",
-        )?;
+        self.require_prompt_agent_authenticated(&target_agent, "submit remote prompt")?;
         if target_agent.state() == crate::agent::AgentState::Error {
             let _ = self
                 .agent_store

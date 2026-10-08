@@ -20,6 +20,9 @@ use chariox_relay::protocol::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
+mod credentials;
+pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
+
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
 const RELAY_METADATA_RETRY_BASE_DELAY_MS: u64 = 250;
@@ -528,6 +531,8 @@ async fn query_relay_once_inner(
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
+    let discovery_config = metadata_discovery_config(config).await?;
+    let config = &discovery_config;
     let relay_url = config
         .relay_url
         .clone()

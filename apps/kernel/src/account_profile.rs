@@ -66,6 +66,28 @@ pub(crate) fn provider_account_authority_owner_user_id(
     }
 }
 
+/// Only the home aliases its Cloud owner to the host's local accounts. An
+/// authorized leased launch uses the replica registered under the lease owner,
+/// even when home and worker are enrolled by the same person.
+#[derive(Clone, Copy)]
+pub(crate) enum ProviderAccountLaunchScope {
+    Home,
+    LeaseReplica,
+}
+
+impl ProviderAccountLaunchScope {
+    pub(crate) fn owner_user_id(
+        self,
+        config: &crate::config::DaemonConfig,
+        runtime_owner_user_id: &str,
+    ) -> String {
+        match self {
+            Self::Home => provider_account_authority_owner_user_id(config, runtime_owner_user_id),
+            Self::LeaseReplica => runtime_owner_user_id.to_string(),
+        }
+    }
+}
+
 /// The provider a new agent gets when none was chosen (`default` is only a
 /// placeholder, not a provider): the owner's signed-in default account
 /// (Claude, Codex, then OpenCode). With nothing signed in no provider can run
@@ -1266,10 +1288,25 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_in_scope(
+            config,
+            agent,
+            operation,
+            ProviderAccountLaunchScope::Home,
+        )
+    }
+
+    pub(crate) fn require_agent_authenticated_in_scope(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+        scope: ProviderAccountLaunchScope,
+    ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
+        let owner_user_id = scope.owner_user_id(config, agent.owner_user_id());
         self.require_authenticated(
             &owner_user_id,
             provider,
