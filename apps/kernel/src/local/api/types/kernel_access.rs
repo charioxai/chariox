@@ -51,6 +51,9 @@ pub enum PasskeyPromptKind {
 /// choice without it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeyPrompt {
+    /// Protocol 470: present for access_grant/access_extension; absent on older kernels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<KernelAccessRequester>,
     pub kind: PasskeyPromptKind,
     /// Protocol 451: access decisions use `kernel-access`, a routing id without a session.
     pub session_id: String,
@@ -69,6 +72,28 @@ pub struct PasskeyPrompt {
     pub lifetime_minutes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_lifetime_minutes: Option<u32>,
+}
+
+/// Protocol 470: OS-established identity of the grant holder, never display-text parsing.
+/// Process start is an opaque decimal string to avoid JavaScript integer truncation
+/// (Linux start ticks or macOS process unique ID); exec version is macOS's version,
+/// zero on Linux. Harness identifies a configured executable, not vendor attestation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelAccessRequester {
+    pub executable: String,
+    pub pid: u32,
+    pub process_start_id: String,
+    pub process_exec_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_harness: Option<KernelAccessProviderHarness>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelAccessProviderHarness {
+    Codex,
+    Claude,
+    Opencode,
 }
 
 /// Protocol 451: an OS-verified Unix peer asks for local-kernel access. No passkey or token.

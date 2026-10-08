@@ -343,3 +343,23 @@ test("shared approval command opener handles waiting room, empty session and pen
     assert.equal(prompt.plainText, "draft kept")
   } finally { dispose(); h.renderer.destroy() }
 })
+
+
+test("MP-08 / MP-10 / MP-11 general interaction panel renders structured requester metadata", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(h.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: true, interaction: { ...view.interaction!,
+      message: "Requester: forged display label",
+      requester: { executable: "/opt/outside\nagent", pid: 43, process_start_id: "9876543210123456789", process_exec_version: 0 },
+    } }, { width: 100, height: 40 })
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Requester: External program · PID 43/)
+    assert.ok(frame.includes('Executable: "/opt/outside\\nagent"'))
+    assert.match(frame, /Process start: 9876543210123456789/)
+  } finally { h.renderer.destroy() }
+})

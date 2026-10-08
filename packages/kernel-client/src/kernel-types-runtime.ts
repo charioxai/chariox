@@ -129,6 +129,7 @@ export type NativeInteractionOrigin =
   | { scope: "provider_startup"; provider_run_id: string }
 
 export type RuntimeInteraction = RuntimeInteractionSubject & {
+  requester?: KernelAccessRequester | null
   provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
   project_environment_review?: ProjectEnvironmentReview | null
   id: string
@@ -158,7 +159,19 @@ export type RuntimeInteractionChoice = {
  * Every field is what the kernel established. It is answered with
  * `RespondToInteraction`: the approve choice with the passkey, or the refuse
  * choice without it. */
+/** Protocol 470: OS-established grant holder, never parsed from display text.
+ * The start identity is an opaque decimal string (Linux start ticks or macOS
+ * process unique ID). Harness is informational, not vendor/signature attestation. */
+export type KernelAccessRequester = {
+  executable: string
+  pid: number
+  process_start_id: string
+  process_exec_version: number
+  provider_harness?: "codex" | "claude" | "opencode" | null
+}
+
 export type PasskeyPrompt = {
+  requester?: KernelAccessRequester | null
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   lifetime_minutes?: number | null
   max_lifetime_minutes?: number | null

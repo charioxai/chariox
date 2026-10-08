@@ -226,3 +226,29 @@ for (const kind of ["access_grant", "access_extension"] as const) {
     } finally { harness.renderer.destroy() }
   })
 }
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  test(`MP-08 / MP-10 / MP-11 ${kind} labels the structured requester independently of message text`, async () => {
+    const h = await createTestRenderer({ width: 100, height: 50, useThread: false })
+    const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+    h.renderer.root.add(box)
+    const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+    surface.assign(box)
+    try {
+      surface.render({ ...view, prompt: { ...prompt, kind, session_id: "kernel-access", session_alias: null,
+        message: "Display text mentions Claude (pid 999) but cannot supply the requester label.",
+        requester: { executable: "/opt/codex\n\u001b[31m\u202e", pid: 42, process_start_id: "18446744073709551615", process_exec_version: 7, provider_harness: "codex" },
+        lifetime_minutes: 30, max_lifetime_minutes: 1440,
+      } }, { width: 100, height: 50 })
+      await h.renderOnce()
+      const frame = h.captureCharFrame()
+      assert.match(frame, /Requester: Codex · PID 42/)
+      assert.match(frame, /Executable: "\/opt\/codex\\n\\u001b\[31m\\u202e"/)
+      assert.match(frame, /Process start: 18446744073709551615 · exec version 7/)
+      assert.match(frame, /Display text mentions Claude/)
+      surface.render({ ...view, prompt: { ...prompt, kind, requester: undefined } }, { width: 100, height: 50 })
+      await h.renderOnce()
+      assert.match(h.captureCharFrame(), /Requester identity unavailable/)
+    } finally { h.renderer.destroy() }
+  })
+}

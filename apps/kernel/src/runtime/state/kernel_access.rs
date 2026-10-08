@@ -322,10 +322,11 @@ impl KernelRuntimeState {
             format!("{}-{action}", grant.grant_id), format!("access-{action}:{}", grant.grant_id),
             title,
             format!("OS-verified external agent {} (pid {}) requests {} access to the whole LOCAL kernel for {} minutes. Critical approvals, secret reads, and remote kernels remain unavailable. Only this process and its OS descendants will have access. Chariox agents it spawns receive no grant.",
-                grant.holder_executable.escape_debug(), grant.holder_pid, action, grant.lifetime_minutes),
+                crate::runtime::kernel_access::requester::display_executable(&grant.holder_executable), grant.holder_pid, action, grant.lifetime_minutes),
             vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
                 RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
-            .with_timeout_sec(timeout_sec);
+            .with_timeout_sec(timeout_sec)
+            .with_requester(crate::runtime::kernel_access::requester::project(holder));
         let rx = self
             .create_kernel_operation_interaction(
                 crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,

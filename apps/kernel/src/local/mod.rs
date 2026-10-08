@@ -270,7 +270,10 @@ pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
-pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
+pub use api::{
+    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
+    PasskeyPromptKind,
+};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 

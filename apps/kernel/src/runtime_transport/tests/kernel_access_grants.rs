@@ -729,6 +729,38 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
         .into()
 }
 
+// MP-08 / MP-10 / MP-11: fail-first on actual Unix admission and terminal projection.
+#[tokio::test]
+async fn kernel_access_grants_require_structured_requester_identity() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    holder.send(serde_json::json!({"RequestKernelAccess":{"holder_pid":holder.child.id()}}));
+    let prompt = kernel.access_popup("-grant").await;
+    let expected = crate::runtime::kernel_access::process::inspect(holder.child.id())
+        .unwrap()
+        .0;
+    assert_eq!(prompt["requester"]["pid"], expected.pid);
+    assert_eq!(prompt["requester"]["executable"], expected.executable);
+    assert_eq!(
+        prompt["requester"]["process_start_id"],
+        expected.start.to_string()
+    );
+    assert_eq!(
+        prompt["requester"]["process_exec_version"],
+        expected.version
+    );
+    // The test executable is no official provider harness.
+    assert!(prompt["requester"].get("provider_harness").is_none());
+    let id = prompt["interaction_id"].as_str().unwrap();
+    let refused = kernel
+        .request(serde_json::json!({"RespondToInteraction":{
+            "session_id":"kernel-access", "interaction_id":id, "choice_id":"refuse"
+        }}))
+        .await;
+    assert!(refused["error"].is_null(), "{refused}");
+    assert!(holder.result()["error"].is_object());
+}
+
 #[tokio::test]
 async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_and_critical() {
     let mut kernel = Kernel::start().await;
@@ -824,12 +856,33 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
         "{list}"
     );
     kernel.control("notice").await;
-    let extension = kernel.access_prompt("-extension").await;
+    let extension_prompt = kernel.access_popup("-extension").await;
+    let extension = extension_prompt["interaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(
         kernel.answer(&extension, None, None).await["error"]["message"]
             .as_str()
             .unwrap()
             .contains("PASSKEY_REQUIRED")
+    );
+    // MP-08 / MP-10 / MP-11: identity is OS-established structured metadata.
+    let expected = crate::runtime::kernel_access::process::inspect(holder.child.id())
+        .unwrap()
+        .0;
+    assert_eq!(extension_prompt["requester"]["pid"], expected.pid);
+    assert_eq!(
+        extension_prompt["requester"]["executable"],
+        expected.executable
+    );
+    assert_eq!(
+        extension_prompt["requester"]["process_start_id"],
+        expected.start.to_string()
+    );
+    assert_eq!(
+        extension_prompt["requester"]["process_exec_version"],
+        expected.version
     );
     assert!(kernel.answer(&extension, Some(PASSKEY), Some(45)).await["error"].is_null());
     timeout(Duration::from_secs(5), async {
