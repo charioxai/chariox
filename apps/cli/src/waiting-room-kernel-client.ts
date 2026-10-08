@@ -1,5 +1,4 @@
 import { LocalIpcClient } from "./ipc.js"
-import { selectLocalKernelClient } from "./local-kernel-selection.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
 import { beginMutableLocalIpcClientPivot, type MutableLocalIpcClient, type MutableLocalIpcClientPivot } from "./mutable-local-ipc-client.js"
 import { getWaitingRoomInventory, type WaitingRoomInventory } from "./waiting-room-inventory-api.js"
@@ -12,15 +11,8 @@ type KernelClientTarget = {
 }
 
 async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
-  const local = await selectLocalKernelClient({ kernelId: target.kernelRef }, (endpoint) => new LocalIpcClient(endpoint))
-  if (local) {
-    if (!target.isActive()) {
-      await local.client.close()
-      return null
-    }
-    const { presence } = local
-    return { client: local.client, label: presence.kernelAlias ?? presence.kernelId, machineId: presence.machineId, kernelId: presence.kernelId }
-  }
+  // MP-08 / MP-11: resolve through the current authority; never probe a
+  // discovered TCP endpoint before its listener has been authenticated.
   const connection = await resolveKernelClientConnection(controlClient, target)
   if (!target.isActive()) return null
   const client = new LocalIpcClient(connection.relayUrl, {

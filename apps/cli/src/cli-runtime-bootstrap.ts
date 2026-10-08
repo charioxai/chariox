@@ -14,11 +14,6 @@ import {
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { joinKernelTerminalPairingLink } from "./relay-api.js"
 import {
-  selectLocalKernelClient,
-  type LocalKernelSelection,
-  type LocalKernelTarget,
-} from "./local-kernel-selection.js"
-import {
   attachToSession,
   createSession,
   deleteSessionByRef,
@@ -123,10 +118,6 @@ export type CliRuntimeBootstrapDeps = {
   isKernelEndpointUnavailableError: (error: unknown) => boolean
   bootstrapAttachedSession: BootstrapAttachedSession
   maybeResize: (client: LocalIpcClient, sessionId: string) => Promise<void>
-  selectLocalKernelClient: (
-    target: LocalKernelTarget,
-    createClient: (endpoint: string) => LocalIpcClient,
-  ) => Promise<LocalKernelSelection | null>
 }
 
 export type CliRuntimeBootstrapOptions = {
@@ -173,7 +164,6 @@ export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
   isKernelEndpointUnavailableError,
   bootstrapAttachedSession: bootstrapAttachedSessionWithRuntimeDeps,
   maybeResize: resizeSessionTerminal,
-  selectLocalKernelClient,
 }
 
 export async function bootstrapCliRuntime(
@@ -214,23 +204,8 @@ export async function bootstrapCliRuntime(
       throw error
     }
   }
-  if (cliOptions.relayUrl) {
-    // MP-08: a relay-addressed kernel on this machine is reached directly; the
-    // relay remains the path whenever the local kernel cannot prove identity.
-    const local = await deps.selectLocalKernelClient(
-      { kernelId: cliOptions.targetDaemonId },
-      (endpoint) => deps.createClient(endpoint),
-    )
-    if (local) {
-      await Promise.resolve(client.close()).catch(() => {})
-      client = local.client
-      kernelEndpoint = local.endpoint
-      options.logger?.info("using local kernel endpoint for relay target", {
-        kernel_id: local.presence.kernelId,
-        kernel_endpoint: local.endpoint,
-      })
-    }
-  }
+  // MP-08 / MP-11: keep relay targets on their authenticated carrier. A
+  // discovery record and a matching daemon ID do not authenticate TCP peers.
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree

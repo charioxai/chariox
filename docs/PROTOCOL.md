@@ -481,6 +481,12 @@ Current implementation notes:
 
 ### Same-machine browser carrier (local protocol 464, MP-08/MP-11)
 
+MP-08 / MP-11: relay-addressed TUI launches and waiting-room kernel switches
+retain their authenticated relay transport, including for a same-machine target.
+Local presence is discovery metadata, not server identity proof. A matching
+`RelayStatus.daemon_id` from a loopback TCP listener does not authorize a carrier
+switch or disclosure of a local bearer credential.
+
 The kernel's CLI listener keeps refusing every request that carries an
 `Origin` header. A paired web terminal whose kernel runs on the same machine
 can instead use a dedicated loopback carrier that has no authority of its own:
