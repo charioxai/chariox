@@ -86,6 +86,13 @@ impl KernelRuntimeState {
             })
             .collect::<Vec<_>>();
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        // MP-11 A07: bind the pending request to the original grant identity.
+        // A later grant must not resurrect a request made before source loss.
+        let source_grant_identity = self
+            .owned
+            .kernel_browser_host
+            .grant_identity(&admission)
+            .map_err(host_error)?;
         let result = self
             .kernel_browser_operation_admitted(
                 &user,
@@ -155,7 +162,8 @@ impl KernelRuntimeState {
         // Retain the full-URL fence privately. URLs may contain sensitive
         // query/fragment values, so only safe origin/path enter the projection.
         let binding = self.owned.durable_state_store.append_event("handoff.binding", Some(id.clone()),
-            json!({"room":agent.session_id(), "document_url_digest":document_url_binding(snapshot.document_url_for_node(&handoff.target.node_ref).map_err(host_error)?)}));
+            json!({"room":agent.session_id(), "source_grant_identity":source_grant_identity,
+                "document_url_digest":document_url_binding(snapshot.document_url_for_node(&handoff.target.node_ref).map_err(host_error)?)}));
         crate::runtime::room_dispatch_registration::reject_if_failed(
             &self.owned.durable_state_store,
             Some(&obligation),

@@ -272,6 +272,27 @@ impl KernelBrowserHost {
         }
         Ok(())
     }
+    /// MP-11 A07: immutable product grant identity for a durable pending action.
+    pub(crate) fn grant_identity(
+        &self,
+        admission: &KernelBrowserAdmission,
+    ) -> Result<String, String> {
+        self.check_admission(Some(admission))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| "MP-11: browser grant lock poisoned")?;
+        Self::check_admission_epoch(&state, admission)?;
+        let agent = admission
+            .agent
+            .as_deref()
+            .ok_or("MP-11: source agent grant required")?;
+        Ok(state
+            .access
+            .grant(&admission.user, agent)?
+            .subscription_owner
+            .clone())
+    }
     /// MD-N4 / MP-11: a note read/write commits within one uninterrupted grant epoch.
     pub(crate) fn note_operation<T>(
         &self,
