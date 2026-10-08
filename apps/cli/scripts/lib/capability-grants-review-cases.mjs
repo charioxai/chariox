@@ -79,7 +79,6 @@ export async function runCapabilityReviewCase(kind, ctx) {
       await decide('deny')
       await until(async () => !(await snapshot()).interactions.some(i => i.id === approval.id), 15_000)
       step('r1-promoted-external-edit-does-not-open-owner-acquisition')
-      let sawPromotion = false
       await until(async () => {
         const view = await snapshot()
         if (view.interactions.some(i => i.title === 'Chariox resource access')) {
@@ -88,10 +87,10 @@ export async function runCapabilityReviewCase(kind, ctx) {
           throw new Error('MP-11 R1 external edit opened an owner acquisition popup')
         }
         const entries = view.agentPanes[agent] ?? view.transcript.entries
-        sawPromotion ||= entries.some(entry => entry.role === 'user' && entry.text.includes('AM5_EXTERNAL_EDIT'))
-        return sawPromotion && !view.session.agents.find(a => a.id === agent).isProcessing
+        const editedPrompt = entries.findLastIndex(entry => entry.role === 'user' && entry.text.includes('AM5_EXTERNAL_EDIT'))
+        return editedPrompt >= 0 && !view.session.agents.find(a => a.id === agent).isProcessing
           && !view.queuedPromptStrips[agent]?.items.length
-          && entries.some(entry => entry.text.includes('user_domain_not_requested'))
+          && entries.slice(editedPrompt + 1).some(entry => entry.text.includes('user_domain_not_requested'))
       }, 180_000)
       requireValue((await grants()).length === 0)
       await capture('r1-promoted-edit-refused-tui.ansi')
