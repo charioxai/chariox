@@ -365,22 +365,19 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-/// Launches use the profile's Chariox Vault setup token, which was verified
-/// with Claude when it was stored. `claude auth status` cannot see it, and
-/// reading it back needs the vault, so when Claude reports no native login
-/// the observation recorded at storage is kept rather than downgraded.
+/// MP-08/MP-10/MP-11: launches select a registered Chariox Vault token even
+/// when native credentials coexist. Native status/usage describes a different
+/// credential, so preserve the selected token's verified/unchecked observation.
 fn claude_vault_token_status(
     owner_user_id: &str,
     profile: &crate::account_profile::ProviderAccountProfile,
     native: &ProviderAuthStatus,
 ) -> Result<Option<ProviderAuthStatus>, DaemonError> {
-    if native.auth_state == "authenticated"
-        || !crate::provider::provider_account_credential_registered(
-            owner_user_id,
-            "claude",
-            &profile.profile_id,
-        )?
-    {
+    if !crate::provider::provider_account_credential_registered(
+        owner_user_id,
+        "claude",
+        &profile.profile_id,
+    )? {
         return Ok(None);
     }
     use crate::account_profile::ProviderAccountAuthState;

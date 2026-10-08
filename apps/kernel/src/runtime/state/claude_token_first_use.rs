@@ -4,10 +4,10 @@ use super::*;
 use crate::account_profile::ProviderAccountAuthState;
 use crate::provider::{ClaudeCredentialCheckError, ProviderCredentialEnvironment};
 
+type ClaudeTokenCheck = Mutex<Option<Result<(), ClaudeCredentialCheckError>>>;
+
 #[derive(Default)]
-pub(super) struct ClaudeTokenChecks(
-    Mutex<BTreeMap<String, Result<(), ClaudeCredentialCheckError>>>,
-);
+pub(super) struct ClaudeTokenChecks(Mutex<BTreeMap<String, Arc<ClaudeTokenCheck>>>);
 
 impl KernelRuntimeState {
     pub(in crate::runtime) async fn invalidate_claude_token_check(
@@ -40,12 +40,23 @@ impl KernelRuntimeState {
         }
         let credential_id =
             crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
-        let mut checks = self.owned.claude_token_checks.0.lock().await;
-        // Serialize the single check across agents using the same account. The
-        // cache holds verdicts only; successful replacement invalidates it.
+        // The map lock only locates an account's check lane. A slow official
+        // CLI must not hold unrelated launches or completed replacements.
+        let lane = self
+            .owned
+            .claude_token_checks
+            .0
+            .lock()
+            .await
+            .entry(credential_id.clone())
+            .or_default()
+            .clone();
+        let mut checks = lane.lock().await;
+        // Cache verdicts only. Invalidation removes the lane from the map, so
+        // an in-flight old check cannot repopulate a replacement's cache.
         let checked = if profile.auth_state == ProviderAccountAuthState::Expired {
             Err(ClaudeCredentialCheckError::Rejected)
-        } else if let Some(checked) = checks.get(&credential_id) {
+        } else if let Some(checked) = checks.as_ref() {
             checked.clone()
         } else {
             let checked = crate::runtime::claude_setup_token_login::check(
@@ -55,7 +66,7 @@ impl KernelRuntimeState {
                 &zeroize::Zeroizing::new(token.to_string()),
             )
             .await;
-            checks.insert(credential_id.clone(), checked.clone());
+            *checks = Some(checked.clone());
             checked
         };
         drop(checks);

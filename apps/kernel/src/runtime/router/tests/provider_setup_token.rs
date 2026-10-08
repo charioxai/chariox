@@ -309,6 +309,11 @@ async fn legacy_setup_token_is_unknown_until_verified() {
     pasted_setup_token_fixture("legacy").await;
 }
 
+#[tokio::test]
+async fn setup_token_unchecked_vault_observation_wins_over_authenticated_native() {
+    pasted_setup_token_fixture("legacy-native").await;
+}
+
 async fn pasted_setup_token_fixture(scenario: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -346,8 +351,14 @@ async fn pasted_setup_token_fixture(scenario: &str) {
         format!(
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
-if [ "$1" = auth ] && [ "$2" = status ]; then echo '{{"loggedIn":false,"authMethod":"none"}}'; exit 1; fi
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  if [ '{scenario}' = legacy-native ]; then
+    echo '{{"loggedIn":true,"authMethod":"oauth","email":"other@example.test","subscriptionType":"max"}}'; exit 0
+  fi
+  echo '{{"loggedIn":false,"authMethod":"none"}}'; exit 1
+fi
 if [ "$1" = -p ] && [ "$2" = /usage ]; then
+  echo usage >> "$(dirname "$0")/usage-probes"
   echo '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Total cost: $0.0000"}}'
   exit 0
 fi
@@ -427,7 +438,7 @@ exit 90
         crate::account_profile::ProviderAccountAuthState::Authenticated
     );
 
-    if scenario == "legacy" {
+    if scenario.starts_with("legacy") {
         crate::provider::store_provider_account_credential(
             &config,
             "local",
@@ -463,6 +474,20 @@ exit 90
                 panic!("expected auth status");
             };
             assert_eq!(status.auth_state, "unknown");
+            assert_eq!(status.identity_summary, profile.identity_summary);
+            assert_eq!(status.plan, profile.plan);
+            assert!(
+                !root.join("usage-probes").exists(),
+                "MP-08/MP-10/MP-11 refresh must not probe the unselected native account"
+            );
+            assert_eq!(
+                router
+                    .provider_account_profiles
+                    .get("local", "claude", &profile.profile_id)
+                    .unwrap()
+                    .usage,
+                profile.usage
+            );
             let hint = status.login_hint.unwrap();
             assert!(
                 hint.contains("checked automatically") && !hint.contains("--replace"),
@@ -470,7 +495,7 @@ exit 90
             );
         }
     }
-    if scenario == "legacy" {
+    if scenario.starts_with("legacy") {
         let (session, agent) = {
             let mut app = router.app.lock().await;
             crate::app::KernelSessionService::new(&mut app)
@@ -493,11 +518,18 @@ exit 90
         )
         .with_agent_id(agent.id());
         for _ in 0..2 {
-            router
+            let prepared = router
                 .runtime_state
                 .prepare_provider_launch_request_with_vault(request.clone(), "test first use")
                 .await
                 .unwrap();
+            assert!(
+                prepared
+                    .provider_credential_env
+                    .iter()
+                    .any(|(_, value)| value == good),
+                "MP-08/MP-10/MP-11 launch must use the checked Vault token"
+            );
         }
         let after = std::fs::read_to_string(root.join("model-turns"))
             .unwrap()
@@ -692,6 +724,16 @@ async fn setup_token_previously_expired_account_uses_the_same_oauth_interaction(
 }
 
 #[tokio::test]
+async fn setup_token_expired_vault_observation_wins_over_authenticated_native() {
+    first_use_fixture("expired-native").await;
+}
+
+#[tokio::test]
+async fn setup_token_first_use_other_account_launch_and_replacement_do_not_wait() {
+    first_use_fixture("concurrent").await;
+}
+
+#[tokio::test]
 async fn setup_token_oauth_does_not_hold_an_operation_vault_lease() {
     first_use_fixture("expired-locked").await;
 }
@@ -753,8 +795,18 @@ async fn first_use_fixture(mode: &str) {
     std::env::set_var("CHARIOX_CLAUDE_BIN", &binary);
     std::fs::write(&binary, format!(r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  echo '{{"loggedIn":true,"authMethod":"oauth","email":"other@example.test","subscriptionType":"max"}}'; exit 0
+fi
 if [ "$1" = -p ]; then
   echo check >> '{root}/checks'
+  if [ '{mode}' = concurrent ]; then
+    if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{stalled}' ]; then
+      touch '{root}/checking-a'
+      while [ ! -f '{root}/release-a' ]; do sleep 0.05; done
+    fi
+    echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
+  fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && [ '{mode}' = enrollment-two ]; then
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
   fi
@@ -774,7 +826,7 @@ if [ '{mode}' = enrollment-failed ] || [ '{mode}' = enrollment-two ]; then
   printf '%s\n' 'sk-ant-oat01-{replacement}'; exit 0
 fi
 exit 1
-"#, root = root.display(), replacement = "B".repeat(96))).unwrap();
+"#, root = root.display(), replacement = "B".repeat(96), stalled = "A".repeat(96))).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
@@ -849,6 +901,40 @@ exit 1
             )
             .unwrap();
     }
+    if mode == "expired-native" {
+        for refresh in [false, true] {
+            let request: LocalDaemonRequest = if refresh {
+                serde_json::from_value(serde_json::json!({"RefreshProviderAccountProfile": {
+                    "provider": "claude", "account_profile": profile.profile_id
+                }}))
+                .unwrap()
+            } else {
+                LocalDaemonRequest::GetProviderAuthStatus(
+                    crate::local::GetProviderAuthStatusRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                    },
+                )
+            };
+            let command = KernelCommand::from_local_request("expired-native", None, None, &request);
+            router.dispatch(command, request).await.unwrap();
+            let observed = router
+                .provider_account_profiles
+                .get("local", "claude", &profile.profile_id)
+                .unwrap();
+            assert_eq!(
+                observed.auth_state,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                "MP-08/MP-10/MP-11 selected expired Vault token must survive status/refresh"
+            );
+            assert_eq!(observed.identity_summary, profile.identity_summary);
+            assert_eq!(observed.plan, profile.plan);
+            assert!(
+                !root.join("checks").exists(),
+                "refresh must not probe native usage"
+            );
+        }
+    }
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
@@ -857,6 +943,106 @@ exit 1
         "claude-sonnet",
     )
     .with_agent_id(agent.id());
+    if mode == "concurrent" {
+        let router = Arc::new(router);
+        let runtime = router.runtime_state.clone();
+        let same_account = request.clone();
+        let a = tokio::spawn(async move {
+            runtime
+                .prepare_provider_launch_request_with_vault(request, "account A")
+                .await
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !root.join("checking-a").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "A never reached verifier"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let runtime = router.runtime_state.clone();
+        let a_duplicate = tokio::spawn(async move {
+            runtime
+                .prepare_provider_launch_request_with_vault(same_account, "account A duplicate")
+                .await
+        });
+        let b = router
+            .provider_account_profiles
+            .create_managed("local", "claude", "other")
+            .unwrap();
+        let token = format!("sk-ant-oat01-{}", "B".repeat(96));
+        crate::provider::store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &b.profile_id,
+            &token,
+            false,
+        )
+        .unwrap();
+        let b_launch = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            &b.profile_id,
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id());
+        let launched = tokio::time::timeout(
+            Duration::from_secs(3),
+            router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(b_launch, "account B"),
+        )
+        .await;
+        let replacement = LocalDaemonRequest::SetProviderAccountCredential(
+            crate::local::SetProviderAccountCredentialRequest {
+                provider: "claude".into(),
+                account_profile: b.profile_id.clone(),
+                value: token,
+                run: false,
+                overwrite: true,
+                session_id: None,
+                agent_id: None,
+            },
+        );
+        let command = KernelCommand::from_local_request("replace B", None, None, &replacement);
+        let replaced = tokio::time::timeout(
+            Duration::from_secs(3),
+            router.dispatch(command, replacement),
+        )
+        .await;
+        // Always release and settle owned verifiers before asserting a RED.
+        std::fs::write(root.join("release-a"), "release").unwrap();
+        tokio::time::timeout(Duration::from_secs(8), a)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(8), a_duplicate)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            launched.is_ok_and(|value| value.is_ok()),
+            "MP-08/MP-10/MP-11 B first use waited on A's stalled verifier"
+        );
+        assert!(
+            replaced.is_ok_and(|value| value.is_ok()),
+            "MP-08/MP-10/MP-11 B replacement waited on A's stalled verifier"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("checks"))
+                .unwrap()
+                .lines()
+                .count(),
+            3,
+            "A must be checked once; B first use and replacement each once"
+        );
+        router.app.lock().await.shutdown_cleanup().unwrap();
+        return;
+    }
     if mode == "network" {
         for _ in 0..2 {
             router
