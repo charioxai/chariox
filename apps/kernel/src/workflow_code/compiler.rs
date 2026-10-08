@@ -247,22 +247,36 @@ fn discover_node_path(
     }
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.clone()));
-    candidates
-        .into_iter()
-        .find(|candidate| {
-            Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        })
-        .ok_or_else(|| crate::DaemonError::LocalTransport {
-            operation: "workflow_code.compile",
-            message:
-                "could not find Node.js for workflow-code compilation; set the kernel NODE environment variable"
-                    .to_string(),
-        })
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    for candidate in candidates {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(mut child) = Command::new(&candidate)
+            .env_clear()
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if child
+            .wait_timeout(remaining.min(Duration::from_millis(500)))
+            .is_ok_and(|status| status.is_some_and(|status| status.success()))
+        {
+            return Ok(candidate);
+        }
+        if child.id() > 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    Err(crate::DaemonError::LocalTransport {
+        operation: "workflow_code.compile",
+        message: "could not find responsive Node.js for workflow-code compilation; set the kernel NODE environment variable".into(),
+    })
 }
 
 #[cfg(unix)]

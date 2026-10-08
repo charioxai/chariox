@@ -30,6 +30,19 @@ impl WorkflowRegistry {
         node_path: &str,
         limits: &WorkflowCodeLimitsConfig,
     ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        self.add_authorized(name, scope, source, node_path, limits, &|| Ok(()))
+    }
+
+    pub(crate) fn add_authorized(
+        &self,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+        source: WorkflowRegistrySourceInput,
+        node_path: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        authorize: &(dyn Fn() -> Result<(), crate::DaemonError> + Send + Sync),
+    ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        authorize()?;
         validate_registry_name(name, "workflow registry entry name")?;
         let root = self.write_root(scope.clone())?;
         let entry_dir = root.join(name);
@@ -48,7 +61,12 @@ impl WorkflowRegistry {
             fs::remove_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
         }
         fs::create_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
-        let result = self.write_entry_to_dir(name, scope, &temp_dir, source, node_path, limits);
+        let result = self
+            .write_entry_to_dir(name, scope, &temp_dir, source, node_path, limits)
+            .and_then(|metadata| {
+                authorize()?;
+                Ok(metadata)
+            });
         match result {
             Ok(metadata) => {
                 if let Some(parent) = entry_dir.parent() {
