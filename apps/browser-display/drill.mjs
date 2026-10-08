@@ -426,7 +426,9 @@ try {
  receipt.fixture_statistics=fixtureStats;
  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
  await page.evaluate(()=>mdStream.input({kind:'click',x:80,y:mdStream.presenter.canvas.height/mdStream.binding.device_scale_factor-25}));await pause(200);
- const navigated=await until(()=>page.evaluate(()=>mdStream.next()),'asynchronous independent navigation frame');
+ // MP-08/MP-10: pushed frames of the old document (painted between the
+ // native click and the commit) precede it; judge the first new-document frame.
+ const navigated=await until(async()=>{const frame=await page.evaluate(()=>mdStream.next());return frame&&frame.document_id!==oldDocument?frame:null},'asynchronous independent navigation frame');
  assertIndependentNavigation(navigated,oldDocument,await page.evaluate(()=>mdStream.binding.codec));
  const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
  if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');
