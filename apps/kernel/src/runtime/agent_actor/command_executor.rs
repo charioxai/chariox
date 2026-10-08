@@ -18,7 +18,7 @@ pub(super) struct AgentRuntimeCommandExecutor {
     prompt_commands: AgentPromptCommandService,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-    prompt_id_allocator: PromptIdAllocator,
+    _prompt_id_allocator: PromptIdAllocator,
 }
 
 impl AgentRuntimeCommandExecutor {
@@ -32,7 +32,7 @@ impl AgentRuntimeCommandExecutor {
             prompt_commands,
             session_projection,
             agent_runtime_projection,
-            prompt_id_allocator,
+            _prompt_id_allocator: prompt_id_allocator,
         }
     }
 

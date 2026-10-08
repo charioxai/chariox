@@ -216,6 +216,7 @@ pub(crate) enum Operation {
         source: String,
         occurrence: String,
         success: bool,
+        #[allow(dead_code)] // Retained source-occurrence clock in the A02 operation contract.
         now: u64,
     },
     Sweep {

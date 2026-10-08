@@ -165,8 +165,10 @@ pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,
     MetaagentProviderTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     WorkflowNodeTurn,
     UtilityTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
     McpSkillContinuationTurn,
 }
 
@@ -839,10 +841,6 @@ impl PromptAssemblyService {
 
     pub(crate) fn new(registry: PromptTemplateRegistry) -> Self {
         Self { registry }
-    }
-
-    pub(crate) fn registry(&self) -> &PromptTemplateRegistry {
-        &self.registry
     }
 
     pub(crate) fn assemble_provider_turn(

@@ -93,9 +93,6 @@ impl ActiveStartAdmission {
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }
-    pub(crate) fn installation(&self) -> &str {
-        &self.installation
-    }
     pub(crate) fn attempt(&self) -> &str {
         &self.attempt
     }

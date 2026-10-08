@@ -188,6 +188,7 @@ impl CommandRouter {
         })
     }
 
+    #[allow(dead_code)] // Retain the scoped relay import admission path from the merged dependency.
     pub(crate) async fn relay_begin_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
@@ -232,6 +233,7 @@ impl CommandRouter {
         relay_status_response(status)
     }
 
+    #[allow(dead_code)] // Retain the scoped relay import admission path from the merged dependency.
     pub(crate) async fn relay_upload_managed_context_chunk(
         &self,
         request: RelayManagedContextChunkRequest,
@@ -278,6 +280,7 @@ impl CommandRouter {
         relay_status_response(status)
     }
 
+    #[allow(dead_code)] // Retain the scoped relay import admission path from the merged dependency.
     pub(crate) async fn relay_get_managed_context_import_status(
         &self,
         identity: RelayCallerIdentity,
@@ -322,6 +325,7 @@ impl CommandRouter {
         relay_status_response(status)
     }
 
+    #[allow(dead_code)] // Retain the scoped relay import admission path from the merged dependency.
     pub(crate) async fn relay_finalize_managed_context_import(
         &self,
         identity: RelayCallerIdentity,

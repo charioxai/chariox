@@ -247,6 +247,7 @@ struct MetaagentGuideFrontmatter {
     commands: Vec<String>,
 }
 
+#[allow(dead_code)] // Retain the existing guide-list entry point for catalog consumers.
 pub(crate) fn list_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::Value> {
     search_guides(args).into_iter().collect()
 }

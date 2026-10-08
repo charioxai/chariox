@@ -134,10 +134,6 @@ impl CharioxEncryptedCredentialVaultStore {
             kdf_profile,
         }
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
