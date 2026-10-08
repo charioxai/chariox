@@ -774,26 +774,8 @@ impl KernelRuntimeState {
                 provider_run_id.clone()
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
-                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
-                    {
-                        self.update_relay_leased_prompt_admission_receipt(
-                            &leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
-                        )
-                        .await?;
-                    }
-                    return Err(DaemonError::LocalTransport {
-                        operation: "launch remote provider without credential",
-                        message: format!(
-                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
-                        ),
-                    });
-                }
+                // One launch policy admits receiving official logins and retains the
+                // typed setup-token fallback for accounts without a renewable login.
                 match self
                     .launch_provider_for_remote_lease_detached(
                         request.clone(),
