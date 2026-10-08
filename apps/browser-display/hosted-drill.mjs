@@ -39,7 +39,9 @@ try{
  stage='waiting room';await page.goto(origin+'/waiting-room');await page.getByText('Waiting Room Ready',{exact:true}).waitFor({timeout:60000});await page.waitForTimeout(20000);
  const dashboard=await page.evaluate(()=>fetch('/dashboard').then(r=>r.json()));
  const t=dashboard.relayTargets.find(t=>t.machineId===process.env.MD_MACHINE_ID&&t.daemonId===process.env.MD_KERNEL_ID);if(!t||t.status!=='ONLINE')throw Error('MP-10: fresh target missing');r.enrollment={machine_id:t.machineId,kernel_id:t.daemonId,status:t.status,heartbeat:t.lastHeartbeatAt};
- await page.waitForTimeout(2000);await page.getByRole('button',{name:'Open Browser panel',exact:true}).click();
+ await page.waitForTimeout(2000);
+ const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}
+ await page.getByRole('button',{name:'Open Browser panel',exact:true}).click();
  r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
  for(const [site,url]of sites){
   stage=site;const row={site,url,status:'RED',screenshots:[],clicks:[],typing:[]};r.sites.push(row);await sample();
