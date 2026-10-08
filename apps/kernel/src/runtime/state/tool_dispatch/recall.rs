@@ -175,9 +175,18 @@ fn scoped_session_id(
     requested_session_id: Option<String>,
 ) -> Result<Option<String>, DaemonError> {
     match scope.unwrap_or("current_session") {
-        "current_session" => Ok(Some(
-            requested_session_id.unwrap_or_else(|| provider_run.session_id().to_string()),
-        )),
+        "current_session" => {
+            if requested_session_id
+                .as_deref()
+                .is_some_and(|requested| requested != provider_run.session_id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_recall_scope",
+                    message: "current-session recall requires the caller room; use an explicit broader scope for broader recall".into(),
+                });
+            }
+            Ok(Some(provider_run.session_id().to_string()))
+        }
         "all" => Ok(requested_session_id),
         other => Err(DaemonError::LocalTransport {
             operation: "runtime_tool_recall_scope",
