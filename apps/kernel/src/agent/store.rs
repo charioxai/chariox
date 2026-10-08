@@ -6,7 +6,6 @@ use super::{calculate_agent_layout, AgentInstance, AgentState};
 pub struct AgentStore {
     agents: HashMap<String, AgentInstance>,
     agent_ids_by_session: HashMap<String, Vec<String>>,
-    next_id: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -21,19 +20,13 @@ impl AgentStore {
     }
 
     pub fn next_agent_id(&mut self) -> String {
-        self.next_id += 1;
-        format!("agent-{}", self.next_id)
+        // A live-agent snapshot omits deleted identities. Random IDs do not depend
+        // on that snapshot and cannot transfer a retired agent's authority on restart.
+        format!("agent-{:032x}", rand::random::<u128>())
     }
 
     pub(crate) fn next_agent_ids(&mut self, count: usize) -> Vec<String> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let start = self.next_id + 1;
-        self.next_id += count as u64;
-        (start..=self.next_id)
-            .map(|id| format!("agent-{id}"))
-            .collect()
+        (0..count).map(|_| self.next_agent_id()).collect()
     }
 
     pub fn insert(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -120,13 +113,6 @@ impl AgentStore {
     }
 
     pub fn insert_restored(&mut self, agent: AgentInstance) -> AgentInstance {
-        if let Some(number) = agent
-            .id()
-            .strip_prefix("agent-")
-            .and_then(|value| value.parse::<u64>().ok())
-        {
-            self.next_id = self.next_id.max(number);
-        }
         self.insert(agent)
     }
 
