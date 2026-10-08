@@ -1,8 +1,91 @@
-# MP-08 / MP-10 / MP-11 — A09 real local drills (rounds 4–5)
+# MP-08 / MP-10 / MP-11 — A09 real live drills (rounds 4–7)
 
-MP-08 / MP-10 / MP-11: the requested local real Codex/TUI recall, privacy and
-search-quality cells PASS. Broader hosted, worker, managed Path-1 and
-browser/display acceptance is not established. No mock is counted as acceptance.
+MP-08 / MP-10 / MP-11: real OpenCode, Codex, Claude `-p` and Claude
+headless recall cells PASS. Hosted web at DPR 1/2 and remote TUI recall also
+PASS over shaped WSS. Hosted multi-hour stability is **RED**; the leased-worker
+hosted cell fails before spawn at metadata discovery. Overall A09 acceptance
+remains on hold. Earlier rounds below retain their original source identities.
+
+## MP-08 / MP-10 / MP-11: round 7 source and checks
+
+Assigned base: `1e7468fd44686f4fe5de71c95897dc684cffed2c`.
+Corrected kernel and relay were built from
+`86d5cec19689d5adbf0f5b8eeb3168b679a16fb3`; documentation/runtime results do
+not relabel those artifacts as later heads. `2c197bea1` has the identical Git
+tree. Daemon 453 and relay 73 wire shapes are unchanged. The existing #917
+prerequisite was merged to use product-supported Claude setup-token enrollment.
+No shared provider login was changed, logged out, revoked or read directly.
+
+Source checks PASS: public history 43, Room protection 47, operational history 20,
+OpenCode 111, account credentials 7, context resolver 1 and Claude setup-token 13
+(242 total). `cargo fmt --check`, clippy and exact native kernel/relay builds
+exit 0. Cargo ran through coordinator slots with disk-backed TMPDIR; compiler
+JSON verified critical crate manifests belonged to this checkout and were freshly
+compiled. A separate foreign-cache compile failure is not a behavioral RED.
+
+The real TUI client uses the frozen Solid 1.9.11 and OpenTUI 0.1.87 patch. A
+scratch install with two Solid runtimes produced an invalid startup result;
+a speculative CLI workaround was reverted. The corrected client has no net
+source change. `round7/unified-client-provenance.json` distinguishes the earlier
+unpatched client from the final patched build. The final remote TUI and local
+leased-provider repetitions used the patched client.
+
+## MP-08 / MP-10 / MP-11: round 7 real cells
+
+| Real user flow | Result and limit |
+| --- | --- |
+| OpenCode peer recalls a repository review with search/read/turn | Base RED: official OpenCode 1.18.23 hangs in its Linux native watcher; four server routes time out. Same base/account with only the official watcher flag completes in 20.085 s. Production fix, without parent flag injection, PASS 16.265 s prompt-to-final-output (32.173 s complete spawn/recall phase). |
+| Claude `-p` root review and peer search/read/turn | PASS with the fleet account enrolled through the product setup-token flow, encrypted disposable Vault and hidden passphrase. Search snippets are bounded; read/turn contain the complete review. |
+| Claude headless root review and peer recall | PASS, including the real workspace-trust RuntimeInteraction answered through the TUI. No approval bypass. |
+| Codex Vault registration while a SQLite read snapshot is held | PASS: hidden disposable passphrase/value; matching public rows2→0, no TEST value remains in public source; later answers remain visible and peer recall reads them. |
+| Real local OpenCode home run and Codex leased worker share raw `provider-run-1` | Base RED: actual Codex worker tool records are stamped OpenCode through the colliding raw counter. Corrected home stamps Codex; genuine native Git commands are searchable and peer read returns the six-sentence OpenCode review with `truncated:false`. Local relay/provider evidence supplements the hosted placement requirement. |
+| Hosted web, real app entry, DPR 1 and DPR 2 | PASS fresh uniquely marked Codex recalls: 10.212 s / 11.301 s. Exact kernel selection is ONLINE with fresh heartbeat, selected through the waiting room. |
+| Hosted remote TUI, final frozen client dependencies | PASS fresh Codex peer search/read: 14.642 s, actual TUI exit 0. Earlier unpatched repetition 19.165 s is separately recorded. |
+| Hosted two-hour browser stability | RED after about 14 min: two control sockets close after the last good 13.01 min sample; no new shaper failure. Do not count as a multi-hour pass. |
+| Hosted leased-worker spawn | RED before execution: `decode relay metadata response: relay metadata response does not match request`. No worker-run acceptance established. |
+
+The hosted cells use own `pr912-am9`, Cloud
+`22411adb14c514882bb6412835fa3575de335316`, exact corrected OSS and its relay,
+trusted HTTPS/WSS, real Chromium and real provider accounts. The opaque shaper
+configured 8 Mbit/s / 30 ms each way, measured 7.77 Mbit/s calibration and real web
+relay RTT at least 66 ms. Remote TUI echo calibration RTT 61–63 ms is reported
+separately from the web's authenticated relay round-trip samples. No TLS payload
+or credentials were inspected. An initial navigation EPIPE is retained in the
+network evidence; soak failure counters were never reset to hide a closure.
+
+## MP-08 / MP-10 / MP-11: round 7 security and acceptance limits
+
+The reviewer P1 is reproduced through the actual admitted remote projection and
+fan-out with colliding home OpenCode / worker Codex run IDs. Before the fix, the
+worker's normalized private MCP record enters public history (test exit101).
+After the fix, its whole record/reference is unavailable and the genuine worker
+native command remains searchable. Production resolves provider family from the
+current admitted lease projection with exact session/agent/run binding, never
+from a colliding local counter. Index 4 fences/removes prior public projections
+without importing raw history. This actual-path regression is supplementary to
+real provider drills, not a claim of every live private-MCP placement passing.
+
+The own hosted relay log contains six token-expiry closure events; its JSON
+logger omits timestamps, so those events alone do not prove temporal correlation
+with the soak. Source inspection confirms that relay sockets close at token
+expiry and this Cloud baseline refreshes bootstrap before opening a new socket.
+The soak remains RED. The coordinator needs to supply compatible admission
+renewal integration (and allocate protocol changes if needed) and resolve the
+hosted metadata-discovery baseline. No expiry extension or admission bypass was
+used. Optional `Notes` / `KernelBrowser` requests from this Cloud are unsupported
+by the old 453 kernel and retained in diagnostics.
+
+Evidence: `round7/`, `round7-unified-green-opencode/`,
+`round7-ready-green-claude/{claude-p,claude-headless}/`,
+`round7-final-green-codex/`, `round7-hosted-final-codex/`,
+`round7-lease-green-home/` and `round7-lease-base-home/` under the evidence root.
+They contain exact build identities, commands/exit codes, per-step terminal and
+browser screenshots, masked UI captures, timings, resource samples and cleanup
+receipts. No whole MP item closes. Real public-site display coverage, click/fps
+thresholds, managed/slice placements and remaining A09 cells are not established
+by these history recall results. MP-11 changed security anchors are listed in
+the external lane handoff for the independent reviewer; non-security source is
+not an exact-blob review blocker. No CI or publication was run.
 
 ## MP-08 / MP-10 / MP-11: round 5 real RED → GREEN
 
@@ -129,7 +212,7 @@ Earlier unmasked TEST-word screenshots/ANSI were removed; replacements and the
 redaction inventory are recorded. No Vault/provider payload was read for the
 count-only diagnostics. All generated state remains outside source.
 
-## MP-08 / MP-10 / MP-11: remaining acceptance scope
+## MP-08 / MP-10 / MP-11: historical round 4–5 acceptance scope
 
 Round 3's local room-scoping and 13-page concurrent increasing-append pagination
 PASS remain historical results with their original identities. Rounds 4–5 do not
