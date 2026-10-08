@@ -33,6 +33,7 @@ impl Fixture {
                 Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some(room.into()),
                     agent_id: Some("peer".into()),
                     ..Default::default()
@@ -251,6 +252,7 @@ fn public_history_version_change_and_unknown_legacy_have_no_raw_fallback() {
             Some("unknown_legacy_text".into()),
             Default::default(),
             HistoryEventTurnContext {
+                public_history_owner_user_id: Some("owner".into()),
                 session_id: Some("room".into()),
                 agent_id: Some("peer".into()),
                 ..Default::default()
@@ -404,6 +406,7 @@ fn public_history_queued_append_is_drained_before_protection_invalidation() {
         Some("queued public finding".into()),
         Default::default(),
         HistoryEventTurnContext {
+            public_history_owner_user_id: Some("owner".into()),
             session_id: Some("room".into()),
             agent_id: Some("peer".into()),
             ..Default::default()
@@ -416,7 +419,6 @@ fn public_history_queued_append_is_drained_before_protection_invalidation() {
             event_json: serde_json::to_string(&event).unwrap(),
             metadata_text: super::super::searchable_metadata(&event),
             merge_key: None,
-            public_document: f.store.project_public_history(&event),
             event: event.clone(),
         }])
         .unwrap();
@@ -452,6 +454,7 @@ fn public_history_leased_bookkeeping_preserves_search_and_read() {
             Some(r#"{"id":"tool-id","output":"retained compiler tool"}"#.into()),
             Default::default(),
             HistoryEventTurnContext {
+                public_history_owner_user_id: Some("owner".into()),
                 session_id: Some("room".into()),
                 agent_id: Some("peer".into()),
                 provider_run_id: Some("run".into()),
@@ -546,6 +549,7 @@ fn public_history_late_lower_sequence_invalidates_pagination() {
         Some("compiler delayed fourth".into()),
         Default::default(),
         HistoryEventTurnContext {
+            public_history_owner_user_id: Some("owner".into()),
             session_id: Some("room".into()),
             agent_id: Some("peer".into()),
             ..Default::default()
@@ -659,6 +663,7 @@ fn public_history_turn_selection_is_scoped_and_distinguishes_missing_from_null_t
                 Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some(room.into()),
                     agent_id: Some(peer.into()),
                     turn_id: turn.map(str::to_owned),
@@ -722,6 +727,7 @@ fn public_history_recalls_fragmented_peer_answer_as_one_message() {
                     text.to_owned(),
                 ),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some(room.into()),
                     agent_id: Some(agent.into()),
                     provider_run_id: Some(run.into()),
@@ -817,6 +823,7 @@ fn public_history_previous_turn_groups_prompt_and_native_output() {
                 Some(text.to_owned()),
                 Default::default(),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some("room".into()),
                     agent_id: Some("peer".into()),
                     prompt_id: Some(prompt.into()),
@@ -885,6 +892,7 @@ fn public_history_assembled_answer_is_bounded_and_uses_only_retained_public_part
                     text,
                 ),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some("room".into()),
                     agent_id: Some("peer".into()),
                     provider_run_id: Some("run".into()),
@@ -949,6 +957,7 @@ fn public_history_search_matches_streamed_message_once() {
                     text.to_owned(),
                 ),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some("room".into()),
                     agent_id: Some("peer".into()),
                     provider_run_id: Some("run".into()),
@@ -1008,6 +1017,7 @@ fn public_history_stream_growth_invalidates_offset_cursor() {
                     text.to_owned(),
                 ),
                 HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
                     session_id: Some("room".into()),
                     agent_id: Some("peer".into()),
                     provider_run_id: Some("run".into()),
@@ -1054,4 +1064,122 @@ fn public_history_invalidation_survives_busy_wal_reader() {
         .is_none());
     drop(_guard);
     reader.execute_batch("COMMIT").unwrap();
+}
+
+#[test]
+fn public_history_batch_projects_and_updates_stream_once() {
+    // MP-08 / MP-10 / MP-11: one streamed key in a writer batch does one projection/FTS update.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let f = Fixture::new();
+    let first = f
+        .store
+        .append_transcript(
+            &SessionHistoryEntry::provider_output(
+                "room",
+                "run",
+                Some("peer"),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                Some("message".into()),
+                "prefix ".to_owned(),
+            ),
+            HistoryEventTurnContext {
+                public_history_owner_user_id: Some("owner".into()),
+                session_id: Some("room".into()),
+                agent_id: Some("peer".into()),
+                provider_run_id: Some("run".into()),
+                prompt_id: Some("prompt".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let project = f
+        .store
+        .public_history_projector
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    f.store.set_public_history_projector(Arc::new(move |event| {
+        counted.fetch_add(1, Ordering::Relaxed);
+        project(event)
+    }));
+    let before: u64 = {
+        let c = f.store.connection.lock().unwrap();
+        c.execute_batch(
+            "CREATE TABLE am9_update_count(n); INSERT INTO am9_update_count VALUES(0);
+            CREATE TRIGGER am9_count_update AFTER UPDATE OF text ON public_history BEGIN
+                UPDATE am9_update_count SET n=n+1; END;",
+        )
+        .unwrap();
+        public_revision(&c, "room").unwrap()
+    };
+    let events: Vec<_> = (0..64)
+        .map(|i| {
+            let mut event = first.clone();
+            event.event_id = format!("batch-{i}");
+            event.sequence = first.sequence + 1 + i;
+            event.content = Some("delta ".into());
+            event
+        })
+        .collect();
+    f.store.append_many(&events).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 1, "batch must project once");
+    let c = f.store.connection.lock().unwrap();
+    assert_eq!(
+        c.query_row("SELECT n FROM am9_update_count", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(public_revision(&c, "room").unwrap() - before, 1);
+    drop(c);
+    let guard = f.store.lock_public_history().unwrap();
+    let doc = f
+        .store
+        .read_public_history_locked("owner", "room", &events[63].event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.text, format!("prefix {}", "delta ".repeat(64)));
+    drop(guard);
+}
+
+#[test]
+fn public_history_nonmatching_stream_growth_still_restarts_cursor() {
+    // MP-08 / MP-10 / MP-11: document the conservative Room-wide revision fence.
+    let f = Fixture::new();
+    f.append("room", "compiler oldest");
+    let first = f
+        .store
+        .append_operational_event(
+            HistoryEventKind::ProviderOutput,
+            None,
+            Some("unrelated streamed review ".into()),
+            BTreeMap::from([("merge_key".into(), serde_json::json!("message"))]),
+            HistoryEventTurnContext {
+                public_history_owner_user_id: Some("owner".into()),
+                session_id: Some("room".into()),
+                agent_id: Some("peer".into()),
+                provider_run_id: Some("run".into()),
+                prompt_id: Some("prompt".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.append("room", "compiler newest");
+    let page = f.search("room", "compiler", 1, None).unwrap();
+    assert!(page.next_cursor.is_some());
+    let mut delta = first.clone();
+    delta.event_id = "unrelated-growth".into();
+    delta.sequence = f.store.reserve_sequence();
+    delta.content = Some("more public prose".into());
+    f.store.append(&delta).unwrap();
+    assert!(f
+        .search("room", "compiler", 1, page.next_cursor.as_deref())
+        .is_err());
+    assert_eq!(
+        f.search("room", "compiler", 50, None).unwrap().hits.len(),
+        2
+    );
 }

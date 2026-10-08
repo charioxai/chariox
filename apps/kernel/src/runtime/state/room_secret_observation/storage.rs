@@ -200,6 +200,7 @@ impl RoomSecretObservations {
             revision: registry.revision,
             recovered_artifacts: true,
             history_before_ms,
+            history_boundary_bytes: None,
         }))
     }
 }

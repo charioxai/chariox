@@ -41,6 +41,9 @@ Nested private tool fields are removed. Protection failure fences reads; legacy
 raw/semantic recall tools are unavailable to agents while the transition flag is
 on, preventing a raw-history bypass. Legacy sessions with the flag off retain
 their existing tools; this does not retire `/meta` or implement PR11 migration.
+The legacy Meta turn-overview and turn-blob argument objects now reject unknown
+fields, matching their published schemas. Remove unsupported extra keys rather
+than relying on the former silent ignore behavior.
 
 MP-08 / MP-10 / MP-11: only newly admitted sanitized records are indexed. Raw
 legacy imports have unknown provenance and are explicitly excluded. Rebuilds
@@ -49,7 +52,10 @@ A redaction-version change excludes incompatible projections; it never imports
 raw history. Retention/source replacement invalidates rows and cursors. Leased commit-order
 and deduplication bookkeeping preserves public documents. Late lower-sequence
 appends invalidate this room's cursors: restart the initial query on a stale-cursor
-error. Later increasing-sequence appends preserve the bounded snapshot. Changes
+error. Later increasing-sequence appends of new messages preserve the bounded snapshot.
+Any indexed growth of an existing streamed message changes the Room revision,
+even if it adds no match for this query. Pagination and query revalidation can
+therefore require a restart while an agent in the Room is streaming. Changes
 to registered secret values remove matching prior public messages and invalidate
 pagination while preserving unrelated messages. Unknown or revoked browser
 provenance conservatively invalidates the Room (all worker-local rows for a
@@ -89,18 +95,24 @@ serialized history cannot supply it. Query services release projection locks to
 revalidate canonical authority, then fence the room/index revision before releasing
 a result. Invalidated snapshots fail visibly and require a fresh query.
 
-MP-08 / MP-11: appends enqueue sanitized records while holding the projection
-fence, then wait for the existing batched writer outside that fence. Protection
+MP-08 / MP-11: appends enqueue trusted-provenance records while holding the projection
+fence, then producers wait for the writer outside that fence. The writer sanitizes
+before creating public source/FTS rows. Protection
 invalidation drains the queue before changing provenance, so delayed writes cannot
 restore a stale sanitized projection. Stored Vault values remove matching public
 messages only; unrelated earlier reviews remain available. Message growth changes
-the index revision, so pagination restarts when a streamed message gains matches.
+the index revision once per stream key in a writer batch, so any growth can
+restart pagination and post-query revalidation. Clients must retry after streaming
+settles if concurrent growth repeatedly invalidates a result.
 
 MP-08 / MP-11: projection version3 indexes whole messages and admits only
 provider-native tools. Upgrading from an earlier version fences and removes
 predecessor public projections before reads or rebuilds; it never reimports raw
-records that may contain private MCP output. Joined message text is projected
-again, so a protected value split across deltas is scrubbed before FTS insertion. This
+records that may contain private MCP output. A batch coalesces matching stream keys into one projection and FTS mutation.
+Across batches, only the retained suffix bounded by the longest secret variant
+minus one byte is re-projected with the new text; split secret variants remain
+scrubbed before FTS insertion. Vault registration pre-filters serialized variants
+and reads at most 128 candidate rows at a time under the projection fence. This
 internal projection change does not alter daemon453 or relay73 wire shapes.
 
 MP-08 / MP-10 / MP-11: [live validation](PUBLIC_HISTORY_SEARCH_LIVE_VALIDATION.md)

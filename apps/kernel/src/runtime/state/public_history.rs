@@ -44,6 +44,16 @@ impl room_secret_observation::RoomSecretObservations {
         }
         let room = event.session_id.as_deref()?;
         self.require(room, false).ok()?;
+        // A coalesced batch must not admit a later reference colliding with a
+        // registered value. Check only these small identity strings, not N texts.
+        if let Some(references) = event
+            .metadata
+            .get(crate::history::public_history::PUBLIC_HISTORY_BATCH_REFS)
+        {
+            if self.scrub(room, references.clone()).ok().as_ref() != Some(references) {
+                return None;
+            }
+        }
         let mut protected = self.protect_history_events(vec![event.clone()]);
         let protected = protected.pop()?;
         let text = protected.content?;
@@ -93,7 +103,7 @@ fn native_tool(provider: Option<&str>, value: &serde_json::Value) -> bool {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let title = value.get("title").and_then(|v| v.as_str());
-    match provider {
+    match provider.and_then(crate::provider::canonical_provider_family) {
         // Codex MCP records carry their server in `title`; native file changes
         // carry only a generated change count.
         Some("codex") => match tool {
@@ -547,6 +557,10 @@ impl KernelRuntimeState {
 }
 
 #[cfg(test)]
+#[path = "public_history_projection_tests.rs"]
+mod projection_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::history::{HistoryEventRole, HistoryEventTurnContext, OperationalHistoryStore};
@@ -681,12 +695,18 @@ mod tests {
         );
         append(
             "claude",
-            serde_json::json!({"id":"9","tool":"Bash","status":"completed","input":{"command":"ls"},"output":"claude_native_marker"}),
+            serde_json::json!({"id":"9","tool":"Bash","status":"completed","input":{"command":"ls"},"output":"claudebuiltin_native_marker"}),
         );
         append(
             "opencode",
             serde_json::json!({"id":"10","tool":"read","status":"completed","output":"opencode_native_marker"}),
         );
+        for provider in ["claude-headless", "claude-p"] {
+            append(
+                provider,
+                serde_json::json!({"id":provider,"tool":"Bash","status":"completed","input":{"command":"ls"},"output":format!("{provider}_native_marker")}),
+            );
+        }
         let _guard = store.lock_public_history().unwrap();
         let hits = |query| {
             store
@@ -716,7 +736,9 @@ mod tests {
         for query in [
             "codex_native_marker",
             "codex_patch_marker",
-            "claude_native_marker",
+            "claudebuiltin_native_marker",
+            "claude-headless_native_marker",
+            "claude-p_native_marker",
             "opencode_native_marker",
         ] {
             assert_eq!(hits(query), 1, "{query}");

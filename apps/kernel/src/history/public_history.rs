@@ -13,12 +13,25 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 // identity; version 2 indexed streamed deltas and allowed unknown tools. The
 // existing version fence removes those projections on upgrade.
 pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 3;
+// Internal projection input only; never serialized into operational events.
+pub(crate) const PUBLIC_HISTORY_BATCH_REFS: &str = "_public_history_batch_refs";
 pub(crate) type PublicHistoryProjector =
     dyn Fn(&HistoryEvent) -> Option<PublicHistoryDocument> + Send + Sync;
 
 #[derive(Default)]
-pub(super) struct ProjectorSlot(pub Mutex<Option<Arc<PublicHistoryProjector>>>);
+pub(super) struct ProjectorSlot(
+    pub Mutex<Option<Arc<PublicHistoryProjector>>>,
+    Mutex<Option<Arc<PublicHistoryBoundary>>>,
+);
+type PublicHistoryBoundary = dyn Fn(&HistoryEvent) -> usize + Send + Sync;
 impl ProjectorSlot {
+    fn boundary_bytes(&self, event: &HistoryEvent) -> usize {
+        self.1
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .map_or(usize::MAX, |boundary| boundary(event))
+    }
     pub(super) fn project(&self, event: &HistoryEvent) -> Option<PublicHistoryDocument> {
         let projector = self.0.lock().ok()?.clone()?;
         projector(event)
@@ -99,17 +112,18 @@ impl OperationalHistoryStore {
             .expect("public history projector lock") = Some(projector);
     }
 
+    pub(crate) fn set_public_history_boundary(&self, boundary: Arc<PublicHistoryBoundary>) {
+        *self
+            .public_history_projector
+            .1
+            .lock()
+            .expect("public history boundary lock") = Some(boundary);
+    }
+
     pub(crate) fn lock_public_history(&self) -> Result<MutexGuard<'_, ()>, DaemonError> {
         self.public_history_lock
             .lock()
             .map_err(|_| invalid_search())
-    }
-
-    pub(super) fn project_public_history(
-        &self,
-        event: &HistoryEvent,
-    ) -> Option<PublicHistoryDocument> {
-        self.public_history_projector.project(event)
     }
 
     // MP-08 / MP-10 / MP-11: caller holds the projection fence and has drained
@@ -117,50 +131,89 @@ impl OperationalHistoryStore {
     pub(crate) fn retain_public_history_locked(
         &self,
         room: Option<&str>,
+        candidates: Option<&[zeroize::Zeroizing<String>]>,
         retain: &dyn Fn(&PublicHistoryDocument) -> bool,
     ) -> Result<(), DaemonError> {
-        let rows = {
-            let connection = self.lock_read_connection(room)?;
-            let mut statement = connection.prepare(
-                "SELECT sequence,document_json FROM public_history WHERE (?1 IS NULL OR session_id=?1)",
-            ).map_err(public_error)?;
-            let rows = statement
-                .query_map([room], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        // Search serialized variants (including escaped field names/values)
+        // before deserialization. Unknown registry state scans conservatively.
+        let mut query = String::from("SELECT sequence,document_json FROM public_history WHERE (?1 IS NULL OR session_id=?1) AND sequence>?2");
+        if let Some(candidates) = candidates {
+            query.push_str(" AND (");
+            for index in 0..candidates.len() {
+                if index > 0 {
+                    query.push_str(" OR ");
+                }
+                query.push_str(&format!("instr(document_json,?{})>0", index + 3));
+            }
+            if candidates.is_empty() {
+                query.push('0');
+            }
+            query.push(')');
+        }
+        query.push_str(" ORDER BY sequence LIMIT 128");
+        let mut through = -1_i64;
+        let mut changed = false;
+        loop {
+            let rows = {
+                let connection = self.lock_read_connection(room)?;
+                let mut values: Vec<rusqlite::types::Value> = vec![
+                    room.map_or(rusqlite::types::Value::Null, |room| room.to_owned().into()),
+                    through.into(),
+                ];
+                if let Some(candidates) = candidates {
+                    values.extend(
+                        candidates
+                            .iter()
+                            .map(|value| rusqlite::types::Value::Text(value.to_string())),
+                    );
+                }
+                let mut statement = connection.prepare(&query).map_err(public_error)?;
+                let rows = statement
+                    .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(public_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(public_error)?;
+                rows
+            };
+            let Some((last, _)) = rows.last() else {
+                break;
+            };
+            through = *last;
+            let removed: Vec<_> = rows
+                .into_iter()
+                .filter_map(|(sequence, json)| {
+                    serde_json::from_str(&json)
+                        .ok()
+                        .filter(retain)
+                        .is_none()
+                        .then_some(sequence)
                 })
-                .map_err(public_error)?
-                .collect::<Result<Vec<_>, _>>()
+                .collect();
+            if removed.is_empty() {
+                continue;
+            }
+            changed = true;
+            let mut connection = self.connection.lock().map_err(|_| invalid_search())?;
+            let tx = connection.transaction().map_err(public_error)?;
+            for sequence in removed {
+                tx.execute(
+                    "INSERT INTO public_history_revision(session_id,revision)
+                    SELECT session_id,1 FROM public_history WHERE sequence=?1
+                    ON CONFLICT(session_id) DO UPDATE SET revision=revision+1",
+                    [sequence],
+                )
                 .map_err(public_error)?;
-            rows
-        };
-        let removed: Vec<_> = rows
-            .into_iter()
-            .filter_map(|(sequence, json)| {
-                serde_json::from_str(&json)
-                    .ok()
-                    .filter(retain)
-                    .is_none()
-                    .then_some(sequence)
-            })
-            .collect();
-        if removed.is_empty() {
-            return Ok(());
+                tx.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])
+                    .map_err(public_error)?;
+            }
+            tx.commit().map_err(public_error)?;
         }
-        let mut connection = self.connection.lock().map_err(|_| invalid_search())?;
-        let tx = connection.transaction().map_err(public_error)?;
-        for sequence in removed {
-            tx.execute(
-                "INSERT INTO public_history_revision(session_id,revision)
-                SELECT session_id,1 FROM public_history WHERE sequence=?1
-                ON CONFLICT(session_id) DO UPDATE SET revision=revision+1",
-                [sequence],
-            )
-            .map_err(public_error)?;
-            tx.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])
-                .map_err(public_error)?;
+        if changed {
+            let connection = self.connection.lock().map_err(|_| invalid_search())?;
+            checkpoint_public_history(&connection, room);
         }
-        tx.commit().map_err(public_error)?;
-        checkpoint_public_history(&connection, room);
         Ok(())
     }
 
@@ -530,31 +583,122 @@ fn coverage(
     })
 }
 
-// MP-08 / MP-10 / MP-11: FTS indexes whole streamed messages. Deltas of one
-// owner/room/agent/run/prompt/merge key append to the row of the first retained
-// delta. Each delta was sanitized alone; the joined text is projected again so
-// a protected value split across deltas is scrubbed before FTS insertion.
+// MP-08 / MP-10 / MP-11: coalesce only events with identical admission
+// metadata and stream identity. Raw events stay separate in operational history;
+// public membership and the first retained reference remain stable.
+fn same_public_stream(a: &HistoryEvent, b: &HistoryEvent) -> bool {
+    a.kind == HistoryEventKind::ProviderOutput
+        && b.kind == a.kind
+        && a.public_history_owner_user_id == b.public_history_owner_user_id
+        && a.session_id.is_some()
+        && a.session_id == b.session_id
+        && a.agent_id.is_some()
+        && a.agent_id == b.agent_id
+        && a.provider_run_id.is_some()
+        && a.provider_run_id == b.provider_run_id
+        && a.prompt_id.as_ref().or(a.turn_id.as_ref()).is_some()
+        && a.prompt_id == b.prompt_id
+        && a.turn_id == b.turn_id
+        && history_event_merge_key(a).is_some()
+        && a.metadata == b.metadata
+        && a.provider == b.provider
+        && a.model == b.model
+        && a.content.is_some()
+        && b.content.is_some()
+        && a.content_ref == b.content_ref
+        && a.role == b.role
+        && a.workflow_id == b.workflow_id
+        && a.workflow_run_id == b.workflow_run_id
+        && a.workflow_node_id == b.workflow_node_id
+}
+
+pub(super) fn write_public_batch(
+    connection: &Connection,
+    events: &[&HistoryEvent],
+    projector: &ProjectorSlot,
+) -> Result<(), rusqlite::Error> {
+    let mut groups: Vec<(HistoryEvent, Vec<&HistoryEvent>)> = Vec::new();
+    let mut streams = BTreeMap::<_, Vec<usize>>::new();
+    for event in events {
+        let key = (event.kind == HistoryEventKind::ProviderOutput)
+            .then(|| {
+                Some((
+                    event.public_history_owner_user_id.as_deref()?,
+                    event.session_id.as_deref()?,
+                    event.agent_id.as_deref()?,
+                    event.provider_run_id.as_deref()?,
+                    event.prompt_id.as_deref().or(event.turn_id.as_deref())?,
+                    history_event_merge_key(event)?,
+                ))
+            })
+            .flatten();
+        let existing = key.and_then(|key| streams.get(&key)).and_then(|indices| {
+            indices
+                .iter()
+                .copied()
+                .find(|&index| same_public_stream(&groups[index].0, event))
+        });
+        if let Some(index) = existing {
+            let (joined, members) = &mut groups[index];
+            joined
+                .content
+                .as_mut()
+                .expect("stream content")
+                .push_str(event.content.as_deref().unwrap_or_default());
+            joined.timestamp_ms = joined.timestamp_ms.min(event.timestamp_ms);
+            members.push(event);
+        } else {
+            if let Some(key) = key {
+                streams.entry(key).or_default().push(groups.len());
+            }
+            groups.push(((*event).clone(), vec![event]));
+        }
+    }
+    for (mut event, members) in groups {
+        if members.len() > 1 {
+            event.metadata.insert(
+                PUBLIC_HISTORY_BATCH_REFS.into(),
+                serde_json::json!(members
+                    .iter()
+                    .map(|member| &member.event_id)
+                    .collect::<Vec<_>>()),
+            );
+        }
+        write_public_document(connection, &event, projector)?;
+        for member in members.iter().skip(1) {
+            connection.execute(
+                "INSERT OR REPLACE INTO public_history_member(event_ref,sequence)
+                 SELECT ?1,sequence FROM public_history_member WHERE event_ref=?2",
+                params![member.event_id, event.event_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn write_public_document(
     connection: &Connection,
     event: &HistoryEvent,
-    document: Option<&PublicHistoryDocument>,
-    project: &dyn Fn(&HistoryEvent) -> Option<PublicHistoryDocument>,
+    projector: &ProjectorSlot,
 ) -> Result<(), rusqlite::Error> {
+    // Empty output carries no public text and must not erase a retained message.
+    if event.kind == HistoryEventKind::ProviderOutput
+        && event.content.as_deref().is_none_or(str::is_empty)
+    {
+        return Ok(());
+    }
     connection.execute(
         "DELETE FROM public_history WHERE event_ref=?1
          OR sequence IN (SELECT sequence FROM public_history_member WHERE event_ref=?1)",
         [&event.event_id],
     )?;
-    let Some(doc) = document else {
-        return Ok(());
-    };
-    let message = match (
-        doc.kind,
-        history_event_merge_key(event),
-        event.provider_run_id.as_deref(),
-        event.prompt_id.as_deref().or(doc.turn_id.as_deref()),
+    let existing = match (
+        event.kind, event.public_history_owner_user_id.as_deref(),
+        event.session_id.as_deref(), event.agent_id.as_deref(),
+        history_event_merge_key(event), event.provider_run_id.as_deref(),
+        event.prompt_id.as_deref().or(event.turn_id.as_deref()),
     ) {
-        (HistoryEventKind::ProviderOutput, Some(key), Some(run), Some(turn)) => connection
+        (HistoryEventKind::ProviderOutput, Some(owner), Some(room), Some(agent), Some(key), Some(run), Some(turn)) => connection
             .query_row(
                 "SELECT p.sequence,p.document_json FROM public_history p
                  JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
@@ -562,39 +706,65 @@ pub(super) fn write_public_document(
                    AND h.session_id=?2 AND h.agent_id=?3
                    AND h.provider_run_id=?4 AND h.merge_key=?5
                    AND COALESCE(h.prompt_id,json_extract(p.document_json,'$.turn_id'))=?6",
-                params![doc.owner_user_id, doc.session_id, doc.agent_id, run, key, turn],
+                params![owner, room, agent, run, key, turn],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-            )
-            .optional()?,
+            ).optional()?,
         _ => None,
     };
     let encode = |doc: &PublicHistoryDocument| {
         serde_json::to_string(doc).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     };
-    let sequence = if let Some((sequence, json)) = message {
+    let sequence = if let Some((sequence, json)) = existing {
         let mut message: PublicHistoryDocument = serde_json::from_str(&json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?;
-        if message.text.chars().count() < 64 * 1024 {
-            let mut joined = event.clone();
-            joined.content = Some(format!("{}{}", message.text, doc.text));
-            let Some(projected) = project(&joined) else {
-                connection.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])?;
-                return Ok(());
-            };
-            message.truncated |= projected.truncated || projected.text.chars().count() > 64 * 1024;
-            message.text = projected.text.chars().take(64 * 1024).collect();
-        } else if !doc.text.is_empty() {
-            message.truncated = true;
+        // Only a suffix can form a new secret with these deltas. The prefix
+        // already passed this registry epoch; mutations drain/fence the writer.
+        let bytes = projector.boundary_bytes(event);
+        let mut boundary = message.text.len().saturating_sub(bytes);
+        while !message.text.is_char_boundary(boundary) {
+            boundary = boundary.saturating_sub(1);
         }
-        message.truncated |= doc.truncated;
+        let mut joined = event.clone();
+        joined.content = Some(format!(
+            "{}{}",
+            &message.text[boundary..],
+            event.content.as_deref().unwrap_or_default()
+        ));
+        let Some(projected) = projector.project(&joined) else {
+            connection.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])?;
+            return Ok(());
+        };
+        // Scope fields are immutable authority, even under custom projectors.
+        if projected.owner_user_id != message.owner_user_id
+            || projected.session_id != message.session_id
+            || projected.agent_id != message.agent_id
+            || projected.kind != message.kind
+        {
+            return Ok(());
+        }
+        message.text.truncate(boundary);
+        message.text.push_str(&projected.text);
+        let end = message
+            .text
+            .char_indices()
+            .nth(64 * 1024)
+            .map(|(index, _)| index);
+        message.truncated |= projected.truncated || end.is_some();
+        if let Some(end) = end {
+            message.text.truncate(end);
+        }
         connection.execute(
             "UPDATE public_history SET text=?2,document_json=?3 WHERE sequence=?1",
             params![sequence, message.text, encode(&message)?],
         )?;
         sequence
     } else {
-        connection.execute("INSERT INTO public_history(sequence,event_ref,owner_user_id,session_id,agent_id,kind,text,document_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![doc.sequence as i64,doc.event_ref,doc.owner_user_id,doc.session_id,doc.agent_id,history_event_kind_key(doc.kind),doc.text,encode(doc)?])?;
+        let Some(doc) = projector.project(event) else {
+            return Ok(());
+        };
+        connection.execute("INSERT INTO public_history(sequence,event_ref,owner_user_id,session_id,agent_id,kind,text,document_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![doc.sequence as i64,doc.event_ref,doc.owner_user_id,doc.session_id,doc.agent_id,history_event_kind_key(doc.kind),doc.text,encode(&doc)?])?;
         doc.sequence as i64
     };
     connection.execute(

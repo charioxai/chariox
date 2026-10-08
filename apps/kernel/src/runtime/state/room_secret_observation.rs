@@ -34,6 +34,8 @@ pub(super) struct RoomSecretObservations {
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
     revocation_delivery: Arc<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) epoch: u64,
+    #[cfg(test)]
+    pub(super) history_retention_checks: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -48,6 +50,7 @@ struct Protection {
     revision: u64,
     recovered_artifacts: bool,
     history_before_ms: u64,
+    history_boundary_bytes: Option<usize>,
 }
 
 impl Protection {
@@ -61,6 +64,12 @@ impl RoomSecretObservations {
         mut self,
         store: crate::history::OperationalHistoryStore,
     ) -> Self {
+        let protection = self.clone();
+        store.set_public_history_boundary(Arc::new(move |event| {
+            event.session_id.as_deref().map_or(usize::MAX, |room| {
+                protection.public_history_boundary_bytes(room)
+            })
+        }));
         self.public_history = Some(store);
         self
     }
@@ -96,6 +105,8 @@ impl RoomSecretObservations {
             vault_lifecycle: Default::default(),
             revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
+            #[cfg(test)]
+            history_retention_checks: Default::default(),
         };
         store.migration_failed = store.migrate_legacy_rooms(recovered).is_err()
             || store.migrate_flat_revocations().is_err();
@@ -161,6 +172,35 @@ impl RoomSecretObservations {
             history_before_ms: if unknown { self.epoch } else { 0 },
             ..Default::default()
         })
+    }
+
+    // MP-08 / MP-10 / MP-11: cache only a length, never another secret copy.
+    // Registration resets it; restored/reset registries start uncached.
+    fn public_history_boundary_bytes(&self, room: &str) -> usize {
+        let room = self.room_key(room);
+        if self.blocked(room, false).is_err() {
+            return usize::MAX;
+        }
+        let Ok(mut rooms) = self.rooms.lock() else {
+            return usize::MAX;
+        };
+        let Some(protection) = rooms.get_mut(room) else {
+            return usize::MAX;
+        };
+        if let Some(bytes) = protection.history_boundary_bytes {
+            return bytes;
+        }
+        let bytes = protection
+            .values
+            .iter()
+            .chain(&protection.retired_values)
+            .chain(&protection.stored_values)
+            .flat_map(|value| secret_variants(value))
+            .map(|variant| variant.len().saturating_sub(1))
+            .max()
+            .unwrap_or(0);
+        protection.history_boundary_bytes = Some(bytes);
+        bytes
     }
 
     pub(super) fn register_credential_source(
@@ -233,13 +273,26 @@ impl RoomSecretObservations {
         }
         let registered = self.register_value(room, value, live);
         if let Some(store) = &self.public_history {
+            // JSON source uses escaped forms; use the same variants as scrub_value.
+            let candidates: Vec<_> = secret_variants(value)
+                .iter()
+                .map(|variant| {
+                    let encoded =
+                        serde_json::to_string(variant.as_str()).expect("encode secret variant");
+                    Zeroizing::new(encoded[1..encoded.len() - 1].to_owned())
+                })
+                .collect();
             store.retain_public_history_locked(
                 if self.worker_room.is_some() {
                     None
                 } else {
                     Some(room)
                 },
+                registered.as_ref().ok().map(|_| &candidates[..]),
                 &|document| {
+                    #[cfg(test)]
+                    self.history_retention_checks
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     self.scrub(room, document.clone())
                         .is_ok_and(|clean| clean == *document)
                 },
@@ -254,6 +307,7 @@ impl RoomSecretObservations {
             rooms.insert(room.into(), self.initial(room)?);
         }
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+        protection.history_boundary_bytes = None;
         // Set the memory fence even if persisting the marker fails. Input must then abort.
         protection.revision = protection.revision.saturating_add(1);
         let has = |values: &[Zeroizing<String>]| values.iter().any(|v| v.as_str() == value);

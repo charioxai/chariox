@@ -498,7 +498,6 @@ struct OperationalHistoryWriteRecord {
     event_json: String,
     metadata_text: String,
     merge_key: Option<String>,
-    public_document: Option<public_history::PublicHistoryDocument>,
 }
 
 #[derive(Debug)]
@@ -833,7 +832,6 @@ impl OperationalHistoryStore {
             }
         })?;
         let metadata_text = searchable_metadata(&replacement);
-        let document = self.project_public_history(&replacement);
         let transaction = connection
             .transaction()
             .map_err(|error| operational_history_error("replace public history", error))?;
@@ -893,8 +891,7 @@ impl OperationalHistoryStore {
         public_history::write_public_document(
             &transaction,
             &replacement,
-            document.as_ref(),
-            &|event| self.project_public_history(event),
+            &self.public_history_projector,
         )
         .map_err(|error| operational_history_error("replace public history", error))?;
         transaction
@@ -1021,7 +1018,6 @@ impl OperationalHistoryStore {
             let merge_key = history_event_merge_key(event).map(str::to_string);
             encoded_events.push(OperationalHistoryWriteRecord {
                 event: event.clone(),
-                public_document: self.project_public_history(event),
                 event_json,
                 metadata_text,
                 merge_key,
@@ -1062,8 +1058,8 @@ impl OperationalHistoryStore {
             .map_err(history_writer_error)
     }
 
-    // Caller holds the projection mutex. Every previously projected record is
-    // committed before invalidation, and no new projection can enqueue until
+    // Caller holds the projection mutex. Every previously queued record is
+    // projected and committed before invalidation, and no new record can enqueue until
     // the protected mutation releases that mutex. No writer takes this mutex.
     pub(crate) fn flush_public_history_appends_locked(&self) -> Result<(), DaemonError> {
         self.await_history_write(self.enqueue_history_records(Vec::new())?)
@@ -1120,6 +1116,7 @@ fn commit_operational_history_batch(
     };
     let result = (|| -> Result<(), rusqlite::Error> {
         let mut statement = transaction.prepare(OPERATIONAL_HISTORY_INSERT_SQL)?;
+        let mut public_events = Vec::new();
         for record in batch.iter().flat_map(|request| request.records.iter()) {
             let event = &record.event;
             let inserted = statement.execute(params![
@@ -1147,15 +1144,11 @@ fn commit_operational_history_batch(
                 record.event_json.as_str(),
             ])?;
             if inserted > 0 {
-                public_history::write_public_document(
-                    &transaction,
-                    event,
-                    record.public_document.as_ref(),
-                    &|event| projector.project(event),
-                )?;
+                public_events.push(event);
             }
         }
         drop(statement);
+        public_history::write_public_batch(&transaction, &public_events, projector)?;
         transaction.commit()
     })();
     match result {
