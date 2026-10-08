@@ -154,6 +154,7 @@ export class CloudClient {
     return client
   }
   private async authenticated<T>(request: (credential: CloudClientCredential) => Promise<T>): Promise<T> {
+    if (this.revoked) throw new CloudClientAuthError("client_revoked")
     try {
       let credential = await this.store.session(this.identity().publicKeyThumbprint)
       try { return await request(credential) }
@@ -164,8 +165,12 @@ export class CloudClient {
         return await request(credential)
       }
     } catch (error) {
-      if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) this.invalidate(error)
-      throw error
+      // A concurrent refresh/logout may remove the private credential before
+      // its revocation callback runs. Existing admission must settle as revoked.
+      const authError = error instanceof CloudClientAuthError && error.code === "login_required" && (this.renewal || this.revoked)
+        ? new CloudClientAuthError("client_revoked") : error
+      if (authError instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(authError.code)) this.invalidate(authError)
+      throw authError
     }
   }
 }

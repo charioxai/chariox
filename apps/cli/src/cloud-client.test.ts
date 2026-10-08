@@ -13,6 +13,10 @@ import { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
 import { CloudClientAuthError } from "./cloud-client-http.js"
 
 type Family = { clientId: string; key: string; access: string; refresh: string; revoked: boolean }
+// Renewal includes the real OS profile lock and synchronized credential writes.
+// Keep accelerated expiries, with room for that disk path on a shared builder.
+const ACCESS_LIFETIME_MS = 2_800
+const GRANT_LIFETIME_MS = 2_000
 async function fixture() {
   const key = createECDH("prime256v1"); key.generateKeys()
   const daemon = new RelayClientIdentity(key.getPrivateKey())
@@ -62,7 +66,7 @@ async function fixture() {
       } else if (path === "/auth/device/poll") {
         const family = devices.get(body.deviceCode)!
         rotate(family)
-        send({ status: "approved", profile: { enrollmentKind: invalidEnrollment ? "KERNEL" : "CLIENT", publicKeyThumbprint: family.key, accountId: "account-a", userId: "owner-a", email: "fixture@example.test", accountSlug: "fixture", realmId: "realm-a", relayUrl, issuerId: "fixture", clientId: family.clientId }, refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+700).toISOString() })
+        send({ status: "approved", profile: { enrollmentKind: invalidEnrollment ? "KERNEL" : "CLIENT", publicKeyThumbprint: family.key, accountId: "account-a", userId: "owner-a", email: "fixture@example.test", accountSlug: "fixture", realmId: "realm-a", relayUrl, issuerId: "fixture", clientId: family.clientId }, refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+ACCESS_LIFETIME_MS).toISOString() })
       } else if (path === "/auth/client/refresh") {
         const family = families.get(body.clientId)
         if (!family || family.revoked) return deny("client_revoked")
@@ -70,7 +74,7 @@ async function fixture() {
         assert.equal(body.publicKeyThumbprint, family.key)
         assert.ok(/^[0-9a-f]{64}$/.test(body.rotationId))
         metrics.refreshes++; rotate(family)
-        send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+700).toISOString() })
+        send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+ACCESS_LIFETIME_MS).toISOString() })
       } else if (path === "/relay/targets") {
         if (!active(request.headers.authorization?.slice("Bearer ".length))) return deny("session_invalid")
         send({ targets })
@@ -80,7 +84,7 @@ async function fixture() {
         assert.equal(body.subjectKind, "client"); assert.equal(body.subject, family.clientId)
         assert.equal(body.machineId, undefined); assert.equal(body.publicKeyThumbprint, family.key)
         assert.ok(body.allowedTargets.length === 1 && targets.some(t => t.daemonId === body.allowedTargets[0] && t.status === "ONLINE"))
-        const expiry = Date.now()+450
+        const expiry = Date.now()+GRANT_LIFETIME_MS
         const payload = { public_key_thumbprint: wrongKey ? "b".repeat(64) : family.key, allowed_targets: body.allowedTargets, jti: `grant-${++metrics.grants}` }
         const token = `fixture.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.fixture`
         grants.set(token, { family, target: body.allowedTargets[0], expiry })
@@ -168,12 +172,12 @@ test("detached client-only login survives process resume and several access/gran
     let events = 0
     target.onKernelEvent(event => { if (event.event === "runtime_notices") events++ })
     await target.subscribeToKernelEvents("session-fixture", "attachment-fixture")
-    const deadline = Date.now()+3_000
+    const deadline = Date.now()+12_000
     while (Date.now() < deadline) {
       assert.deepEqual(await target.send({ GetDaemonHealth: null }), { accepted: true })
       await new Promise(resolve => setTimeout(resolve, 35))
     }
-    assert.ok(cloud.metrics.grants >= 7); assert.ok(cloud.metrics.refreshes >= 7); assert.ok(events > 50)
+    assert.ok(cloud.metrics.grants >= 7); assert.ok(cloud.metrics.refreshes >= 7); assert.ok(events > 200)
     assert.equal(cloud.metrics.connections, 2); assert.equal(cloud.metrics.subscriptions, 1); assert.equal(notices.length, 1)
     assert.ok(cloud.paths.every(path => ["/auth/device/start", "/auth/device/poll", "/auth/client/refresh", "/relay/targets", "/relay/token"].includes(path)), "Cloud carries bootstrap only")
     cloud.revoke(cloud.families.get(publicProfile.clientId!)!)
@@ -185,6 +189,51 @@ test("detached client-only login survives process resume and several access/gran
     await new Promise(resolve => setTimeout(resolve, 100))
     assert.equal(events, stopped); assert.equal(cloud.metrics.connections, 2)
   } finally { first.client.stop(); resumed.client.stop(); await cloud.close(); await rm(root, { recursive: true, force: true }) }
+})
+
+test("MP-08 / MP-11: background client revocation remains explicit on later control requests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-background-revocation-")), cloud = await fixture()
+  const terminal = profile(root)
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    const linked = await terminal.client.login(cloud.apiUrl, () => {})
+    let revoked!: () => void
+    const observed = new Promise<void>(resolve => { revoked = resolve })
+    await terminal.client.resume(revoked)
+    cloud.revoke(cloud.families.get(linked.clientId!)!)
+    await Promise.race([
+      observed,
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("background revocation was not observed")), 5_000) }),
+    ])
+    assert.equal(await terminal.store.load(), null)
+    await assert.rejects(terminal.client.directory(), authCode("client_revoked"))
+    await assert.rejects(terminal.client.issue("remote-a"), authCode("client_revoked"))
+  } finally {
+    clearTimeout(deadline)
+    terminal.client.stop()
+    await cloud.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("MP-08 / MP-11: missing active client authority settles revocation before the background callback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-revocation-race-")), cloud = await fixture()
+  const terminal = profile(root)
+  let revoked = 0
+  try {
+    await terminal.client.login(cloud.apiUrl, () => {})
+    await terminal.client.resume(() => { revoked++ })
+    // Another profile process can remove the credential while this process
+    // still owns admitted work and its background refresh is settling.
+    await terminal.store.clear()
+    await assert.rejects(terminal.client.directory(), authCode("client_revoked"))
+    await assert.rejects(terminal.client.issue("remote-a"), authCode("client_revoked"))
+    assert.equal(revoked, 1)
+  } finally {
+    terminal.client.stop()
+    await cloud.close()
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("detached profiles are independent; logout waits for acknowledgement and cannot revoke kernels", async () => {
