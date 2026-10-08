@@ -633,3 +633,190 @@ async fn capability_agents_cannot_supply_app_authority_or_safety_overrides() {
     }
     assert!(!bound(&room, &agent).await);
 }
+
+// MP-08/MP-11 SB-03: retain the same owner prompt while replacing its provider.
+async fn replace_calling_run(room: &Room, agent: &str) {
+    let mut app = room.app.lock().await;
+    let run = app
+        .providers()
+        .get_run_for_agent(&room.session, agent)
+        .unwrap();
+    app.providers_mut()
+        .mark_run_ended_provider_only(&room.session, run.id())
+        .unwrap();
+    app.providers_mut()
+        .launch_run_detached(
+            LaunchProviderRequest::new(
+                &room.session,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent)
+            .with_owner_user_id("alice"),
+        )
+        .unwrap();
+}
+
+async fn pending_app_decision(room: &Room) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = room
+                .router
+                .runtime_state
+                .session_snapshot(&room.session)
+                .await
+                .unwrap();
+            if let Some(item) = session
+                .active_interactions()
+                .iter()
+                .find(|item| item.title() == Some("Chariox resource access"))
+            {
+                break item.id().to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_sb03_direct_app_decision_withdraws_on_provider_replacement() {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    let (attempt, ()) = tokio::join!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            request_app(&room, &token, "installed")
+        ),
+        async {
+            pending_app_decision(&room).await;
+            replace_calling_run(&room, &agent).await;
+        }
+    );
+    assert!(!attempt.expect("MP-11 SB-03: stale direct caller withdraws without owner reply"));
+    assert!(!bound(&room, &agent).await);
+    assert!(room
+        .router
+        .runtime_state
+        .session_snapshot(&room.session)
+        .await
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|item| item.title() != Some("Chariox resource access")));
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
+async fn stale_app_writer(room_route: bool) {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    let admission = room.router.runtime_state.app_control().admission();
+    let initial_slots = admission.available_permits();
+    let (attempt, ()) = tokio::join!(
+        async {
+            if room_route {
+                room_command(
+                    &room,
+                    &token,
+                    format!("extension grant app {agent} installed"),
+                )
+                .await
+            } else {
+                request_app(&room, &token, "installed").await
+            }
+        },
+        async {
+            let decision = pending_app_decision(&room).await;
+            let store = room.app.lock().await.durable_state_store();
+            let mut blocker = rusqlite::Connection::open(store.path()).unwrap();
+            let held = blocker
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            room.router
+                .runtime_state
+                .resolve_terminal_runtime_interaction(
+                    &room.session,
+                    &decision,
+                    "allow",
+                    None,
+                    Some("alice"),
+                )
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while admission.available_permits() == initial_slots {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("MP-11 SB-03: grant reached blocking writer check");
+            replace_calling_run(&room, &agent).await;
+            held.rollback().unwrap();
+        }
+    );
+    assert!(
+        !bound(&room, &agent).await,
+        "MP-11 SB-03: stale writer completion cannot persist a binding"
+    );
+    assert!(!attempt, "MP-11 SB-03: stale acquisition is refused");
+    assert!(!room
+        .router
+        .runtime_state
+        .pending_provider_reload_for_test(&agent));
+    let events = room
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| event.kind != "agent.extension_granted"));
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_sb03_direct_app_writer_cannot_bind_after_provider_replacement() {
+    stale_app_writer(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_sb03_room_app_writer_cannot_bind_after_provider_replacement() {
+    stale_app_writer(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_sb03_wrong_prompt_delivery_cannot_acquire() {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
+    {
+        let app = room.app.lock().await;
+        let session = app.sessions().get_session(&room.session).unwrap();
+        let prompts = app.prompt_state_owner();
+        let active = prompts
+            .active_prompt_for_agent_snapshot(&session, &agent)
+            .unwrap();
+        let mut wrong_run = active.clone();
+        wrong_run.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("replaced-run".into()),
+            None,
+        );
+        assert!(prompts.replace_active_prompt_if_matches(&session, &agent, &active, wrong_run));
+    }
+    let attempt = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request_app(&room, &token, "installed"),
+    )
+    .await;
+    assert!(!attempt.expect("MP-11 SB-03: another run's delivery cannot acquire App authority"));
+    assert!(!bound(&room, &agent).await);
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
