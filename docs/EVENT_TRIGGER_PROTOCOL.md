@@ -210,9 +210,9 @@ Refusal leaves no delivery receipt; completion retains a visible
 `workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
 host-file read or provider attachment promotion. There are at most 1,024 local sources
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
-and 16 MiB pending payload per kernel, measured as UTF-8 bytes for both new and
+and 16 MiB pending payload per subscription, measured as UTF-8 bytes for both new and
 already retained envelopes. Oversize/backpressure is diagnostic and cannot
-roll back successful workflow completion. Legacy accepted bytes retain their original
+roll back successful workflow completion. New envelope output, subject and fields use the shared secret redaction policy before source forwarding and receipt persistence. Legacy accepted bytes retain their original
 TTL; editing a binding's TTL affects new occurrences only, and admission of older
 pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.
 The current completion `status` is reserved while copying opaque trigger metadata,

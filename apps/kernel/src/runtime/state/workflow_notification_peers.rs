@@ -11,10 +11,26 @@ const VERSION: u32 = 82;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 impl KernelRuntimeState {
+    fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        if config.kernel_runtime_role != crate::config::KernelRuntimeRole::General
+            || config.daemon_id.starts_with("slice:")
+        {
+            return Err(store::error(
+                "workflow notification peers require a home kernel",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn notification_peer_owner(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
+        self.ensure_notification_home_role().ok()?;
+        if identity.subject.starts_with("slice:") {
+            return None;
+        }
         let config = self.owned.config_projection.snapshot();
         let profile = config.cloud_relay.as_ref()?;
         if identity.realm_id != profile.realm_id
@@ -30,6 +46,7 @@ impl KernelRuntimeState {
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.ensure_notification_home_role()?;
         let config = self.owned.config_projection.snapshot();
         let target = ClientTarget {
             daemon_id: Some(kernel.into()),
@@ -56,6 +73,7 @@ impl KernelRuntimeState {
         &self,
         owner: &str,
     ) -> Result<(), DaemonError> {
+        self.ensure_notification_home_role()?;
         let projection = self.owned.notification_inventory_projection.clone();
         // Refresh uses the same Cloud inventory credential as the waiting room.
         // No workflow data is sent to Cloud. A picker failure retains cache offline.
@@ -72,6 +90,7 @@ impl KernelRuntimeState {
         owner: &str,
         fresh: bool,
     ) -> Result<(), DaemonError> {
+        self.ensure_notification_home_role()?;
         let (_, kernels) = self.owned.notification_inventory_projection.snapshot();
         let home = self.owned.config_projection.snapshot().daemon_id;
         let mut cache = self
@@ -253,6 +272,7 @@ impl KernelRuntimeState {
         owner: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.ensure_notification_home_role()?;
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -595,6 +615,39 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+    // MP-08/MP-10/MP-11 security F8/F9: owner-wide transport is not worker authority.
+    #[test]
+    fn security_f8_slice_identity_cannot_read_home_notifications() {
+        let mut f = Fixture::for_kernel("notification-home");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let identity = chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "wfnotify-fixture".into(),
+            subject: "slice:child".into(),
+            subject_kind: RelaySubjectKind::Kernel,
+            expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+            token_id: None,
+            user_id: Some("local".into()),
+            public_key_thumbprint: None,
+        };
+        assert!(runtime.notification_peer_owner(&identity).is_none());
+    }
+
+    #[test]
+    fn security_f8_local_worker_cannot_serve_home_notifications() {
+        let mut f = Fixture::for_kernel("notification-worker");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        runtime.owned.config_projection.update(config);
+        assert!(runtime
+            .receive_workflow_notification_peer(
+                "home-peer",
+                "local",
+                RelayPeerRequest::ListWorkflowNotificationSources {
+                    protocol_version: VERSION
+                }
+            )
+            .is_err());
     }
     async fn relay_drill() {
         let relay_config = RelayConfig {

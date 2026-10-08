@@ -1382,3 +1382,107 @@ fn retained_multibyte_notification_payload_limit_is_measured_in_bytes() {
         "fixture distinguishes characters from bytes"
     );
 }
+// MP-08/MP-10/MP-11 F8: one subscription cannot consume another's allowance.
+#[test]
+fn security_f8_notification_budget_is_per_subscription() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("source");
+    let (b, _, bp) = f.workflow("first");
+    let (c, _, cp) = f.workflow("second");
+    let source = f.source(&a);
+    let first = f.attach(&source, &b, &bp);
+    let second = f.attach(&source, &c, &cp);
+    f.complete(&a, "seed", None, WorkflowRunStatus::Completed, "fixture");
+    let (_, mut env) = f.candidates(false).pop().unwrap();
+    let mut db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+    db.execute("DELETE FROM app_outbox", []).unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..MAX_PENDING {
+        env.occurrence_id = format!("first-{n}");
+        insert_receipt(&tx, &first, &env, "retryable", 1).unwrap();
+    }
+    env.occurrence_id = "second-0".into();
+    let independent = insert_receipt(&tx, &second, &env, "retryable", 1);
+    assert!(
+        independent.is_ok(),
+        "MP-11 F8: another subscription retains its own admission budget"
+    );
+    assert!(insert_receipt(&tx, &first, &env, "retryable", 1).is_err());
+    tx.rollback().unwrap();
+    drop(db);
+    cleanup(f);
+}
+#[test]
+fn security_f8_notification_receipts_redact_output_and_fields() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("source");
+    let (b, _, bp) = f.workflow("target");
+    let source = f.source(&a);
+    let sub = f.attach(&source, &b, &bp);
+    let synthetic = format!("ghp_{}", "a".repeat(36));
+    f.complete(&a, "seed", None, WorkflowRunStatus::Completed, &synthetic);
+    let (_, mut env) = f.candidates(false).pop().unwrap();
+    assert_eq!(
+        env.output.as_ref().unwrap().message(),
+        crate::secret_redaction::redact_secrets(&synthetic),
+        "MP-11 F8: source outbox must protect public output before forwarding"
+    );
+    env.occurrence_id = "inbound".into();
+    env.output = Some(WorkflowOutputPayload::new(&synthetic, vec![]));
+    env.fields = serde_json::json!({"password":"synthetic-not-a-secret","summary":"useful"});
+    f.store
+        .notify(NotificationOperation::Accept {
+            subscription: sub.clone(),
+            envelope: env.clone(),
+        })
+        .unwrap();
+    let (_, stored) = f.candidates(true).pop().unwrap();
+    assert_ne!(stored.fields["password"], env.fields["password"]);
+    assert_eq!(stored.fields["summary"], "useful");
+    assert_ne!(stored.output, env.output);
+    let replay = f
+        .store
+        .notify(NotificationOperation::Accept {
+            subscription: sub.clone(),
+            envelope: env.clone(),
+        })
+        .unwrap();
+    assert!(matches!(
+        replay,
+        NotificationOutcome::Ack(WorkflowNotificationAck::Duplicate)
+    ));
+    env.fields["password"] = serde_json::json!("changed-synthetic-value");
+    assert!(f
+        .store
+        .notify(NotificationOperation::Accept {
+            subscription: sub,
+            envelope: env
+        })
+        .is_err());
+    cleanup(f);
+}
+
+#[test]
+fn security_f8_redaction_expansion_cannot_accept_oversize_receipts() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("source");
+    let (b, _, bp) = f.workflow("target");
+    let source = f.source(&a);
+    let sub = f.attach(&source, &b, &bp);
+    f.complete(&a, "seed", None, WorkflowRunStatus::Completed, "fixture");
+    let (_, mut env) = f.candidates(false).pop().unwrap();
+    env.occurrence_id = "redaction-expansion".into();
+    env.fields = serde_json::json!({"items":(0..2500).map(|_|serde_json::json!({"password":"x"})).collect::<Vec<_>>()});
+    assert!(encode_notification_envelope(&env).is_ok());
+    assert!(
+        f.store
+            .notify(NotificationOperation::Accept {
+                subscription: sub,
+                envelope: env
+            })
+            .is_err(),
+        "MP-11 F8: admission must bound the protected bytes actually persisted and delivered"
+    );
+    assert!(f.candidates(true).is_empty());
+    cleanup(f);
+}
