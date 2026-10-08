@@ -276,7 +276,7 @@ async fn run_workflow_command_lane(
                     )
                     .await;
                 command_state
-                    .authorize_current_external_command()
+                    .authorize_current_external_response()
                     .and(result)
             }
         };
