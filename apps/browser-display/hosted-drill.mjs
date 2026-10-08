@@ -16,6 +16,7 @@ try{
  await sample();if(process.env.MD_HOSTED_NETNS){shaped=await shapeHostedViewer({namespace:process.env.MD_HOSTED_NETNS});r.network=shaped.info}
  browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage',...(shaped?['--host-resolver-rules='+shaped.resolverRules]:[])]});
  const ctx=await browser.newContext({viewport:{width:1440,height:1200},deviceScaleFactor:dpr});page=await ctx.newPage();page.setDefaultTimeout(30000);
+ r.bootstrap_protocol=[];page.on('response',async response=>{if(new URL(response.url()).pathname!=='/browser/relay-kernel/bootstrap')return;try{const value=await response.json();r.bootstrap_protocol.push({at:Date.now(),status:response.status(),protocol:value.target?.localDaemonProtocolVersion,daemon_id:value.target?.daemonId})}catch{r.bootstrap_protocol.push({at:Date.now(),status:response.status(),code:'unreadable'})}});
  page.on('pageerror',e=>r.errors.push({stage,code:e.name}));page.on('console',async msg=>{if(!msg.text().startsWith('[chariox:kernel-transport]'))return;let fields=await msg.args()[1]?.jsonValue().catch(()=>({}));if(!fields){try{fields=JSON.parse(msg.text().slice(msg.text().indexOf('{')))}catch{fields={}}}r.errors.push({event:msg.text().split(' ')[1],stage,request_kind:fields?.requestKind,code:fields?.code,rtt_ms:fields?.rttMs,lane:fields?.lane})});
  const cdp=await ctx.newCDPSession(page);await cdp.send('Network.enable');if(process.env.MD_DIAGNOSTIC==='1'){r.debug_exceptions=[];await cdp.send('Debugger.enable');await cdp.send('Debugger.setPauseOnExceptions',{state:'all'});cdp.on('Debugger.paused',async event=>{const line=String(event.data?.description??'').split('\n')[0];r.debug_exceptions.push({reason:event.reason,labels:['kernel_browser','MD-DISPLAY:','MP-11:','stale browser','Failed to fetch dynamically imported module'].filter(label=>line.includes(label)),location:event.callFrames?.[0]?.location});await cdp.send('Debugger.resume').catch(()=>{})})}
  cdp.on('Network.webSocketFrameReceived',e=>{if(r.wire.length<100000)r.wire.push({at:Date.now(),opcode:e.response.opcode,bytes:e.response.opcode===2?Math.floor(e.response.payloadData.length*3/4):e.response.payloadData.length})});
@@ -38,9 +39,9 @@ try{
  });
  stage='waiting room';await page.goto(origin+'/waiting-room');await page.getByText('Waiting Room Ready',{exact:true}).waitFor({timeout:60000});await page.waitForTimeout(20000);
  const dashboard=await page.evaluate(()=>fetch('/dashboard').then(r=>r.json()));
- const t=dashboard.relayTargets.find(t=>t.machineId===process.env.MD_MACHINE_ID&&t.daemonId===process.env.MD_KERNEL_ID);if(!t||t.status!=='ONLINE')throw Error('MP-10: fresh target missing');r.enrollment={machine_id:t.machineId,kernel_id:t.daemonId,status:t.status,heartbeat:t.lastHeartbeatAt};
+ const t=dashboard.relayTargets.find(t=>t.machineId===process.env.MD_MACHINE_ID&&t.daemonId===process.env.MD_KERNEL_ID);if(!t||t.status!=='ONLINE')throw Error('MP-10: fresh target missing');r.enrollment={machine_id:t.machineId,kernel_id:t.daemonId,status:t.status,heartbeat:t.lastHeartbeatAt,protocol:t.localDaemonProtocolVersion};
  await page.waitForTimeout(2000);
- const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}
+ const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(process.env.MD_OPEN_SESSION==='1'&&await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}
  await page.getByRole('button',{name:'Open Browser panel',exact:true}).click();
  r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
  for(const [site,url]of sites){
