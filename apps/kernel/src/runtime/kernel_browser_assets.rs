@@ -19,14 +19,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/room-native-accessibility.mjs"),
     ),
     (
-        "browser-controller-artifacts.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
-    ),
-    (
-        "browser-controller-image.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
-    ),
-    (
         "native-keyboard-channel.mjs",
         include_bytes!("../../slice-linux-docker/docker/native-keyboard-channel.mjs"),
     ),

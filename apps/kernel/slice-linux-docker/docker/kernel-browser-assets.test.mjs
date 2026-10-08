@@ -40,3 +40,9 @@ test('MP-11 #904 review 2 slice image copies every Python helper its installed h
  }
  assert.deepEqual([...missing],[]);
 });
+
+test('MP-08 #904 review 5 native kernel asset inventory has no duplicate entries',async()=>{
+ const inventory=await readFile(new URL('../../src/runtime/kernel_browser_assets.rs',import.meta.url),'utf8');
+ const names=[...inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g)].map(m=>m[1]);
+ assert.deepEqual(names.filter((name,index)=>names.indexOf(name)!==index),[]);
+});
