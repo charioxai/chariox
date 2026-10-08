@@ -220,6 +220,8 @@ process.exitCode = result.status ?? 1;
     if "Grant external agent access" in frame():
         raise RuntimeError("MP-11 refused popup stayed open")
     requester.wait(timeout=45)
+    if requester.returncode != 0:
+        raise RuntimeError("MP-10 outside requester exited " + str(requester.returncode))
     result.update(status="PASS", requesterExit=requester.returncode,
                   established="Real TUI structured OS requester projection and refusal" if not args.local_cli else "Supplementary real local CLI/TUI requester projection and refusal")
 except SystemExit:
@@ -276,3 +278,5 @@ finally:
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     sample()
     emit(status=result["status"], cleanup=result["cleanup"])
+    if result["status"] == "FAIL":
+        raise SystemExit(1)
