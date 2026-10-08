@@ -71,7 +71,10 @@ for (const installId of ["local", "second"]) {
     const explanation = "MP-07/MP-08/MP-11: Setup failed: another install operation owns this install ID; confirm no installer is running, then remove only the empty lock directory."
     writeFileSync(join(bin, "chariox-setup"), `#!/usr/bin/env node\nprocess.stderr.write(${JSON.stringify(explanation + "\n")});process.exitCode=1\n`, { mode: 0o700 })
     const notices: string[] = []
-    await assert.rejects(startLocalKernelSetup(profile, message => notices.push(message)), /Setup failed/)
+    await assert.rejects(startLocalKernelSetup(profile, message => notices.push(message)), error => {
+      assert.ok(error instanceof Error && error.message.includes(explanation), "the final TUI failure must retain the recovery explanation")
+      return true
+    })
     assert.ok(notices.join("").includes(explanation), "the TUI must receive Setup's recovery explanation")
     writeFileSync(join(bin, "chariox-setup"), '#!/usr/bin/env node\nprocess.stderr.write(Buffer.alloc(32769,120));setInterval(()=>{},1000)\n', { mode: 0o700 })
     const bounded: string[] = []
