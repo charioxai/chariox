@@ -11,6 +11,10 @@ pub(crate) trait ComputerBackend: Send {
     fn ready(&mut self) -> bool;
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;
+    /// Kernel exit must wait for any cleanup deferred by ordinary Stop.
+    fn shutdown(&mut self) -> Result<(), String> {
+        self.stop()
+    }
     fn request(
         &mut self,
         method: &str,

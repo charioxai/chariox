@@ -35,10 +35,13 @@ pub(crate) struct MacComputerHelper {
     launch: Launch,
     link: Option<Arc<Link>>,
     rendezvous_guard: Arc<Mutex<()>>,
+    // Watchers can also retire links, so kernel exit must drain both kinds.
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 struct Link {
     rendezvous_guard: Arc<Mutex<()>>,
+    retirement_guard: Mutex<()>,
     epoch: String,
     pid: i32,
     started: Option<(u64, u64)>,
@@ -76,6 +79,7 @@ impl MacComputerHelper {
             launch,
             link: None,
             rendezvous_guard: Arc::new(Mutex::new(())),
+            workers: Vec::new(),
         }
     }
 
@@ -199,6 +203,7 @@ fn admit(
     }
     Ok(Arc::new(Link {
         rendezvous_guard,
+        retirement_guard: Mutex::new(()),
         epoch,
         pid: peer.pid(),
         started: code_identity::started(peer.pid()),
@@ -290,6 +295,11 @@ impl Link {
     }
     /// Owned cleanup: fence, let the helper exit, kill only the paired process.
     fn retire(&self) {
+        // Stop, ready() and the watcher can race to retire the same epoch.
+        let _retirement = self
+            .retirement_guard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         self.fence();
         let deadline = Instant::now() + LEASE;
         let alive = || {
@@ -338,11 +348,12 @@ fn exchange(
     serde_json::from_str(&line).map_err(|_| LOST.into())
 }
 
-fn watch(link: Weak<Link>) {
+fn watch(link: Weak<Link>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || loop {
         std::thread::sleep(HEARTBEAT);
         let Some(link) = link.upgrade() else { return };
         if !link.alive.load(Ordering::Acquire) {
+            link.retire();
             return;
         }
         if link.call("heartbeat", json!({}), LEASE).is_err() {
@@ -350,7 +361,7 @@ fn watch(link: Weak<Link>) {
             link.retire();
             return;
         }
-    });
+    })
 }
 
 impl ComputerBackend for MacComputerHelper {
@@ -369,18 +380,29 @@ impl ComputerBackend for MacComputerHelper {
             return Ok(());
         }
         let link = self.pair()?;
-        watch(Arc::downgrade(&link));
+        self.workers.retain(|worker| !worker.is_finished());
+        self.workers.push(watch(Arc::downgrade(&link)));
         self.link = Some(link);
         Ok(())
     }
     fn stop(&mut self) -> Result<(), String> {
+        self.workers.retain(|worker| !worker.is_finished());
         if let Some(link) = self.link.take() {
             let _ = link.call("stop", json!({}), LEASE);
             // End this epoch under the seat lock. Only reaping may outlive Stop.
             link.fence();
-            std::thread::spawn(move || link.retire());
+            self.workers.push(std::thread::spawn(move || link.retire()));
         }
         Ok(())
+    }
+    fn shutdown(&mut self) -> Result<(), String> {
+        let mut first = self.stop().err();
+        for worker in self.workers.drain(..) {
+            if worker.join().is_err() {
+                first.get_or_insert_with(|| "MP-11: Computer helper retirement failed".into());
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
     fn request(
         &mut self,

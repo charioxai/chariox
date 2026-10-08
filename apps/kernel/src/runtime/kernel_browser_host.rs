@@ -696,10 +696,12 @@ impl KernelBrowserHost {
             )
         };
         // Seat requests check admission under the host lock; stop them outside it.
-        for (_, seat) in seats {
-            let _ = seat.lock().unwrap_or_else(|e| e.into_inner()).stop();
-        }
         let mut first = None;
+        for (_, seat) in seats {
+            if let Err(error) = seat.lock().unwrap_or_else(|e| e.into_inner()).shutdown() {
+                first.get_or_insert(error);
+            }
+        }
         for (_, browser) in browsers {
             let mut backend = browser
                 .lock()
