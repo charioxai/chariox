@@ -13,23 +13,29 @@ import { VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from '
 const executable = process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
 assert.ok(executable, 'Explicit installed Chromium required; never download a browser');
 
-async function withFixture(dpr, run) {
+async function withFixture(dpr, run, query = '') {
   const root = await mkdtemp(path.join(tmpdir(), 'cx-protection-'));
   const fixture = await serveFixture();
   const chromium = await launchChromium({ executable, dpr, root });
   try {
-    const opened = await openFixture(chromium.browser, fixture.url);
+    const opened = await openFixture(chromium.browser, fixture.url + query);
     const shot = async () => decodePng((await opened.connection.send('Page.captureScreenshot', { format: 'png' }, opened.sessionId)).data, dpr);
     await run({ ...chromium, ...opened, shot });
   } finally { await chromium.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
 }
 const policy = (values = []) => ({ values, targets: [], unknown: false });
 
-for (const dpr of [1, 2]) {
-  test(`DPR ${dpr}: every protected frame region is covered; ordinary content stays visible`, () => withFixture(dpr, async ({ browser, connection, sessionId, shot }) => {
+// Vault policy: whole-page DOMSnapshot path (echoes, markers incl. frame owners).
+// No policy on a fields-only page: selector-search path, no DOMSnapshot.
+for (const dpr of [1, 2]) for (const [label, values, query] of [['snapshot', [VAULT_VALUE], ''], ['search', [], '?novault&nomarkers']]) {
+  test(`DPR ${dpr} ${label}: every protected frame region is covered; ordinary content stays visible`, () => withFixture(dpr, async ({ browser, connection, sessionId, shot }) => {
     for (const scroll of [0, 300]) {
       await connection.send('Runtime.evaluate', { expression: `scrollTo(0, ${scroll})` }, sessionId);
-      const { pages } = await measureBrowserProtection(browser, policy([VAULT_VALUE]));
+      let snapshots = 0;
+      const send = connection.send.bind(connection);
+      connection.send = (method, ...rest) => { if (method === 'DOMSnapshot.captureSnapshot') snapshots++; return send(method, ...rest); };
+      const { pages } = await measureBrowserProtection(browser, policy(values)).finally(() => { connection.send = send; });
+      assert.equal(snapshots > 0, label === 'snapshot', `${label} path`);
       assert.equal(pages.length, 1);
       const [page] = pages;
       assert.equal(page.dpr, dpr);
@@ -41,7 +47,7 @@ for (const dpr of [1, 2]) {
       // Ordinary content incl. the cross-site captcha frame is not withheld.
       assert.ok(after.cyan > before.cyan * 0.95, `scroll ${scroll}: ordinary content masked (${after.cyan}/${before.cyan})`);
     }
-  }));
+  }, query));
 }
 
 test('Vault echoes and opaque media are protected only while values are registered', () => withFixture(1, async ({ browser, shot }) => {
