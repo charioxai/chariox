@@ -63,7 +63,15 @@ export class NativeAccessibility {
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.
     this.observers.delete(observer);
     const browser_processes=await binding.browserProcesses?.();
-    const result=await this.execute({op:'accessibility_action',processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
+    const agent=Boolean(command._agent_input || observer.startsWith('agent:'));
+    // MP-11 review R1: doAction can invoke Paste without naming that effect.
+    // All agent control actions therefore need the same proved clipboard as keys.
+    if(agent) {
+      const clipboard=await this.execute({op:'clipboard_read',processes,...(browser_processes?{browser_processes}:{}),mask:Boolean(policy?.values?.length || policy?.targets?.length)},binding.environment,signal);
+      if(typeof clipboard.text!=='string' || clipboard.text==='[protected]')throw new UserDomainRefusal('sensitive_requires_focus');
+      if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
+    }
+    const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return result;
   }

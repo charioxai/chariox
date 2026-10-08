@@ -648,11 +648,12 @@ async fn execute_local(
                     )
                     .into_daemon("room_computer"));
                 }
-                // MP-11 R2: registered/unknown protection also fences agent
-                // shortcuts. Never pass registry values to a native keyboard.
+                // MP-11 review R2: registered/unknown protection fences both
+                // text and shortcuts. Never pass registry values to a keyboard.
                 if matches!(
                     &action,
                     crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { .. }
                 ) {
                     let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
                     let policy: serde_json::Value = serde_json::from_str(&policy)

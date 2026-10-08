@@ -1,6 +1,6 @@
 // MP-08 / MP-11: physical native input/OCR/image oracle; no paid provider claim.
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
@@ -9,15 +9,30 @@ import path from 'node:path';
 import { isOwnedAlive } from './docker/linux-owned-process.mjs';
 import { LinuxOwnedDesktop } from './docker/linux-owned-desktop.mjs';
 import { NativeComputer } from './docker/native-computer.mjs';
-const root=await mkdtemp(path.join(os.tmpdir(),'culinux-native-state-'));
+import { NativeAccessibility } from './docker/native-accessibility.mjs';
+const root=await mkdtemp(path.join(os.tmpdir(),'native-'));
+// MP-08: a disposable runner can use public packages extracted into its lane,
+// while the real desktop/helper keeps its normal HOME/PATH dependency lookup.
+const prefix=process.env.CULINUX_NATIVE_PREFIX;
+if(prefix) {
+  const python=spawnSync('/usr/bin/python3',['-c','import sys;print("%d.%d" % sys.version_info[:2])'],{encoding:'utf8'}).stdout.trim();
+  const site=path.join(root,'.local','lib','python'+python,'site-packages');
+  await mkdir(site,{recursive:true});
+  const init='import os,ctypes; os.environ["GI_TYPELIB_PATH"]='+JSON.stringify(prefix+'/usr/lib/x86_64-linux-gnu/girepository-1.0')+'; '+['libimagequant.so.0','libraqm.so.0'].map(name=>'ctypes.CDLL('+JSON.stringify(prefix+'/usr/lib/x86_64-linux-gnu/'+name)+',mode=ctypes.RTLD_GLOBAL)').join('; ');
+  await writeFile(path.join(site,'native.pth'),prefix+'/usr/lib/python3/dist-packages\n'+init+'\n');
+  const services=path.join(root,'.local/share/dbus-1/services');await mkdir(services,{recursive:true});
+  await writeFile(path.join(services,'org.a11y.Bus.service'),'[D-BUS Service]\nName=org.a11y.Bus\nExec='+prefix+'/bin/at-spi-bus-launcher\n');
+}
 let native;let keyboardProcess;
-const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:(prefix?prefix+'/bin:':'')+'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+if(prefix){const launch=desktop.launch.bind(desktop);desktop.launch=(name,args,env,stdio=['ignore','ignore','ignore'])=>launch(name,args,env,[stdio[0],'inherit','inherit',...stdio.slice(3)]);}
 let cleaning;
 const cleanup=()=>cleaning??=(async()=>{console.error('MP-11 cleanup native begin');try{await native?.close();console.error('MP-11 cleanup native settled');if(keyboardProcess){assert(keyboardProcess.exitCode!==null || keyboardProcess.signalCode!==null,'warm keyboard must be reaped');}}finally{const processes=await desktop.ownedProcesses();await desktop.stop();for(const item of processes)assert.equal(await isOwnedAlive(item),false,'owned desktop process must be settled');console.error('MP-11 cleanup desktop settled');await rm(root,{recursive:true,force:true});console.error('MP-11 cleanup scratch removed');}})();
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void cleanup().finally(()=>process.exit(143));});
 try {
   const binding=await desktop.start();
   console.log('MP-08 public fixture DISPLAY='+binding.environment.DISPLAY);
+  if(prefix){const dependencies=spawnSync('/usr/bin/python3',['-c','import PIL.Image,Xlib,pyatspi;print("MP-08 helper dependencies imported")'],{env:binding.environment,encoding:'utf8'});console.error(dependencies.stdout,dependencies.stderr);assert.equal(dependencies.status,0,'MP-08 extracted native dependencies must import');}
   const file=path.join(root,'public.txt');await writeFile(file,'');
   await desktop.launch('mousepad',[file],binding.environment);
   let window;
@@ -40,17 +55,40 @@ try {
   await command({kind:'hold',key:'Right',duration_ms:60});
   const screenshot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   assert.equal(screenshot.mime_type,'image/png');assert.equal(screenshot.width,1280);
+  if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-public-editor.png'),Buffer.from(screenshot.data_base64,'base64'));
   const ocr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{});
   assert(ocr.targets.length>0);
   const masked=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},{values:['synthetic-private-value']});
   assert.equal(masked.text,'[protected]');assert.deepEqual(masked.targets,[]);
-  const clipboard='public clipboard';await command({kind:'clipboard_write',text:clipboard});
+  // MP-11 review R3: xclip has no proved native app provenance. The positive
+  // fixture copies public editor text through the real application's Copy action.
+  const clipboard='public clipboard';await command({kind:'key',key:'ctrl+a'});
+  await command({kind:'text',text:clipboard});await command({kind:'key',key:'ctrl+a'});
+  await command({kind:'move',x:0,y:0});
+  await command({kind:'key',key:'ctrl+c'});await delay(500);
   assert.equal((await native.request({op:'clipboard_read',surface_id:binding.surface_id,generation:binding.generation},{})).text,clipboard);
+  await command({kind:'clipboard_write',text:'synthetic-private-source-canary'});
+  assert.equal((await native.request({op:'clipboard_read',surface_id:binding.surface_id,generation:binding.generation},{})).text,'[protected]');
+  await assert.rejects(native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,_agent_input:true,input:{kind:'key',key:'ctrl+v'}},{}),e=>e.code==='user_domain_sensitive_requires_focus');
+  // MP-11 review R1: use the native editor's actual Paste menu/control.
+  await command({kind:'key',key:'alt+e'});await delay(100);
+  const accessibility=new NativeAccessibility({binding:()=>desktop.binding()});
+  const snapshot=await accessibility.snapshot('agent:paste-drill',{});
+  const paste=snapshot.nodes.find(node=>node.name.replaceAll('_','').trim()==='Paste' && node.actions.length && node.states.includes('showing'));
+  assert(paste?.bounds,'MP-11 real native editor Paste control required');
+  const [x,y,width,height]=paste.bounds;
+  for(const button of [1,3])await assert.rejects(native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,_agent_input:true,input:{kind:'click',button,x:Math.floor(x+width/2),y:Math.floor(y+height/2)}},{}),e=>e.code==='user_domain_sensitive_requires_focus');
+  await assert.rejects(accessibility.action('agent:paste-drill',{target_id:paste.target_id,tree_revision:snapshot.tree_revision,action:paste.actions[0]},{}),e=>e.code==='user_domain_sensitive_requires_focus');
+  await command({kind:'key',key:'Escape'});
+  const observed=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},{});
+  assert(!observed.text.includes('private-source-canary'),'MP-11 refused Paste canary must not enter OCR');
+  const proof=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
+  if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-paste-refused.png'),Buffer.from(proof.data_base64,'base64'));
   const cancellation=new AbortController();
   const hold=native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'hold',key:'Right',duration_ms:10000}}, {}, {signal:cancellation.signal});
   await delay(300);cancellation.abort();await assert.rejects(hold,/cancelled/);
   const released=spawnSync('/usr/bin/python3',['-c',"from Xlib import display;d=display.Display();keys=d.query_keymap();assert not keys[114//8] & (1 << (114%8));d.close()"],{env:binding.environment});
   assert.equal(released.status,0,'cancelled bounded key released before next actor');
-  assert.equal(wakes.length,6);
-  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','registry-mask','capture-wake','owned-clipboard','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
+  assert.equal(wakes.length,13);
+  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','registry-mask','capture-wake','proved-native-app-clipboard','unknown-xclip-refused','native-Paste-click-and-action-refused','no-canary-in-capture-OCR','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
 }finally{await cleanup();}

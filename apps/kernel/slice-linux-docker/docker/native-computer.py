@@ -66,6 +66,11 @@ def input_action(action, processes=None):
                 admit_clipboard()
         keyboard.hold_input('key', key, action.get('duration_ms', 1),before_press=guard); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
+    if processes is not None and kind=='click':
+        # MP-11 review R1: pointers may activate any app's Paste control.
+        accessibility=load('native-accessibility')
+        guard=load('native-clipboard').paste_guard(processes,accessibility)
+        guard()
     connection = display.Display()
     try:
         screen = connection.screen()
@@ -80,6 +85,7 @@ def input_action(action, processes=None):
             if kind in ('click','drag'):
                 button = action.get('button',1)
                 if button not in (1,2,3): raise ValueError('invalid button')
+                if guard is not None:guard()
                 try:
                     xtest.fake_input(connection, X.ButtonPress, button)
                     if kind == 'drag':

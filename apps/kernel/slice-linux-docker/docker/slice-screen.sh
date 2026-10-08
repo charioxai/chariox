@@ -584,6 +584,10 @@ pointer_click() {
     1|2) ;;
     *) printf 'pointer click count must be 1 or 2\n' >&2; return 2 ;;
   esac
+  if [[ "${CHARIOX_COMPUTER_AGENT_INPUT:-}" == 1 ]]; then
+    python3 "$ROOT/slice-keyboard.py" pointer-click "$button_name" "$click_count" "$x" "$y"
+    return
+  fi
   # xdotool also delays after the last release. A single click needs no
   # repeat interval; keep the double-click interval unchanged.
   local delay=0
