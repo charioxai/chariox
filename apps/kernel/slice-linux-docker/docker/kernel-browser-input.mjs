@@ -42,11 +42,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
-      await mirrorGuard?.();
       if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
         await checkTextTarget();
         await check();
       }
+      // MP-11: live mirror focus is the final fence, after every text preflight.
+      await mirrorGuard?.();
       onDispatch?.();
       const result = await connection.send(method, params, sessionId);
       assertNotCancelled(signal);
