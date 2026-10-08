@@ -46,6 +46,12 @@ function details(requirement: Requirement): string[] {
   return []
 }
 export function environmentDetectionMessages(environment: ProjectEnvironment): string[] {
+  return detectionMessages(environment).filter(message => !message.startsWith("Skipped "))
+}
+export function environmentDetectionSkips(environment: ProjectEnvironment): string[] {
+  return detectionMessages(environment).filter(message => message.startsWith("Skipped "))
+}
+function detectionMessages(environment: ProjectEnvironment): string[] {
   return environment.operations.filter(operation => operation.kind === "detect").flatMap(operation => operation.per_item_results.map(result => result.safe_summary))
 }
 export function projectEnvironmentSections(environment: ProjectEnvironment): EnvironmentViewSection[] {
@@ -70,9 +76,10 @@ export function projectEnvironmentSections(environment: ProjectEnvironment): Env
   ]
 }
 export function projectEnvironmentLines(environment: ProjectEnvironment): string[] {
-  return [...environmentDetectionMessages(environment), ...projectEnvironmentSections(environment).flatMap(section => [section.title,
+  const skips = environmentDetectionSkips(environment)
+  return [...environmentDetectionMessages(environment), ...(skips.length <= 4 ? skips : [`${skips.length} skipped evidence items · complete list below proposals`]), ...projectEnvironmentSections(environment).flatMap(section => [section.title,
     ...(section.groups.length ? section.groups.flatMap(group => [`  ${group.kind}`, ...group.rows.flatMap(row => [
       `    ${row.title} · ${row.status}`, ...row.origins.map(origin => `      ${origin}`), ...row.details.map(detail => `      ${detail}`),
     ])]) : ["  No requirements · Not checked"]),
-  ])]
+  ]), ...(skips.length > 4 ? ["Skipped evidence", ...skips] : [])]
 }

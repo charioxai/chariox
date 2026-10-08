@@ -1,7 +1,7 @@
 // MP-02 / MP-03 / MP-08 / MP-10: shared projection and Project-only protocol regressions.
 import assert from "node:assert/strict"
 import test from "node:test"
-import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion, projectEnvironmentSections } from "./project-environment-aggregate.js"
+import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion, projectEnvironmentSections, projectEnvironmentLines } from "./project-environment-aggregate.js"
 import type { ProjectEnvironment } from "./kernel-types-project-environment-aggregate.js"
 
 test("ENV P01 query has no agent/session and requires allocated protocol 471", () => {
@@ -43,4 +43,19 @@ test("ENV VERSION(P01) gates the complete reserved operation family", async () =
 test("ENV P01 provider references use the official provider IDs", () => {
   const providers: import("./kernel-types-project-environment-aggregate.js").EnvironmentProvider[] = ["codex", "claude", "opencode"]
   assert.deepEqual(providers, ["codex", "claude", "opencode"])
+})
+
+// MP-08 / MP-10 / MP-11: Real MDN has hundreds of binary skips; proposals must remain reachable.
+test("ENV P02a many evidence skips do not bury the first proposal", () => {
+  const environment = {
+    project_requirements: [], folders: [],
+    proposals: [{ proposal_id: "proposal", requirement: { requirement_id: "node", title: "Node", scope: { kind: "project" }, origins: [], spec: { kind: "software", identity: "Node", version_constraint: null, detect_only: false } } }],
+    operations: [{ kind: "detect", per_item_results: [
+      ...Array.from({ length: 100 }, (_, i) => ({ safe_summary: `Skipped image-${i}.png · unsupported encoding` })),
+      { safe_summary: "Official provider metadata utility completed · proposals need review" },
+    ] }],
+  } as unknown as ProjectEnvironment
+  const lines = projectEnvironmentLines(environment)
+  assert(lines.findIndex(line => line.includes("Node · Not checked")) < 12)
+  assert.equal(lines.filter(line => line.startsWith("Skipped image-")).length, 100)
 })
