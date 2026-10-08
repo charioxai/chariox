@@ -1,35 +1,30 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { WebSocketServer } from "ws"
 
 import { bootstrapCliRuntime } from "./cli-runtime-bootstrap.js"
 import { LocalIpcClient } from "./ipc.js"
 import { withWaitingRoomWorkspaceClient } from "./waiting-room-kernel-client.js"
 
 // MP-08 / MP-11 F1: a fresh discovery record and a matching public ID do
-// not authenticate whoever has taken over the kernel's loopback port.
+// not authenticate the listener on the kernel's loopback port.
 for (const entry of ["relay launch", "waiting-room switch"] as const) {
   test(`MP-11 F1 ${entry} never probes a replacement TCP listener`, async (t) => {
-    const root = mkdtempSync(path.join(tmpdir(), "chariox-mp11-impostor-"))
+    const root = mkdtempSync(path.join(tmpdir(), "chariox-mp11-carrier-"))
     const originalHome = process.env.CHARIOX_HOME
     process.env.CHARIOX_HOME = root
-    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
-    await once(server, "listening")
     let connections = 0
-    server.on("connection", (socket) => {
+    const server = createServer((socket) => {
       connections++
-      socket.on("message", (data) => {
-        const frame = JSON.parse(data.toString())
-        socket.send(JSON.stringify({ type: "response", request_id: frame.request_id,
-          response: { RelayStatus: { status: { daemon_id: "home-1" } } } }))
-      })
+      socket.destroy()
     })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
     t.after(async () => {
-      for (const socket of server.clients) socket.terminate()
       await new Promise<void>((resolve) => server.close(() => resolve()))
       if (originalHome === undefined) delete process.env.CHARIOX_HOME
       else process.env.CHARIOX_HOME = originalHome
