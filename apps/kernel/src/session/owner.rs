@@ -586,6 +586,13 @@ impl SessionStateStore {
         self.write().delete_session_with_project_cleanup(session_id)
     }
 
+    pub(crate) fn delete_session_retaining_project(
+        &self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.write().delete_session_retaining_project(session_id)
+    }
+
     pub(crate) fn set_active_provider_run(
         &self,
         session_id: &str,

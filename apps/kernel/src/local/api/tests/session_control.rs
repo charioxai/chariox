@@ -1377,11 +1377,18 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
     let LocalDaemonResponse::SessionCreated { session, .. } = created else {
         panic!("utility session expected")
     };
+    let runtime = harness.runtime_state();
+    assert!(harness
+        .block_on_test_task(
+            runtime.delete_environment_utility_session(session.id(), "different-project")
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("binding mismatch"));
     harness
-        .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
-            session_ref: session.id().into(),
-            workspace_id: None,
-        }))
+        .block_on_test_task(
+            runtime.delete_environment_utility_session(session.id(), "utility-project"),
+        )
         .unwrap();
     let after = harness
         .dispatch(get)

@@ -976,10 +976,40 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.delete_session_id_with_project_retention(session_id, false)
+            .await
+    }
+
+    /// MP-08 / MP-10 / MP-11: an owned utility is temporary; its source Project is not.
+    pub(crate) async fn delete_environment_utility_session(
+        &self,
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if session.project_id() != project_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "environment.utility.cleanup",
+                message: "utility session Project binding mismatch".into(),
+            });
+        }
+        self.delete_session_id_with_project_retention(session_id, true)
+            .await
+    }
+
+    async fn delete_session_id_with_project_retention(
+        &self,
+        session_id: &str,
+        retain_project: bool,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = session_id.to_string();
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(&session_id)?;
-        let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        let durable_project_delete = if retain_project {
+            None
+        } else {
+            owned.project_removed_by_session_delete(&session_id)
+        };
         let _vault_observation_guard = self.vault_observation_mutation_guard().await;
         // Revoke the bound worker copy while its Room/slice binding still exists.
         if self
@@ -1001,8 +1031,11 @@ impl KernelRuntimeState {
         }
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
-        let (session, terminated_run_ids, removed_project) =
-            owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+        let (session, terminated_run_ids, removed_project) = owned
+            .delete_session_with_project_retention(
+                owned.session_store.get_session(&session_id)?,
+                retain_project,
+            )?;
         self.sweep_kernel_access();
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),

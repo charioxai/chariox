@@ -317,12 +317,15 @@ impl KernelRuntimeState {
         let cleanup_guard = EnvironmentUtilityCleanup {
             runtime: self.clone(),
             session_id: Some(session.id().into()),
+            project_id: project.id().into(),
         };
         let result = self
             .discover_project_environment(session.id(), agent.id(), input)
             .await;
         // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
-        let cleanup = self.delete_session_ref(session.id(), None).await;
+        let cleanup = self
+            .delete_environment_utility_session(session.id(), project.id())
+            .await;
         let mut cleanup_guard = cleanup_guard;
         if cleanup.is_ok() {
             cleanup_guard.session_id = None;
@@ -415,6 +418,7 @@ impl KernelRuntimeState {
                 Some(EnvironmentUtilityCleanup {
                     runtime: self.clone(),
                     session_id: Some(session.id().into()),
+                    project_id: project.id().into(),
                 }),
             )),
             _ => Err(environment_failure(
@@ -463,16 +467,21 @@ pub(crate) struct PreparedProjectEnvironmentExport {
 struct EnvironmentUtilityCleanup {
     runtime: KernelRuntimeState,
     session_id: Option<String>,
+    project_id: String,
 }
 impl Drop for EnvironmentUtilityCleanup {
     fn drop(&mut self) {
         let runtime = self.runtime.clone();
+        let project_id = self.project_id.clone();
         let Some(session_id) = self.session_id.take() else {
             return;
         };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Err(error) = runtime.delete_session_ref(&session_id, None).await {
+                if let Err(error) = runtime
+                    .delete_environment_utility_session(&session_id, &project_id)
+                    .await
+                {
                     tracing::warn!(
                         session_id,
                         "MP-08 / MP-11: utility session cleanup failed: {}",

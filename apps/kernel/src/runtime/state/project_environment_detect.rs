@@ -147,7 +147,7 @@ impl KernelRuntimeState {
             });
             results.push(EnvironmentItemResult { requirement_id: "detect:model".into(), status: EnvironmentObservationStatus::NeedsYourInput,
                 reason_code: if utility_result.is_ok() { "utility_completed" } else if unauthorized { "provider_unauthorized" } else { "utility_failed" }.into(),
-                safe_summary: if utility_result.is_ok() { "Official provider metadata utility completed · proposals need review" } else if unauthorized { "Provider returned unauthorized/401 · coordinator must repair the shared linked account; do not log out or re-login" } else { "Provider utility failed · deterministic proposals retained; check provider sign-in and retry" }.into(), receipt_ids: vec![] });
+                safe_summary: if utility_result.is_ok() { "Official provider metadata utility completed · proposals need review" } else if unauthorized { "Provider returned unauthorized/401 · check Provider Accounts; deterministic proposals retained" } else { "Provider utility failed · deterministic proposals retained; check provider sign-in and retry" }.into(), receipt_ids: vec![] });
         }
         let operation = EnvironmentOperation {
             operation_id: request.operation_id,
