@@ -100,7 +100,7 @@ try {
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-paste-refused.png'),Buffer.from(proof.data_base64,'base64'));
   if(process.env.CULINUX_DESKTOP_CAPTURE==='1') {
     const {DesktopSource}=await import('./docker/kernel-desktop-source.mjs');
-    const {encodePng}=await import('./docker/kernel-browser-pixels.mjs');
+    const {encodePng,displayMaskRegions}=await import('./docker/kernel-browser-pixels.mjs');
     const capture=async(name,policy={values:[],targets:[],unknown:false})=>{
       desktopSource=await new DesktopSource(binding,policy).start();
       const raw=desktopSource.sample().raw,pixels=Buffer.from(raw.pixels);
@@ -119,10 +119,26 @@ try {
     const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
     await signalOwned(passwordOwner,'SIGTERM');if(passwordApp.exitCode===null&&passwordApp.signalCode===null)await new Promise(resolve=>passwordApp.once('exit',resolve));
     assert.equal(await isOwnedAlive(passwordOwner),false,'MP-11 password app closed before opaque browser oracle');
-    const browser=await desktop.launch('/usr/bin/google-chrome',['--no-sandbox','--disable-dev-shm-usage','--user-data-dir='+path.join(root,'browser'),'--new-window','https://en.wikipedia.org/wiki/Linux'],binding.environment);
+    const browser=await desktop.launch('/usr/bin/google-chrome',['--no-sandbox','--no-first-run','--no-default-browser-check','--disable-dev-shm-usage','--user-data-dir='+path.join(root,'browser'),'--ozone-platform=x11','--class=CharioxOpaqueBrowser','--new-window','https://en.wikipedia.org/wiki/Linux'],binding.environment);
     await desktop.recordOwned(browser,true);await delay(2000);
+    let browserWindow;
+    for(let n=0;n<100&&!browserWindow;n++){
+      browserWindow=spawnSync('xdotool',['search','--onlyvisible','--class','CharioxOpaqueBrowser'],{env:binding.environment,encoding:'utf8'}).stdout.trim().split('\n')[0];
+      if(!browserWindow)await delay(100);
+    }
+    assert(browserWindow,'MP-11 real opaque Chromium window required');
+    assert.equal(spawnSync('xdotool',['windowactivate','--sync',browserWindow],{env:binding.environment}).status,0);
+    const geometry=spawnSync('xdotool',['getwindowgeometry','--shell',browserWindow],{env:binding.environment,encoding:'utf8'});
+    assert.equal(geometry.status,0);
+    const bounds=Object.fromEntries(geometry.stdout.trim().split('\n').map(line=>{const [key,value]=line.split('=');return [key,Number(value)];}));
+    const left=Math.max(0,bounds.X),top=Math.max(0,bounds.Y),right=Math.min(binding.width,bounds.X+bounds.WIDTH),bottom=Math.min(binding.height,bounds.Y+bounds.HEIGHT);
+    assert(right-left>100&&bottom-top>100,'MP-11 visible browser bounds required');
+    await delay(300);
     const opaque=await capture('desktop-opaque-browser-protected');
-    assert(opaque.raw.pixels.every(v=>v===0),'MP-11 opaque browser must export no desktop pixels');
+    const regions=opaque.raw[displayMaskRegions];
+    assert(regions.some(r=>r.x<=left&&r.y<=top&&r.x+r.width>=right&&r.y+r.height>=bottom),'MP-11 masking receipt must cover the real opaque browser');
+    for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every(v=>v===0),'MP-11 opaque browser region must export no pixels');
+    console.log(JSON.stringify({items:['MP-11'],oracle:'opaque browser with password app closed',browser_bounds:{left,top,right,bottom},protected_regions:regions,black_browser_pixels:true}));
     console.log('MP-08 MP-11 desktop source clipboard OCR, password and opaque Chromium masking PASS (supplementary)');
   }
   const cancellation=new AbortController();
