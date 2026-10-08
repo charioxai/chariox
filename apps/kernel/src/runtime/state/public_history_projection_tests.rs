@@ -459,6 +459,31 @@ fn public_history_worker_provider_provenance_survives_local_run_collision() {
         private.hits.is_empty(),
         "worker MCP was classified using the colliding local OpenCode run"
     );
+    let private_events = store
+        .query_events(crate::history::HistoryEventQuery {
+            session_id: Some(session.id().to_owned()),
+            text: Some("unregistered_private_canary".into()),
+            limit: Some(10),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        private_events.len(),
+        1,
+        "the fixture must reach operational history"
+    );
+    assert_eq!(private_events[0].provider.as_deref(), Some("codex"));
+    assert!(
+        store
+            .read_public_history_locked(
+                session.owner_user_id(),
+                session.id(),
+                &private_events[0].event_id,
+            )
+            .unwrap()
+            .is_none(),
+        "the entire worker MCP record must be unavailable by reference"
+    );
     let native = store
         .search_public_history_locked(
             session.owner_user_id(),
