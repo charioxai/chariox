@@ -93,7 +93,7 @@ async fn owner_cloud_export_propagates_temporary_consumed_binding_failure() {
             )
             .unwrap(),
         };
-        let error = authorize_export(&config, &ticket)
+        let error = authorize_export(&config, &ticket, true)
             .await
             .err()
             .expect("outage must not authorize");

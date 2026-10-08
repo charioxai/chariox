@@ -2,6 +2,9 @@
 mod completion;
 #[path = "outbound_operation_store.rs"]
 mod operation_store;
+#[cfg(test)]
+#[path = "outbound_owner_expiry_tests.rs"]
+mod owner_expiry_tests;
 use completion::{
     cleanup_durable_completion, complete_outbound_operation, load_transfer_checkpoint,
     persist_transfer_checkpoint,
@@ -554,6 +557,9 @@ pub(crate) fn start_managed_context_outbound_operation(
         .then(|| store.prepared_git_enrollment_ticket(&ticket))
         .transpose()?;
     let plan = ticket.context_plan.package_binding();
+    // Cloud uses authorization_expired for both missing and expired consumed
+    // bindings. Only a first attempt may interpret it as permission to issue.
+    let allow_first_issuance = store.get(&plan.context_id).is_none();
     let (status, permit) = store.start(&plan.context_id, &plan.plan_digest)?;
     let Some(permit) = permit else {
         return Ok(status);
@@ -565,8 +571,13 @@ pub(crate) fn start_managed_context_outbound_operation(
         let _active = active;
         let authoritative_ticket = match prepared_git_enrollment_ticket {
             Some(authoritative) => authoritative,
-            None => match authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
-                .await
+            None => match authoritative_ticket_for_outbound_operation(
+                &config,
+                &store,
+                &ticket,
+                allow_first_issuance,
+            )
+            .await
             {
                 Ok(authoritative) if authoritative == ticket => authoritative,
                 Ok(_) => {
@@ -772,6 +783,7 @@ pub(crate) fn start_managed_context_outbound_operation(
 async fn fetch_authoritative_ticket(
     config: &DaemonConfig,
     requested: &ManagedContextTransferTicket,
+    allow_first_issuance: bool,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     if requested
         .context_plan
@@ -779,7 +791,12 @@ async fn fetch_authoritative_ticket(
         .destination
         .is_some()
     {
-        return crate::managed_context::owner_authority::authorize_export(config, requested).await;
+        return crate::managed_context::owner_authority::authorize_export(
+            config,
+            requested,
+            allow_first_issuance,
+        )
+        .await;
     }
     let cloud = config.cloud_relay.as_ref().ok_or_else(|| {
         outbound_service_error("source kernel is not connected to Chariox Cloud", true)
@@ -835,11 +852,12 @@ async fn authoritative_ticket_for_outbound_operation(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     requested: &ManagedContextTransferTicket,
+    allow_first_issuance: bool,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     if requested.context_plan.is_git_credential_enrollment() {
         return store.prepared_git_enrollment_ticket(requested);
     }
-    fetch_authoritative_ticket(config, requested).await
+    fetch_authoritative_ticket(config, requested, allow_first_issuance).await
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -2298,7 +2316,7 @@ mod tests {
                 }
             }
         });
-        let result = fetch_authoritative_ticket(&config, &ticket).await;
+        let result = fetch_authoritative_ticket(&config, &ticket, true).await;
         assert!(
             result.is_ok(),
             "kernel-only profile must reach Cloud ticket authorization"
@@ -2369,7 +2387,7 @@ mod tests {
         assert_eq!(materializations.len(), 1);
     }
 
-    fn persisted_test_artifact(
+    pub(super) fn persisted_test_artifact(
         ticket: &ManagedContextTransferTicket,
         created_at_ms: u64,
         package_size_bytes: u64,
@@ -2414,7 +2432,7 @@ mod tests {
         }
     }
 
-    fn write_persisted_test_artifact(
+    pub(super) fn write_persisted_test_artifact(
         root: &Path,
         ticket: &ManagedContextTransferTicket,
         created_at_ms: u64,
@@ -2636,6 +2654,7 @@ mod tests {
                 &config,
                 &ManagedContextOutboundOperationStore::default(),
                 &ticket,
+                true,
             )
             .await
             .expect("authoritative ticket"),
@@ -2688,7 +2707,7 @@ mod tests {
             .expect("remember prepared Git enrollment ticket");
 
         assert_eq!(
-            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket, true)
                 .await
                 .expect("prepared Git enrollment ticket"),
             ticket
@@ -2705,7 +2724,7 @@ mod tests {
         });
         store.finish(&context_id);
         assert!(
-            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket, true)
                 .await
                 .is_err()
         );
@@ -2737,7 +2756,7 @@ mod tests {
         };
         let store = ManagedContextOutboundOperationStore::default();
         assert!(
-            authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket, true)
                 .await
                 .is_err()
         );
@@ -2748,7 +2767,7 @@ mod tests {
         let mut modified = ticket;
         modified.target.kernel_id = "attacker-kernel".to_string();
         assert!(
-            authoritative_ticket_for_outbound_operation(&config, &store, &modified)
+            authoritative_ticket_for_outbound_operation(&config, &store, &modified, true)
                 .await
                 .is_err()
         );

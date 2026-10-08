@@ -165,22 +165,81 @@ fn validate_bundle(
         ],
         MAX_FILE,
     )?;
-    let objects = git(&repository, &["rev-list", "--objects", "--all"], MAX_FILE)?;
+    // Object path hints are incomplete: the same blob can have many names,
+    // including blocked names that disappeared from the current tree.
+    let objects = git(
+        &repository,
+        &["rev-list", "--objects", "--no-object-names", "--all"],
+        MAX_FILE,
+    )?;
     let objects = std::str::from_utf8(&objects).map_err(|_| refused())?;
     if objects.lines().count() > 10_000 {
         return Err(refused());
     }
-    for line in objects.lines() {
-        let (oid, path) = line.split_once(' ').unwrap_or((line, ""));
-        validate_bytes(path, b"")?;
+    let mut kinds = BTreeMap::new();
+    let mut blob_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut associations = 0usize;
+    for oid in objects.lines() {
         let kind = git(&repository, &["cat-file", "-t", oid], 128)?;
-        if matches!(kind.as_slice(), b"blob\n" | b"commit\n" | b"tag\n") {
-            let contents = git(&repository, &["cat-file", "-p", oid], MAX_FILE)?;
-            *budget = budget.saturating_add(contents.len() as u64);
+        if kind == b"tree\n" {
+            // Every commit root tree is reachable, as are any directly tagged trees.
+            // NUL framing preserves literal filenames, including tabs/newlines.
+            let tree = git(
+                &repository,
+                &["ls-tree", "-r", "-t", "-z", "--full-tree", oid],
+                MAX_FILE,
+            )?;
+            *budget = budget.saturating_add(tree.len() as u64);
             if *budget > MAX_SCAN {
                 return Err(refused());
             }
-            validate_bytes(path, &contents)?;
+            for entry in tree
+                .split(|byte| *byte == 0)
+                .filter(|entry| !entry.is_empty())
+            {
+                let entry = std::str::from_utf8(entry).map_err(|_| refused())?;
+                let (metadata, path) = entry.split_once('\t').ok_or_else(refused)?;
+                validate_bytes(path, b"")?;
+                let mut metadata = metadata.split_whitespace();
+                let _mode = metadata.next().ok_or_else(refused)?;
+                let kind = metadata.next().ok_or_else(refused)?;
+                let blob = metadata.next().ok_or_else(refused)?;
+                if metadata.next().is_some() {
+                    return Err(refused());
+                }
+                if kind == "blob"
+                    && blob_paths
+                        .entry(blob.to_owned())
+                        .or_default()
+                        .insert(path.to_owned())
+                {
+                    associations += 1;
+                    if associations > 100_000 {
+                        return Err(refused());
+                    }
+                }
+            }
+        }
+        kinds.insert(oid, kind);
+    }
+    for (oid, kind) in kinds {
+        if matches!(kind.as_slice(), b"blob\n" | b"commit\n" | b"tag\n") {
+            let contents = git(&repository, &["cat-file", "-p", oid], MAX_FILE)?;
+            let paths = blob_paths.get(oid);
+            // Bound both content reads and repeated path-sensitive inspection.
+            *budget = budget.saturating_add(
+                (contents.len() as u64).saturating_mul(paths.map_or(1, |paths| paths.len() as u64)),
+            );
+            if *budget > MAX_SCAN {
+                return Err(refused());
+            }
+            if let Some(paths) = paths {
+                for path in paths {
+                    validate_bytes(path, &contents)?;
+                }
+            } else {
+                validate_bytes("", &contents)?;
+            }
         }
     }
     Ok(())

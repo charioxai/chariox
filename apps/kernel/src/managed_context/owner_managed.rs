@@ -220,6 +220,11 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
 pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
     let (code, message, retryable) =
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            Some("authorization_expired") => (
+                "owner_context_authorization_expired",
+                "Owner-managed context authorization expired; start a new copy",
+                false,
+            ),
             Some("source_offline" | "source_stale") => (
                 "owner_context_source_offline",
                 "Source kernel is offline or stale",

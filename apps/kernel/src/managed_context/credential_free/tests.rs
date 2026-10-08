@@ -146,6 +146,53 @@ impl InlineShellFixture {
         fixture
     }
 
+    fn historical_path(blocked: &str, rename: bool) -> Self {
+        let fixture = Self::file("README.txt", b"ordinary opaque fixture value\n", false);
+        fs::write(
+            fixture.project.join(blocked),
+            b"ordinary opaque fixture value\n",
+        )
+        .unwrap();
+        git(&fixture.project, &["add", "."], MAX_FILE).unwrap();
+        git(
+            &fixture.project,
+            &["commit", "-m", "shared historical blob"],
+            MAX_FILE,
+        )
+        .unwrap();
+        if rename {
+            git(&fixture.project, &["rm", "README.txt"], MAX_FILE).unwrap();
+            git(&fixture.project, &["mv", blocked, "README.txt"], MAX_FILE).unwrap();
+        } else {
+            git(&fixture.project, &["rm", blocked], MAX_FILE).unwrap();
+        }
+        git(
+            &fixture.project,
+            &["commit", "-m", "public current filename"],
+            MAX_FILE,
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn assert_source_refuses(&self) {
+        use crate::managed_context::development::*;
+        let development = export_development_context(DevelopmentContextExportRequest {
+            project_id: "project".into(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: self.project.display().to_string(),
+                worktree_id: None,
+                worktree_path: self.project.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: self.root.join("development.tar.gz"),
+        })
+        .unwrap();
+        let error = validate_development_archive(&development.archive_path)
+            .expect_err("source must inspect every historical filename of a shared blob");
+        assert!(error.to_string().contains("credential-free context"));
+    }
+
     fn assert_target_refuses(&self) {
         self.assert_target_result(false);
     }
@@ -538,5 +585,38 @@ fn mp11_metadata_roles_do_not_hide_authentication_values() {
             validate_bytes(path, bytes).is_err(),
             "MP-11 authentication fixture {path}"
         );
+    }
+}
+
+#[test]
+fn source_refuses_renamed_and_shared_blocked_historical_paths() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for blocked in [".env", "auth.json"] {
+        for rename in [true, false] {
+            InlineShellFixture::historical_path(blocked, rename).assert_source_refuses();
+        }
+    }
+}
+
+#[test]
+fn target_refuses_renamed_and_shared_blocked_historical_paths() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for blocked in [".env", "auth.json"] {
+        for rename in [true, false] {
+            InlineShellFixture::historical_path(blocked, rename).assert_target_refuses();
+        }
+    }
+}
+
+#[test]
+fn target_accepts_renamed_and_shared_ordinary_historical_paths() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    for path in ["notes.txt", "public\tname.txt"] {
+        for rename in [true, false] {
+            InlineShellFixture::historical_path(path, rename).assert_target_result(true);
+        }
     }
 }

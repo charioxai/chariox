@@ -113,6 +113,7 @@ fn source_peer(config: &DaemonConfig) -> Result<ManagedContextTransferTarget, Da
 pub(crate) async fn authorize_export(
     config: &DaemonConfig,
     requested: &ManagedContextTransferTicket,
+    allow_first_issuance: bool,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     let profile = config
         .cloud_relay
@@ -148,16 +149,13 @@ pub(crate) async fn authorize_export(
             return Ok(requested.clone());
         }
         Err(error) => {
-            let error = cloud_admission_error(error);
-            if matches!(
-                &error,
-                DaemonError::ManagedContext {
-                    retryable: true,
-                    ..
-                }
-            ) {
-                // An unavailable lookup cannot prove that a new capability is needed.
-                return Err(error);
+            // Never issue another capability for a resumed context ID: Cloud
+            // retains consumed rows, including expired ones, under a unique ID.
+            let may_issue = allow_first_issuance
+                && crate::runtime::cloud_api_client::cloud_error_code(&error)
+                    == Some("authorization_expired");
+            if !may_issue {
+                return Err(cloud_admission_error(error));
             }
         }
     }
