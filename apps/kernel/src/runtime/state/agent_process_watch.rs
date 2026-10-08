@@ -433,6 +433,13 @@ impl KernelRuntimeState {
                         "Wake alert: process ownership could not be verified; physical settlement is unconfirmed, supervision is retrying");
                     continue;
                 }
+                if matches!(signal, Signal::Lost(_)) {
+                    // Physical loss must be visible even if durable delivery
+                    // is backpressured by the recipient (#914 admission seam).
+                    state.owned.record_notice_for_agent(&notice_room, None, Some(&notice_agent),
+                        state.owned.attachment_store.list_session_attachment_ids(&notice_room),
+                        "Wake alert: watched process is lost/unsettled after bounded retries; survivors may still be running and require operator cleanup");
+                }
                 let now = crate::session::unix_epoch_ms();
                 let (op, exited) = match signal {
                     Signal::Matched(line) => (
