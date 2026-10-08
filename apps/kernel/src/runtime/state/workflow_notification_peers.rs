@@ -1078,7 +1078,7 @@ mod tests {
             .execute_workflow_notification_command(
                 LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
                     session_id: target.session.clone(),
-                    subscription_id: subscription.subscription_id,
+                    subscription_id: subscription.subscription_id.clone(),
                 }),
                 "local",
             )
@@ -1090,6 +1090,42 @@ mod tests {
             .unwrap()
             .1
             .is_empty());
+        // MP-11 F8: authenticated, same-owner relay access does not grant
+        // kernel-wide notification authority on a lease worker. These kinds
+        // have no lease selector, so all four must fail at the caller boundary.
+        sc.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        source_runtime.owned.config_projection.update(sc.clone());
+        for request in [
+            RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: VERSION,
+            },
+            RelayPeerRequest::SubscribeWorkflowNotifications {
+                protocol_version: VERSION,
+                source_workflow_ref: source_record.source_id.clone(),
+                target_ref: subscription.clone(),
+            },
+            RelayPeerRequest::UnsubscribeWorkflowNotifications {
+                protocol_version: VERSION,
+                subscription_id: subscription.subscription_id.clone(),
+            },
+            RelayPeerRequest::DeliverWorkflowNotification {
+                protocol_version: VERSION,
+                subscription_id: subscription.subscription_id.clone(),
+                envelope: envelope.clone(),
+            },
+        ] {
+            match target_runtime
+                .notification_peer("local", &sc.daemon_id, request)
+                .await
+            {
+                Err(DaemonError::RelayTransport { code, .. }) => {
+                    assert_eq!(code, "kernel_runtime_role_denied");
+                }
+                other => {
+                    panic!("MP-11 F8: worker notification authority must be denied: {other:?}")
+                }
+            }
+        }
         source_tx.send(true).unwrap();
         target_tx.send(true).unwrap();
         source_connector.await.unwrap();

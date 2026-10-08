@@ -95,6 +95,14 @@ access.
 
 ## Private workflow notifications (local 452 / peer 82; MP-08 / MP-10 / MP-11)
 
+MP-11 F8 is closed by the existing lease-scoped authorization: leased-resource
+requests must match the authenticated `LeaseCallerBinding`, and a mismatch
+returns typed `unauthorized`. Remote lease workers reject kernel-wide
+List/Subscribe/Unsubscribe/Deliver notification requests, including requests
+from authenticated same-owner hosted peers, because these requests have no
+agent or lease selector. A future notification selector requires a separately
+allocated protocol change; this decision changes no protocol shape or version.
+
 Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
 {session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
 when runs finish**. The session owner owns the source. Its ID survives switches;
