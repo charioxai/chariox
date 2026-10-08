@@ -114,6 +114,30 @@ async fn a06_ordinary_agents_cannot_generate_credentials() {
 }
 
 #[tokio::test]
+async fn a06_an_enrolled_kernel_owner_generates_and_other_users_cannot() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    // A Cloud-enrolled kernel's local owner is its Cloud user.
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
+    let set_owner = |owner: &str| {
+        let mut turns = f.state.owned.sudo_turns.lock().unwrap();
+        turns.get_mut(&turn.entry_id).unwrap().owner_user_id = owner.into();
+    };
+    set_owner("collaborator");
+    assert!(generate(&f, "other", SITE).await.is_err());
+    set_owner("cloud-owner");
+    let created = generate(&f, "signup", SITE).await.unwrap();
+    assert_eq!(created["created"], true);
+}
+
+#[tokio::test]
 async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
