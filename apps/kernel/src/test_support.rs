@@ -68,6 +68,9 @@ impl TestWorktree {
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test worktree should exist");
+        // Disk-backed test TMPDIRs may use an alias outside protected service
+        // state. Provider discovery binds to its canonical working directory.
+        let path = path.canonicalize().expect("test worktree should resolve");
         Self { path }
     }
 
