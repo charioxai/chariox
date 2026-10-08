@@ -229,10 +229,7 @@ mod tests {
     #[test]
     fn a03_output_is_sanitized_bounded_and_matches_once() {
         assert_eq!(sanitize(b"\x1b[31mred\x1b[0m ok\x07"), "red ok");
-        let output = Arc::new(Output {
-            tail: Default::default(),
-            matched: Default::default(),
-        });
+        let output = Arc::new(Output::default());
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut input = b"boot\nready one\nready two\n".to_vec();
         input.extend(std::iter::repeat_n(b'x', 10_000));
