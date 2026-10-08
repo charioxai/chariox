@@ -200,7 +200,10 @@ mod tests {
     /// an embedded asset imports is embedded too.
     #[test]
     fn embedded_assets_include_every_relative_import() {
-        let names = super::ASSETS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let names = super::ASSETS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
         for (name, bytes) in super::ASSETS {
             let text = String::from_utf8_lossy(bytes);
             for quote in ['"', '\''] {
