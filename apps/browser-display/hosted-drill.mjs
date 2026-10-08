@@ -22,10 +22,19 @@ try{
  await page.addInitScript(()=>{
   globalThis.mdHosted={frames:[],inputs:[]};
   const stats=globalThis.mdHosted;
+  // MP-08/MP-10/MP-11: bounded metadata only; preserve native API behavior.
+  stats.timings=[];const timing=(stage,start)=>{if(stats.timings.length<100000)stats.timings.push({stage,started_ms:performance.timeOrigin+start,duration_ms:performance.now()-start})};
+  if(globalThis.VideoDecoder){const Original=VideoDecoder;globalThis.VideoDecoder=class extends Original{
+   constructor(config){const starts=new Map();super({...config,output:frame=>{const t=starts.get(frame.timestamp);if(t!==undefined){timing('client_video_decode',t);starts.delete(frame.timestamp)}return config.output(frame)}});this.mdStarts=starts}
+   decode(chunk){this.mdStarts.set(chunk.timestamp,performance.now());try{return super.decode(chunk)}catch(e){this.mdStarts.delete(chunk.timestamp);throw e}}
+  }}
+  const draw=CanvasRenderingContext2D.prototype.drawImage;CanvasRenderingContext2D.prototype.drawImage=function(...args){const t=performance.now();try{return draw.apply(this,args)}finally{if(this.canvas.matches?.('[aria-label="Kernel browser video"]'))timing('client_canvas_draw',t)}};
+  const bitmap=createImageBitmap;globalThis.createImageBitmap=async(...args)=>{const t=performance.now();try{return await bitmap(...args)}finally{timing('client_bitmap_decode',t)}};
+  const decrypt=SubtleCrypto.prototype.decrypt;SubtleCrypto.prototype.decrypt=async function(...args){const t=performance.now();try{return await decrypt.apply(this,args)}finally{timing('client_decrypt',t)}};
   new MutationObserver(records=>{for(const record of records)if(record.attributeName==='data-display-sequence'){
    const c=record.target;const sequence=Number(c.dataset.displaySequence),kind=c.dataset.displayKind,width=c.width,height=c.height;requestAnimationFrame(at=>{if(stats.frames.length<100000)stats.frames.push({at:performance.timeOrigin+at,sequence,kind,width,height})});
   }}).observe(document,{subtree:true,attributes:true,attributeFilter:['data-display-sequence']});
-  for(const kind of ['click','wheel','keydown','beforeinput'])document.addEventListener(kind,e=>{if(e.isTrusted&&e.target instanceof HTMLCanvasElement)stats.inputs.push({at:performance.timeOrigin+performance.now(),kind})},true);
+  for(const kind of ['click','wheel','keydown','beforeinput'])document.addEventListener(kind,e=>{if(e.isTrusted&&(e.target instanceof HTMLCanvasElement||e.target instanceof HTMLTextAreaElement))stats.inputs.push({at:performance.timeOrigin+performance.now(),kind})},true);
  });
  stage='waiting room';await page.goto(origin+'/waiting-room');await page.getByText('Waiting Room Ready',{exact:true}).waitFor({timeout:60000});await page.waitForTimeout(20000);
  const dashboard=await page.evaluate(()=>fetch('/dashboard').then(r=>r.json()));
@@ -48,10 +57,10 @@ try{
     const b=await canvas.boundingBox();if(!b)throw Error('MP-10: video canvas missing');
     await page.mouse.move(b.x+b.width*.5,b.y+b.height*.5);
     const begin=await page.evaluate(()=>performance.timeOrigin+performance.now());
-    const until=Date.now()+10000;while(Date.now()<until){await page.mouse.wheel(0,Math.floor((10000-(until-Date.now()))/1000)%2===0?120:-120);await page.waitForTimeout(16)}
+    const until=Date.now()+10000;let wheelCalls=0;while(Date.now()<until){await page.mouse.wheel(0,Math.floor((10000-(until-Date.now()))/1000)%2===0?120:-120);wheelCalls++;await page.waitForTimeout(16)}
     const end=await page.evaluate(()=>performance.timeOrigin+performance.now());await page.waitForTimeout(1000);
     const frames=await page.evaluate(({begin,end})=>mdHosted.frames.filter(f=>f.at>=begin&&f.at<=end),{begin,end});
-    const visible=[...new Map(frames.map(frame=>[frame.at,frame])).values()];row.scroll={begin,end,presented:visible.length,decoded:frames.length,fps:visible.length*1000/(end-begin),kinds:frames.reduce((o,f)=>(o[f.kind]=(o[f.kind]??0)+1,o),{})};
+    const visible=[...new Map(frames.map(frame=>[frame.at,frame])).values()];row.scroll={begin,end,wheel_calls:wheelCalls,driver_hz:wheelCalls*1000/(end-begin),presented:visible.length,decoded:frames.length,fps:visible.length*1000/(end-begin),kinds:frames.reduce((o,f)=>(o[f.kind]=(o[f.kind]??0)+1,o),{})};
     row.final_canvas=await canvas.evaluate(c=>({width:c.width,height:c.height,kind:c.dataset.displayKind,sequence:c.dataset.displaySequence}));
    }
    const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.status=row.mode==='image'?'RED_PNG_FALLBACK':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);

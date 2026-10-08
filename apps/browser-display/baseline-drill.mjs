@@ -1,4 +1,5 @@
 // MP-08/MP-10/MP-11: upstream baseline only; no Selkies product authority.
+import {tmpdir} from 'node:os';
 import {createServer} from 'node:http';import {createRequire} from 'node:module';
 import {readFile,writeFile,mkdir,mkdtemp,chmod,chown,rm} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';import path from 'node:path';
@@ -6,7 +7,7 @@ import {fixture} from './drill-fixtures.mjs';import {distribution} from './drill
 import {CpuSampler,cpuSpan} from './drill-cpu.mjs';import {launchOwned,checkChild,stopGroup} from './drill-owned-process.mjs';import {sourceIdentity} from './source-identity.mjs';
 const [output,tools,python]=process.argv.slice(2);if(![output,tools,python].every(p=>p&&path.isAbsolute(p)))throw Error('MP-10: absolute output/tools/Selkies2 Python required');
 const require=createRequire(path.join(tools,'package.json')),{chromium}=require('playwright-core'),{PNG}=require('pngjs');
-const here=path.dirname(fileURLToPath(import.meta.url)),root=await mkdtemp('/tmp/chariox-display-baseline-');await chmod(root,0o755);await mkdir(output,{recursive:true});
+const here=path.dirname(fileURLToPath(import.meta.url)),root=await mkdtemp(path.join(tmpdir(),'chariox-display-baseline-'));await chmod(root,0o755);await mkdir(output,{recursive:true});
 const legacy=process.env.MD_BASELINE==='legacy';
 const receipt={item:'MP-08/MP-10/MP-11',...await sourceIdentity(),backend:legacy?'Selkies legacy 17a3d5a GStreamer/WebRTC x264enc':'Selkies 2.0.0 pixelflux/WebSocket x264',geometry:[1920,1080],dpr:1,gpu_requested:process.env.MD_BASELINE_GPU==='1'||process.env.MD_BASELINE_ENCODER==='vah264enc',budget_bps:Number(process.env.MD_BITRATE||8000000),workload:process.env.MD_WORKLOAD||'docs',status:'RED',state_root:root,cleanup:[],samples:[]};
 const owned=[];let browser,sourceBrowser,server,pipelineLog='',page;const metrics=new MetricsWorker(tools),cpu=new CpuSampler({root,viewerRoot:path.join(root,'viewer')});cpu.start();let interrupted=false;
