@@ -60,20 +60,23 @@ test('a captcha frame stays visible; its region is not protected', () => withFix
   assert.deepEqual(overlap, []);
 }));
 
-test('layout moved between measurement and capture re-captures fail-closed', () => withFixture(1, async ({ browser, connection, sessionId }) => {
+test('layout moved between measurement and capture re-measures, then fails closed', () => withFixture(1, async ({ browser, connection, sessionId }) => {
   const calls = [];
-  const result = await fenceBrowserCapture(browser, policy(), async protection => {
+  const once = await fenceBrowserCapture(browser, policy(), async protection => {
     calls.push(protection);
     if (calls.length === 1) await connection.send('Runtime.evaluate', { expression: 'scrollBy(0, 120)' }, sessionId);
     return calls.length;
   });
-  assert.equal(result, 2);
-  assert.ok(calls[0]?.pages?.length === 1);
-  assert.equal(calls[1], null);
-  const stable = [];
-  assert.equal(await fenceBrowserCapture(browser, policy(), async protection => { stable.push(protection); return 'ok'; }), 'ok');
-  assert.equal(stable.length, 1);
-  assert.ok(stable[0].pages[0].regions.length > 0);
+  assert.equal(once, 2, 'the moved capture is discarded and re-captured under a fresh measurement');
+  assert.notDeepEqual(calls[1].pages[0].regions, calls[0].pages[0].regions);
+  const moving = [];
+  const result = await fenceBrowserCapture(browser, policy(), async protection => {
+    moving.push(protection);
+    if (protection) await connection.send('Runtime.evaluate', { expression: 'scrollBy(0, 40)' }, sessionId);
+    return protection;
+  });
+  assert.equal(result, null, 'continuously moving layout is captured fail-closed');
+  assert.deepEqual(moving.map(Boolean), [true, true, true, false]);
 }));
 
 test('unknown protection fails closed', () => withFixture(1, async ({ browser }) => {

@@ -257,14 +257,17 @@ export async function measurePresented(browser, policy) {
 }
 
 // Measure, let the measured layout reach the screen, capture, re-measure. A
-// changed page, window, frame tree or region set re-captures fail-closed:
-// capture(null) must protect every browser pixel it cannot bind.
-export async function fenceBrowserCapture(browser, policy, capture) {
-  const before = await measurePresented(browser, policy);
-  if (!before) return capture(null);
-  const result = await capture(before);
-  const after = await measurePresented(browser, policy);
-  if (after && protectionDigest(after) === protectionDigest(before)) return result;
+// changed page, window, frame tree or region set retries with a fresh
+// measurement; after `attempts` it captures fail-closed: capture(null) must
+// protect every browser pixel it cannot bind.
+export async function fenceBrowserCapture(browser, policy, capture, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const before = await measurePresented(browser, policy);
+    if (!before) break;
+    const result = await capture(before);
+    const after = await measurePresented(browser, policy);
+    if (after && protectionDigest(after) === protectionDigest(before)) return result;
+  }
   return capture(null);
 }
 
