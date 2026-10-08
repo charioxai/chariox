@@ -63,7 +63,9 @@ impl KernelRuntimeState {
             return Err(error("generated password length must be 16-128"));
         }
         let (origin, host) = generation_origin(&args.origin)?;
-        if turn.owner_user_id != crate::session::DEFAULT_LOCAL_USER_ID
+        // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
+        if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
+            != crate::session::DEFAULT_LOCAL_USER_ID
             || self
                 .owned
                 .config_projection
