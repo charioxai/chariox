@@ -409,6 +409,9 @@ done
         response,
         LocalDaemonResponse::PromptSubmitted { .. }
     ));
+    // The OS birth fence deliberately rejects same-tick births. On a fast
+    // builder the fixture can reach its probe within the admission tick.
+    tokio::time::sleep(Duration::from_millis(30)).await;
     std::fs::write(scratch_root.join("probe"), "probe").unwrap();
     let allowed: serde_json::Value =
         serde_json::from_str(&file(&scratch_root.join("result")).await).unwrap();
@@ -752,4 +755,173 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
         !retained_allowed,
         "prior turn descendant must lose shell authority"
     );
+}
+
+// MP-08/MP-10/MP-11: a spawn launcher is not the endpoint-serving provider.
+#[tokio::test]
+async fn sudo_shell_wrapper_native_endpoint_preserves_turn_fence() {
+    for mode in ["spawn", "exec"] {
+        let scratch = ShellDrillScratch::new();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let script = scratch.path().join("wrapper.py");
+        std::fs::write(
+            &script,
+            r#"
+import os, socket, sys, time
+root, port, mode = sys.argv[1:]
+def wait(name):
+    while not os.path.exists(root+'/'+name): time.sleep(.01)
+def idle():
+    while True: time.sleep(1)
+if mode == 'spawn':
+    child = os.fork()
+    if child == 0: os.execl(sys.executable, sys.executable, __file__, root, port, 'native')
+    idle()
+sock = socket.socket()
+sock.bind(('127.0.0.1', int(port)))
+sock.listen()
+old = os.fork()
+if old == 0:
+    sock.close()
+    open(root+'/old', 'w').write(str(os.getpid()))
+    wait('old-go')
+    if os.fork() == 0:
+        open(root+'/old-grandchild', 'w').write(str(os.getpid()))
+    idle()
+open(root+'/native', 'w').write(str(os.getpid()))
+for name in ['first', 'next']:
+    wait('start-'+name)
+    child = os.fork()
+    if child == 0:
+        sock.close()
+        open(root+'/pid-'+name, 'w').write(str(os.getpid()))
+        idle()
+idle()
+"#,
+        )
+        .unwrap();
+        let f = super::tests::fixture_with_run_endpoint(
+            Some(&format!(
+                "exec python3 '{}' '{}' {port} {mode}",
+                script.display(),
+                scratch.path().display()
+            )),
+            false,
+            "dev-stub",
+            "dev-stub",
+            Some(format!("http://127.0.0.1:{port}")),
+        );
+        let native = file(&scratch.path().join("native"))
+            .await
+            .parse::<u32>()
+            .unwrap();
+        let old = file(&scratch.path().join("old"))
+            .await
+            .parse::<u32>()
+            .unwrap();
+        let mut children = SiblingCleanup::new(vec![native, old]);
+        {
+            let mut app = f.app.lock().await;
+            app.finish_provider_launch(
+                &crate::app::StartedProviderLaunch {
+                    run: f.run.clone(),
+                    previous_active_run_id: None,
+                    provider_credential_env: Default::default(),
+                },
+                None,
+            )
+            .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let turn = running(&f);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::fs::write(scratch.path().join("start-first"), "start").unwrap();
+        std::fs::write(scratch.path().join("old-go"), "start").unwrap();
+        let first = file(&scratch.path().join("pid-first"))
+            .await
+            .parse::<u32>()
+            .unwrap();
+        let grandchild = file(&scratch.path().join("old-grandchild"))
+            .await
+            .parse::<u32>()
+            .unwrap();
+        children.0.push(inspect(first).unwrap().0);
+        children.0.push(inspect(grandchild).unwrap().0);
+        let first_identity = inspect(first).unwrap().0;
+        assert_eq!(
+            f.state
+                .sudo_for_peer(&first_identity)
+                .expect("wrapper native tool child must have current-turn authority"),
+            turn
+        );
+        assert_eq!(
+            f.state.sudo_for_peer(&inspect(native).unwrap().0).unwrap(),
+            turn
+        );
+        assert!(f.state.sudo_for_peer(&inspect(old).unwrap().0).is_err());
+        assert!(f
+            .state
+            .sudo_for_peer(&inspect(grandchild).unwrap().0)
+            .is_err());
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap();
+        let owner = &f.state.owned.prompt_state_owner;
+        owner.hold_sudo_work(&session, &turn.agent_id, &turn.entry_id, "sudo-exact-turn");
+        owner
+            .cancel_active_prompt_only(&session, &turn.agent_id)
+            .unwrap();
+        assert!(owner.admit_sudo_work_prompt(
+            &session,
+            &turn.agent_id,
+            &turn.entry_id,
+            "wrapper-next-turn"
+        ));
+        let prompt = PromptQueueItem::new(
+            "wrapper-next-turn",
+            &f.request.attachment_id,
+            &turn.agent_id,
+            "continue",
+            PromptStatus::Queued,
+        );
+        owner
+            .submit_prepared_prompt_with_queue_policy(&session, prompt, false, false)
+            .unwrap();
+        assert!(owner.bind_sudo_turn(
+            &session,
+            &turn.agent_id,
+            "wrapper-next-turn",
+            &turn.entry_id
+        ));
+        let mut next_turn = turn;
+        next_turn.prompt_id = Some("wrapper-next-turn".into());
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .insert(next_turn.entry_id.clone(), next_turn.clone());
+        assert!(
+            f.state.sudo_for_peer(&first_identity).is_err(),
+            "retained child must remain denied"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::fs::write(scratch.path().join("start-next"), "start").unwrap();
+        let next = file(&scratch.path().join("pid-next"))
+            .await
+            .parse::<u32>()
+            .unwrap();
+        children.0.push(inspect(next).unwrap().0);
+        assert_eq!(
+            f.state.sudo_for_peer(&inspect(next).unwrap().0).unwrap(),
+            next_turn
+        );
+    }
 }

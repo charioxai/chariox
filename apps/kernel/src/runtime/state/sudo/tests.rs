@@ -39,6 +39,16 @@ pub(super) fn fixture_with_run_profile(
     adapter: &str,
     provider: &str,
 ) -> Fixture {
+    fixture_with_run_endpoint(script, room_tools, adapter, provider, None)
+}
+
+pub(super) fn fixture_with_run_endpoint(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+    endpoint: Option<String>,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -78,10 +88,12 @@ pub(super) fn fixture_with_run_profile(
             pty_env: Default::default(),
             pty_env_remove: vec![],
             working_directory: Some(worktree.path().to_owned()),
-            structured_endpoint: None,
+            structured_endpoint: endpoint.clone(),
         },
     );
-    run.mark_running();
+    if endpoint.is_none() {
+        run.mark_running();
+    }
     run.set_runtime_mcp_auth_token(Some("sudo-fixture-bearer".into()));
     // The kernel must admit the current run before its process can launch.
     app.providers_mut().insert_run_for_test(run.clone());
