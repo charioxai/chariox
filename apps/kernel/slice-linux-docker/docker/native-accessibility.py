@@ -282,6 +282,12 @@ def input_target(processes, expected=None):
     return identity
 
 
+def input_guard(processes):
+    """MP-11: bind the admitted leaf once and recheck it before every press."""
+    expected = input_target(processes)
+    return lambda: input_target(processes, expected)
+
+
 def act(request):
     tree=snapshot(request['processes'],request.get('browser_processes'))
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')

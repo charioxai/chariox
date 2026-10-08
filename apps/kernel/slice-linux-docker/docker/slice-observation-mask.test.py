@@ -15,6 +15,51 @@ spec.loader.exec_module(module)
 
 
 class MaskTests(unittest.TestCase):
+    def setUp(self):
+        self.native = patch.object(module, 'native_coverage', create=True, return_value={
+            'available': True, 'complete': True, 'protected': False, 'masks': []})
+        self.native.start()
+        self.addCleanup(self.native.stop)
+
+    def test_mp11_empty_registry_room_screenshot_and_ocr_apply_native_masks(self):
+        coverage = {'available': True, 'complete': True, 'protected': False,
+                    'nodes': [], 'masks': [[20, 10, 20, 10]], 'uncovered': [[20, 10, 20, 10]]}
+        policy = {'unknown': False, 'targets': [], 'values': []}
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'room.png'
+            native = Mock(return_value=coverage)
+            capture = lambda: Image.new('RGB', (80, 40), 'white')
+            with patch.object(module, 'native_coverage', native):
+                module.observe('screenshot', str(path), policy, lambda _: [], capture)
+            with self.subTest(mode='screenshot'), Image.open(path) as image:
+                self.assertEqual(image.getpixel((25, 15)), (0, 0, 0))
+                self.assertEqual(image.getpixel((0, 0)), (255, 255, 255))
+                self.assertEqual(image.getpixel((40, 15)), (255, 255, 255))
+                self.assertEqual(image.getpixel((45, 15)), (255, 255, 255))
+            def recognize(args, **kwargs):
+                with Image.open(args[3]) as image:
+                    # A recognizer cannot see the canary once its pixels are masked.
+                    print('public' if image.getpixel((25, 15)) == (0, 0, 0) else 'private-canary')
+            with patch('sys.stdout', new_callable=io.StringIO) as text:
+                with patch.object(module, 'native_coverage', native):
+                    module.observe('ocr', None, policy, lambda _: [], capture, recognize, root)
+            with self.subTest(mode='ocr'):
+                self.assertEqual(text.getvalue(), 'public\n')
+                self.assertEqual(native.call_count, 4)
+
+    def test_mp11_room_native_coverage_change_retries_before_releasing_pixels(self):
+        public = {'available': True, 'complete': True, 'protected': False, 'masks': []}
+        masked = {**public, 'masks': [[20, 10, 20, 10]]}
+        native = Mock(side_effect=[public, masked, masked, masked])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'room.png'
+            capture = Mock(side_effect=lambda: Image.new('RGB', (80, 40), 'white'))
+            with patch.object(module, 'native_coverage', native):
+                module.observe('screenshot', str(path), {}, lambda _: [], capture)
+            self.assertEqual(capture.call_count, 2)
+            with Image.open(path) as image:
+                self.assertEqual(image.getpixel((25, 15)), (0, 0, 0))
+
     def test_destroyed_native_window_is_pruned_but_other_x_errors_fail_closed(self):
         class BadWindow(Exception):
             pass
@@ -28,6 +73,7 @@ class MaskTests(unittest.TestCase):
         }
         target = {'kind': 'native', 'target': {'focus_window': 42, 'active_window': 42}}
         policy = {'targets': [target]}
+        modules['Xlib'] = modules['selkies.Xlib']
         with patch.dict(sys.modules, modules):
             self.assertEqual(module.locate_regions(policy), [])
             self.assertEqual(policy['targets'], [])

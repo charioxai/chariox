@@ -672,9 +672,12 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
+  # MP-11: slice-keyboard uses the kernel-admitted CHARIOX_COMPUTER_AGENT_INPUT
+  # actor marker to bind and recheck native focus before every press. AT-SPI
+  # is a system package; expose it without replacing the pinned keyboard backend.
   # Kernel enforces a length-derived deadline and immediate cancellation.
   # Standalone safety bound accommodates the full 64 KiB input contract.
-  timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
+  PYTHONPATH=/usr/lib/python3/dist-packages timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
     "${BASH_SOURCE[0]%/*}/slice-keyboard.py"
 }
 
@@ -693,7 +696,7 @@ computer_key_stdin() {
   fi
   # MP-08/MP-11: use the same strict XTEST chords as host native input.
   # xdotool can return success for unknown lowercase keysyms without input.
-  printf '%s' "$key" | timeout --foreground 10s /opt/chariox-selkies/bin/python \
+  printf '%s' "$key" | PYTHONPATH=/usr/lib/python3/dist-packages timeout --foreground 10s /opt/chariox-selkies/bin/python \
     "${BASH_SOURCE[0]%/*}/slice-keyboard.py" key-repeat "$repeat"
 }
 
@@ -952,7 +955,7 @@ case "${1:-status}" in
   protected-screenshot|protected-ocr|protected-find-text)
     mode="${1#protected-}"; shift
     require_screen_available
-    /opt/chariox-selkies/bin/python "$ROOT/slice-observation-mask.py" "$mode" "$@" ;;
+    /usr/bin/python3 "$ROOT/slice-observation-mask.py" "$mode" "$@" ;;
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;

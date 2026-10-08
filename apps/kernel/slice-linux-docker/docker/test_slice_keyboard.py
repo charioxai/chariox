@@ -1,4 +1,5 @@
 """Unicode text must not become Chromium's physical browser accelerators."""
+import io
 import importlib.util
 from pathlib import Path
 import sys
@@ -92,6 +93,24 @@ class KeyboardTextTests(unittest.TestCase):
             with self.assertRaises(ValueError):module.type_text('ab',before_press=admit)
         self.assertEqual(connection.text,'a')
 
+    def test_mp11_room_text_cli_refuses_before_a_protected_field_receives_input(self):
+        import ast
+        connection = Display()
+        module = helper(connection)
+        source = Path(__file__).with_name('slice-keyboard.py').read_text()
+        tree = ast.parse(source)
+        entry = next(node for node in tree.body if isinstance(node, ast.If) and '__name__' in ast.unparse(node.test))
+        code = compile(ast.Module(body=[entry], type_ignores=[]), str(Path(__file__).with_name('slice-keyboard.py')), 'exec')
+        module.__dict__['__name__'] = '__main__'
+        with patch.dict(module.os.environ, {'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), \
+             patch.object(module.sys, 'argv', ['slice-keyboard.py']), \
+             patch.object(module.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(b'private-canary'))), \
+             patch.object(module, 'room_input_guard', create=True, side_effect=ValueError('protected native focus')), \
+             patch.object(module.time, 'sleep'), patch.object(module.signal, 'signal'), \
+             patch.object(module.sys, 'stderr', io.StringIO()):
+            with self.assertRaises(SystemExit):exec(code, module.__dict__)
+        self.assertEqual(connection.text, '')
+
     def type(self, text, inherited=False):
         connection = Display()
         if inherited: connection.mapping[0x01000000 | ord(text[0])] = 181
@@ -163,6 +182,47 @@ class PhysicalChordTests(unittest.TestCase):
         c.keysym_to_keycode.side_effect=lambda key:key
         c.keycode_to_keysym.side_effect=lambda code,level:code
         return m,c
+    def test_mp11_two_non_modifier_chord_is_rejected_before_any_key(self):
+        m,c=self.native()
+        with patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+            with self.assertRaises(ValueError):m.hold_input('key','Return+s',1)
+        inject.assert_not_called()
+
+    def test_mp11_non_modifier_is_readmitted_after_chord_resolution(self):
+        m,c=self.native()
+        checks=[]
+        def admit():
+            checks.append(True)
+            if len(checks)==2:raise ValueError('protected leaf')
+        with patch.object(m.xtest,'fake_input') as inject, patch.object(m,'focused_target',return_value={}), patch.object(m,'assert_secret_target'), patch.object(m.signal,'signal'):
+            with self.assertRaises(ValueError):m.hold_input('key','CTRL+s',1,before_press=admit)
+        self.assertFalse(any(call.args[1:]==(2,39) for call in inject.call_args_list))
+
+    def test_mp11_room_key_repeat_readmits_each_press(self):
+        m,c=self.native()
+        checks=[]
+        def admit():
+            checks.append(True)
+            if len(checks)==3:raise ValueError('protected leaf')
+        with patch.object(m.xtest,'fake_input') as inject, patch.object(m,'focused_target',return_value={}), patch.object(m,'assert_secret_target'), patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+            with self.assertRaises(ValueError):m.key_repeat('s',2,before_press=admit)
+        self.assertEqual(sum(call.args[1:]==(2,39) for call in inject.call_args_list),1)
+
+    def test_mp11_room_cli_text_and_key_use_native_admission(self):
+        m,c=self.native()
+        for args,text in [([],b'private'),(['key-repeat','2'],b's')]:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',create=True,side_effect=ValueError('protected native focus')), patch.object(m.xtest,'fake_input') as inject:
+                with self.assertRaises(ValueError):m.main(args,io.BytesIO(text))
+            inject.assert_not_called()
+
+    def test_mp11_approved_room_vault_input_bypasses_ordinary_native_admission(self):
+        m,c=self.native()
+        target={'focus_window':10,'active_window':10,'geometry':[0,0,10,10],'window_geometry':[0,0,10,10]}
+        with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard') as guard, patch.object(m,'type_text') as type_text:
+            m.main(['secret',m.json.dumps(target)],io.BytesIO(b'approved'))
+        guard.assert_not_called()
+        type_text.assert_called_once_with('approved',target)
+
     def test_mp08_lowercase_provider_navigation_dispatches_real_base_keys(self):
         for name,code in [('down',116),('return',36)]:
             m,c=self.native()

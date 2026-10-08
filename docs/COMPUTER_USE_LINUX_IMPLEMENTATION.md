@@ -21,6 +21,13 @@ subtract an occluding window. Override-redirect windows are always inspected;
 unknown popups are masked independently of the normal-window list. The
 before/after observation fence covers these masks and window bindings.
 
+MP-08 / MP-11: Room screenshots and OCR combine registered-value masks with
+this same native coverage, including an empty secret registry. Both captures
+fence the native tree before and after reading pixels. Room agent text and
+key-repeat helpers bind and recheck the same public native leaf before each
+press. Chords permit modifiers and at most one ordinary key. Human and approved
+Vault typing keep their existing actor paths.
+
 These conservative fallbacks are security restrictions, not functional or
 MP-10 acceptance evidence. Real-live hosted/client/provider parity still
 requires the current validation matrix and independently reviewed anchors.

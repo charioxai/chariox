@@ -855,6 +855,15 @@ async fn run_slice_screen_command_inner_with_output_policy(
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // MP-11: actor comes from the kernel's admitted action, never stdin.
+        if cancellation
+            .as_ref()
+            .is_some_and(|value| value.is_agent_input())
+        {
+            command.env("CHARIOX_COMPUTER_AGENT_INPUT", "1");
+        } else {
+            command.env_remove("CHARIOX_COMPUTER_AGENT_INPUT");
+        }
         if stdin.is_some() {
             command.stdin(std::process::Stdio::piped());
         }
@@ -996,6 +1005,17 @@ async fn run_slice_screen_command_inner_with_output_policy(
                 })??;
         if !status.success() && cancellation.as_ref().is_some_and(|value| value.requested()) {
             return Err(computer_input_cancelled());
+        }
+        if !status.success()
+            && cancellation
+                .as_ref()
+                .is_some_and(|value| value.is_agent_input())
+            && stderr.trim() == "user_domain_sensitive_requires_focus"
+        {
+            return Err(crate::error::HostFailure::Refused(
+                crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+            )
+            .into_daemon("room_computer"));
         }
         Ok(SliceScreenCommandOutput {
             success: status.success(),

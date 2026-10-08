@@ -17,7 +17,7 @@ class ObservationRedacted(Exception):
     pass
 
 
-def mask_image(image, regions):
+def mask_image(image, regions, margin=8):
     # Copy pixels, not PNG metadata that may itself contain pre-redaction text.
     masked = Image.new('RGB', image.size)
     masked.paste(image.convert('RGB'))
@@ -28,25 +28,38 @@ def mask_image(image, regions):
         x, y, width, height = region
         if width <= 0 or height <= 0:
             raise ObservationRedacted(RETRY_MESSAGE)
-        left, top = max(0, math.floor(x) - 8), max(0, math.floor(y) - 8)
-        right = min(image.width - 1, math.ceil(x + width) + 8)
-        bottom = min(image.height - 1, math.ceil(y + height) + 8)
+        left, top = max(0, math.floor(x) - margin), max(0, math.floor(y) - margin)
+        right = min(image.width - 1, math.ceil(x + width) + margin - (1 if margin == 0 else 0))
+        bottom = min(image.height - 1, math.ceil(y + height) + margin - (1 if margin == 0 else 0))
         if left > right or top > bottom:
             continue  # A known offscreen region contributes no captured pixels.
         draw.rectangle((left, top, right, bottom), fill='black')
     return masked
 
 
-def capture_masked(policy, locate, capture):
+def capture_masked(policy, locate, capture, native=None):
     for _ in range(MAX_ATTEMPTS):
         try:
             before = locate(policy)
+            coverage = native() if native else None
             image = capture()
             try:
                 after = locate(policy)
-                if before != after:
+                next_coverage = native() if native else None
+                if before != after or coverage != next_coverage:
                     continue  # Drop only this frame. Re-locate and re-capture.
-                return mask_image(image, before)
+                if coverage is not None:
+                    if not coverage['available'] or not coverage['complete'] or coverage['protected']:
+                        return Image.new('RGB', image.size, 'black')
+                registered = mask_image(image, before)
+                if coverage is None:
+                    return registered
+                try:
+                    # Native masks already include window borders and stacking
+                    # subtraction. Do not pad into an accessible window above.
+                    return mask_image(registered, coverage.get('masks', coverage.get('uncovered', [])), margin=0)
+                finally:
+                    registered.close()
             finally:
                 image.close()
         except Exception:
@@ -61,7 +74,10 @@ def locate_regions(policy):
     regions = []
     for target in list(policy.get('targets', [])):
         if target['kind'] == 'native':
-            from selkies.Xlib import display, error
+            try:
+                from Xlib import display, error
+            except ModuleNotFoundError:
+                from selkies.Xlib import display, error
             connection = display.Display()
             try:
                 # Re-locate this exact approved control even if focus now differs.
@@ -106,13 +122,21 @@ def capture_pixels():
             return image.copy()
 
 
+def native_coverage():
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location('room_native_protection', Path(__file__).with_name('room-native-protection.py'))
+    protection = module_from_spec(spec)
+    spec.loader.exec_module(protection)
+    return protection.snapshot()
+
+
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
-            run=subprocess.run, scratch=None):
+            run=subprocess.run, scratch=None, native=None):
     native_ids = {target['target']['focus_window'] for target in policy.get('targets', [])
                   if target.get('kind') == 'native'}
     image = None
     try:
-        image = capture_masked(policy, locate, capture)
+        image = capture_masked(policy, locate, capture, native or native_coverage)
         if mode == 'screenshot':
             image.save(argument, format='PNG')
             return

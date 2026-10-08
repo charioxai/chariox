@@ -254,6 +254,9 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
                        "arrowdown": "Down",
                        "end": "End", "pageup": "Prior", "pagedown": "Next"}
             codes = []
+            non_modifiers = set()
+            modifiers = {'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'Shift_L', 'Shift_R',
+                         'Super_L', 'Super_R', 'Meta_L', 'Meta_R', 'Hyper_L', 'Hyper_R'}
             for name in value.split("+"):
                 base = aliases.get(name.lower(), name)
                 if len(base) == 1 and base.isalpha():
@@ -266,6 +269,13 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
                 if code < 8 or connection.keycode_to_keysym(code, 0) != keysym or code in codes:
                     raise ValueError("unmapped or duplicate chord key")
                 codes.append(code)
+                if base not in modifiers:
+                    non_modifiers.add(code)
+            if len(non_modifiers) > 1:
+                raise ValueError('chord permits at most one non-modifier key')
+            # Check the live leaf after resolution, before sending modifiers.
+            if non_modifiers and before_press is not None:
+                before_press()
             event_type, release_type = Xlib.X.KeyPress, Xlib.X.KeyRelease
         elif kind == "button":
             codes = [{"left": 1, "middle": 2, "right": 3}[value]]
@@ -300,14 +310,14 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
         connection.close()
 
 
-def key_repeat(value, repeat):
+def key_repeat(value, repeat, before_press=None):
     """MP-08/MP-11: strict shared native chords, bounded repeat, cancellable."""
     if not 1 <= repeat <= 32:
         raise ValueError("invalid key repeat")
     for index in range(repeat):
         handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
         try:
-            hold_input("key", value, 1)
+            hold_input("key", value, 1, before_press=before_press)
         finally:
             # hold_input shields key-up cleanup; restore cancellation between chords.
             for number, handler in handlers.items():
@@ -330,44 +340,62 @@ def reset_input():
         connection.close()
 
 
-if __name__ == "__main__":
+def room_input_guard():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location('room_native_protection', Path(__file__).with_name('room-native-protection.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.input_guard()
+
+
+def main(args, stream):
+    agent = os.environ.get('CHARIOX_COMPUTER_AGENT_INPUT') == '1'
+    guard = room_input_guard() if agent and (not args or args[0] == 'key-repeat') else None
+    if args == ['prepare-owned-keymap'] and not agent:
+        prepare_owned_text_keymap()
+    elif len(args) == 2 and args[0] == 'key-repeat':
+        key_repeat(stream.read(129).decode('ascii', errors='strict'), int(args[1]), before_press=guard)
+    elif len(args) == 2 and args[0] == 'hold-key':
+        hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
+    elif len(args) == 5 and args[0] == 'hold-button':
+        hold_input('button', args[1], int(args[2]), int(args[3]), int(args[4]))
+    elif args == ['reset'] and not agent:
+        reset_input()
+    elif args == ['secret-target']:
+        connection = display.Display()
+        try:
+            print(json.dumps(focused_target(connection), separators=(',', ':')))
+        finally:
+            connection.close()
+    elif len(args) == 2 and args[0] == 'secret':
+        expected_target = json.loads(args[1])
+        if not isinstance(expected_target, dict) or set(expected_target) != {
+            'focus_window', 'active_window', 'geometry', 'window_geometry'
+        }:
+            raise ValueError('invalid secret target')
+        type_text(stream.read().decode('utf-8', errors='strict'), expected_target)
+    elif not args:
+        type_text(stream.read().decode('utf-8', errors='strict'), before_press=guard)
+    else:
+        raise ValueError('unsupported keyboard operation')
+
+
+if __name__ == '__main__':
     def terminate(signum, _frame):
         raise SystemExit(128 + signum)
 
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, terminate)
     try:
-        if sys.argv[1:] == ["prepare-owned-keymap"]:
-            prepare_owned_text_keymap()
-        elif len(sys.argv) == 3 and sys.argv[1] == "key-repeat":
-            key_repeat(sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
-        elif len(sys.argv) == 3 and sys.argv[1] == "hold-key":
-            hold_input("key", sys.stdin.buffer.read(129).decode("ascii", errors="strict"), int(sys.argv[2]))
-        elif len(sys.argv) == 6 and sys.argv[1] == "hold-button":
-            hold_input("button", sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
-        elif sys.argv[1:] == ["reset"]:
-            reset_input()
-        elif sys.argv[1:] == ["secret-target"]:
-            connection = display.Display()
-            try:
-                print(json.dumps(focused_target(connection), separators=(",", ":")))
-            finally:
-                connection.close()
-        elif len(sys.argv) == 3 and sys.argv[1] == "secret":
-            expected_target = json.loads(sys.argv[2])
-            if not isinstance(expected_target, dict) or set(expected_target) != {
-                "focus_window", "active_window", "geometry", "window_geometry"
-            }:
-                raise ValueError("invalid secret target")
-            type_text(sys.stdin.buffer.read().decode("utf-8", errors="strict"), expected_target)
-        elif not sys.argv[1:]:
-            type_text(sys.stdin.buffer.read().decode("utf-8", errors="strict"))
-        else:
-            raise ValueError("unsupported keyboard operation")
+        main(sys.argv[1:], sys.stdin.buffer)
     except SecretTargetChanged:
-        print("computer credential input aborted: focused control or window changed", file=sys.stderr)
+        print('computer credential input aborted: focused control or window changed', file=sys.stderr)
         sys.exit(2)
-    except Exception:
-        # Neither typed text nor upstream exceptions belong in helper output.
-        print("physical keyboard text input failed", file=sys.stderr)
+    except Exception as error:
+        # MP-11: only native admission failures use the typed focus refusal.
+        if type(error).__name__ in ('NativeInputDenied', 'RoomInputDenied'):
+            print('user_domain_sensitive_requires_focus', file=sys.stderr)
+        else:
+            print('physical keyboard text input failed', file=sys.stderr)
         sys.exit(1)

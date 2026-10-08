@@ -18,9 +18,19 @@ struct ComputerInputExecutionState {
 pub(crate) struct ComputerInputCancellation {
     state: Arc<ComputerInputExecutionState>,
     authorizer: Option<Arc<dyn Fn() -> Result<(), crate::error::DaemonError> + Send + Sync>>,
+    agent_input: bool,
 }
 
 impl ComputerInputCancellation {
+    pub(crate) fn with_agent_input(mut self, agent_input: bool) -> Self {
+        self.agent_input = agent_input;
+        self
+    }
+
+    pub(crate) fn is_agent_input(&self) -> bool {
+        self.agent_input
+    }
+
     pub(crate) fn with_authorizer(
         mut self,
         authorizer: Arc<dyn Fn() -> Result<(), crate::error::DaemonError> + Send + Sync>,
@@ -166,6 +176,7 @@ impl ComputerInputExecution {
         ComputerInputCancellation {
             state: Arc::clone(&self.state),
             authorizer: None,
+            agent_input: false,
         }
     }
 }

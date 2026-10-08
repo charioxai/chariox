@@ -650,7 +650,8 @@ async fn execute_local(
             }
             let cancellation = execution
                 .cancellation()
-                .with_authorizer(authorize_input.clone());
+                .with_authorizer(authorize_input.clone())
+                .with_agent_input(actor_id.starts_with("agent:"));
             let input_result = match action {
                 crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { tree_revision, target_id, action } => {
                     let policy = state.owned.room_secret_observations.capture_policy(session_id)?;

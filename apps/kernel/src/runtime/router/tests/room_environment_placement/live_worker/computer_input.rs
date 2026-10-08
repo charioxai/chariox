@@ -458,3 +458,102 @@ esac
     );
     resumed.expect("capture resumes after insertion");
 }
+
+// MP-08 / MP-11: authenticated worker route retains agent admission and human/Vault paths.
+#[test]
+fn mp11_room_worker_keyboard_carries_native_admission_and_typed_refusal() {
+    crate::test_support::isolated_env_test!();
+    run_test(room_worker_native_input_admission);
+}
+
+async fn room_worker_native_input_admission() {
+    let _guard = crate::env_lock::lock();
+    let mut worker_state = TestState::new();
+    let home = DaemonConfig::for_tests();
+    worker_state.config.host_machine_id = "slice:slice-1".into();
+    worker_state.config.room_environment_worker_binding =
+        Some(crate::config::RoomEnvironmentWorkerBinding {
+            home_kernel_id: "home-kernel".into(),
+            home_public_key: home.relay_public_key.clone(),
+            session_id: "room-1".into(),
+            slice_id: "slice-1".into(),
+            provisioned_slice_id: None,
+        });
+    std::fs::create_dir_all(&worker_state.root).unwrap();
+    let script = worker_state.root.join("native-input-admission.sh");
+    let effects = worker_state.root.join("human-effects");
+    // Supplementary transport regression: the real native focus oracle lives in Python/live drills.
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+if [ "${{CHARIOX_COMPUTER_AGENT_INPUT:-}}" = 1 ]; then
+  printf 'user_domain_sensitive_requires_focus\n' >&2
+  exit 1
+fi
+printf human >> '{}'
+"#,
+            effects.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    let (worker, _) = worker_state.router();
+    for (index, action) in [
+        crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText {
+            input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                "public".into(),
+            ),
+        },
+        crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey {
+            input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                "a".into(),
+            ),
+            repeat: 2,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for actor in ["agent:agent-1", "user:owner-1"] {
+            // The kernel must replace stale inherited markers for either actor.
+            std::env::set_var(
+                "CHARIOX_COMPUTER_AGENT_INPUT",
+                if actor.starts_with("agent:") {
+                    "0"
+                } else {
+                    "1"
+                },
+            );
+            let result = worker.relay_room_browser_controller(
+                "home-kernel", &home.relay_public_key, "room-1", "slice-1",
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ComputerInput {
+                    action_id: format!("admit-{index}-{actor}"), actor_id: actor.into(), runtime_generation: 1,
+                    viewport_revision: 1, desktop_pixel_width: 1280, desktop_pixel_height: 800, action: action.clone(),
+                },
+            ).await;
+            if actor.starts_with("agent:") {
+                let error = result.expect_err("agent native guard must refuse the protected focus");
+                assert!(matches!(
+                    error,
+                    DaemonError::UserDomainRefused {
+                        reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
+                    }
+                ));
+            } else {
+                result.expect("human input retains its existing path");
+            }
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&effects).unwrap(), "humanhuman");
+    std::env::remove_var("CHARIOX_COMPUTER_AGENT_INPUT");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::fs::remove_dir_all(&worker_state.root).unwrap();
+}
