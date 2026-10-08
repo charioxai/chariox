@@ -100,7 +100,7 @@ def snapshot(processes, browser_processes=None):
             binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
             if 'chrome' in binary or 'chromium' in binary or 'firefox' in binary:browsers.add(pid)
         except OSError:pass
-    nodes=[];complete=True;protected=False;seen=set();pending=deque();uncovered=[];masks=[]
+    nodes=[];complete=True;protected=False;pending=deque();uncovered=[];masks=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -150,7 +150,6 @@ def snapshot(processes, browser_processes=None):
             if pid not in allowed:
                 complete=False
                 continue
-            seen.add(pid)
             pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=False
         # MP-08: traverse applications fairly before deep hidden menu trees.
@@ -175,27 +174,34 @@ def snapshot(processes, browser_processes=None):
             clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST_STACKING'),X.AnyPropertyType)
             stacked=clients is not None
             if not stacked:clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
+            windows=[]
             for window_id in clients.value if clients is not None else []:
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
                 pid=window.get_full_property(connection.intern_atom('_NET_WM_PID'),X.AnyPropertyType)
                 pid=int(pid.value[0]) if pid is not None and len(pid.value) else None
-                # MP-08: an owned window without AT-SPI (e.g. xterm) has unknown
-                # contents; capture blacks out its frame instead of the desktop.
-                if pid in allowed and (pid not in seen or pid in browsers):
-                    uncovered.append(frame_rect(root,window));masks.append(uncovered[-1])
-                elif pid not in seen:complete=False
-                else:
-                    if stacked and masks:
-                        cover=frame_rect(root,window)
-                        masks=[part for rect in masks for part in subtract(rect,cover)]
-                    if int(window_id)==active_id:
-                        title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
-                        name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
-                        frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and node['name']==name]
-                        if len(frames)==1:
-                            frame=frames[0]
-                            active_window={key:frame[key] for key in ('pid','started','path')}
+                rect=frame_rect(root,window)
+                geometry=window.get_geometry()
+                origin=root.translate_coords(window,0,0)
+                client_rect=[origin.x,origin.y,geometry.width,geometry.height]
+                title=window.get_full_property(connection.intern_atom('_NET_WM_NAME'),X.AnyPropertyType)
+                name=bytes(title.value).decode('utf-8',errors='replace') if title is not None else window.get_wm_name()
+                # MP-11: PID membership alone is never window coverage. Match
+                # a showing frame's title AND actual X11 screen geometry.
+                frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and
+                        node['name']==name and 'showing' in node['states'] and node['bounds'] in (rect,client_rect)]
+                windows.append((int(window_id),pid,rect,frames))
+            for window_id,pid,rect,frames in windows:
+                frame=frames[0] if complete and len(frames)==1 else None
+                # A single accessible frame cannot authorize two X windows.
+                covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates in windows)==1
+                if pid not in allowed:complete=False
+                if not covered or pid in browsers:
+                    uncovered.append(rect);masks.append(rect)
+                elif stacked and masks:
+                    masks=[part for region in masks for part in subtract(region,rect)]
+                if covered and window_id==active_id:
+                    active_window={key:frame[key] for key in ('pid','started','path')}
             # MP-08 / MP-11: menus, completion lists and tooltips are
             # override-redirect root children outside _NET_CLIENT_LIST with no
             # reliable owner. Mask every viewable one (over-masking is accepted).

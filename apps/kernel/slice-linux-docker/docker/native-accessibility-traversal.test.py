@@ -15,8 +15,11 @@ class Node:
     def get_process_id(self): return self.pid
     def getRoleName(self): return self.role
     def getRole(self): return int(self.secret)
-    def getState(self): return types.SimpleNamespace(contains=lambda flag: False)
-    def queryComponent(self): raise NotImplementedError
+    def getState(self): return types.SimpleNamespace(contains=lambda flag: self.role in ('frame','window','dialog') and flag==1)
+    def queryComponent(self):
+        if self.role not in ('frame','window','dialog'):raise NotImplementedError
+        rect=getattr(self,'rect',types.SimpleNamespace(x=100,y=80,width=300,height=200))
+        return types.SimpleNamespace(getExtents=lambda coords:rect)
     def queryAction(self): raise NotImplementedError
 
 
@@ -83,7 +86,10 @@ class TraversalTest(unittest.TestCase):
     def foreground(self, pid=200, name='Writer'):
         window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
-        root = types.SimpleNamespace(get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]))
+        root = types.SimpleNamespace(id=1,get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]),translate_coords=lambda *args:types.SimpleNamespace(x=100,y=80))
+        window.id=9
+        window.query_tree=lambda:types.SimpleNamespace(parent=root)
+        window.get_geometry=lambda:types.SimpleNamespace(x=100,y=80,width=300,height=200,border_width=0)
         self.connection.screen = lambda: types.SimpleNamespace(root=root)
         self.connection.create_resource_object = lambda kind, value: window
 
@@ -189,7 +195,8 @@ class TraversalTest(unittest.TestCase):
             get_attributes=lambda: types.SimpleNamespace(map_state=2, override_redirect=0),
             get_geometry=lambda: types.SimpleNamespace(x=20, y=30, width=244, height=150, border_width=1))
         root.query_tree = lambda: types.SimpleNamespace(children=[frame, *popups])
-        window = types.SimpleNamespace(id=9, query_tree=lambda: types.SimpleNamespace(parent=frame),
+        root.translate_coords=lambda *args:types.SimpleNamespace(x=20,y=30)
+        window = types.SimpleNamespace(id=9, get_geometry=lambda:types.SimpleNamespace(width=246,height=152),query_tree=lambda: types.SimpleNamespace(parent=frame),
             get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else b'xterm'))
         self.connection.screen = lambda: types.SimpleNamespace(root=root)
@@ -223,7 +230,7 @@ class TraversalTest(unittest.TestCase):
             frame = types.SimpleNamespace(id=window_id*10, query_tree=lambda: types.SimpleNamespace(parent=root),
                 get_attributes=lambda: types.SimpleNamespace(map_state=2, override_redirect=0),
                 get_geometry=lambda: types.SimpleNamespace(x=x, y=y, width=width, height=height, border_width=1))
-            return types.SimpleNamespace(id=window_id, query_tree=lambda: types.SimpleNamespace(parent=frame),
+            return types.SimpleNamespace(id=window_id,get_geometry=lambda:types.SimpleNamespace(width=width+2,height=height+2),query_tree=lambda: types.SimpleNamespace(parent=frame),
                 get_attributes=lambda: types.SimpleNamespace(map_state=2),
                 get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name))
         windows = {9: client(9, 201, b'xterm', 20, 30, 244, 150), 10: client(10, 200, b'Writer', 100, 80, 298, 198)}
@@ -231,6 +238,7 @@ class TraversalTest(unittest.TestCase):
         if stacking: lists['_NET_CLIENT_LIST_STACKING'] = order
         root.get_full_property = lambda atom, kind: types.SimpleNamespace(value=lists[atom]) if atom in lists else None
         root.query_tree = lambda: types.SimpleNamespace(children=[])
+        root.translate_coords=lambda window,*args:types.SimpleNamespace(x=20 if window.id==9 else 100,y=30 if window.id==9 else 80)
         self.connection.screen = lambda: types.SimpleNamespace(root=root)
         self.connection.create_resource_object = lambda kind, value: windows[value]
 
@@ -290,8 +298,22 @@ class TraversalTest(unittest.TestCase):
         popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
             get_geometry=lambda:types.SimpleNamespace(x=300,y=40,width=100,height=60,border_width=1))
         self.terminal(200,[popup])
-        tree=self.snapshot([Node('Office','application',[Node('xterm','frame')])])
+        frame=Node('xterm','frame');frame.rect=types.SimpleNamespace(x=20,y=30,width=246,height=152)
+        tree=self.snapshot([Node('Office','application',[frame])])
         self.assertEqual(tree['masks'],[[300,40,102,62]])
+
+    def test_mp11_finding4_same_pid_unmatched_window_has_no_coverage(self):
+        self.terminal(200)
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
+        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertIsNone(tree['active_window'])
+
+    def test_mp11_finding4_ambiguous_or_wrong_geometry_never_subtracts_masks(self):
+        for frames in [[Node('Writer','frame'),Node('Writer','frame')],[Node('Other','frame')],[]]:
+            self.stacked([9,10])
+            tree=self.snapshot([Node('Office','application',frames)])
+            self.assertEqual(tree['masks'],[[20,30,246,152],[100,80,300,200]])
+            self.assertIsNone(tree['active_window'])
 
 
 if __name__ == '__main__': unittest.main()
