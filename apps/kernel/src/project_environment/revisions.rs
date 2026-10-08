@@ -374,9 +374,17 @@ impl ProjectEnvironmentStore {
                     folder.label = old.label.clone();
                 }
             }
-            snapshot
-                .proposals
-                .retain(|p| !history.decisions.contains_key(&p.proposal_id));
+            snapshot.proposals.retain(|p| {
+                !history
+                    .decisions
+                    .contains_key(&p.requirement.requirement_id)
+            });
+        }
+        // Opaque review tokens bind the content shown to the client. Decisions remain
+        // keyed by stable requirement identity so a later Detect preserves user choices.
+        for proposal in &mut snapshot.proposals {
+            proposal.proposal_id =
+                metadata_digest(&requirement_specification(&proposal.requirement));
         }
         Ok(())
     }
@@ -419,6 +427,7 @@ impl ProjectEnvironmentStore {
         let mut draft = request.draft.clone();
         validate_draft(current, &draft)?;
         let mut selected = BTreeSet::new();
+        let mut accepted_requirements = BTreeSet::new();
         if request.accepted_proposal_ids.len() + request.excluded_proposal_ids.len() > 4096 {
             return Err(environment_error("proposal decisions exceed bounds"));
         }
@@ -441,7 +450,7 @@ impl ProjectEnvironmentStore {
                     .iter()
                     .find(|p| &p.proposal_id == id)
                     .ok_or_else(|| {
-                        environment_error("proposal is no longer pending; refresh and review")
+                        environment_error("Environment revision conflict; proposal is no longer pending; refresh and review")
                     })?;
                 if requirements(&draft)
                     .any(|r| r.requirement_id == proposal.requirement.requirement_id)
@@ -449,6 +458,7 @@ impl ProjectEnvironmentStore {
                     return Err(environment_error("proposal already present in draft"));
                 }
                 if decision == EnvironmentOptInDecision::Accepted {
+                    accepted_requirements.insert(proposal.requirement.requirement_id.clone());
                     let mut requirement = proposal.requirement.clone();
                     requirement.required = true;
                     match &requirement.scope {
@@ -462,7 +472,10 @@ impl ProjectEnvironmentStore {
                             .push(requirement),
                     }
                 }
-                history.decisions.insert(id.clone(), decision.clone());
+                history.decisions.insert(
+                    proposal.requirement.requirement_id.clone(),
+                    decision.clone(),
+                );
             }
         }
         validate_draft(current, &draft)?;
@@ -494,16 +507,19 @@ impl ProjectEnvironmentStore {
             .checked_add(1)
             .ok_or_else(|| environment_error("revision overflow"))?;
         saved.parent_revision_digest = Some(current.content_digest.clone());
-        saved.content_digest = draft_digest(&saved.lineage, &draft);
+        saved.content_digest = draft_digest(&saved.lineage, &environment_draft(&saved));
         saved.reviewed_at_ms = Some(crate::session::unix_epoch_ms());
         saved.reviewed_by = Some(user.into());
-        saved
-            .proposals
-            .retain(|p| !history.decisions.contains_key(&p.proposal_id));
+        saved.proposals.retain(|p| {
+            !history
+                .decisions
+                .contains_key(&p.requirement.requirement_id)
+        });
         let mut diff = environment_revision_diff(current, &request.draft)?;
         diff.target_digest = saved.content_digest.clone();
         // Include server-accepted proposals in the same review diff as field edits.
-        for r in requirements(&draft).filter(|r| selected.contains(&r.requirement_id)) {
+        for r in requirements(&draft).filter(|r| accepted_requirements.contains(&r.requirement_id))
+        {
             diff.requirements.push(EnvironmentRequirementDiff {
                 requirement_id: r.requirement_id.clone(),
                 kind: EnvironmentDiffKind::Added,

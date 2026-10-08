@@ -1645,15 +1645,21 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
         "operation":{"operation_id":"detect-test","attempt":1,"local_project_id":"edit-project","revision_digest":before.content_digest,"target":{"machine_id":"machine","target_instance_generation":"generation","slice_ref":null},"kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}}})).unwrap();
     store.save_detection(&cache).unwrap();
     let detected = envp02b_read(&harness);
-    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":["proposal-accept"],"excludedProposalIds":["proposal-exclude"]}})).unwrap();
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":[detected.proposals.iter().find(|p|p.requirement.requirement_id=="accept").unwrap().proposal_id],"excludedProposalIds":[detected.proposals.iter().find(|p|p.requirement.requirement_id=="exclude").unwrap().proposal_id]}})).unwrap();
     let LocalDaemonResponse::ProjectEnvironmentSaved {
-        environment: saved, diff
+        environment: saved,
+        diff,
     } = harness.dispatch(request).unwrap()
     else {
         panic!("proposal review Save expected")
     };
     assert!(saved.proposals.is_empty());
-    assert!(diff.requirements.iter().any(|row| row.requirement_id == "accept" && row.kind == EnvironmentDiffKind::Added), "accepted proposal must be in review diff even when proposal ID differs");
+    assert!(
+        diff.requirements
+            .iter()
+            .any(|row| row.requirement_id == "accept" && row.kind == EnvironmentDiffKind::Added),
+        "accepted proposal must be in review diff even when proposal ID differs"
+    );
     assert_eq!(saved.folders[0].requirements[0].requirement_id, "accept");
     assert!(saved.folders[0].requirements[0].required);
     let history_path = root
@@ -1762,24 +1768,43 @@ fn envp02b_stale_proposal_review_is_rejected_without_a_new_protocol_field() {
     store.save_detection(&cache).unwrap();
     let current = envp02b_read(&harness);
     let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":viewed.revision,"expectedContentDigest":viewed.content_digest,"draft":environment_draft_for_test(&viewed),"acceptedProposalIds":[viewed_id],"excludedProposalIds":[]}})).unwrap();
-    assert!(harness.dispatch(request).is_err(),"must reject unseen changed proposal");
-    assert_eq!(current,envp02b_read(&harness));
+    assert!(
+        harness.dispatch(request).is_err(),
+        "must reject unseen changed proposal"
+    );
+    assert_eq!(current, envp02b_read(&harness));
 }
 
 // MP-08 / MP-10 / MP-11: normalized response order must match immutable content identity.
 #[test]
 fn envp02b_saved_digest_matches_returned_folder_order() {
-    let harness=envp02b_harness();
+    let harness = envp02b_harness();
     harness.with_app_mut(|app| {
-        let mut project=app.sessions().get_project("edit-project").unwrap().clone();
-        project.replace_workspace_ids(vec!["/plain/one".into(),"/plain/two".into()]);
+        let mut project = app.sessions().get_project("edit-project").unwrap().clone();
+        project.replace_workspace_ids(vec!["/plain/one".into(), "/plain/two".into()]);
         app.sessions_mut().restore_projects(vec![project]);
     });
-    let before=envp02b_read(&harness);
-    let mut request=serde_json::to_value(envp02b_save(&before,"Reviewed")).unwrap();
-    request["SaveProjectEnvironmentRevision"]["draft"]["folders"].as_array_mut().unwrap().reverse();
-    let LocalDaemonResponse::ProjectEnvironmentSaved{environment:saved,..}=harness.dispatch(serde_json::from_value(request).unwrap()).unwrap() else {panic!("Save expected")};
+    let before = envp02b_read(&harness);
+    let mut request = serde_json::to_value(envp02b_save(&before, "Reviewed")).unwrap();
+    request["SaveProjectEnvironmentRevision"]["draft"]["folders"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: saved, ..
+    } = harness
+        .dispatch(serde_json::from_value(request).unwrap())
+        .unwrap()
+    else {
+        panic!("Save expected")
+    };
     let request=serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":saved.revision,"draft":environment_draft_for_test(&saved)}})).unwrap();
-    let LocalDaemonResponse::ProjectEnvironmentDiff{diff}=harness.dispatch(request).unwrap() else {panic!("Preview expected")};
-    assert_eq!(saved.content_digest,diff.target_digest,"saved digest must represent returned canonical folder order");
+    let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(request).unwrap()
+    else {
+        panic!("Preview expected")
+    };
+    assert_eq!(
+        saved.content_digest, diff.target_digest,
+        "saved digest must represent returned canonical folder order"
+    );
 }
