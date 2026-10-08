@@ -23,6 +23,7 @@ import {memoryFloorGiB} from './drill-resources.mjs';
 import { summarizeStages } from './drill-stages.mjs';
 import {stressProtection} from './drill-protection.mjs';
 import {KernelLogCapture} from './drill-kernel-log.mjs';
+import {collectRelayDiagnostics} from './drill-teardown.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
@@ -41,7 +42,7 @@ const runUid=Number(process.env.MD_RUNTIME_UID || 65534),runGid=Number(process.e
 const chrome=process.env.MD_CHROME || '/usr/bin/google-chrome';
 const runtimePath=process.env.MD_RUNTIME_PATH || '/usr/bin:/bin';
 const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
-let kernel, display, viewer, browser, server, ready, shaped, shortTmp, kernelProfiler,dynamicFixtureServed=false;
+let kernel, display, viewer, browser, page, server, ready, shaped, shortTmp, kernelProfiler,dynamicFixtureServed=false;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
 receipt.requested_hardware=process.env.MD_SOFTWARE==='0';receipt.memory_floor_gib=memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB);
@@ -204,7 +205,7 @@ try {
  viewer=await launchOwned(chrome,['--headless=new','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${viewerHome}`,'--no-first-run','--disable-background-networking','--disable-dev-shm-usage','about:blank'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{PATH:runtimePath,HOME:viewerHome,TMPDIR:shortTmp},stdio:'ignore'});groups.push(viewer.pid);await cpu.track(viewer.pid,'viewer');
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
- const page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
+ page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
  await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection,stripes,legacyRelay,requireBinary})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
@@ -468,7 +469,7 @@ try {
  if(browser)try{const page=browser.contexts()[0].pages().at(-1);receipt.failure_client=await page.evaluate(()=>({frames:window.mdFrames,presentations:window.mdPresentations,stream_running:window.mdStream?.running,stream_error:window.mdStream?.error?.message,sequence:window.mdStream?.presenter?.sequence}));}catch{}
 }
 finally {
- receipt.binary_relay_frames=await page.evaluate(()=>mdBinaryRelayFrames).catch(()=>receipt.binary_relay_frames);
+ await collectRelayDiagnostics(page,receipt);
  await stopGroup(kernelProfiler);
  receipt.cpu_samples=cpu.samples;receipt.cpu_accounting='Linux CLK_TCK; separate source Chromium, capture/encode/kernel/relay pipeline, viewer browser and harness. Exited processes retain sampled high-water ticks; sub100ms processes can be missed. WebCodecs inside source Chromium cannot be partitioned (force software portable encoder for CPU comparison).';await cpu.close();
  try{await metrics?.close()}catch{receipt.cleanup.push('RED: owned PNG worker teardown failed');receipt.status='RED';process.exitCode=1}
