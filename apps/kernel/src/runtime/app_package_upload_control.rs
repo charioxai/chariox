@@ -273,10 +273,17 @@ impl AppPackageUploadControl {
             UploadLimits::default(),
             now_ms,
         )
-        .map_err(|error| match error {
-            UploadError::Busy => UploadControlError::Busy,
-            // Root/configuration/recovery failures are never blamed on a caller.
-            _ => UploadControlError::StorageUnavailable,
+        .map_err(|error| {
+            crate::logging::warn_with_fields(
+                "app.upload",
+                "App package upload store could not be opened",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            match error {
+                UploadError::Busy => UploadControlError::Busy,
+                // Root/configuration/recovery failures are never blamed on a caller.
+                _ => UploadControlError::StorageUnavailable,
+            }
         })?;
         *store = Some(opened.clone());
         Ok(opened)

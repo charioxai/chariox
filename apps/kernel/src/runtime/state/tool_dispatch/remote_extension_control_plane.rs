@@ -421,6 +421,7 @@ impl KernelRuntimeState {
     > {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        // MD-4: inactive registrations must not reserve their large futures for a read/message.
         match tool_name {
             crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
                 self.handle_list_session_agents_runtime_tool(&session, &agent),
@@ -431,7 +432,7 @@ impl KernelRuntimeState {
                 None,
             )),
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
-                self.handle_send_agent_message_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
@@ -439,44 +440,50 @@ impl KernelRuntimeState {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
             }
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
-                self.handle_request_extension_runtime_tool(
+                Box::pin(self.handle_request_extension_runtime_tool(
                     &session,
                     &agent,
                     session_id,
                     arguments,
                     include_skill_package,
-                )
+                ))
                 .await
             }
             crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
-                self.handle_register_mcp_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_register_mcp_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
-                self.handle_register_skill_path_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_register_skill_path_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
-                self.handle_register_environment_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_environment_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
-                self.handle_register_script_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_script_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
-                self.handle_register_connector_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_connector_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
-                self.handle_register_connector_adapter_path_runtime_tool(
+                Box::pin(self.handle_register_connector_adapter_path_runtime_tool(
                     &session, &agent, arguments,
-                )
+                ))
                 .await?,
                 None,
             )),

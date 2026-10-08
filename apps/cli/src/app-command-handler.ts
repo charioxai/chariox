@@ -12,6 +12,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean> }
   appHostTerminal?: AppHostTerminal
   currentAppHostOperationIds?: () => string[]
   lastViewedAppHostOperationId?: () => string | undefined
@@ -76,6 +77,11 @@ export async function handleAppSlashCommand(
   if (!deps.sendAppRequest) {
     deps.flashFooter("Apps are unavailable in this kernel", "error")
     return
+  }
+  const args = appSlashArgs(command.raw)
+  if (deps.userAppViews && await deps.userAppViews.handle(args, deps.currentAppSessionId?.())) return
+  if (args[0] === "view" || args[0] === "views") {
+    throw new Error("Enable CHARIOX_USER_APP_VIEWS_PROTOTYPE=1 to use the App text prototype")
   }
   if (command.args[0] === "host") {
     const [, action, explicitOperation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))

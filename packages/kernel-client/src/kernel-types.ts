@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 435
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 443
 
 export type * from "./kernel-types-apps.js"
 
@@ -14,3 +14,8 @@ export type * from "./kernel-types-workflow.js"
 export type * from "./kernel-types-event-publication.js"
 export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
+
+export type * from "./kernel-types-kernel-browser.js"
+export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
+
+export * from "./notes.js"

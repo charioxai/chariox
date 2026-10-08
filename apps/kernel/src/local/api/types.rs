@@ -24,9 +24,11 @@ mod event_publication;
 mod external_provider_session;
 mod history;
 mod kernel_access;
+mod kernel_browser;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod notes;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -37,10 +39,12 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod screenshot;
 mod session_control;
 mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod user_domain_access;
 mod waiting_room;
 mod workflow;
 mod workspace;
@@ -59,9 +63,11 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
+pub use kernel_browser::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use notes::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -72,10 +78,12 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
@@ -251,6 +259,6 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
-/// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
-/// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 435;
+/// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 443;

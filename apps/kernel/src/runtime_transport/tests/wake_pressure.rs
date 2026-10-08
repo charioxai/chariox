@@ -43,7 +43,7 @@ async fn call(
             input,
             CallerContext {
                 actor: Actor::Human("alice".into()),
-                room_id: "wake-pressure".into(),
+                room_id: Some("wake-pressure".into()),
                 operation_id: format!("pressure-{}", rand::random::<u64>()),
                 task_id: None,
                 turn_id: None,
