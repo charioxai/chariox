@@ -1167,12 +1167,12 @@ mod room_agent_admission;
 
 mod agent_inbox_delivery;
 mod agent_lifecycle_runtime;
-mod agent_process_watch;
 mod agent_process_group;
 mod agent_process_output;
-mod agent_wake_cancellation;
+mod agent_process_watch;
 mod agent_task_cancellation;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod room_dispatch_obligation;
