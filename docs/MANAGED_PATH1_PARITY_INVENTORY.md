@@ -7,7 +7,16 @@ snapshot, so deletion and kernel restart do not restore a retired counter value.
 Current and legacy ID forms are reserved from aliases; message resolution rejects
 ambiguous references already present in restored state. Workflow execution bindings
 require the caller or an immutable direct child, including code-built definitions
-and persisted definitions at endpoint invocation.
+and persisted definitions at endpoint invocation. Resume also checks saved run
+agents, runtime bindings, and graph nodes the run has not reached yet.
+
+Current-session recall rejects an explicit session ID different from the
+authenticated provider run's room. The shared check covers keyword, semantic,
+agent-assisted, and structured recall. Provider instructions describe regular
+agent spawning and workflows when the room tools are exposed, with the same
+self/direct-child execution policy. MP-08 / MP-10 / MP-11 obligation settlement
+cells require the PR2 lifecycle implementation; PR1 dispatch registration alone
+does not establish completion settlement.
 
 The workflow lane retains each command's provider epoch and forwarded peer binding
 and rechecks authority before execution and result delivery. Compiler work, including
@@ -23,7 +32,6 @@ These corrections change no serialized protocol shape (local450/peer73). This en
 records source policy only. Focused RED/GREEN checks, real relay/TUI/Codex evidence,
 current semantic review, and hosted/fresh-machine acceptance are separate gates;
 no acceptance result is inferred from this inventory.
-
 
 ## MP-08 / MP-10 / MP-11 room workflow compilation boundary, am1 (2026-10-07)
 
