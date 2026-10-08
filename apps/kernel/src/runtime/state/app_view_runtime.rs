@@ -868,7 +868,7 @@ fn app_error(error: crate::durable_state::app_tools::AppToolsError) -> BrowserAp
 fn view_caller(binding: &AppViewBinding, session_id: &str) -> CallerContext {
     CallerContext {
         actor: Actor::Human(binding.owner.clone()),
-        room_id: session_id.to_owned().into(),
+        room_id: session_id.into(),
         operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
         task_id: None,
         turn_id: None,

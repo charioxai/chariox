@@ -78,7 +78,7 @@ impl KernelRuntimeState {
             require_binding(&current, &expected, &tool, remote.as_ref())?;
             let caller = CallerContext {
                 actor: Actor::Agent(current.id().into()),
-                room_id: current.session_id().to_owned().into(),
+                room_id: current.session_id().into(),
                 operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
                 task_id: None,
                 turn_id,
