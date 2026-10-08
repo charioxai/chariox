@@ -838,39 +838,15 @@ mod tests {
             )
             .unwrap();
         let store = app.durable_state_store();
+        let parent_task = app
+            .sessions()
+            .get_session(room.id())
+            .unwrap()
+            .active_prompt_for_agent(parent.id())
+            .unwrap()
+            .id()
+            .to_owned();
         let now = crate::session::unix_epoch_ms();
-        for (agent, prompt) in [(parent.id(), "parent-turn"), (child.id(), "child-turn")] {
-            store
-                .agent_lifecycle(Operation::Begin {
-                    owner: room.owner_user_id().into(),
-                    room: room.id().into(),
-                    agent: agent.into(),
-                    prompt: prompt.into(),
-                    run: Some("run".into()),
-                    now,
-                })
-                .unwrap();
-        }
-        store
-            .agent_lifecycle(Operation::RegisterObligation {
-                owner: room.owner_user_id().into(),
-                room: room.id().into(),
-                agent: parent.id().into(),
-                prompt: "parent-turn".into(),
-                run: Some("run".into()),
-                id: "delegate".into(),
-                kind: "delegate".into(),
-                resource: Some(child.id().into()),
-                now,
-            })
-            .unwrap();
-        store
-            .agent_lifecycle(Operation::DispatchReceipt {
-                id: "delegate".into(),
-                accepted: true,
-                resource: Some(child.id().into()),
-            })
-            .unwrap();
         store
             .agent_lifecycle(Operation::Begin {
                 owner: room.owner_user_id().into(),
@@ -885,7 +861,7 @@ mod tests {
         // Beginning an arbitrary turn on the same agent grants no delegation.
         store
             .agent_lifecycle(Operation::BindDelegate {
-                parent_task: "parent-turn".into(),
+                parent_task,
                 child_task: "child-turn".into(),
             })
             .unwrap();
