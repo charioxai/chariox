@@ -456,8 +456,11 @@ impl KernelRuntimeState {
             Err(error) => Err(error),
         };
         if let Err(error) = settled {
-            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep");
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
         }
     }
 

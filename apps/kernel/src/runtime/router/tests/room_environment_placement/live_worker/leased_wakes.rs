@@ -642,36 +642,19 @@ async fn wake_reaches_a_leased_agent_after_its_worker_restarts() {
     );
 }
 
-const OWNER_PASSKEY: &str = "a10 fixture owner passkey";
-
-#[test]
-fn mp10_a10_leased_sudo_window_is_enforced_on_home_and_worker() {
-    run_test(leased_sudo_window_is_enforced_on_home_and_worker);
-}
-
-/// The owner opens a sudo window for a leased agent with a fresh passkey.
-/// The worker lists the privileged tool only for that agent's elevated turn
-/// and forwards each call home, where the same window is checked again. A
-/// sibling leased agent on the same worker inherits nothing. When the window
-/// expires both kernels refuse. Base: the home refuses leased sudo outright.
-async fn leased_sudo_window_is_enforced_on_home_and_worker() {
+/// The owner opens a sudo window for `agent` through the real entry and
+/// answers the passkey popup; returns the owner and the verification time.
+async fn open_leased_sudo(
+    fixture: &LiveWorker,
+    room: &str,
+    attachment: &str,
+    agent: &str,
+    window_length: Duration,
+) -> (String, std::time::Instant) {
     use crate::local::{ApprovalPasskey, KernelConnectionClass, PasskeyPromptKind};
-    let _tools = with_room_tools();
-    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
-    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
-    let room = fixture.rooms[0].clone();
-    let attachment = owner_attachment(&fixture, &room).await;
-    let agent = spawn_on_agent_worker(&mut fixture, &room).await;
-    let sibling = spawn_on_agent_worker(&mut fixture, &room).await;
-    run_turn(
-        &fixture,
-        &room,
-        &attachment,
-        &sibling,
-        "MP-10 A10 regular sibling turn",
-    )
-    .await;
-    let window_length = Duration::from_secs(8);
+    let room = room.to_string();
+    let attachment = attachment.to_string();
+    let agent = agent.to_string();
     crate::runtime::state::SUDO_WINDOW_LENGTH_FOR_TEST
         .lock()
         .unwrap()
@@ -730,6 +713,40 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .expect("sudo entry returns")
         .unwrap()
         .expect("the home admits leased elevation");
+    (owner, verified)
+}
+
+const OWNER_PASSKEY: &str = "a10 fixture owner passkey";
+
+#[test]
+fn mp10_a10_leased_sudo_window_is_enforced_on_home_and_worker() {
+    run_test(leased_sudo_window_is_enforced_on_home_and_worker);
+}
+
+/// The owner opens a sudo window for a leased agent with a fresh passkey.
+/// The worker lists the privileged tool only for that agent's elevated turn
+/// and forwards each call home, where the same window is checked again. A
+/// sibling leased agent on the same worker inherits nothing. When the window
+/// expires both kernels refuse. Base: the home refuses leased sudo outright.
+async fn leased_sudo_window_is_enforced_on_home_and_worker() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent = spawn_on_agent_worker(&mut fixture, &room).await;
+    let sibling = spawn_on_agent_worker(&mut fixture, &room).await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &sibling,
+        "MP-10 A10 regular sibling turn",
+    )
+    .await;
+    let window_length = Duration::from_secs(8);
+    let (owner, verified) =
+        open_leased_sudo(&fixture, &room, &attachment, &agent, window_length).await;
     let run = worker.run_for(&fixture, &agent).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let lists = |token: &str| {
@@ -929,5 +946,168 @@ async fn leased_room_tools_act_at_home_with_the_lease_origin() {
     assert!(
         worker_tasks.is_empty(),
         "the worker supervises no task of its own: {worker_tasks:?}"
+    );
+}
+
+#[test]
+fn mp10_a10_elevated_leased_work_continues_after_a_wake() {
+    run_test(elevated_leased_work_continues_after_a_wake);
+}
+
+/// The elevated leased turn sets a timer and yields through its worker (the
+/// home ledger records both), the worker finishes the turn, and a wake
+/// correlated with the same owner work starts a continuation that passes the
+/// worker fence and the home window again. Base: the leased continuation was
+/// never admitted under the window's work hold.
+async fn elevated_leased_work_continues_after_a_wake() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent = spawn_on_agent_worker(&mut fixture, &room).await;
+    let (owner, _) = open_leased_sudo(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        Duration::from_secs(1800),
+    )
+    .await;
+    let window = fixture
+        .home
+        .runtime_state
+        .list_sudo_turns(&owner)
+        .pop()
+        .expect("live window");
+    let task = window.task_id.clone().expect("window bound to owner work");
+    let first = worker.run_for(&fixture, &agent).await;
+    let token = first.runtime_mcp_auth_token().unwrap().to_string();
+    let prompt = window.prompt_id.clone().unwrap();
+    let call = |name: &'static str, args: Value| {
+        let worker = &worker;
+        let token = token.clone();
+        async move {
+            worker
+                .router
+                .dispatch_authenticated_runtime_tool_call(&token, name, args)
+                .await
+        }
+    };
+    let timer = call(
+        "chariox.events.timer",
+        json!({"task_id":task,"origin_prompt_id":prompt,"delay_ms":600000,"label":"a10"}),
+    )
+    .await
+    .expect("the leased timer registers at home");
+    let registration = timer.payload["registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        "chariox.events.yield",
+        json!({"task_id":task,"origin_prompt_id":prompt,"registration_ids":[registration],
+               "inbox_cursor":0,"reason":"MP-10 A10 waits on its timer","deadline_ms":crate::session::unix_epoch_ms() + 600_000}),
+    )
+    .await
+    .expect("the leased yield commits at home");
+    fixture
+        .home
+        .runtime_state
+        .record_leased_answer_for_test(&room, &agent, "MP-10 A10 waiting on the timer")
+        .unwrap();
+    let leased = binding(&fixture, &agent).await.leased_agent_id;
+    let (backing_session, _) =
+        crate::app::RemoteLeaseRuntime::new(&mut *worker.router.app.lock().await)
+            .leased_agent_backing(&leased)
+            .expect("worker backing agent");
+    dispatch_json(
+        &worker.router,
+        json!({"CompletePrompt":{"session_id":backing_session}}),
+    )
+    .await
+    .expect("the worker finishes the elevated turn");
+    let store = store(&fixture).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let tasks = store.agent_tasks(Some(&room), Some(&agent)).unwrap();
+        if tasks.iter().any(|t| {
+            t.task_id == task
+                && t.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+        }) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let windows = fixture.home.runtime_state.list_sudo_turns(&owner);
+            let inbox = store.agent_inbox(&room, &agent, 0).unwrap();
+            panic!("elevated task never waited: tasks {tasks:?}, windows {windows:?}, inbox {inbox:?}, binding {:?}", binding(&fixture, &agent).await);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(ledger::occurrence(
+            &room,
+            &agent,
+            &registration,
+            "a10-correlated",
+            "source_completed",
+            json!({"task_id":task,"summary":"MP-10 A10 correlated result"}),
+        )))
+        .unwrap()
+    else {
+        panic!("durable occurrence")
+    };
+    let delivered = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &agent)
+        .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let accepted = loop {
+        let inbox = store.agent_inbox(&room, &agent, 0).unwrap();
+        if let Some(e) = inbox
+            .iter()
+            .find(|e| e.sequence == event.sequence && e.state == "accepted")
+        {
+            break e.clone();
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let tasks = store.agent_tasks(Some(&room), Some(&agent)).unwrap();
+            let windows = fixture.home.runtime_state.list_sudo_turns(&owner);
+            let retry = fixture
+                .home
+                .runtime_state
+                .deliver_agent_inbox_for_test(&room, &agent)
+                .await;
+            panic!("continuation not accepted: first delivery {delivered:?}, retry {retry:?}, inbox {inbox:?}, tasks {tasks:?}, windows {windows:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let next = worker.run_for(&fixture, &agent).await;
+    let next_token = next.runtime_mcp_auth_token().unwrap().to_string();
+    let listed = worker
+        .router
+        .runtime_tool_specs_for_auth_token(&next_token)
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request");
+    let elevated = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &next_token,
+            "chariox_kernel_request",
+            json!({"request":{"ListSessions":null}}),
+        )
+        .await;
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(delivered.is_ok(), "{delivered:?}");
+    assert!(accepted.prompt_id.is_some());
+    assert!(
+        listed,
+        "the continuation lists the tool under the live fence"
+    );
+    assert!(
+        elevated.as_ref().is_ok_and(|r| r.ok),
+        "the continuation acts as the host on both ends: {elevated:?}"
     );
 }

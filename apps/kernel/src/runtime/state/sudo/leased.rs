@@ -384,8 +384,11 @@ impl KernelRuntimeState {
         let agent = turn.agent_id.clone();
         tokio::spawn(async move {
             if let Err(error) = state.push_leased_sudo(&agent, &prompt, grant).await {
-                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                    "MP-08/MP-09/MP-10/MP-11 A10: worker sudo fence update not confirmed; it expires on its own deadline");
+                crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "MP-08/MP-09/MP-10/MP-11 A10: worker sudo fence update not confirmed; it expires on its own deadline",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
             }
         });
     }

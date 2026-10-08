@@ -309,8 +309,11 @@ impl KernelRuntimeState {
                 })
         })();
         if let Err(error) = result {
-            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                "MP-08/MP-09/MP-10/MP-11 A10: accepted leased turn left its task for sweep");
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "MP-08/MP-09/MP-10/MP-11 A10: accepted leased turn left its task for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
         }
     }
     /// A10: the leased dispatch's exact worker outcome is this attempt's
@@ -352,8 +355,11 @@ impl KernelRuntimeState {
             self.record_agent_delivery_receipt(room, agent, event.sequence, state)
         })();
         if let Err(error) = result {
-            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                "MP-08/MP-09/MP-10/MP-11 A10: leased wake receipt retained for sweep reconciliation");
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "MP-08/MP-09/MP-10/MP-11 A10: leased wake receipt retained for sweep reconciliation",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
         }
     }
     fn record_agent_delivery_receipt(
