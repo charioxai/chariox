@@ -532,6 +532,49 @@ async fn room_boundaries() {
         "known queue rejection must close only its dispatch intent"
     );
     drop(app_guard);
+    // MP-11 F3: saved runs retain their actual execution bindings even when a
+    // newer definition is safe. Model a pre-admission snapshot at the store seam.
+    let legacy_run = {
+        let mut app = app.lock().await;
+        let mut sessions = app.sessions_mut();
+        let workflow = sessions
+            .create_workflow_controlled_by_metaagent(
+                session.id(),
+                Some("legacy-peer-binding".into()),
+                Some(a.id().into()),
+            )
+            .unwrap();
+        let node = sessions
+            .add_workflow_node(session.id(), workflow.id(), peer.id())
+            .unwrap();
+        let endpoint = sessions
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+            .unwrap();
+        let run = sessions
+            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), None)
+            .unwrap();
+        let mut restored = sessions.get_session(session.id()).unwrap();
+        let stored = restored.workflow_run_mut(run.id()).unwrap();
+        *stored = stored.clone().with_creator(Some(a.id().into()));
+        stored.set_status(crate::session::WorkflowRunStatus::Paused);
+        sessions.restore_session(restored);
+        run.id().to_string()
+    };
+    let (resumed, _) = router
+        .runtime_state
+        .execute_workflow_request(
+            LocalDaemonRequest::ResumeWorkflowRun(crate::local::ResumeWorkflowRunRequest {
+                session_id: session.id().into(),
+                workflow_run_ref: legacy_run,
+            }),
+            a.owner_user_id().into(),
+            Some(a.id().into()),
+        )
+        .await;
+    assert!(
+        resumed.is_err(),
+        "MP-11 F3: saved peer bindings cannot resume"
+    );
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
     // The raw/native typed request path sees the same mutation fence.

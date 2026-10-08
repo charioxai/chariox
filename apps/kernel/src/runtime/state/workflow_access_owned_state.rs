@@ -398,6 +398,17 @@ impl KernelRuntimeOwnedState {
             workflow.controlled_by_metaagent_id() == Some(metaagent_id)
         };
         if admitted {
+            if self.config_projection.snapshot().room_agent_tools
+                && operation == "resume workflow run"
+            {
+                let actor = self.agent_store.get_agent(metaagent_id)?;
+                // The saved run may predate binding admission or the current
+                // definition. Check the agents it will actually resume.
+                for node in workflow_run.node_runs() {
+                    let target = self.agent_store.get_agent(node.agent_id())?;
+                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                }
+            }
             Ok(())
         } else {
             Err(DaemonError::LocalTransport {
