@@ -31,6 +31,7 @@ await mkdir(evidence, { recursive: true })
 const url = 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25)
 const deviceUrl = 'https://auth.openai.com/codex/device'
 const requests = []
+const upstreamResponses = []
 let output = '', tui, browser, page, frontend, kernel
 const clients = new Set()
 const fixture = new WebSocketServer({ port: 0, host: '127.0.0.1' })
@@ -87,8 +88,10 @@ try {
       else if (upstream) {
         const request = f.type === 'subscribe' ? { type: 'subscribe', session_id: f.session_id, attachment_id: f.attachment_id, subscription_scope: f.subscription_scope } : req
         void upstream.send(request).then(response => {
+          upstreamResponses.push({ request: variant, response: Object.keys(response)[0] })
           if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response, error: null }))
         }).catch(() => {
+          upstreamResponses.push({ request: variant, response: 'transport_error' })
           if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response: { Error: { message: 'owned kernel request unavailable' } }, error: null }))
         })
       }
@@ -210,11 +213,12 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? createHash('sha256').update(await readFile(options['kernel-binary'])).digest('hex') : null, source: options.source, dpr: Number(options.dpr ?? 1), retained, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? createHash('sha256').update(await readFile(options['kernel-binary'])).digest('hex') : null, source: options.source, dpr: Number(options.dpr ?? 1), retained, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   if (options['expect-red']) assert.ok(!retained || !fullLink || !exactCopy || !honest || !deviceLink, 'baseline must fail')
   else assert.ok(retained && fullLink && exactCopy && nativeSelection && hyperlinkActivated && honest && deviceLink, 'selection/link regression')
+  if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
   }
 } finally {
   await browser?.close()
