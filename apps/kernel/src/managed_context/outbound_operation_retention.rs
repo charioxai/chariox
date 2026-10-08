@@ -104,7 +104,8 @@ impl ManagedContextOutboundOperationStore {
                 && disk_counts.get(&status.context_id) == Some(&1)
                 && (*retiring || protected_context != Some(status.context_id.as_str()))
                 && state.get(&status.context_id).is_none_or(|memory| {
-                    terminal(memory) && memory.plan_digest == status.plan_digest
+                    terminal(memory)
+                        && memory.plan_digest == status.plan_digest
                         && memory.updated_at_ms == status.updated_at_ms
                 })
                 && bindings.get(&status.context_id).is_none_or(|files| {
