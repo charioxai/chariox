@@ -54,6 +54,9 @@ export class DesktopSource {
   }
   async verify() {
     while(!this.closed) {
+      // Measuring holds the renderer's main thread (DOMSnapshot): only measure
+      // to adopt protection or to verify a captured frame, never while idle.
+      if(!this.held&&this.gate.protectionSerial!==0){await delay(8);continue;}
       // The latest frame captured before this measurement begins; frames
       // arriving meanwhile wait for the next one (no starvation while scrolling).
       const held=this.held;this.held=null;
