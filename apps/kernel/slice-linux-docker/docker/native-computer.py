@@ -32,7 +32,7 @@ finder = load('slice-text-finder')
 
 
 def capture(mask, uncovered=()):
-    connection = display.Display()
+    connection = load('native-x11').open_display(display)
     try:
         screen = connection.screen()
         if mask: return Image.new('RGB', (screen.width_in_pixels, screen.height_in_pixels), 'black')
@@ -71,7 +71,7 @@ def input_action(action, processes=None):
         accessibility=load('native-accessibility')
         guard=load('native-clipboard').paste_guard(processes,accessibility)
         guard()
-    connection = display.Display()
+    connection = load('native-x11').open_display(display)
     try:
         screen = connection.screen()
         if kind == 'keycode':
@@ -111,7 +111,7 @@ def main(request):
         return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
     if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None); return {'applied':True}
     if op == 'release':
-        connection=display.Display()
+        connection=load('native-x11').open_display(display)
         try:
             for code in request['codes']:
                 if not isinstance(code,int) or not 8 <= code <= 255: raise ValueError('invalid owned release')

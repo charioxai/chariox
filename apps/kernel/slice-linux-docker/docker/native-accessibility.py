@@ -1,4 +1,10 @@
 """MP-08 / MP-11: private-session AT-SPI tree; only verified owned applications."""
+# MP-08/MP-11: do not connect an owned display number to a host filesystem socket.
+import importlib.util as _x11_import
+from pathlib import Path as _X11Path
+_x11_spec=_x11_import.spec_from_file_location('native_x11',_X11Path(__file__).with_name('native-x11.py'))
+_x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module(_x11_module)
+
 import hashlib
 import json
 import os
@@ -187,7 +193,7 @@ def snapshot(processes, browser_processes=None):
         except ModuleNotFoundError as error:
             if error.name != 'Xlib': raise
             from selkies.Xlib import X, display
-        connection=display.Display()
+        connection=_x11_module.open_display(display)
         active_window=None
         try:
             screen=connection.screen();root=screen.root

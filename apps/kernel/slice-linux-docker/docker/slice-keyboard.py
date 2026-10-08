@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """Physical text input using the pinned Selkies XTEST keyboard implementation."""
+# MP-08/MP-11: do not connect an owned display number to a host filesystem socket.
+import importlib.util as _x11_import
+from pathlib import Path as _X11Path
+_x11_spec=_x11_import.spec_from_file_location('native_x11',_X11Path(__file__).with_name('native-x11.py'))
+_x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module(_x11_module)
+
 
 import json
 import logging
@@ -37,7 +43,7 @@ def prepare_owned_text_keymap():
     """MP-08 / MP-11: reserve code8 only during owned virtual-display boot."""
     if os.environ.get('CHARIOX_OWNED_VIRTUAL_DISPLAY') != '1':
         raise ValueError('owned virtual display required')
-    connection=display.Display()
+    connection=_x11_module.open_display(display)
     connection.grab_server()
     original_modifiers=None
     original_row=None
@@ -149,7 +155,7 @@ def assert_secret_target(connection, expected_target):
 
 
 def type_text(text, expected_target=None, before_press=None):
-    connection = display.Display()
+    connection = _x11_module.open_display(display)
     keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
@@ -231,7 +237,7 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
     """
     if not 1 <= duration_ms <= 10000:
         raise ValueError("invalid hold duration")
-    connection = display.Display()
+    connection = _x11_module.open_display(display)
     pressed = []
     try:
         expected_target=None
@@ -327,7 +333,7 @@ def key_repeat(value, repeat, before_press=None):
 
 
 def reset_input():
-    connection = display.Display()
+    connection = _x11_module.open_display(display)
     try:
         down = connection.query_keymap()
         for code in range(8, 256):
@@ -405,7 +411,7 @@ def main(args, stream):
     elif args == ['reset'] and not agent:
         reset_input()
     elif args == ['secret-target']:
-        connection = display.Display()
+        connection = _x11_module.open_display(display)
         try:
             print(json.dumps(focused_target(connection), separators=(',', ':')))
         finally:
