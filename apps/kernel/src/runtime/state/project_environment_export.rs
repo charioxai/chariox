@@ -279,6 +279,59 @@ impl KernelRuntimeState {
         })
     }
 
+    // MP-08 / MP-10 / MP-11: Detection uses an owned, hidden utility session and settles cleanup.
+    pub(super) async fn detect_environment_utility(
+        &self,
+        project: &crate::session::RuntimeProject,
+        folder: &EnvironmentFolder,
+        provider: Option<&EnvironmentProvider>,
+        input: &ProjectEnvironmentDiscoveryInput,
+    ) -> Result<(), DaemonError> {
+        let provider = match provider {
+            Some(EnvironmentProvider::Codex) => "codex",
+            Some(EnvironmentProvider::Claude) => "claude",
+            Some(EnvironmentProvider::OpenCode) => "opencode",
+            None => "default",
+        };
+        let response = self
+            .create_session_response(
+                crate::session::CreateSessionRequest::new(
+                    &folder.local_workspace_binding,
+                    &folder.local_workspace_binding,
+                )
+                .with_owner_user_id(project.owner_user_id())
+                .with_project_selection(crate::session::SessionProjectSelection::Existing {
+                    project_id: project.id().into(),
+                })
+                .with_hidden(true)
+                .with_agent_defaults(
+                    crate::session::SessionAgentDefaults::new(provider)
+                        .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
+                        .with_permission_level(crate::provider::AgentPermissionLevel::Required),
+                ),
+            )
+            .await?;
+        let LocalDaemonResponse::SessionCreated { session, agent } = response else {
+            return Err(environment_failure("Detect utility session unavailable"));
+        };
+        let cleanup_guard = EnvironmentUtilityCleanup {
+            runtime: self.clone(),
+            session_id: Some(session.id().into()),
+        };
+        let result = self
+            .discover_project_environment(session.id(), agent.id(), input)
+            .await;
+        // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
+        let cleanup = self.delete_session_ref(session.id(), None).await;
+        let mut cleanup_guard = cleanup_guard;
+        if cleanup.is_ok() {
+            cleanup_guard.session_id = None;
+        }
+        result?;
+        cleanup?;
+        Ok(())
+    }
+
     pub(super) async fn discover_project_environment(
         &self,
         session_id: &str,
@@ -361,7 +414,7 @@ impl KernelRuntimeState {
                 agent.id().into(),
                 Some(EnvironmentUtilityCleanup {
                     runtime: self.clone(),
-                    session_id: session.id().into(),
+                    session_id: Some(session.id().into()),
                 }),
             )),
             _ => Err(environment_failure(
@@ -409,12 +462,14 @@ pub(crate) struct PreparedProjectEnvironmentExport {
 // MP-08 / MP-11: Only the temporary session created by this utility is retired.
 struct EnvironmentUtilityCleanup {
     runtime: KernelRuntimeState,
-    session_id: String,
+    session_id: Option<String>,
 }
 impl Drop for EnvironmentUtilityCleanup {
     fn drop(&mut self) {
         let runtime = self.runtime.clone();
-        let session_id = self.session_id.clone();
+        let Some(session_id) = self.session_id.take() else {
+            return;
+        };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(error) = runtime.delete_session_ref(&session_id, None).await {

@@ -28,3 +28,17 @@ test("ENV P01 closed TUI panel ignores a late kernel response", async () => {
   assert.equal(controller.isOpen(), false)
   assert.equal(renders, 2)
 })
+
+// MP-08 / MP-10: P02a Detect must go through the real kernel request surface.
+test("ENV P02a TUI Detect is read-only, uses kernel folders and shows evidence skips", async () => {
+  const requests: any[] = []
+  const environment: any = { schema_version: 1, local_project_id: "project", lineage: { environment_id: "env", project_id: "lineage" }, folders: [], project_requirements: [], proposals: [], operations: [], delivered_capabilities: { enabled_environment_operations: ["get", "detect"], supported_schema: 1 } }
+  const controller = createProjectEnvironmentReadController({ send: async request => { requests.push(request); return "RelayStatus" in (request as any) ? { RelayStatus: { status: { machine_id: "machine", daemon_id: "kernel" } } } : { ProjectEnvironment: { environment } } }, render() {}, pageSize: () => 100 })
+  await controller.open("project")
+  controller.handleKey({ name: "d" })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(requests.length, 3)
+  assert.equal(requests[2].DetectProjectEnvironment.projectId, "project")
+  assert.deepEqual(requests[2].DetectProjectEnvironment.allowModelFolders, [])
+  assert.equal(requests.some(r => r.SaveProjectEnvironmentRevision), false)
+})
