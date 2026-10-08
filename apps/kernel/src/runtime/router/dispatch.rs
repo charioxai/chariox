@@ -138,6 +138,11 @@ impl CommandRouter {
                 .await;
         }
         if let LocalDaemonRequest::SubmitPrompt(prompt) = &request {
+            if crate::runtime::state::is_sudo_control(&prompt.prompt) {
+                return Err(crate::runtime::kernel_access::error(
+                    "use the terminal's sudo controls for status, extend or revoke",
+                ));
+            }
             if crate::runtime::state::is_sudo_prompt(&prompt.prompt) {
                 if command.caller.connection_class
                     != Some(crate::local::KernelConnectionClass::Terminal)
@@ -154,7 +159,7 @@ impl CommandRouter {
                 .await;
             }
         }
-        if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt)))
+        if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt) || crate::runtime::state::is_sudo_control(&prompt.prompt)))
         {
             return Err(crate::runtime::kernel_access::error(
                 "submit /sudo individually so each entry has its own popup",

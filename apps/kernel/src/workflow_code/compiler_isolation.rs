@@ -287,6 +287,19 @@ fn open_schema_beneath(
 mod linux;
 
 #[cfg(target_os = "linux")]
+#[path = "compiler_seccomp.rs"]
+mod seccomp;
+
+#[cfg(target_os = "linux")]
+fn root_compiler_host_id() -> libc::uid_t {
+    // MP-11 F14: NPROC counts every task of a host UID, including unrelated
+    // services using nobody. Choose a high, process-private identity once in the
+    // parent, so the two compiler jobs share a budget without sharing service UIDs.
+    static ID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| 1_000_000 + rand::random::<u32>() % 1_000_000_000)
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn compiler_command(
     node: &Path,
     limits: &WorkflowCodeLimitsConfig,
@@ -306,9 +319,15 @@ pub(super) fn compiler_command(
             "--unshare-all",
             "--die-with-parent",
             "--new-session",
+            "--uid",
+            "65534",
+            "--gid",
+            "65534",
             "--cap-drop",
             "ALL",
             "--clearenv",
+            "--perms",
+            "0500",
             "--size",
         ])
         .arg(limits.script_memory_bytes.max(4096).to_string())
@@ -320,12 +339,15 @@ pub(super) fn compiler_command(
         .arg("--ro-bind")
         .arg(&node)
         .arg("/compiler/node")
-        .args(["--remount-ro", "/", "/compiler/node"]);
+        .args(["--remount-ro", "/", "--seccomp", "3", "/compiler/node"]);
+    let filter = seccomp::compiler_filter()?;
     // V8's heap flag alone does not bound native allocations / ArrayBuffers.
     let address_limit = limits
         .script_memory_bytes
         .saturating_add(1024 * 1024 * 1024);
     let cpu_seconds = limits.script_timeout_ms.div_ceil(1000).max(1);
+    let drop_root_privileges = unsafe { libc::getuid() == 0 || libc::geteuid() == 0 };
+    let host_id = drop_root_privileges.then(root_compiler_host_id);
     unsafe {
         command.pre_exec(move || {
             // Mark every non-stdio descriptor close-on-exec, including a descriptor
@@ -347,7 +369,24 @@ pub(super) fn compiler_command(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            Ok(())
+            if let Some(host_id) = host_id {
+                // NPROC counts the host UID. A namespace UID change alone
+                // retains host root's exemption. Use an unprivileged host UID.
+                // Ordinary users retain their existing per-user process limit;
+                // the syscall, address-space and time bounds still apply.
+                let limit = libc::rlimit {
+                    rlim_cur: 64,
+                    rlim_max: 64,
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0
+                    || libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(host_id) != 0
+                    || libc::setuid(host_id) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            seccomp::install_filter_fd(&filter)
         });
     }
     Ok(command)
@@ -369,6 +408,82 @@ mod macos_tests;
 mod tests {
     use super::*;
 
+    // MP-11 F14: a realm escape cannot turn the compiler into a process launcher.
+    #[test]
+    fn security_f14_linux_compiler_cannot_spawn_its_own_node() {
+        let node = discover_workflow_code_node_path().unwrap();
+        let mut command = compiler_command(&node, &WorkflowCodeLimitsConfig::default()).unwrap();
+        let output = command.args(["--disable-wasm-trap-handler", "-e",
+            "const {spawnSync}=require('node:child_process'); const r=spawnSync(process.execPath,['--disable-wasm-trap-handler','-e','process.exit(0)']); if(!r.error || !['EPERM','EAGAIN'].includes(r.error.code)) process.exit(1);"
+        ]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "MP-11 F14: sandbox allowed a child Node: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // MP-11 F14: NPROC applies to the host real UID, not the namespace UID.
+    #[test]
+    fn security_f14_root_compiler_uses_nonroot_host_uid() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        fn compiler_uid(pid: u32) -> Option<u32> {
+            let root = std::path::PathBuf::from(format!("/proc/{pid}"));
+            if std::fs::read_to_string(root.join("comm")).ok()?.trim() == "node" {
+                let status = std::fs::read_to_string(root.join("status")).ok()?;
+                return status
+                    .lines()
+                    .find(|line| line.starts_with("Uid:"))?
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse()
+                    .ok();
+            }
+            let children =
+                std::fs::read_to_string(root.join(format!("task/{pid}/children"))).ok()?;
+            children
+                .split_whitespace()
+                .filter_map(|id| id.parse::<u32>().ok())
+                .filter(|id| *id > 1)
+                .find_map(compiler_uid)
+        }
+        let node = discover_workflow_code_node_path().unwrap();
+        let mut command = compiler_command(&node, &WorkflowCodeLimitsConfig::default()).unwrap();
+        let child = command
+            .args([
+                "--disable-wasm-trap-handler",
+                "-e",
+                "setTimeout(() => {}, 2000)",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(child.id() > 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut uid = None;
+        while std::time::Instant::now() < deadline && uid.is_none() {
+            uid = compiler_uid(child.id());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "compiler UID diagnostic must run");
+        assert!(
+            uid.is_some_and(|uid| uid != 0),
+            "MP-11 F14: host root UID exempts compiler NPROC limit"
+        );
+    }
+
+    #[test]
+    fn security_f14_root_compiler_avoids_shared_service_uid() {
+        assert!(
+            root_compiler_host_id() >= 1_000_000,
+            "MP-11 F14: root compiler shares a normal host service UID and its task budget"
+        );
+    }
+
     #[test]
     fn compiler_isolation_denies_host_files_commands_environment_and_network() {
         let node = discover_workflow_code_node_path().expect("real Node required");
@@ -381,16 +496,19 @@ import net from 'node:net';
 import {spawnSync} from 'node:child_process';
 // Bubblewrap creates this PWD after clearing the inherited environment.
 if (Object.keys(process.env).some(key => key !== 'PWD') || process.env.PWD !== '/tmp') throw new Error('inherited environment');
+if (process.getuid() === 0 || process.getgid() === 0) throw new Error('privileged compiler identity');
 if (process.cwd() !== '/tmp' || fs.readdirSync('/tmp').length) throw new Error('scratch not empty');
 let readonly = false;
 try {fs.writeFileSync('/marker', 'x')} catch (error) {readonly = error.code === 'EROFS'}
 if (!readonly) throw new Error('root is writable');
-fs.writeFileSync('/tmp/marker', 'x'); fs.unlinkSync('/tmp/marker');
+let scratchReadonly = false;
+try {fs.writeFileSync('/tmp/marker', 'x')} catch (error) {scratchReadonly = ['EACCES', 'EPERM', 'EROFS'].includes(error.code)}
+if (!scratchReadonly) throw new Error('scratch is writable');
 for (const path of ['/root', '/etc/hostname', '/bin/sh', '/proc']) {
   if (fs.existsSync(path)) throw new Error('host file exposed');
 }
 const child = spawnSync('/bin/sh', ['-c', 'exit 0']);
-if (child.error?.code !== 'ENOENT') throw new Error('host command available');
+if (!['ENOENT', 'EPERM', 'EAGAIN'].includes(child.error?.code)) throw new Error('host command available');
 await new Promise((resolve, reject) => {
  const socket = net.connect({host: '1.1.1.1', port: 443});
  socket.on('connect', () => {socket.destroy(); reject(new Error('network available'))});

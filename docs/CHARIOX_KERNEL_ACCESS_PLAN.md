@@ -220,7 +220,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The defaults are for the owner to confirm (open question 1).
+The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2).
 
 ### 5.6 Revocation
 

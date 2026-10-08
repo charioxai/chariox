@@ -10,6 +10,8 @@ pub(crate) struct TrackedProviderProcess {
     pub(crate) pid: Option<u32>,
     // Captured once at launch, never refreshed from a possibly reused PID.
     pub(crate) identity: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
+    // The OS-verified endpoint owner, captured once before prompt dispatch.
+    pub(crate) endpoint_identity: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
     pub(crate) endpoint_mode: AgentEndpointMode,
     pub(crate) process_label: String,
     pub(crate) started_at_ms: u64,

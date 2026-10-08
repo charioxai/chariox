@@ -44,7 +44,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
             for mut t in tasks(tx)? {
-                if t.room_id != room {
+                if t.room_id != room || t.state == ExecutionState::Done {
                     continue;
                 }
                 let registrations = match registrations(tx, &t.task_id) {
@@ -63,7 +63,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 let mut changed = false;
                 for o in &mut t.obligations {
-                    if o.completion_source() == Some(&source) && o.status == "open" {
+                    if o.completion_source() == Some(&source)
+                        && o.status == "open"
+                        && !(success
+                            && o.kind == "delegate"
+                            && o.dispatch_state == "accepted"
+                            && o.completion_task_id.is_none())
+                    {
                         o.status = if t.state == ExecutionState::Cancelled {
                             "cancelled"
                         } else if success {
@@ -76,7 +82,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
                 for mut reg in registrations {
-                    if reg.source_id == source && reg.live {
+                    if reg.source_id == source
+                        && reg.live
+                        && !(success && super::delegation::unbound(&t, &reg))
+                    {
                         reg.live = false;
                         tx.execute(
                             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",

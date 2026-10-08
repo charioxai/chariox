@@ -146,7 +146,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");
-        // A02: a durable prompt keeps its identity through promotion.
+        // MP-08/MP-10/MP-11: profile changes retain the durable admission ID.
         assert_eq!(started.id(), "first");
         assert_eq!(started.workflow_run_id(), Some("run-first"));
         assert_eq!(started.workflow_node_run_id(), Some("node-first"));

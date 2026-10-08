@@ -127,6 +127,10 @@ impl<'a> KernelSessionService<'a> {
                         });
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
+                        if self.app.config().room_agent_tools {
+                            let actor = self.app.agents.get_agent(metaagent_id)?;
+                            crate::runtime::room_tool_admission::workflow_node(&actor, &agent)?;
+                        }
                         if !self.app.config().room_agent_tools
                             && agent.controlled_by_metaagent_id() != Some(metaagent_id)
                         {
@@ -317,50 +321,6 @@ impl<'a> KernelSessionService<'a> {
             &[],
             &[],
         )
-    }
-
-    pub(crate) fn compile_and_validate_workflow_code_source_with_rebindings(
-        &mut self,
-        session_id: &str,
-        node_path: impl AsRef<Path>,
-        source: &str,
-        language: WorkflowCodeLanguage,
-        limits: &WorkflowCodeLimitsConfig,
-        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
-        agent_rebindings: &[crate::workflow_code::WorkflowCodeAgentRebinding],
-        caller_metaagent_id: Option<&str>,
-    ) -> Result<WorkflowCodeCompileResult, DaemonError> {
-        let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
-        let mut compile = compile_workflow_code_source_with_schema_import_root(
-            node_path,
-            source,
-            language,
-            limits,
-            schema_import_root.as_deref(),
-        )?;
-        let mut definition = compile.definition.clone();
-        crate::workflow_code::apply_workflow_code_agent_rebindings(
-            &mut definition,
-            agent_rebindings,
-        )?;
-        crate::workflow_code::apply_workflow_code_provider_rebindings(
-            &mut definition,
-            provider_rebindings,
-        )?;
-        if compile.validation.ok {
-            self.append_workflow_code_target_validation(
-                session_id,
-                &definition,
-                &mut compile.validation,
-                caller_metaagent_id,
-            )?;
-            crate::workflow_code::attach_workflow_code_diagnostic_spans(
-                &mut compile.validation,
-                &compile.source_spans,
-            );
-        }
-        compile.definition = definition;
-        Ok(compile)
     }
 
     pub(crate) fn validate_workflow_code_definition_with_rebindings(
@@ -632,8 +592,14 @@ impl<'a> KernelSessionService<'a> {
                                     ),
                                     Some(node.handle.clone()),
                                 );
-                            } else if !self.app.config().room_agent_tools && caller_metaagent_id.is_some_and(|metaagent_id| {
-                                agent.controlled_by_metaagent_id() != Some(metaagent_id)
+                             } else if caller_metaagent_id.is_some_and(|actor_id| {
+                                if self.app.config().room_agent_tools {
+                                    self.app.agents.get_agent(actor_id).map_or(true, |actor| {
+                                        crate::runtime::room_tool_admission::workflow_node(&actor, &agent).is_err()
+                                    })
+                                } else {
+                                    agent.controlled_by_metaagent_id() != Some(actor_id)
+                                }
                             }) {
                                 push_workflow_code_target_validation_error(
                                     validation,

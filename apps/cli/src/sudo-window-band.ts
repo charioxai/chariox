@@ -14,7 +14,9 @@ export function createSudoWindowBand(renderer: CliRenderer, actions: {
     render(windows: readonly KernelSudoTurn[], now: number, agentLabel: (agentId: string) => string) {
       if (!band) return
       const lines = windows.map((window) => sudoWindowLine(window, now, agentLabel(window.agent_id)))
-      const frame = JSON.stringify([lines, theme.warning, theme.backgroundElement])
+      // MP-08/MP-10/MP-11 P3: handlers capture the window, so its revision
+      // must invalidate the frame even when the rounded deadline is unchanged.
+      const frame = JSON.stringify([lines, windows.map((window) => window.revision), theme.warning, theme.backgroundElement])
       // MP-08/MP-10/MP-11: a layout mount can hide the box after its ref;
       // cached content still has to restore the current visibility.
       const visibilityChanged = band.visible !== (windows.length > 0)

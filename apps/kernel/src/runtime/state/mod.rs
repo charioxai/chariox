@@ -89,7 +89,7 @@ mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 pub(crate) use sudo::SudoWindowProjection;
-pub(crate) use sudo::{is_sudo_prompt, sudo_window_minutes};
+pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
@@ -174,7 +174,6 @@ struct KernelRuntimeOwnedState {
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
-    sudo_process_cutoffs: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
@@ -505,6 +504,7 @@ mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
+mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
 mod workflow_notification_peers;
@@ -810,7 +810,6 @@ impl KernelRuntimeState {
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
-                sudo_process_cutoffs: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_scopes: Default::default(),
                 sudo_timer_changes: Default::default(),
@@ -1219,6 +1218,7 @@ impl KernelRuntimeState {
 
 mod room_agent_admission;
 
+mod agent_delegation_runtime;
 mod agent_inbox_delivery;
 mod agent_lifecycle_runtime;
 mod agent_task_cancellation;

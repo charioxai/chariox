@@ -698,6 +698,7 @@ impl KernelRuntimeState {
                 .await?;
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
+            let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
                 if let Some(mut submission) =
@@ -791,6 +792,9 @@ impl KernelRuntimeState {
             // blocks on the owner for work that never started.
             if submission.is_err() && admitted {
                 self.owned.withdraw_agent_task(prepared.prompt.id())?;
+            }
+            if submission.is_ok() {
+                self.reconcile_delegated_prompt(delegated_parent, &prepared);
             }
             submission
         }
