@@ -248,6 +248,13 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
   return { ...page, regions: regions.map(outward), withheld };
 }
 
+// A private session per measurement: its DOM agent state (document node ids,
+// searches, isolated worlds) never invalidates the controller's page session.
+async function withSession(connection, targetId, run) {
+  const { sessionId } = await connection.send('Target.attachToTarget', { targetId, flatten: true });
+  try { return await run(sessionId); } finally { await connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+}
+
 // Every visible page target, with its window (screen DIP) for desktop placement.
 export async function measureBrowserProtection(browser, policy) {
   if (policy?.unknown || !Array.isArray(policy?.values) || !Array.isArray(policy?.targets)) throw new Error('MP-11: browser protection policy unknown');
@@ -262,8 +269,7 @@ export async function measureBrowserProtection(browser, policy) {
     const window = [bounds?.left, bounds?.top, bounds?.width, bounds?.height];
     if (!window.every(Number.isFinite)) throw new Error('MP-11: unknown browser window');
     // A visible page that cannot be bound fails the whole measurement closed.
-    const { sessionId } = await browser.resolvePageTarget(page.targetId);
-    const measured = await measurePageProtection(connection, sessionId, page.targetId, policy);
+    const measured = await withSession(connection, page.targetId, sessionId => measurePageProtection(connection, sessionId, page.targetId, policy));
     if (measured === null) continue;
     // Desktop pixels: the X11 client window must equal this exact rectangle.
     const device = window.map(value => Math.round(value * measured.scale));
@@ -280,14 +286,14 @@ export const protectionDigest = measurement => createHash('sha256').update(JSON.
 export async function awaitPresented(browser, pages, frames = 2) {
   const nested = 'requestAnimationFrame(() => resolve(true))';
   const callback = frames === 2 ? `requestAnimationFrame(() => ${nested})` : nested;
-  await Promise.all(pages.map(async page => {
-    const { connection, sessionId } = await browser.resolvePageTarget(page.target_id);
+  const connection = await browser.ensureConnection();
+  await Promise.all(pages.map(page => withSession(connection, page.target_id, async sessionId => {
     const top = await frameTree(connection, sessionId);
     const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frame.id, worldName: 'chariox-protection-regions' }, sessionId);
     const { result } = await connection.send('Runtime.evaluate', { contextId: executionContextId, awaitPromise: true, returnByValue: true,
       expression: `new Promise(resolve => { setTimeout(() => resolve(false), ${FRAME_TIMEOUT_MS}); ${callback}; })` }, sessionId);
     if (result?.value !== true) throw new Error('MP-11: page did not present a frame');
-  }));
+  })));
 }
 
 // A measurement whose layout has reached the screen, or null (fail closed).
