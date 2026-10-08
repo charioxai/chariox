@@ -1,4 +1,4 @@
-import { createProjectEnvironmentReadController } from "./project-environment-read-controller.js"
+import { createProjectEnvironmentReadController, projectEnvironmentPageSize } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
@@ -93,7 +93,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const environmentController = createProjectEnvironmentReadController({
     send: request => deps.client.send(request),
-    pageSize: () => Math.max(1, deps.dimensions().height - 12),
+    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
     render: () => dialogOverlayController.render(),
   })
   const dialogOverlayController = createCliDialogOverlayController<any, any>({

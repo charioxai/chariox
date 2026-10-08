@@ -1,6 +1,10 @@
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
 import { getProjectEnvironmentRequest, projectEnvironmentLines, type ProjectEnvironment } from "@chariox/kernel-client"
 
+export function projectEnvironmentPageSize(height: number) {
+  return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
+}
+
 export function createProjectEnvironmentReadController(deps: {
   send: (request: unknown) => Promise<unknown>
   render: () => void

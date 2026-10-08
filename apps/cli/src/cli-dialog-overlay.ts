@@ -69,9 +69,7 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   if (options.mode === "environment") {
     const panel = dialogPanel(renderer, Math.min(110, Math.max(30, dimensions.width - 4)), dimensions.width)
     panel.add(dialogHeader(renderer, "Environment · Read-only", "↑/↓ scroll • Esc close"))
-    for (const line of options.environmentLines ?? []) {
-      panel.add(new TextRenderable(renderer, { content: line, fg: theme.text, wrapMode: "none" }))
-    }
+    panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
     scrim.add(panel)
   } else if (options.mode === "managed-machine") {
     scrim.add(renderManagedMachinePanel(options))
