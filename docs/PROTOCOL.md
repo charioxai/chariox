@@ -823,24 +823,36 @@ client surface includes:
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
 
-MP-05 / MP-08 / MP-11 owner-managed admission (local 445, relay peer 88)
-adds `ownerManaged` to the same `StartManagedContextTransfer` request. Exactly one
-of `ticket` and `ownerManaged` is allowed; owner-managed requests require
-`interactive: true`. The client supplies only destination identity pins and
-inventory selections. The source kernel derives source identity, context ID and
-canonical plan digest, validates Project/Workspace/worktree ownership and obtains
-a Cloud ticket. A disconnected source refuses the request. The selected destination
-must be an enrolled ordinary kernel owned by the same account/user in the same realm.
+MP-05 / MP-08 / MP-11 owner-managed admission (local 445, relay peer 88; Cloud
+ticket binding since local 467) adds `ownerManaged` to the same
+`StartManagedContextTransfer` request. Exactly one of `ticket` and `ownerManaged`
+is allowed; owner-managed requests require `interactive: true`. `ownerManaged` is
+`{ticket, source, target, contextSelection}`: `ticket` is the single-use `oct_`
+capability Cloud issued (`POST /v1/owner-managed-context-tickets`, by the owner's
+browser session or the source's kernel credential) for exactly these
+`source`/`target` peer pins (`relayRealmId`, `machineId`, `kernelId`,
+`relayPublicKey`, `keyThumbprint`) and `contextSelection`. The source kernel
+refuses a ticket whose `source` pins are not its own, derives the context ID and
+canonical plan digest, validates Project/Workspace/worktree ownership and redeems
+the ticket once at `POST /v1/managed-kernels/context/ticket` with
+`{kernelCredential, ownerManaged:{ticket, source, target, contextSelection}}`.
+Cloud answers with the issuance binding (`kind:"owner_managed_machine"`, no
+`ticket`); the kernel requires its `source`, `target` and `contextSelection` to
+equal the request. The capability stays in source memory only; the durable
+owner binding records redemption, so a resumed transfer never replays it.
+`authorization_expired` (used, revoked or expired), `authorization_denied` and
+`dependency_unavailable` map to typed refusals. A disconnected source refuses
+the request.
 
 MP-08 / MP-11 owner destination bindings are
 `{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
 persisted operations, authoritative receipts and launch targets retain this binding.
 `environmentId` / `target_environment_id` is absent only for this branch; mixed
-or missing bindings are rejected. Owner-managed tickets use
-`/v1/owner-managed-kernels/context/ticket`, never the managed-environment authority.
-The target independently validates a Cloud ticket against the encrypted source
-identity and its own enrollment; every arm/begin/chunk/finalize/status operation
-retains the existing capability, identity/key, realm/user, digest, TTL and size checks.
+or missing bindings are rejected. The target does not call Cloud: it binds the
+import to its own enrollment (machine, kernel, key, realm, account, user) and to
+the relay-authenticated source (same user and realm, distinct kernel, pinned
+key); every arm/begin/chunk/finalize/status operation retains the existing
+capability, identity/key, realm/user, digest, TTL and size checks.
 Chunks remain encrypted kernel-to-kernel relay packets.
 
 MP-08 / MP-11 `source_kernel_without_credentials` is part of the canonical plan

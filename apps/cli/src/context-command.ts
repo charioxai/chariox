@@ -38,8 +38,9 @@ export async function runContextCommand(argv: string[]): Promise<boolean> {
       try { selection = JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")) as OwnerManagedContextTransfer }
       catch { throw new Error("Invalid context selection JSON") }
     } finally { await file.close() }
-    // The kernel validates selection shape, ownership and inventory; clients
-    // cannot supply a ticket, source identity, credentials or plan digest.
+    // The selection carries Cloud's single-use owner ticket and the pins it was
+    // issued for. The kernel validates shape, its own source pins, ownership and
+    // inventory; clients cannot supply credentials, a context ID or plan digest.
     request = startOwnerManagedContextTransferRequest(selection)
   } else if (args[0] === "status" && args.length === 2) {
     request = getManagedContextTransferStatusRequest(args[1]!)

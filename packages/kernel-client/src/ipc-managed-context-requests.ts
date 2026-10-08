@@ -43,10 +43,20 @@ export type ManagedContextLaunchTarget = {
       }
 }
 
-// MP-08 / MP-11: clients select inventory only; the kernel pins source/owner/plan.
+// MP-08 / MP-11: clients pass a Cloud-issued single-use ticket (Cloud #305) with
+// the source/target pins it was issued for; the source kernel verifies the source
+// pins are its own and derives owner, context ID and plan digest itself.
 export const OWNER_MANAGED_CONTEXT_CAPABILITY = "owner_managed_context_transfer_v1"
-export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 445
+export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 467
 export const OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION = 88
+
+export type OwnerManagedContextPeer = {
+  readonly relayRealmId: string
+  readonly machineId: string
+  readonly kernelId: string
+  readonly relayPublicKey: string
+  readonly keyThumbprint: string
+}
 
 export type OwnerManagedDestination = {
   readonly kind: "owner_managed_machine"
@@ -55,13 +65,10 @@ export type OwnerManagedDestination = {
 }
 
 export type OwnerManagedContextTransfer = {
-  readonly target: {
-    readonly relayRealmId: string
-    readonly machineId: string
-    readonly kernelId: string
-    readonly relayPublicKey: string
-    readonly keyThumbprint: string
-  }
+  /** Single-use `oct_` capability from `POST /v1/owner-managed-context-tickets`. */
+  readonly ticket: string
+  readonly source: OwnerManagedContextPeer
+  readonly target: OwnerManagedContextPeer
   readonly contextSelection: {
     readonly kernelContext: "empty" | "source_kernel_without_credentials"
     readonly developmentSetup:

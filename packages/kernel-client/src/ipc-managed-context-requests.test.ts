@@ -50,10 +50,12 @@ test("managed context transfer requests use the shared local daemon shape", () =
   })
 })
 
-test("MP-08 MP-11 owner-managed admission is interactive and carries inventory selection only", () => {
-  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION, 445)
+test("MP-08 MP-11 owner-managed admission is interactive and carries the Cloud ticket binding", () => {
+  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION, 467)
   assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION, 88)
   const ownerManaged = {
+    ticket: `oct_${"A".repeat(43)}`,
+    source: { relayRealmId: "realm", machineId: "source-machine", kernelId: "source-kernel", relayPublicKey: "source-public", keyThumbprint: "source-pin" },
     target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
     contextSelection: {
       kernelContext: "source_kernel_without_credentials" as const,
@@ -63,5 +65,6 @@ test("MP-08 MP-11 owner-managed admission is interactive and carries inventory s
   assert.deepEqual(startOwnerManagedContextTransferRequest(ownerManaged), {
     StartManagedContextTransfer: { interactive: true, ownerManaged },
   })
+  // The Path-1 environment ticket stays exclusive of the owner-managed branch.
   assert.equal("ticket" in startOwnerManagedContextTransferRequest(ownerManaged).StartManagedContextTransfer, false)
 })

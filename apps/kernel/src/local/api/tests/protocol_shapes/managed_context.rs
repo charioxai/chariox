@@ -6,10 +6,10 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
         DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 464);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        94
+        95
     );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
@@ -52,7 +52,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 464);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -337,11 +337,11 @@ fn managed_context_launch_target_reads_schema_v4_variant_fields() {
     );
 }
 
-// MP-08/MP-11: owner admission and environment-free launch require protocol 445.
+// MP-08/MP-11: owner admission (Cloud #305 ticket binding, 467) and environment-free launch.
 #[test]
 fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 445);
-    let value: serde_json::Value = serde_json::from_str(r#"{"StartManagedContextTransfer":{"interactive":true,"ownerManaged":{"target":{"relayRealmId":"realm","machineId":"machine","kernelId":"kernel","relayPublicKey":"public","keyThumbprint":"thumbprint"},"contextSelection":{"kernelContext":"source_kernel_without_credentials","developmentSetup":{"kind":"source_project","projectId":"project","repositories":[{"role":"primary","workspaceId":"workspace","worktreeId":null}]}}}}}"#).unwrap();
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
+    let value: serde_json::Value = serde_json::from_str(r#"{"StartManagedContextTransfer":{"interactive":true,"ownerManaged":{"ticket":"oct_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":{"relayRealmId":"realm","machineId":"source-machine","kernelId":"source-kernel","relayPublicKey":"source-public","keyThumbprint":"source-thumbprint"},"target":{"relayRealmId":"realm","machineId":"machine","kernelId":"kernel","relayPublicKey":"public","keyThumbprint":"thumbprint"},"contextSelection":{"kernelContext":"source_kernel_without_credentials","developmentSetup":{"kind":"source_project","projectId":"project","repositories":[{"role":"primary","workspaceId":"workspace","worktreeId":null}]}}}}}"#).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), value);
     assert_eq!(

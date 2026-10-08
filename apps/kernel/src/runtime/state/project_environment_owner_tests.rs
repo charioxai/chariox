@@ -245,6 +245,8 @@ async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
     let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
     for approve in [false, true] {
         let selection = OwnerManagedTransfer {
+            ticket: crate::managed_context::owner_managed::test_capability(),
+            source: crate::managed_context::owner_managed::test_source(&config),
             target: target.clone(),
             context_selection: OwnerManagedContextSelection {
                 kernel_context: OwnerManagedKernelSelection::SourceKernelWithoutCredentials,

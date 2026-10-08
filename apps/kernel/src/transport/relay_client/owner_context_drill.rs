@@ -1,12 +1,11 @@
 //! MP-05 / MP-08 / MP-10 / MP-11: credential-free owner-to-owner encrypted peer drill.
-//! Cloud admission is loopback mocked; this is not hosted/fresh-machine acceptance.
+//! The target never calls Cloud: under the Cloud #305 contract the source redeems
+//! the single-use owner ticket. This is not hosted/fresh-machine acceptance.
 use super::tests::{send_managed_peer_request, ManagedPeerRequestHarness, ScopedEnv};
 use super::*;
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::managed_context::outbound::*;
-use crate::managed_context::outbound_service::{
-    ManagedContextTransferTarget, ManagedContextTransferTicket,
-};
+use crate::managed_context::outbound_service::ManagedContextTransferTarget;
 use crate::managed_context::owner_managed::*;
 use crate::managed_context::{development::*, kernel::*, package::*};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
@@ -14,7 +13,6 @@ use chariox_relay::auth::RelaySubjectKind;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Cleanup(PathBuf);
 impl Drop for Cleanup {
@@ -277,8 +275,8 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         b"target-vault-canary",
     )
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    // MP-11: an unreachable Cloud proves target admission is relay/enrollment only.
+    let api_url = "http://127.0.0.1:9".to_string();
     let mut source = DaemonConfig::for_tests();
     source.cloud_relay = Some(enrolled_profile(&source, &api_url));
     let mut target =
@@ -301,6 +299,8 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     );
     target.cloud_relay = Some(enrolled_profile(&target, &api_url));
     let selection = OwnerManagedTransfer {
+        ticket: crate::managed_context::owner_managed::test_capability(),
+        source: crate::managed_context::owner_managed::test_source(&source),
         target: ManagedContextTransferTarget {
             relay_realm_id: "owner-realm".into(),
             machine_id: target.host_machine_id.clone(),
@@ -326,73 +326,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         crate::managed_bootstrap::ManagedKernelContextPlan::for_owner_managed(&source, &selection)
             .unwrap();
     let plan = context_plan.package_binding();
-    let cloud_ticket = ManagedContextTransferTicket {
-        environment_id: String::new(),
-        context_plan,
-        target: selection.target.clone(),
-    };
-    let cloud_response = serde_json::to_vec(&cloud_ticket).unwrap();
-    let source_id = source.daemon_id.clone();
-    let target_id = target.daemon_id.clone();
-    let plan_id = plan.context_id.clone();
-    let server = tokio::spawn(async move {
-        for attempt in 0..9 {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let (header, length) = loop {
-                let mut chunk = [0u8; 4096];
-                let read = stream.read(&mut chunk).await.unwrap();
-                assert!(read > 0);
-                bytes.extend_from_slice(&chunk[..read]);
-                assert!(bytes.len() < 128 * 1024);
-                if let Some(header) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&bytes[..header]);
-                    let length: usize = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .and_then(|s| s.trim().parse().ok())
-                        })
-                        .unwrap();
-                    if bytes.len() >= header + 4 + length {
-                        break (header, length);
-                    }
-                }
-            };
-            assert!(String::from_utf8_lossy(&bytes[..header])
-                .starts_with(&format!("POST {TICKET_ENDPOINT} ")));
-            let body: serde_json::Value =
-                serde_json::from_slice(&bytes[header + 4..header + 4 + length]).unwrap();
-            assert_eq!(body["admission"], "target");
-            assert_eq!(body["accountId"], "owner-account");
-            assert_eq!(body["kernelId"], target_id);
-            assert_eq!(body["source"]["kernelId"], source_id);
-            assert_eq!(body["contextId"], plan_id);
-            assert!(body.get("environmentId").is_none());
-            let mut response_ticket: serde_json::Value =
-                serde_json::from_slice(&cloud_response).unwrap();
-            let wrong_pin = match attempt {
-                1 => Some("machineId"),
-                2 => Some("kernelId"),
-                3 => Some("keyThumbprint"),
-                4 => Some("relayPublicKey"),
-                _ => None,
-            };
-            if let Some(pin) = wrong_pin {
-                response_ticket["target"][pin] = serde_json::json!("incorrect-pin");
-            }
-            let response_bytes = serde_json::to_vec(&response_ticket).unwrap();
-            let (status, response) = if attempt == 0 {
-                ("403 Forbidden", b"{}".as_slice())
-            } else {
-                ("200 OK", response_bytes.as_slice())
-            };
-            let headers = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
-            stream.write_all(headers.as_bytes()).await.unwrap();
-            stream.write_all(response).await.unwrap();
-        }
-    });
     let development = export_development_context(DevelopmentContextExportRequest {
         project_id: "owner-project".into(),
         repositories: vec![DevelopmentRepositorySelection {
@@ -550,42 +483,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     assert!(key_refusal
         .error
         .is_some_and(|error| error.code == "unauthorized" && !error.retryable));
-    let refused = send_managed_peer_request(
-        &harness,
-        &source.daemon_id,
-        &identity,
-        &source.relay_private_key,
-        &target.relay_public_key,
-        arm.clone(),
-    )
-    .await;
-    assert!(matches!(
-        refused,
-        RelayPeerResponse::ManagedContextImportFailed {
-            retryable: false,
-            ..
-        }
-    ));
-    for pin in ["machine", "kernel", "thumbprint", "public_key"] {
-        let response = send_managed_peer_request(
-            &harness,
-            &source.daemon_id,
-            &identity,
-            &source.relay_private_key,
-            &target.relay_public_key,
-            arm.clone(),
-        )
-        .await;
-        match response {
-            RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
-                assert!(!retryable, "{pin} refusal code {code} was retryable");
-            }
-            response => panic!(
-                "{pin} did not refuse: {:?}",
-                std::mem::discriminant(&response)
-            ),
-        }
-    }
     let capability = random_managed_context_capability();
     // MP-08/MP-11: match the REAL relay's ordinary-kernel peer projection.
     let mut identity = identity;
@@ -779,7 +676,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         }
     ));
     assert!(std::fs::read(&target.user_config_path).unwrap() == target_config_canary);
-    server.await.unwrap();
     // MP-10: synthetic bound identities and mocked admission are local evidence only.
     let _public_package_hash = format!("{:x}", Sha256::digest(package_bytes));
 }

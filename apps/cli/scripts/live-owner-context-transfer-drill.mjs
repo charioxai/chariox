@@ -8,7 +8,7 @@ import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod } from 'node:fs/promises'
-import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, ownedProcessHandles, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { createReadStream } from 'node:fs'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 
@@ -26,7 +26,7 @@ const ownerProfiles = new Map(), tickets = new Map(), presences = new Map(), dev
 const legacyLocal = mode.startsWith('legacy-local-')
 const scenario = legacyLocal ? mode.slice('legacy-local-'.length) : mode
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-let root, workRoot, cloud, source, target, tui, automationSocket, faultContext
+let root, workRoot, cloud, source, target, tui, automationSocket, faultContext, injectNext = false
 let failed = null, cleanup = false, faultInjected = false
 const sanitize = text => secrets.reduce((out, secret) => out.replaceAll(secret, '[redacted]'), text)
   .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted-jwt]')
@@ -65,11 +65,11 @@ async function stop(child) {
   // MP-11: the retained setsid leader pins every descendant; the shared guard
   // validates PID/start identities before either a positive or group signal.
   if (child.exitCode === null) {
-    for(const row of remaining().filter(row=>row.pid!==child.pid))signalOwnedProcess(row.pid,'SIGTERM')
+    for(const handle of ownedProcessHandles(child).filter(handle=>handle.pid!==child.pid))signalOwnedProcess(handle,'SIGTERM')
     signalOwnedProcessGroup(child,'SIGTERM')
     await Promise.race([child.done,sleep(5000)])
   }
-  for(const row of remaining().filter(row=>row.pid!==child.pid))signalOwnedProcess(row.pid,'SIGKILL')
+  for(const handle of ownedProcessHandles(child).filter(handle=>handle.pid!==child.pid))signalOwnedProcess(handle,'SIGKILL')
   if (child.exitCode === null) { signalOwnedProcessGroup(child,'SIGKILL'); await child.done }
   await until(()=>remaining().length===0,`${child.name} owned session cleanup`,5000)
 }
@@ -145,26 +145,22 @@ async function handleCloud(req,res) {
       assert.equal(ownerProfiles.get(body.kernelId)?.credential,body.kernelCredential)
       presences.set(body.kernelId,{kernelId:body.kernelId,machineId:body.machineId,status:body.status,metadata:body.metadata})
       response={ok:true}
-    } else if(req.url==='/v1/owner-managed-kernels/context/ticket') {
-      assert.equal(ownerProfiles.get(body.kernelId)?.credential,body.kernelCredential)
-      assert.equal(body.accountId,account); assert.equal(body.userId,user)
-      if(body.admission==='source') {
-        response={contextPlan:body.contextPlan,target:body.target}
-        tickets.set(body.contextPlan.contextId,response)
-      } else {
-        response=tickets.get(body.contextId); assert(response)
-        assert.equal(body.source.kernelId,source.identity.kernelId)
-        assert.equal(body.source.keyThumbprint,source.identity.publicKeyThumbprint)
-        assert.equal(body.source.userId,user)
-        assert.equal(body.source.relayRealmId,realm)
-        assert.equal(body.kernelId,target.identity.kernelId)
-        assert.equal(body.keyThumbprint,target.identity.publicKeyThumbprint)
-        if(faultContext===body.contextId && !faultInjected) {
-          const filename=path.join(source.outbound,'.operations',`${faultContext}.json`)
-          await rename(filename,filename+'.saved'); await mkdir(filename); faultInjected=true
-          steps.push({name:'inject-source-status-storage-failure',mpItems:['MP-08','MP-10','MP-11']})
-        }
+    } else if(req.url==='/v1/managed-kernels/context/ticket' && body.ownerManaged) {
+      // Cloud #305: the source redeems the single-use owner ticket with its own credential.
+      assert.deepEqual(Object.keys(body).sort(),['kernelCredential','ownerManaged'])
+      const actor=[...ownerProfiles.values()].find(actor=>actor.credential===body.kernelCredential)
+      assert(actor,'redeemer must be an enrolled kernel')
+      const issued=tickets.get(body.ownerManaged.ticket); assert(issued && !issued.consumed,'owner ticket is single use')
+      assert.equal(actor.profile.kernelId,source.identity.kernelId)
+      for(const field of ['source','target','contextSelection'])assert.deepEqual(body.ownerManaged[field],issued[field])
+      issued.consumed=true
+      if(injectNext && !faultInjected) {
+        await until(()=>faultContext,'fault context id')
+        const filename=path.join(source.outbound,'.operations',`${faultContext}.json`)
+        await rename(filename,filename+'.saved'); await mkdir(filename); faultInjected=true
+        steps.push({name:'inject-source-status-storage-failure',mpItems:['MP-08','MP-10','MP-11']})
       }
+      const {consumed,...binding}=issued; response=binding
     } else if(req.url.startsWith('/kernels') || req.url.startsWith('/v1/')) {
       response={kernels:[],machines:[],items:[]}
     } else throw new Error('unexpected Cloud path '+req.url)
@@ -268,12 +264,23 @@ try {
     relayPublicKey:presences.get(target.identity.kernelId).metadata.relay_public_key,keyThumbprint:target.identity.publicKeyThumbprint},
     contextSelection:{kernelContext:(packagedMode||structuredMode)?'source_kernel_without_credentials':'empty',developmentSetup:kernelOnly?{kind:'empty'}:{kind:'source_project',projectId:session.project_id,
       repositories:[{role:'primary',workspaceId:session.workspace_id,worktreeId:null}]}}}
-  const selectionPath=path.join(root,'selection.json');await writeFile(selectionPath,JSON.stringify(selection))
+  const selectionPath=path.join(root,'selection.json')
+  // MP-11: each copy carries a fresh browser-issued owner ticket (Cloud #305 issuance).
+  async function issueSelection() {
+    const ticket='oct_'+randomBytes(32).toString('base64url')
+    const sourcePins={relayRealmId:realm,machineId:source.identity.machineId,kernelId:source.identity.kernelId,
+      relayPublicKey:presences.get(source.identity.kernelId).metadata.relay_public_key,keyThumbprint:source.identity.publicKeyThumbprint}
+    tickets.set(ticket,{kind:'owner_managed_machine',ticket_id:'ticket-'+tickets.size,expires_at:new Date(Date.now()+300_000).toISOString(),
+      sourceTargetId:source.identity.kernelId,source:sourcePins,target:selection.target,contextSelection:selection.contextSelection})
+    secrets.push(ticket)
+    await writeFile(selectionPath,JSON.stringify({ticket,source:sourcePins,...selection}))
+  }
   async function cli(name,kernel,args) {
     const result=await run(name,path.join(binaryDir,'chariox-cli'),['context',...args,'--kernel-url',kernel.url],kernel.env)
     assert.equal(result.code,0,`MP-08 ${name}: ${result.output}`);return JSON.parse(result.output.trim())
   }
   async function copy(name, inject=false, cancel=false) {
+    injectNext=inject; await issueSelection()
     const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStarted.status
     if(inject)faultContext=initial.contextId
     const prefix='owner-context:'

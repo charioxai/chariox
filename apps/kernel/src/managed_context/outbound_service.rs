@@ -257,6 +257,11 @@ pub(crate) struct ManagedContextOutboundOperationStore {
     state: Arc<Mutex<BTreeMap<String, ManagedContextOutboundOperationStatus>>>,
     active: Arc<Mutex<BTreeSet<String>>>,
     prepared_git_enrollment_tickets: Arc<Mutex<BTreeMap<String, PreparedGitEnrollmentTicket>>>,
+    /// MP-11: unredeemed owner-copy capabilities by context ID, memory only;
+    /// `None` records a redemption for stores without durable state.
+    owner_redemptions: Arc<
+        Mutex<BTreeMap<String, Option<crate::managed_context::owner_managed::OwnerManagedTransfer>>>,
+    >,
     transfer_slots: Arc<Semaphore>,
     artifact_lock: Arc<Mutex<()>>,
     artifact_parent: Option<Arc<PathBuf>>,
@@ -268,6 +273,7 @@ impl Default for ManagedContextOutboundOperationStore {
             state: Arc::new(Mutex::new(BTreeMap::new())),
             active: Arc::new(Mutex::new(BTreeSet::new())),
             prepared_git_enrollment_tickets: Arc::new(Mutex::new(BTreeMap::new())),
+            owner_redemptions: Arc::new(Mutex::new(BTreeMap::new())),
             transfer_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_OUTBOUND_TRANSFERS)),
             artifact_lock: Arc::new(Mutex::new(())),
             artifact_parent: None,
@@ -847,53 +853,80 @@ async fn fetch_authoritative_ticket(
         // Only legacy/managed-worker profiles retain Machine authority.
         body["machineCredential"] = serde_json::json!(credential);
     }
-    if requested
-        .context_plan
-        .package_binding()
-        .destination
-        .is_some()
-    {
-        body.as_object_mut()
-            .expect("ticket body")
-            .remove("environmentId");
-        body["contextPlan"] = serde_json::to_value(&requested.context_plan)
-            .map_err(|_| outbound_service_error("invalid owner context plan", false))?;
-        body["target"] = serde_json::to_value(&requested.target)
-            .map_err(|_| outbound_service_error("invalid owner target", false))?;
-        body["userId"] = serde_json::json!(cloud.user_id);
-        body["admission"] = serde_json::json!("source");
-    }
     post_cloud_json(
         cloud.api_url.clone(),
-        if requested
-            .context_plan
-            .package_binding()
-            .destination
-            .is_some()
-        {
-            crate::managed_context::owner_managed::TICKET_ENDPOINT
-        } else {
-            "/v1/managed-kernels/context/ticket"
-        },
+        "/v1/managed-kernels/context/ticket",
         body,
     )
     .await
     .map_err(|error| {
         let retryable = cloud_error_is_retryable(&error);
-        if requested
-            .context_plan
-            .package_binding()
-            .destination
-            .is_some()
-        {
-            crate::managed_context::owner_managed::cloud_admission_error(error)
-        } else {
-            outbound_service_error(
-                format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
-                retryable,
-            )
-        }
+        outbound_service_error(
+            format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
+            retryable,
+        )
     })
+}
+
+// MP-08/MP-11: redeem Cloud's single-use owner-copy ticket (Cloud #305) once,
+// with this source kernel's own credential. The kernel-built plan stays local.
+async fn redeem_owner_ticket(
+    config: &DaemonConfig,
+    store: &ManagedContextOutboundOperationStore,
+    requested: &ManagedContextTransferTicket,
+) -> Result<ManagedContextTransferTicket, DaemonError> {
+    use crate::managed_context::owner_managed::{admission_error, cloud_admission_error};
+    let context_id = requested.context_plan.package_binding().context_id;
+    let Some(selection) = store.owner_redemption(&context_id)? else {
+        return Ok(requested.clone());
+    };
+    let cloud = config.cloud_relay.as_ref().ok_or_else(|| {
+        outbound_service_error("source kernel is not connected to Chariox Cloud", true)
+    })?;
+    let credential = cloud
+        .kernel_credential
+        .as_deref()
+        .filter(|credential| !credential.is_empty())
+        .ok_or_else(|| outbound_service_error("source kernel Cloud credential is unavailable", true))?;
+    if selection.target != requested.target {
+        return Err(admission_error("owner copy ticket target changed"));
+    }
+    let mut expected = serde_json::json!({
+        "source": selection.source,
+        "target": selection.target,
+        "contextSelection": selection.context_selection,
+    });
+    let mut owner_managed = expected.clone();
+    owner_managed["ticket"] = serde_json::json!(selection.ticket.expose());
+    let binding: serde_json::Value = match post_cloud_json(
+        cloud.api_url.clone(),
+        crate::managed_context::owner_managed::TICKET_ENDPOINT,
+        serde_json::json!({ "kernelCredential": credential, "ownerManaged": owner_managed }),
+    )
+    .await
+    {
+        Ok(binding) => binding,
+        Err(error) => {
+            let error = cloud_admission_error(error);
+            if !error_is_retryable(&error) {
+                store.complete_owner_redemption(&context_id, false)?;
+            }
+            return Err(error);
+        }
+    };
+    expected["kind"] = serde_json::json!("owner_managed_machine");
+    if binding.get("ticket").is_some()
+        || ["kind", "source", "target", "contextSelection"]
+            .iter()
+            .any(|field| binding.get(field) != expected.get(field))
+    {
+        store.complete_owner_redemption(&context_id, false)?;
+        return Err(admission_error(
+            "Cloud owner copy ticket does not match this transfer",
+        ));
+    }
+    store.complete_owner_redemption(&context_id, true)?;
+    Ok(requested.clone())
 }
 
 async fn authoritative_ticket_for_outbound_operation(
@@ -903,6 +936,14 @@ async fn authoritative_ticket_for_outbound_operation(
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     if requested.context_plan.is_git_credential_enrollment() {
         return store.prepared_git_enrollment_ticket(requested);
+    }
+    if requested
+        .context_plan
+        .package_binding()
+        .destination
+        .is_some()
+    {
+        return redeem_owner_ticket(config, store, requested).await;
     }
     fetch_authoritative_ticket(config, requested).await
 }
@@ -2043,6 +2084,8 @@ mod tests {
             ..Default::default()
         });
         let selection = OwnerManagedTransfer {
+            ticket: crate::managed_context::owner_managed::test_capability(),
+            source: crate::managed_context::owner_managed::test_source(&config),
             target: ManagedContextTransferTarget {
                 relay_realm_id: "realm".into(),
                 machine_id: "target-machine".into(),
@@ -2198,6 +2241,7 @@ mod tests {
                 package_sha256: "c".repeat(64),
                 package_size_bytes: 7,
                 receipt: RelayManagedContextImportReceipt {
+                    provider_accounts: Vec::new(),
                     destination: None,
                     transfer_id: "transfer".into(),
                     archive_sha256: "c".repeat(64),
@@ -2249,8 +2293,13 @@ mod tests {
             ..Default::default()
         });
         let mut ticket = git_enrollment_test_ticket(&config, "ticket-request", "public-target-key");
+        let store = ManagedContextOutboundOperationStore::default();
+        let mut response = serde_json::to_vec(&ticket).unwrap();
+        let mut expected_owner = serde_json::Value::Null;
         if owner_managed {
             let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
+                ticket: crate::managed_context::owner_managed::test_capability(),
+                source: crate::managed_context::owner_managed::test_source(&config),
                 target: ticket.target.clone(),
                 context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
                     kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
@@ -2260,9 +2309,20 @@ mod tests {
             ticket.context_plan =
                 ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap();
             ticket.environment_id.clear();
+            store.remember_owner_redemption(&ticket, selection.clone());
+            expected_owner = serde_json::json!({
+                "ticket": selection.ticket.expose(),
+                "source": selection.source,
+                "target": selection.target,
+                "contextSelection": selection.context_selection,
+            });
+            // Cloud #305 answers with the issuance binding, never the capability.
+            let mut binding = expected_owner.clone();
+            binding.as_object_mut().unwrap().remove("ticket");
+            binding["kind"] = serde_json::json!("owner_managed_machine");
+            binding["ticket_id"] = serde_json::json!("ticket-row");
+            response = serde_json::to_vec(&binding).unwrap();
         }
-        let expected_plan = serde_json::to_value(&ticket.context_plan).unwrap();
-        let response = serde_json::to_vec(&ticket).unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
@@ -2282,21 +2342,15 @@ mod tests {
                         })
                         .unwrap();
                     if request.len() >= end + 4 + len {
-                        let endpoint = if owner_managed {
-                            crate::managed_context::owner_managed::TICKET_ENDPOINT
-                        } else {
-                            "/v1/managed-kernels/context/ticket"
-                        };
-                        assert!(headers.starts_with(&format!("POST {endpoint} ")));
+                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
                         let body: serde_json::Value =
                             serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap();
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
                         if owner_managed {
-                            assert!(body.get("environmentId").is_none());
-                            assert_eq!(body["admission"], "source");
-                            assert_eq!(body["contextPlan"], expected_plan);
-                            assert!(body.get("target").is_some());
+                            let fields = body.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+                            assert_eq!(fields, ["kernelCredential", "ownerManaged"]);
+                            assert_eq!(body["ownerManaged"], expected_owner);
                         }
                         let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
                         stream.write_all(header.as_bytes()).await.unwrap();
@@ -2306,13 +2360,23 @@ mod tests {
                 }
             }
         });
-        let result = fetch_authoritative_ticket(&config, &ticket).await;
+        let result = authoritative_ticket_for_outbound_operation(&config, &store, &ticket).await;
         assert!(
             result.is_ok(),
             "kernel-only profile must reach Cloud ticket authorization"
         );
-        assert_eq!(result.unwrap().environment_id, ticket.environment_id);
+        assert_eq!(result.unwrap(), ticket);
         server.await.unwrap();
+        if owner_managed {
+            // MP-11: the single-use capability is redeemed once; a resume
+            // continues without contacting Cloud again.
+            assert_eq!(
+                authoritative_ticket_for_outbound_operation(&config, &store, &ticket)
+                    .await
+                    .unwrap(),
+                ticket
+            );
+        }
     }
 
     fn git_enrollment_test_ticket(

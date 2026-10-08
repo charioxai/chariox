@@ -51,9 +51,13 @@ impl ManagedContextOutboundOperationStore {
         runtime: &crate::runtime::state::KernelRuntimeState,
         selection: crate::managed_context::owner_managed::OwnerManagedTransfer,
     ) -> Result<ManagedContextTransferTicket, DaemonError> {
-        let candidate =
-            crate::managed_context::owner_managed::prepare_ticket(config, runtime, selection)?;
+        let candidate = crate::managed_context::owner_managed::prepare_ticket(
+            config,
+            runtime,
+            selection.clone(),
+        )?;
         let Some(parent) = self.status_parent() else {
+            self.remember_owner_redemption(&candidate, selection);
             return Ok(candidate);
         };
         let _guard = self
@@ -93,6 +97,9 @@ impl ManagedContextOutboundOperationStore {
                     && (status.phase != ManagedContextOutboundOperationPhase::Failed
                         || status.retryable)
             }) {
+                if !saved.redeemed {
+                    self.remember_owner_redemption(&saved.ticket, selection);
+                }
                 return Ok(saved.ticket);
             }
         }
@@ -101,6 +108,7 @@ impl ManagedContextOutboundOperationStore {
             account_id: profile.account_id.clone(),
             user_id: profile.user_id.clone(),
             ticket: candidate.clone(),
+            redeemed: false,
         };
         let bytes = serde_json::to_vec(&saved)
             .map_err(|_| outbound_service_error("serialize owner ticket binding", false))?;
@@ -111,7 +119,94 @@ impl ManagedContextOutboundOperationStore {
             &bytes,
         )
         .map_err(|error| outbound_service_io_error("persist owner context binding", error))?;
+        self.remember_owner_redemption(&candidate, selection);
         Ok(candidate)
+    }
+
+    pub(super) fn remember_owner_redemption(
+        &self,
+        ticket: &ManagedContextTransferTicket,
+        selection: crate::managed_context::owner_managed::OwnerManagedTransfer,
+    ) {
+        self.owner_redemptions
+            .lock()
+            .expect("owner redemption lock")
+            .insert(ticket.context_plan.package_binding().context_id, Some(selection));
+    }
+
+    /// MP-11: the unredeemed Cloud owner-copy capability, or `None` once this
+    /// operation redeemed it (durably recorded so a resume never replays it).
+    pub(crate) fn owner_redemption(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<crate::managed_context::owner_managed::OwnerManagedTransfer>, DaemonError>
+    {
+        if let Some(parent) = self.status_parent() {
+            let path = parent.join(format!("{context_id}-owner.json"));
+            if valid_artifact_name(context_id) && path_entry_exists(&path)? {
+                let bytes = read_bounded_regular_file(&path, MAX_OUTBOUND_ARTIFACT_STATE_BYTES)?;
+                let saved: PersistedOwnerTicket = serde_json::from_slice(&bytes)
+                    .map_err(|_| outbound_service_error("invalid owner context binding", false))?;
+                if saved.redeemed {
+                    return Ok(None);
+                }
+            }
+        }
+        match self
+            .owner_redemptions
+            .lock()
+            .expect("owner redemption lock")
+            .get(context_id)
+        {
+            Some(selection) => Ok(selection.clone()),
+            None => Err(crate::managed_context::owner_managed::admission_error(
+                "owner copy ticket is unavailable; start the copy again",
+            )),
+        }
+    }
+
+    /// Drops the in-memory capability; a successful redemption is recorded in
+    /// both durable owner bindings before the transfer continues.
+    pub(crate) fn complete_owner_redemption(
+        &self,
+        context_id: &str,
+        redeemed: bool,
+    ) -> Result<(), DaemonError> {
+        let mut redemptions = self.owner_redemptions.lock().expect("owner redemption lock");
+        if !redeemed {
+            redemptions.remove(context_id);
+            return Ok(());
+        }
+        redemptions.insert(context_id.to_owned(), None);
+        drop(redemptions);
+        let Some(parent) = self.status_parent() else {
+            return Ok(());
+        };
+        let _guard = self
+            .artifact_lock
+            .lock()
+            .expect("owner operation binding lock");
+        let path = parent.join(format!("{context_id}-owner.json"));
+        let bytes = read_bounded_regular_file(&path, MAX_OUTBOUND_ARTIFACT_STATE_BYTES)?;
+        let mut saved: PersistedOwnerTicket = serde_json::from_slice(&bytes)
+            .map_err(|_| outbound_service_error("invalid owner context binding", false))?;
+        saved.redeemed = true;
+        let index = parent.join(format!(
+            "owner-{}.json",
+            saved
+                .ticket
+                .context_plan
+                .package_binding()
+                .plan_digest
+                .trim_start_matches("sha256:")
+        ));
+        let bytes = serde_json::to_vec(&saved)
+            .map_err(|_| outbound_service_error("serialize owner ticket binding", false))?;
+        for path in [index, path] {
+            crate::config::write_private_file(&path, &bytes)
+                .map_err(|error| outbound_service_io_error("persist owner redemption", error))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn authorize_status_owner(
@@ -151,6 +246,8 @@ struct PersistedOwnerTicket {
     account_id: String,
     user_id: String,
     ticket: ManagedContextTransferTicket,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    redeemed: bool,
 }
 
 // MP-08/MP-11: durable metadata is bounded separately from archive retention.
@@ -213,6 +310,8 @@ mod tests {
         );
         let runtime = router.runtime_state();
         let selection = OwnerManagedTransfer {
+            ticket: crate::managed_context::owner_managed::test_capability(),
+            source: crate::managed_context::owner_managed::test_source(&config),
             target: ManagedContextTransferTarget {
                 relay_realm_id: "realm".into(),
                 machine_id: "target-machine".into(),

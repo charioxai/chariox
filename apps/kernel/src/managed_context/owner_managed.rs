@@ -9,7 +9,64 @@ use super::package::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-pub(crate) const TICKET_ENDPOINT: &str = "/v1/owner-managed-kernels/context/ticket";
+/// Cloud's single-use owner-copy authority: the source redeems the browser- or
+/// source-issued `oct_` capability here with its own kernel credential.
+pub(crate) const TICKET_ENDPOINT: &str = "/v1/managed-kernels/context/ticket";
+
+/// MP-11: a single-use Cloud capability. Never printed, logged or persisted.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnerContextCapability(String);
+
+impl OwnerContextCapability {
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+    fn valid(&self) -> bool {
+        self.0.strip_prefix("oct_").is_some_and(|value| {
+            value.len() == 43
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        })
+    }
+}
+
+impl std::fmt::Debug for OwnerContextCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OwnerContextCapability(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for OwnerContextCapability {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_capability() -> OwnerContextCapability {
+    OwnerContextCapability(format!("oct_{}", "A".repeat(43)))
+}
+
+/// Test source pins for an enrolled source kernel configuration.
+#[cfg(test)]
+pub(crate) fn test_source(config: &DaemonConfig) -> ManagedContextTransferTarget {
+    ManagedContextTransferTarget {
+        relay_realm_id: config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.realm_id.clone())
+            .unwrap_or_default(),
+        machine_id: config.host_machine_id.clone(),
+        kernel_id: config.daemon_id.clone(),
+        relay_public_key: config.relay_public_key.clone(),
+        key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+            &config.relay_public_key,
+        ),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -41,6 +98,10 @@ impl OwnerManagedDestination {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OwnerManagedTransfer {
+    /// Cloud-issued owner-copy capability (Cloud #305 contract).
+    pub ticket: OwnerContextCapability,
+    /// Source pins the ticket was issued for; must equal this kernel.
+    pub source: ManagedContextTransferTarget,
     pub target: ManagedContextTransferTarget,
     pub context_selection: OwnerManagedContextSelection,
 }
@@ -108,6 +169,18 @@ pub(crate) fn prepare_ticket(
     {
         return Err(admission_error(
             "source kernel has no enrolled owner identity",
+        ));
+    }
+    let key = crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+    if !selection.ticket.valid()
+        || selection.source.relay_realm_id != profile.realm_id
+        || selection.source.machine_id != config.host_machine_id
+        || selection.source.kernel_id != config.daemon_id
+        || selection.source.relay_public_key != config.relay_public_key
+        || selection.source.key_thumbprint != key
+    {
+        return Err(admission_error(
+            "owner copy ticket does not name this source kernel",
         ));
     }
     if selection.target.relay_realm_id != profile.realm_id
@@ -220,24 +293,14 @@ pub(crate) fn admission_error(message: impl Into<String>) -> DaemonError {
 pub(crate) fn cloud_admission_error(error: DaemonError) -> DaemonError {
     let (code, message, retryable) =
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
-            Some("source_offline" | "source_stale") => (
-                "owner_context_source_offline",
-                "Source kernel is offline or stale",
-                true,
-            ),
-            Some("source_user_mismatch") => (
-                "owner_context_foreign_user",
-                "This source kernel belongs to another user",
+            Some("authorization_expired") => (
+                "owner_context_ticket_expired",
+                "Owner copy ticket expired, was revoked or was already used; start the copy again",
                 false,
             ),
-            Some("source_account_mismatch") => (
-                "owner_context_foreign_account",
-                "This source kernel belongs to another account",
-                false,
-            ),
-            Some("target_offline" | "target_stale") => (
-                "owner_context_target_offline",
-                "Target kernel is offline or stale",
+            Some("dependency_unavailable") => (
+                "owner_context_peer_offline",
+                "Source or target kernel is offline or stale",
                 true,
             ),
             _ => (
@@ -337,41 +400,19 @@ pub(crate) async fn authorize_import_ticket(
             "owner-managed destination enrollment, account, user or key does not match",
         ));
     }
-    let credential = profile
+    // Cloud #305 has no target-side ticket authority: the source redeemed the
+    // single-use ticket. The target binds the import to its own enrollment and
+    // the relay-authenticated source (same user and realm, distinct kernel).
+    if profile
         .kernel_credential
         .as_deref()
-        .filter(|credential| !credential.is_empty())
-        .ok_or_else(|| admission_error("target kernel has no enrollment credential"))?;
-    let ticket: ManagedContextTransferTicket = crate::runtime::cloud_api_client::post_cloud_json(
-        profile.api_url.clone(), TICKET_ENDPOINT,
-        serde_json::json!({
-            "admission": "target", "accountId": profile.account_id, "userId": profile.user_id,
-            "machineId": profile.machine_id, "kernelId": config.daemon_id,
-            "relayRealmId": profile.realm_id, "keyThumbprint": key, "kernelCredential": credential,
-            "contextId": plan.context_id, "planDigest": plan.plan_digest, "destination": destination,
-            "source": { "kernelId": source_kernel_id, "userId": source.user_id, "relayRealmId": source.realm_id, "keyThumbprint": source.public_key_thumbprint },
-        }),
-    ).await.map_err(cloud_admission_error)?;
-    let binding = ticket.context_plan.package_binding();
-    let pins = &ticket.target;
-    let source_binding = ticket
-        .context_plan
-        .source_binding()
-        .ok_or_else(|| admission_error("owner context ticket has no source"))?;
-    ticket.context_plan.validate().map_err(admission_error)?;
-    if !ticket.environment_id.is_empty()
-        || &binding != plan
-        || pins.machine_id != destination.machine_id()
-        || pins.kernel_id != destination.kernel_id()
-        || pins.relay_realm_id != profile.realm_id
-        || pins.relay_public_key != config.relay_public_key
-        || pins.key_thumbprint != key
-        || source_binding.kernel_id != source_kernel_id
-        || source_binding.relay_realm_id != source.realm_id
-        || Some(source_binding.key_thumbprint) != source.public_key_thumbprint.as_deref()
+        .is_none_or(str::is_empty)
+        || !valid_identity(source_kernel_id)
+        || source_kernel_id == config.daemon_id
+        || source.public_key_thumbprint.as_deref().is_none_or(str::is_empty)
     {
         return Err(admission_error(
-            "Cloud owner context ticket does not match authenticated encrypted peers",
+            "owner-managed source or destination enrollment is incomplete",
         ));
     }
     Ok(())
@@ -381,7 +422,7 @@ pub(crate) async fn authorize_import_ticket(
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn mp11_owner_target_rejects_empty_enrollment_before_cloud() {
+    async fn mp11_owner_target_rejects_empty_enrollment() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
             account_id: "account".into(),
@@ -420,7 +461,7 @@ mod tests {
         let error = authorize_import_ticket(&config, &source, "source", &plan, &destination)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("no enrollment credential"));
+        assert!(error.to_string().contains("enrollment is incomplete"));
     }
     #[test]
     fn mp08_mp11_owner_destination_rejects_ambiguous_and_foreign_bindings() {
@@ -450,22 +491,22 @@ mod tests {
     }
     #[test]
     fn mp08_mp11_cloud_refusals_preserve_safe_reasons_and_retryability() {
+        // Cloud #305 refusal codes for the single-use owner-copy ticket.
         for (cloud_code, expected, retryable) in [
-            ("source_stale", "Source kernel is offline or stale", true),
             (
-                "source_user_mismatch",
-                "This source kernel belongs to another user",
-                false,
-            ),
-            (
-                "source_account_mismatch",
-                "This source kernel belongs to another account",
+                "authorization_expired",
+                "Owner copy ticket expired, was revoked or was already used; start the copy again",
                 false,
             ),
             (
                 "dependency_unavailable",
-                "Cloud refused owner-managed source/target authorization",
+                "Source or target kernel is offline or stale",
                 true,
+            ),
+            (
+                "authorization_denied",
+                "Cloud refused owner-managed source/target authorization",
+                false,
             ),
         ] {
             let error = cloud_admission_error(DaemonError::LocalTransport {
