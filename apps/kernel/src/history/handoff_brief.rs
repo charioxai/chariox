@@ -15,6 +15,29 @@ pub(crate) struct AgentHandoffBrief {
 }
 
 impl OperationalHistoryStore {
+    /// Invalidating a cached observation also removes its incremental watermark.
+    pub(crate) fn delete_agent_handoff_brief(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        connection
+            .execute(
+                "DELETE FROM history_agent_handoff_briefs WHERE session_id = ?1 AND agent_id = ?2",
+                params![session_id, agent_id],
+            )
+            .map(|_| ())
+            .map_err(|error| handoff_brief_error(session_id, "invalidate handoff brief", error))
+    }
+
     pub(crate) fn load_agent_handoff_brief(
         &self,
         session_id: &str,

@@ -49,6 +49,12 @@ The brief is a structured summary with these sections:
 
 The kernel stores it per agent in operational history, with the history sequence it covers.
 
+Every persisted brief read applies the Room's current observation-cache policy,
+including utility input, direct handoffs and refresh-error fallback. Later secret
+registration redacts cached text. Room recovery or a fence rejects the cache and
+deletes its watermark; the next refresh rebuilds from protected history rather
+than skipping older withheld events.
+
 How it is written:
 
 - **When.** Before a provider-switch handoff is dispatched to a Codex or Chariox Claude run, a detached dispatch continuation folds history after the watermark into the stored brief. The output pumps remain available, and session clients see “Preparing handoff brief…”. After preparation, the continuation takes the run's operation lane and checks prompt ownership and cancellation immediately before submission. Cancelled preparations never submit the request or save a completed fold. A deterministic packet that already preserves every turn needs no refresh. It never runs for an intra-provider switch, which keeps the native session.

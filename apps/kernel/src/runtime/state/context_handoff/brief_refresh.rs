@@ -106,7 +106,7 @@ impl KernelRuntimeState {
         prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
-        let stored = history.load_agent_handoff_brief(session_id, agent_id)?;
+        let stored = owned.protected_stored_handoff_brief(session_id, agent_id)?;
         let after = stored
             .as_ref()
             .map_or(0, |stored| stored.covered_through_sequence);
@@ -166,10 +166,13 @@ impl KernelRuntimeState {
                     target_run,
                     brief_prompt(brief.as_deref(), chunk, part, chunks.len()),
                     calls == 0,
-                    |run, prompt| async move {
+                    |run, mut prompt| async move {
                         if !prompt_is_current() {
                             return Err(brief_error("the dispatching prompt is no longer active"));
                         }
+                        prompt.visible_user_prompt = owned
+                            .room_secret_observations
+                            .scrub(session_id, prompt.visible_user_prompt)?;
                         self.brief_call(&run, prompt, started).await
                     },
                 )
@@ -180,10 +183,13 @@ impl KernelRuntimeState {
                 if !prompt_is_current() {
                     return Ok((brief, calls));
                 }
-                brief = Some(
-                    parse_brief(&output)
-                        .ok_or_else(|| brief_error("the utility answer is not a handoff brief"))?,
-                );
+                brief =
+                    Some(owned.room_secret_observations.scrub(
+                        session_id,
+                        parse_brief(&output).ok_or_else(|| {
+                            brief_error("the utility answer is not a handoff brief")
+                        })?,
+                    )?);
             }
             if let Some(brief) = &brief {
                 history.save_agent_handoff_brief(

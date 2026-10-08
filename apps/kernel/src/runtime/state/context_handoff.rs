@@ -454,8 +454,7 @@ impl super::KernelRuntimeOwnedState {
     }
 
     pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
-        self.operational_history_store
-            .load_agent_handoff_brief(session_id, agent_id)
+        self.protected_stored_handoff_brief(session_id, agent_id)
             .inspect_err(|error| {
                 crate::logging::warn_with_fields(
                     "daemon.provider_context_handoff",
@@ -470,6 +469,35 @@ impl super::KernelRuntimeOwnedState {
             .ok()
             .flatten()
             .map(|stored| stored.brief)
+    }
+
+    /// All persisted brief consumers share current Room cache policy. A rejected
+    /// cache cannot keep a watermark that skips the now-protected source history.
+    fn protected_stored_handoff_brief(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::history::AgentHandoffBrief>, crate::error::DaemonError> {
+        let Some(mut stored) = self
+            .operational_history_store
+            .load_agent_handoff_brief(session_id, agent_id)?
+        else {
+            return Ok(None);
+        };
+        match self
+            .room_secret_observations
+            .scrub_cached_result(session_id, stored.brief)
+        {
+            Ok(brief) => {
+                stored.brief = brief;
+                Ok(Some(stored))
+            }
+            Err(_) => {
+                self.operational_history_store
+                    .delete_agent_handoff_brief(session_id, agent_id)?;
+                Ok(None)
+            }
+        }
     }
 
     /// The agent's open interactions and prompts queued behind `prompt_id`.
@@ -548,6 +576,7 @@ fn model_label(model: Option<&str>) -> &str {
 
 #[cfg(test)]
 mod tests {
+    mod brief_protection;
     use super::builder::MAX_HANDOFF_BYTES;
     use super::*;
     use crate::runtime::state::KernelRuntimeState;
@@ -956,7 +985,10 @@ mod tests {
         let risk = "With restart continuity prioritized, the main audit risks remain launch-policy ID clearing and unverified serialization between profile changes and queued promotion; persisted metadata and history provide supporting source evidence, not live recall proof.";
         fixture.user(1, next_step);
         fixture.output(2, "run-source", "codex", Some("thread-audit"), "These checks guard against stale delivery, but the inspected source does not establish serialization with profile changes.");
-        fixture.user(3, "Assess the documented protocol contract and list the remaining audit risks.");
+        fixture.user(
+            3,
+            "Assess the documented protocol contract and list the remaining audit risks.",
+        );
         fixture.output(4, "run-source", "codex", Some("thread-audit"), risk);
         fixture.user(5, "Without tools or reading any file, recall our audit conversation. Preserve the original short decision phrases; do not infer missing facts.");
 
