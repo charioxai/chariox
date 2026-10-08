@@ -3028,6 +3028,104 @@ mod tests {
         remove_artifact_root(&parent).expect("cleanup");
     }
 
+    #[tokio::test]
+    async fn owner_cloud_outage_preserves_original_package_and_upload_checkpoint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            realm_id: "realm-1".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_credential: Some("synthetic-owner-credential".into()),
+            ..Default::default()
+        });
+        let target_key = relay_crypto::public_key_from_private_key_base64(
+            &relay_crypto::generate_private_key_base64(),
+        )
+        .unwrap();
+        let mut ticket = git_enrollment_test_ticket(&config, "unused", &target_key);
+        let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
+            target: ticket.target.clone(),
+            context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::Empty,
+                development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
+            },
+        };
+        ticket.context_plan =
+            ManagedKernelContextPlan::for_owner_managed(&config, &selection).unwrap();
+        ticket.environment_id.clear();
+        let binding = ticket.context_plan.package_binding();
+        let parent = std::env::temp_dir().join(format!(
+            "chariox-owner-outage-{:032x}",
+            rand::random::<u128>()
+        ));
+        let store = ManagedContextOutboundOperationStore::open(parent.clone()).unwrap();
+        let root = parent.join(&binding.context_id);
+        write_persisted_test_artifact(
+            &root,
+            &ticket,
+            crate::session::unix_epoch_ms(),
+            Some(b"package"),
+        );
+        let mut persisted = persisted_test_artifact(&ticket, crate::session::unix_epoch_ms(), 7);
+        persisted.destination = binding.destination;
+        crate::config::write_private_file(
+            &root.join("state.json"),
+            &serde_json::to_vec(&persisted).unwrap(),
+        )
+        .unwrap();
+        crate::config::write_private_file(
+            &root.join("transfer.json"),
+            b"original-upload-checkpoint",
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            for status in [503, 403] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 16384];
+                assert!(stream.read(&mut request).await.unwrap() > 0);
+                stream.write_all(format!("HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            }
+        });
+        start_managed_context_outbound_operation(
+            config,
+            Arc::new(RwLock::new(RelayClientState::default())),
+            store.clone(),
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                parent.join("profiles.json"),
+            )
+            .unwrap(),
+            ticket,
+            None,
+            false,
+        )
+        .unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = store.get(&binding.context_id).unwrap();
+                if status.phase == ManagedContextOutboundOperationPhase::Failed {
+                    break status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        server.abort();
+        let package_retained = fs::read(root.join("managed-context.pkg")).ok();
+        let checkpoint_retained = fs::read(root.join("transfer.json")).ok();
+        let retired = root.join("retired").exists();
+        fs::remove_dir_all(parent).unwrap();
+        assert_eq!(package_retained.as_deref(), Some(b"package".as_slice()));
+        assert_eq!(
+            checkpoint_retained.as_deref(),
+            Some(b"original-upload-checkpoint".as_slice())
+        );
+        assert!(!retired);
+        assert!(status.retryable);
+    }
+
     #[test]
     fn terminal_preflight_retires_only_the_matching_persisted_artifact() {
         let parent = std::env::temp_dir().join(format!(

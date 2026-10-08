@@ -34,6 +34,20 @@ struct Issued {
     ticket: String,
 }
 
+fn cloud_authorization_error(retryable: bool) -> DaemonError {
+    DaemonError::ManagedContext {
+        code: "owner_managed_context_unauthorized",
+        operation: "reauthorize owner-managed transfer",
+        message: if retryable {
+            "Cloud owner authorization is temporarily unavailable"
+        } else {
+            "Cloud refused owner-managed source/target authorization"
+        }
+        .into(),
+        retryable,
+    }
+}
+
 async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
     profile: &PersistedCloudRelayProfile,
     path: &'static str,
@@ -63,14 +77,18 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
                 .set("x-chariox-kernel-credential", credential)
                 .call()
         }
-        .map_err(|_| admission_error("Cloud refused owner-managed source/target authorization"))?;
+        .map_err(|error| {
+            cloud_authorization_error(match error {
+                ureq::Error::Transport(_) => true,
+                ureq::Error::Status(status, _) => status == 408 || status == 429 || status >= 500,
+            })
+        })?;
         // Bounded, typed response; raw API errors never appear in runtime notices.
         let reader = std::io::Read::take(response.into_reader(), 256 * 1024);
-        serde_json::from_reader(reader)
-            .map_err(|_| admission_error("Cloud returned invalid owner-managed authorization"))
+        serde_json::from_reader(reader).map_err(|_| cloud_authorization_error(true))
     })
     .await
-    .map_err(|_| admission_error("Cloud authorization is unavailable"))?
+    .map_err(|_| cloud_authorization_error(true))?
 }
 
 fn source_peer(config: &DaemonConfig) -> Result<ManagedContextTransferTarget, DaemonError> {
@@ -118,15 +136,30 @@ pub(crate) async fn authorize_export(
     let serialized_plan = serde_json::to_value(&requested.context_plan)
         .map_err(|_| admission_error("Invalid owner context plan"))?;
     let selected = json!({ "kernelContext": serialized_plan["kernelContext"], "developmentSetup": serialized_plan["developmentSetup"] });
-    if let Ok(binding) = stored {
-        if binding.kind != "owner_managed_machine"
-            || binding.source != source
-            || binding.target != requested.target
-            || binding.context_selection != selected
-        {
-            return Err(admission_error("Cloud owner authorization pins changed"));
+    match stored {
+        Ok(binding) => {
+            if binding.kind != "owner_managed_machine"
+                || binding.source != source
+                || binding.target != requested.target
+                || binding.context_selection != selected
+            {
+                return Err(admission_error("Cloud owner authorization pins changed"));
+            }
+            return Ok(requested.clone());
         }
-        return Ok(requested.clone());
+        Err(error) => {
+            let error = cloud_admission_error(error);
+            if matches!(
+                &error,
+                DaemonError::ManagedContext {
+                    retryable: true,
+                    ..
+                }
+            ) {
+                // An unavailable lookup cannot prove that a new capability is needed.
+                return Err(error);
+            }
+        }
     }
     let directory: Directory =
         kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None).await?;
@@ -229,3 +262,7 @@ pub(crate) async fn authorize_import(
     // verifies the credential-free plan and package through the shared importer.
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "owner_authority_tests.rs"]
+mod tests;
