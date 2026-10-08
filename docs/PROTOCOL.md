@@ -2743,8 +2743,12 @@ Workflow trigger and deployment direction:
   behavior remains until enforcement. `LocalIpcClient` supports
   `ws+unix:///absolute/socket`. `chariox access request
   [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
-  the popup and prints public grant metadata. The default holder is the
-  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
+  holder is the nearest installed official provider in the CLI launcher's
+  OS-verified ancestry, including native Codex behind its npm launcher. Unknown
+  programs retain the grandparent fallback and the External program label.
+  Selection preserves exact PID/start/exec identity and grant admission fences.
+  Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
