@@ -77,15 +77,19 @@ pub(crate) fn isolate_environment_test() -> bool {
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    #[cfg(unix)]
+    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
         let pid = i32::try_from(child.id()).expect("isolated child PID fits the signal API");
         assert!(pid > 1, "refusing to signal a reserved isolated child PID");
         #[cfg(unix)]
-        if owned_test_process_group(pid) && child.try_wait().is_ok_and(|status| status.is_none()) {
-            // The child created this group; every current member is its descendant.
-            unsafe { libc::kill(-pid, libc::SIGKILL); }
+        if let Some(signals) = signals.as_mut() {
+            if signals.kill_group().is_err() {
+                let _ = signals.kill_owned_processes();
+            }
         }
+        // The std Child handle still owns this unreaped, validated positive PID.
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -101,55 +105,4 @@ pub(crate) fn isolate_environment_test() -> bool {
         }
     }
     true
-}
-
-#[cfg(unix)]
-fn owned_test_process_group(pid: i32) -> bool {
-    if pid <= 1 || unsafe { libc::getpgid(pid) } != pid {
-        return false;
-    }
-    let Ok(output) = Command::new("ps").args(["-eo", "pid=,ppid=,pgid="])
-        .env("LC_ALL", "C").output() else { return false; };
-    if !output.status.success() { return false; }
-    let rows: Option<Vec<(i32, i32, i32)>> = String::from_utf8_lossy(&output.stdout).lines()
-        .map(|line| {
-            let mut fields = line.split_whitespace();
-            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
-        }).collect();
-    let Some(rows) = rows else { return false; };
-    test_group_members_owned(pid, std::process::id(), &rows)
-}
-
-#[cfg(unix)]
-fn test_group_members_owned(root: i32, parent: u32, rows: &[(i32, i32, i32)]) -> bool {
-    if root <= 1 || !rows.iter().any(|&(pid, ppid, group)|
-        pid == root && u32::try_from(ppid) == Ok(parent) && group == root) {
-        return false;
-    }
-    rows.iter().filter(|&&(_, _, group)| group == root).all(|&(member, _, _)| {
-        if member <= 1 { return false; }
-        let mut ancestor = member;
-        for _ in 0..rows.len() {
-            if ancestor == root { return true; }
-            let Some(&(_, ppid, _)) = rows.iter().find(|&&(pid, _, _)| pid == ancestor) else { return false; };
-            if ppid <= 1 { return false; }
-            ancestor = ppid;
-        }
-        false
-    })
-}
-
-#[cfg(unix)]
-#[test]
-fn mp11_isolated_test_signal_rejects_reserved_and_foreign_groups() {
-    let owned = [(10, 9, 10), (11, 10, 10), (12, 11, 10)];
-    assert!(test_group_members_owned(10, 9, &owned));
-    for reserved in [-1, 0, 1] {
-        assert!(!test_group_members_owned(reserved, 9, &owned));
-    }
-    assert!(!test_group_members_owned(10, 8, &owned));
-    assert!(!test_group_members_owned(10, 9, &[(10, 9, 10), (1, 10, 10)]));
-    assert!(!test_group_members_owned(10, 9, &[(10, 9, 10), (11, 1, 10)]));
-    assert!(!test_group_members_owned(10, 9, &[(10, 9, 10), (11, 12, 10), (12, 11, 10)]));
-    assert!(!test_group_members_owned(10, 9, &[(11, 10, 10)]));
 }

@@ -152,6 +152,9 @@ impl OwnedProcessSignals {
 #[cfg(unix)]
 fn send_signal(pid: i32) -> io::Result<()> {
     // Identity and complete group membership are checked immediately before this sole seam.
+    if matches!(pid, -1 | 0 | 1) {
+        return Err(io::Error::other("reserved signal target"));
+    }
     if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
         return Ok(());
     }
@@ -396,6 +399,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(signalled, [43, 41]);
+    }
+
+    #[test]
+    fn mp11_signal_guard_rejects_reserved_and_overflowed_groups_before_io() {
+        for root in [0, 1, u32::MAX] {
+            let rows = [row(root, 9, root, "birth")];
+            let mut guard = OwnedProcessSignals {
+                root,
+                exclusive_session: None,
+                owned: BTreeMap::from([(root, "birth".into())]),
+            };
+            assert!(guard.group_with(&rows, |_| panic!("invalid group signalled")).is_err());
+        }
     }
 
     #[test]
