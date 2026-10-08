@@ -877,3 +877,34 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
         .workflows()
         .is_empty());
 }
+
+// MP-11 F7: a compiler wait must not lock unrelated runtime traffic.
+#[test]
+fn security_f7_compiler_wait_releases_global_app_mutex() {
+    run_large_stack_async_test("security-f7-compile-lock", compiler_does_not_lock_app);
+}
+
+async fn compiler_does_not_lock_app() {
+    let env = TestMetaRuntimeEnv::new("security-f7-compile-lock");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut daemon = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())).unwrap();
+    let app = Arc::new(Mutex::new(daemon));
+    let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+    let marker = format!("// MP-11 F7 {}", workspace.display());
+    let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
+    let request = LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
+        session_id: session.id().into(), node_path: "node".into(), source: marker + "\nworkflow.define({alias:'compile-lock'});",
+        language: None, provider_rebindings: vec![], agent_rebindings: vec![],
+    });
+    let pending = tokio::spawn(async move {
+        router.runtime_state.execute_workflow_request(request, "local-user".into(), None).await
+    });
+    tokio::time::timeout(Duration::from_secs(10), started).await.unwrap().unwrap();
+    let available = tokio::time::timeout(Duration::from_millis(200), app.lock()).await.is_ok();
+    drop(release);
+    let _ = pending.await.unwrap();
+    assert!(available, "MP-11 F7: compiler holds the global app lock");
+}
