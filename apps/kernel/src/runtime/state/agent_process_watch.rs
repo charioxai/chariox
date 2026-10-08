@@ -881,6 +881,23 @@ mod tests {
                 now,
             })
             .unwrap();
+        // MP-08 / MP-11: mirror the admitted prompt's explicit correlation.
+        // Beginning an arbitrary turn on the same agent grants no delegation.
+        store
+            .agent_lifecycle(Operation::BindDelegate {
+                parent_task: "parent-turn".into(),
+                child_task: "child-turn".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .agent_tasks(Some(room.id()), Some(parent.id()))
+                .unwrap()[0]
+                .obligations[0]
+                .completion_task_id
+                .as_deref(),
+            Some("child-turn")
+        );
         let wake: AgentWake = serde_json::from_value(serde_json::json!({
             "id":w(), "task_id":"child-turn", "room_id":room.id(), "agent_id":child.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"resisting child", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":["python3"], "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
         })).unwrap();
@@ -1002,6 +1019,12 @@ mod tests {
             .obligations[0]
             .status
             .clone();
+        let retained_child = store
+            .agent_tasks(Some(room.id()), Some(parent.id()))
+            .unwrap()[0]
+            .obligations[0]
+            .completion_task_id
+            .clone();
         let workflow_unsettled = state
             .owned
             .workflow_agent_tasks_unsettled(room.id(), "watched-workflow")
@@ -1043,6 +1066,11 @@ mod tests {
         assert!(
             still_running,
             "MP-11 R3: resisting watcher remains physically alive during cancellation"
+        );
+        assert_eq!(
+            retained_child.as_deref(),
+            Some("child-turn"),
+            "MP-11 R3: cancellation and failure retain the admitted child identity"
         );
         assert_eq!(
             (after_cancel, after_sweep, after_error_sweep),
