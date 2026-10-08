@@ -64,7 +64,7 @@ test('MP-11 finding 1 each agent text/composition/chord dispatch carries live fo
   const sent=[];
   const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
   const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{sent.push(request);return {};}});
-  for(const input of [{kind:'text',text:'public'},{kind:'composition',text:'public'},{kind:'key',key:'CTRL+V'}]) {
+  for(const input of [{kind:'text',text:'public'},{kind:'composition',text:'public'},{kind:'key',key:'CTRL+s'}]) {
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   }
   assert(sent.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
@@ -73,4 +73,21 @@ test('MP-11 finding 1 each agent text/composition/chord dispatch carries live fo
 test('MP-11 finding 1 native helper uses the same typed Browser/Vault refusal for unproved focus',async()=>{
   await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
     {PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
+});
+
+
+test('MP-11 R1 agent pointer holds require the same human admission as keyboard holds',async()=>{
+  let calls=0;
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
+  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'pointer_hold',button:1,x:10,y:10,duration_ms:100}},{}));
+  assert.equal(calls,0);
+});
+
+test('MP-11 R2 unknown clipboard never reaches an agent paste shortcut',async()=>{
+  const calls=[];
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{calls.push(request.op);return {text:'[protected]'};}});
+  for(const key of ['CTRL+V','SHIFT+Insert','Control_L+Shift+v','Super+v']){
+    await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'key',key}},{}),error=>error.code==='user_domain_sensitive_requires_focus');
+  }
+  assert.deepEqual(calls,['clipboard_read','clipboard_read','clipboard_read','clipboard_read']);
 });

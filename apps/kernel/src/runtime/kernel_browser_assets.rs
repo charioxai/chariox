@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "native-clipboard.py",
+        include_bytes!("../../slice-linux-docker/docker/native-clipboard.py"),
+    ),
+    (
         "room-native-protection.py",
         include_bytes!("../../slice-linux-docker/docker/room-native-protection.py"),
     ),

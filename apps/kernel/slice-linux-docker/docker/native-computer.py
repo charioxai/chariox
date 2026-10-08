@@ -50,13 +50,20 @@ def input_action(action, processes=None):
     if processes is not None and kind in ('text','key','hold'):
         accessibility=load('native-accessibility')
         guard=accessibility.input_guard(processes)
-    if processes is not None and (kind in ('hold','drag','clipboard_write','keycode') or action.get('button')==2):
+    if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
         raise ValueError('native paste/repeat requires human or Vault input')
     if kind == 'text': keyboard.type_text(action['text'],before_press=guard); return
     if kind=='pointer_hold':
         keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):
         key = action['key'].replace('Enter', 'Return')
+        clipboard=load('native-clipboard')
+        if processes is not None and clipboard.is_paste_chord(key):
+            admit_clipboard=clipboard.paste_guard(processes,accessibility)
+            admit_focus=guard
+            def guard():
+                admit_focus()
+                admit_clipboard()
         keyboard.hold_input('key', key, action.get('duration_ms', 1),before_press=guard); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
     connection = display.Display()
@@ -108,13 +115,8 @@ def main(request):
         return {'released':True}
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
-        coverage=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
-        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected'] or coverage.get('uncovered') or any(node.get('protected') for node in coverage.get('nodes', [])): return {'text':'[protected]'}
-        result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
-        after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
-        if coverage!=after:raise ValueError('native protection changed during clipboard read')
-        if len(result.stdout)>65536: raise ValueError('clipboard too large')
-        return {'text':result.stdout.decode('utf-8')}
+        value=load('native-clipboard').public_clipboard(request.get('processes',[]),accessibility,request['mask'],request.get('browser_processes'))
+        return {'text':'[protected]' if value is None else value[0]}
     accessibility=load('native-accessibility')
     before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']

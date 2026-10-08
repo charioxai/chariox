@@ -557,3 +557,112 @@ printf human >> '{}'
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     std::fs::remove_dir_all(&worker_state.root).unwrap();
 }
+
+// MP-08 / MP-11 R1: the authenticated Room worker refuses unfenced agent
+// mutations before invoking even a helper that would blindly emit an event.
+#[test]
+fn mp11_room_worker_unfenced_agent_actions_never_reach_physical_helper() {
+    crate::test_support::isolated_env_test!();
+    run_test(room_worker_unfenced_agent_actions);
+}
+
+async fn room_worker_unfenced_agent_actions() {
+    let _guard = crate::env_lock::lock();
+    let mut state = TestState::new();
+    let home = DaemonConfig::for_tests();
+    state.config.host_machine_id = "slice:slice-1".into();
+    state.config.room_environment_worker_binding =
+        Some(crate::config::RoomEnvironmentWorkerBinding {
+            home_kernel_id: "home-kernel".into(),
+            home_public_key: home.relay_public_key.clone(),
+            session_id: "room-1".into(),
+            slice_id: "slice-1".into(),
+            provisioned_slice_id: None,
+        });
+    std::fs::create_dir_all(&state.root).unwrap();
+    let script = state.root.join("blind-native-helper.sh");
+    let effects = state.root.join("physical-events");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf event >> '{}'\n",
+            effects.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+    let (worker, _) = state.router();
+    use crate::transport::room_browser_controller::{
+        RoomComputerInputAction as A, RoomComputerKeyboardInput as K,
+        RoomComputerPointerButton as B,
+    };
+    let actions = [
+        A::KeyboardHold {
+            input: K::new("a".into()),
+            duration_ms: 100,
+        },
+        A::PointerHold {
+            x: 10,
+            y: 10,
+            button: B::Left,
+            duration_ms: 100,
+        },
+        A::ClipboardWrite {
+            text: crate::transport::room_browser_controller::RoomComputerClipboardText::new(
+                "public".into(),
+            ),
+        },
+        A::PointerDrag {
+            from_x: 10,
+            from_y: 10,
+            to_x: 20,
+            to_y: 20,
+            button: B::Left,
+        },
+        A::PointerClick {
+            x: 10,
+            y: 10,
+            button: B::Middle,
+            click_count: 1,
+        },
+    ];
+    for (index, action) in actions.into_iter().enumerate() {
+        for actor in ["agent:agent-1", "user:owner-1"] {
+            let prior = std::fs::read(&effects).unwrap_or_default();
+            let result=worker.relay_room_browser_controller("home-kernel", &home.relay_public_key,"room-1","slice-1",
+                crate::transport::room_browser_controller::RoomBrowserControllerCommand::ComputerInput {
+                    action_id:format!("unfenced-{index}-{actor}"), actor_id:actor.into(), runtime_generation:1, viewport_revision:1,
+                    desktop_pixel_width:1280,desktop_pixel_height:800,action:action.clone(),
+                }).await;
+            if actor.starts_with("agent:") {
+                assert!(
+                    matches!(
+                        result,
+                        Err(DaemonError::UserDomainRefused {
+                            reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
+                        })
+                    ),
+                    "agent mutation must require human or approved Vault input: {result:?}"
+                );
+                assert_eq!(
+                    std::fs::read(&effects).unwrap_or_default(),
+                    prior,
+                    "refused input reached the physical helper"
+                );
+            } else {
+                result.expect("human mutation retains its admitted path");
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(&effects).unwrap(),
+        "event".repeat(5)
+    );
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    std::fs::remove_dir_all(&state.root).unwrap();
+}

@@ -639,6 +639,34 @@ async fn execute_local(
                     "environment_input_invalid_authority_context",
                 ));
             }
+            // MP-11 R1: refuse unfenced agent mutations before a physical
+            // helper is spawned; human and approved Vault actors retain their paths.
+            if actor_id.starts_with("agent:") {
+                if crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action) {
+                    return Err(crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                    )
+                    .into_daemon("room_computer"));
+                }
+                // MP-11 R2: registered/unknown protection also fences agent
+                // shortcuts. Never pass registry values to a native keyboard.
+                if matches!(
+                    &action,
+                    crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
+                ) {
+                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
+                    let policy: serde_json::Value = serde_json::from_str(&policy)
+                        .map_err(|_| controller_route_error("protection unavailable"))?;
+                    if policy["unknown"] == true
+                        || policy["values"].as_array().is_none_or(|values| !values.is_empty())
+                        || policy["targets"].as_array().is_none_or(|targets| !targets.is_empty())
+                    {
+                        return Err(crate::error::HostFailure::Refused(
+                            crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                        ).into_daemon("room_computer"));
+                    }
+                }
+            }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
                 .map_err(controller_route_error)?;

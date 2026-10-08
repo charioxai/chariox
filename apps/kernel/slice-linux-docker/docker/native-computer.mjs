@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
+export function nativePasteChord(value) {
+  const names=new Set(value.toLowerCase().split('+'));
+  const has=values=>values.some(name=>names.has(name));
+  return has(['paste','xf86paste']) || names.has('v') && has(['ctrl','control','control_l','control_r','super','super_l','super_r','meta','meta_l','meta_r']) || has(['insert','kp_insert']) && has(['shift','shift_l','shift_r']);
+}
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 export function nativeInput(input, binding) {
   if (!input || typeof input !== 'object') throw new Error('MP-08: invalid native input');
@@ -113,9 +118,13 @@ export class NativeComputer {
       if(command._agent_input && input.kind==='keycode')throw new Error('MP-11: persistent physical keys require human input; agents use focused single chords');
       // MP-11: native repeats and clipboard/middle-button paste cannot fence
       // every text-producing event. Agents use focused text or a single chord.
-      if(command._agent_input && (['hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
+      if(command._agent_input && (['hold','pointer_hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
       if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
+      if(command._agent_input && input.kind==='key' && nativePasteChord(input.key)) {
+        const clipboard=await this.request({...command,op:'clipboard_read'},policy,{signal});
+        if(typeof clipboard.text!=='string' || clipboard.text==='[protected]')throw new UserDomainRefusal('sensitive_requires_focus');
+      }
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}
         else if(!this.held.has(input.keycode)) throw new Error('MP-11: key release without owned press');

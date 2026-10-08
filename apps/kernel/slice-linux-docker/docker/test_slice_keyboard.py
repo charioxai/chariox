@@ -215,6 +215,20 @@ class PhysicalChordTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.main(args,io.BytesIO(text))
             inject.assert_not_called()
 
+    def test_mp11_r1_agent_room_holds_emit_no_native_events(self):
+        m,c=self.native()
+        for args,data in [(['hold-key','100'],b's'),(['hold-button','left','100','10','10'],b'')]:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'hold_input') as hold:
+                with self.assertRaises(ValueError):m.main(args,io.BytesIO(data))
+                hold.assert_not_called()
+
+    def test_mp11_r2_agent_room_paste_checks_clipboard_before_native_events(self):
+        m,c=self.native()
+        for key in ['CTRL+v','Control_L+Shift+V','SHIFT+Insert','Super+v']:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None), patch.object(m,'room_clipboard_guard',create=True,side_effect=ValueError('unknown clipboard source')), patch.object(m,'key_repeat') as repeat:
+                with self.assertRaises(ValueError):m.main(['key-repeat','2'],io.BytesIO(key.encode()))
+                repeat.assert_not_called()
+
     def test_mp11_approved_room_vault_input_bypasses_ordinary_native_admission(self):
         m,c=self.native()
         target={'focus_window':10,'active_window':10,'geometry':[0,0,10,10],'window_geometry':[0,0,10,10]}

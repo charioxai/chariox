@@ -35,6 +35,20 @@ MP-10 acceptance evidence. Real-live hosted/client/provider parity still
 requires the current validation matrix and independently reviewed anchors.
 
 
+MP-08 / MP-11 reviewer R1/R2: authenticated Room worker routes refuse agent
+keyboard/pointer holds, clipboard writes, drags and middle-button paste before
+spawning a physical helper. Human and approved Vault input keep their admitted
+paths. The keyboard helper independently refuses agent holds.
+Native paste chords (including Ctrl+V and Shift+Insert variants) share the direct
+clipboard-read protection policy. Unknown selection owners are protected even
+with an otherwise public desktop. A public clipboard requires a live owned
+native source, complete public accessibility coverage and unchanged selection
+owner/tree; each paste press rechecks the admitted clipboard contents. Registered
+or unknown Room protection also fences agent shortcuts. Browser-origin clipboard
+content remains opaque. These are conservative input restrictions, not PR5
+display or MP-10 acceptance evidence.
+
+
 Phase B implements PR boundaries 1–4 of the approved
 `COMPUTER_USE_LINUX_PLAN.md` on multidomain round 2 (`6dde21a8c`).
 This source supplies lifecycle, native operations, AT-SPI targeting and shared

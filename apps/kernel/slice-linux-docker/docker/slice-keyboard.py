@@ -349,13 +349,44 @@ def room_input_guard():
     return module.input_guard()
 
 
+def room_clipboard_guard():
+    import importlib.util
+    from pathlib import Path
+    def load(name):
+        spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+    room=load('room-native-protection')
+    return load('native-clipboard').paste_guard(room.binding(),room.accessibility())
+
+
+def paste_chord(value):
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.is_paste_chord(value)
+
+
 def main(args, stream):
     agent = os.environ.get('CHARIOX_COMPUTER_AGENT_INPUT') == '1'
+    if agent and args and args[0] in ('hold-key','hold-button'):
+        import importlib.util
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('room_native_protection',Path(__file__).with_name('room-native-protection.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        raise module.RoomInputDenied('native Room holds require human or approved Vault input')
     guard = room_input_guard() if agent and (not args or args[0] == 'key-repeat') else None
     if args == ['prepare-owned-keymap'] and not agent:
         prepare_owned_text_keymap()
     elif len(args) == 2 and args[0] == 'key-repeat':
-        key_repeat(stream.read(129).decode('ascii', errors='strict'), int(args[1]), before_press=guard)
+        key=stream.read(129).decode('ascii', errors='strict')
+        if agent and paste_chord(key):
+            admit_clipboard=room_clipboard_guard()
+            admit_focus=guard
+            def guard():
+                admit_focus()
+                admit_clipboard()
+        key_repeat(key, int(args[1]), before_press=guard)
     elif len(args) == 2 and args[0] == 'hold-key':
         hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
     elif len(args) == 5 and args[0] == 'hold-button':

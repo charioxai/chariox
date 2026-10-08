@@ -13,6 +13,22 @@ pub(crate) struct ComputerInputActionMetadata {
     pub(crate) arguments: Option<EnvironmentActionArguments>,
 }
 
+/// MP-11: native repeats, clipboard paste and text drag have no per-event
+/// protection fence. Agents use admitted text or one focused ordinary chord.
+pub(crate) fn agent_native_input_is_unfenced(input: &RoomComputerInputAction) -> bool {
+    matches!(
+        input,
+        RoomComputerInputAction::KeyboardHold { .. }
+            | RoomComputerInputAction::PointerHold { .. }
+            | RoomComputerInputAction::PointerDrag { .. }
+            | RoomComputerInputAction::ClipboardWrite { .. }
+            | RoomComputerInputAction::PointerClick {
+                button: RoomComputerPointerButton::Middle,
+                ..
+            }
+    )
+}
+
 pub(crate) fn keyboard_text_timeout_ms(text: &str) -> u64 {
     // Physical typing paces at 40 ms per character. Allow mapping/X11 work
     // and scheduling overhead without imposing a hidden shorter text limit.
