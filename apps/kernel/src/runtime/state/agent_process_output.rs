@@ -25,19 +25,38 @@ pub(super) fn sanitize(raw: &[u8]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(n) = chars.next() {
+        let control = if c == '\u{1b}' {
+            chars.next()
+        } else {
+            match c {
+                '\u{9b}' => Some('['),
+                '\u{9d}' => Some(']'),
+                '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => Some('P'),
+                _ => None,
+            }
+        };
+        match control {
+            Some('[') => {
+                for n in chars.by_ref() {
                     if ('@'..='~').contains(&n) {
                         break;
                     }
                 }
-            } else {
-                chars.next();
             }
-        } else if c == '\t' || !c.is_control() {
-            out.push(c);
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(n) = chars.next() {
+                    if n == '\u{7}' || n == '\u{9c}' {
+                        break;
+                    }
+                    if n == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {}
+            None if c == '\t' || !c.is_control() => out.push(c),
+            None => {}
         }
     }
     crate::secret_redaction::redact_secrets(&out).into_owned()

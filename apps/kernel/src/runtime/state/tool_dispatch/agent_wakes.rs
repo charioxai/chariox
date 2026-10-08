@@ -11,7 +11,18 @@ fn label(args: &serde_json::Value) -> Result<String, DaemonError> {
     if label.is_empty() || label.chars().count() > 200 {
         return Err(ledger::error("label of 1-200 characters required"));
     }
-    Ok(crate::secret_redaction::redact_secrets(label).into_owned())
+    let label = metadata(label);
+    if label.trim().is_empty() {
+        return Err(ledger::error("visible label required after sanitization"));
+    }
+    Ok(label)
+}
+
+fn metadata(text: &str) -> String {
+    super::super::agent_process_output::sanitize(text.as_bytes())
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> AgentWake {
@@ -139,13 +150,15 @@ impl KernelRuntimeState {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
                     }
-                    other => other.map(str::to_owned),
+                    other => other.map(metadata),
                 };
+                if match_text.as_ref().is_some_and(|m| m.is_empty()) {
+                    return Err(ledger::error(
+                        "visible match_text required after sanitization",
+                    ));
+                }
                 let mut wake = new_wake(task, "process", label(args)?, now);
-                wake.command = argv
-                    .iter()
-                    .map(|a| crate::secret_redaction::redact_secrets(a).into_owned())
-                    .collect();
+                wake.command = argv.iter().map(|a| metadata(a)).collect();
                 wake.match_text = match_text;
                 self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
                     .await?;
@@ -181,6 +194,21 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+
+    #[test]
+    fn security_f13_wake_label_strips_terminal_controls() {
+        let result =
+            label(&serde_json::json!({"label":"safe\u{1b}[2J\u{1b}]0;forged-title\u{7}\u{85}end"}))
+                .unwrap();
+        assert!(
+            !result.chars().any(char::is_control),
+            "unsafe label retained: {result:?}"
+        );
+        assert!(
+            !result.contains("forged-title"),
+            "OSC payload must not become visible metadata"
+        );
+    }
 
     async fn fixture(
         provider: &str,
@@ -270,5 +298,29 @@ mod security_tests {
                 .is_empty(),
             "denied calls must not create a launch intent"
         );
+    }
+    #[tokio::test]
+    async fn security_f13_process_metadata_is_sanitized_before_retention() {
+        let (state, run, task, _worktree) = fixture("codex", false).await;
+        let result = state.dispatch_agent_wake_tool(&run, "chariox.events.process", &serde_json::json!({"label":"safe\u{1b}[2Jlabel", "argv":["/bin/echo","safe\u{1b}[31mready\u{85}"], "match_text":"\u{1b}[31mready\u{85}"}), &task).await;
+        state.owned.agent_wakes.processes.shutdown();
+        result.unwrap();
+        let wake = state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .remove(0);
+        for text in std::iter::once(&wake.label)
+            .chain(wake.command.iter())
+            .chain(wake.match_text.iter())
+        {
+            assert!(
+                !text.chars().any(char::is_control),
+                "unsafe retained metadata: {text:?}"
+            );
+        }
+        assert_eq!(wake.command[1], "safeready");
+        assert_eq!(wake.match_text.as_deref(), Some("ready"));
     }
 }
