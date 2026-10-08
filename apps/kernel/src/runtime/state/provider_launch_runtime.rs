@@ -55,6 +55,12 @@ impl KernelRuntimeState {
                 launch_request,
                 provider_launch_credential,
             )?;
+            if let Some(run) = self
+                .start_missing_copied_claude_login_recovery(&launch_request)
+                .await?
+            {
+                return Ok(run);
+            }
             let launch_request = self
                 .prepare_provider_launch_request_with_vault(
                     launch_request,

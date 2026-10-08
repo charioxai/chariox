@@ -354,3 +354,68 @@ async fn review_worker_claude_without_login_retains_typed_setup_token_fallback()
     fixture.wait_for_prompt("with-token").await;
     fixture.app.lock().await.shutdown_cleanup().unwrap();
 }
+
+#[tokio::test]
+async fn review_worker_missing_claude_copy_admits_first_prompt_before_human_login() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let leased = fixture.lease().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let (run, outcome) = fixture
+        .submit(&leased, "cold-missing-workflow", true, false)
+        .await
+        .expect("the production worker must admit the first turn while receiving login is pending");
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&leased.backing_session_id)
+        .unwrap();
+    let interaction = session
+        .active_interaction_for_agent(&leased.backing_agent_id)
+        .unwrap();
+    assert!(interaction.provider_login_is_human_only());
+    assert_eq!(
+        interaction.title(),
+        Some("Log in to Claude on this machine")
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, &leased.backing_agent_id)
+            .unwrap()
+            .prompt(),
+        "cold-missing-workflow"
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&run)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Starting
+    );
+    assert!(!fixture
+        .credential
+        .parent()
+        .unwrap()
+        .join("synthetic-process-started")
+        .exists());
+    assert!(!fixture
+        .credential
+        .parent()
+        .unwrap()
+        .join("UNEXPECTED_LOGIN")
+        .exists());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}

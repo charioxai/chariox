@@ -21,6 +21,58 @@ impl Drop for RecoveryClaim {
 }
 
 impl KernelRuntimeState {
+    /// A cold receiving Claude copy can lose its file before a harness exists to
+    /// report an auth failure. Create only a waiting run so admission keeps the work;
+    /// the existing human-only login workflow starts the native harness after login.
+    pub(super) async fn start_missing_copied_claude_login_recovery(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
+            || request.agent_id.is_none()
+            || !request.provider_credential_env.is_empty()
+        {
+            return Ok(None);
+        }
+        let owner = self.provider_account_authority_owner_user_id(&request.owner_user_id);
+        if !self
+            .owned
+            .provider_account_profiles
+            .copied_login_artifact_missing(&owner, "claude", &request.account_profile)?
+            || crate::provider::provider_account_credential_registered(
+                &owner,
+                "claude",
+                &request.account_profile,
+            )?
+        {
+            return Ok(None); // Retain supplied and registered setup-token fallbacks.
+        }
+        let request = self
+            .owned
+            .prepare_provider_login_recovery_launch_request(request.clone())?;
+        let started = self.owned.start_provider_launch(request)?;
+        self.owned
+            .provider_run_projection
+            .mark_leased_provider_run(started.run.id());
+        self.owned
+            .provider_run_projection
+            .update(started.run.clone());
+        match self
+            .try_provider_launch_auth_recovery(&started, "not_logged_in")
+            .await
+        {
+            Ok(true) => Ok(Some(started.run)),
+            result => {
+                let error = result.err().unwrap_or_else(|| DaemonError::LocalTransport {
+                    operation: "recover cold copied Claude login",
+                    message: "receiving login recovery could not start".into(),
+                });
+                self.fail_provider_launch_in_lane(&started, &error).await;
+                Err(error)
+            }
+        }
+    }
+
     pub(super) fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
         for agent in self
