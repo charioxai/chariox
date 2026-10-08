@@ -29,10 +29,10 @@ const outward = ([x, y, w, h]) => {
   return [left, top, Math.ceil(x + w) - left, Math.ceil(y + h) - top];
 };
 
-// A frame owner maps child coordinates by translation only when its border box
-// is untransformed: an axis-aligned quad with the layout size. Otherwise the
-// child cannot be placed, so its whole owner box is protected instead.
-async function ownerBox(connection, sessionId, backendNodeId, dpr) {
+// Device-pixel boxes. A frame owner maps child coordinates by translation only
+// when its border box is untransformed: an axis-aligned quad with the layout
+// size. Otherwise the child cannot be placed: its whole owner box is protected.
+async function nodeBox(connection, sessionId, backendNodeId, dpr) {
   const { model } = await connection.send('DOM.getBoxModel', { backendNodeId }, sessionId);
   const border = quadRect(model?.border), content = quadRect(model?.content);
   const q = model.border;
@@ -132,7 +132,7 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
     for (const owner of owners) {
       const isolated = ownersBySession.get(owner.backendNodeId);
       let box = null;
-      try { box = await ownerBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
+      try { box = await nodeBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
       if (!box?.plain || (owner.contentDocument === undefined && !isolated)) { place(owner.rect); continue; }
       const childOrigin = [origin[0] + box.content[0], origin[1] + box.content[1]];
       const childClip = intersect([childOrigin[0], childOrigin[1], box.content[2], box.content[3]], doc.clip);
@@ -165,7 +165,7 @@ async function searchedRegions(connection, entry, dpr, regions, children) {
   if (secrets.some(node => node.localName !== 'input')) return false;
   const owners = await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe));
   const place = rect => { const placed = intersect([rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]], clip); if (placed) regions.push(placed); return placed; };
-  const box = async node => { try { return await ownerBox(connection, sessionId, node.backendNodeId, dpr); } catch { return null; } }; // No layout: no pixels.
+  const box = async node => { try { return await nodeBox(connection, sessionId, node.backendNodeId, dpr); } catch { return null; } }; // No layout: no pixels.
   const isolated = new Map(children.map(child => [child.ownerBackendNodeId, child]));
   for (const node of secrets) { const found = await box(node); if (found) place(found.border); }
   for (const node of owners) {
