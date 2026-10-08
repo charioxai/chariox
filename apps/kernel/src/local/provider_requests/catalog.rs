@@ -265,7 +265,9 @@ pub(crate) fn observe_provider_auth_status(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
+            if let Some(kept) =
+                claude_vault_token_status(registry, owner_user_id, &profile, &status)?
+            {
                 return Ok(kept);
             }
             update_profile_auth_observation(registry, owner_user_id, &status)?;
@@ -315,12 +317,14 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => {
             let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
+            if let Some(kept) =
+                claude_vault_token_status(registry, owner_user_id, &profile, &status)?
+            {
                 if auth_state_from_status(&kept.auth_state) != profile.auth_state {
                     update_profile_auth_observation(registry, owner_user_id, &kept)?;
                     return registry.get(owner_user_id, provider, &profile.profile_id);
                 }
-                return Ok(profile);
+                return registry.get(owner_user_id, provider, &profile.profile_id);
             }
             let usage = if status.auth_state == "authenticated" {
                 let executable = resolve_claude_executable()?;
@@ -369,6 +373,7 @@ pub(crate) fn refresh_provider_account_profile_response(
 /// when native credentials coexist. Native status/usage describes a different
 /// credential, so preserve the selected token's verified/unchecked observation.
 fn claude_vault_token_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     profile: &crate::account_profile::ProviderAccountProfile,
     native: &ProviderAuthStatus,
@@ -381,6 +386,11 @@ fn claude_vault_token_status(
         return Ok(None);
     }
     use crate::account_profile::ProviderAccountAuthState;
+    let profile = crate::provider::reconcile_claude_vault_observation(
+        registry,
+        owner_user_id,
+        profile.clone(),
+    )?;
     Ok(Some(ProviderAuthStatus {
         auth_state: match profile.auth_state {
             ProviderAccountAuthState::Authenticated => "authenticated",

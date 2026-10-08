@@ -1219,6 +1219,8 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
+        let profile =
+            crate::provider::reconcile_claude_vault_observation(self, owner_user_id, profile)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check.

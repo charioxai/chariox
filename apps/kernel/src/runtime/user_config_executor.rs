@@ -129,8 +129,17 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
+    let credential_id = crate::provider::provider_account_credential_id(
+        &owner_user_id,
+        &provider,
+        &profile.profile_id,
+    );
+    let _login_lane = runtime_state
+        .provider_runtime_lanes
+        .acquire(&format!("claude-account-login:{credential_id}"))
+        .await;
     let config = config_projection.snapshot();
-    let stored = crate::provider::store_provider_account_credential(
+    let stored = crate::provider::store_verified_provider_account_credential(
         &config,
         &owner_user_id,
         &provider,

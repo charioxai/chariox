@@ -151,7 +151,7 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
-    provider_runtime_lanes: ProviderRunOperationLanes,
+    pub(in crate::runtime) provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -384,6 +384,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod prompt_provider_credentials;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;

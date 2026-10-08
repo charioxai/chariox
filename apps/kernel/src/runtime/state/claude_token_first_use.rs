@@ -35,7 +35,15 @@ impl KernelRuntimeState {
             self.owned
                 .provider_account_profiles
                 .get(&owner, "claude", &request.account_profile)?;
-        if profile.auth_state == ProviderAccountAuthState::Authenticated {
+        let verification = crate::provider::provider_account_credential_verification(
+            &owner,
+            "claude",
+            &profile.profile_id,
+        )?;
+        if !verification.registered
+            || (verification.verified
+                && profile.auth_state == ProviderAccountAuthState::Authenticated)
+        {
             return Ok(credentials);
         }
         let credential_id =
@@ -54,24 +62,38 @@ impl KernelRuntimeState {
         let mut checks = lane.lock().await;
         // Cache verdicts only. Invalidation removes the lane from the map, so
         // an in-flight old check cannot repopulate a replacement's cache.
-        let checked = if profile.auth_state == ProviderAccountAuthState::Expired {
-            Err(ClaudeCredentialCheckError::Rejected)
-        } else if let Some(checked) = checks.as_ref() {
-            checked.clone()
-        } else {
-            let checked = crate::runtime::claude_setup_token_login::check(
-                self,
-                &owner,
-                &profile.profile_id,
-                &zeroize::Zeroizing::new(token.to_string()),
-            )
-            .await;
-            *checks = Some(checked.clone());
-            checked
-        };
+        let checked =
+            if verification.verified && profile.auth_state == ProviderAccountAuthState::Expired {
+                Err(ClaudeCredentialCheckError::Rejected)
+            } else if let Some(checked) = checks.as_ref() {
+                checked.clone()
+            } else {
+                let checked = crate::runtime::claude_setup_token_login::check(
+                    self,
+                    &owner,
+                    &profile.profile_id,
+                    &zeroize::Zeroizing::new(token.to_string()),
+                )
+                .await;
+                *checks = Some(checked.clone());
+                checked
+            };
         drop(checks);
         match checked {
             Ok(()) => {
+                let _login_lane = self
+                    .provider_runtime_lanes
+                    .acquire(&format!("claude-account-login:{credential_id}"))
+                    .await;
+                if !crate::provider::mark_provider_account_credential_verified(
+                    &owner,
+                    &profile.profile_id,
+                    verification.revision,
+                )? {
+                    return self
+                        .resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
+                        .await;
+                }
                 crate::runtime::claude_setup_token_login::record_verified_token(
                     self,
                     &owner,
@@ -90,12 +112,18 @@ impl KernelRuntimeState {
                     .provider_runtime_lanes
                     .acquire(&format!("claude-account-login:{credential_id}"))
                     .await;
-                if self
-                    .owned
-                    .provider_account_profiles
-                    .get(&owner, "claude", &profile.profile_id)?
-                    .auth_state
-                    == ProviderAccountAuthState::Authenticated
+                if crate::provider::provider_account_credential_verification(
+                    &owner,
+                    "claude",
+                    &profile.profile_id,
+                )?
+                .verified
+                    && self
+                        .owned
+                        .provider_account_profiles
+                        .get(&owner, "claude", &profile.profile_id)?
+                        .auth_state
+                        == ProviderAccountAuthState::Authenticated
                 {
                     return self
                         .resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
@@ -136,6 +164,9 @@ impl KernelRuntimeState {
                     "provider-auth-recovery:{}",
                     login.login_id.as_deref().unwrap_or_default()
                 );
+                // Consent/storage runs on this same commit lane. Release it
+                // after starting the shared login, before waiting on the human.
+                drop(_login_lane);
                 if !self
                     .wait_for_account_login(&request.session_id, &agent_id, &owner, &id, &login)
                     .await?

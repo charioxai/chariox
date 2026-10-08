@@ -47,6 +47,9 @@ impl KernelRuntimeState {
         agent_id: &str,
         operation: impl FnOnce(&mut DaemonApp) -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
+        let account = self
+            .prepare_prompt_provider_credentials(session_id, agent_id)
+            .await?;
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
         let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
@@ -66,7 +69,11 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        self.with_authorized_app_side_effect(operation).await
+        self.with_authorized_app_side_effect(|app| {
+            account.validate(app)?;
+            operation(app)
+        })
+        .await
     }
 
     pub(crate) fn project_environment_for_shell(

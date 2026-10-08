@@ -61,7 +61,7 @@ impl KernelRuntimeState {
         Ok(request.with_provider_credential_env(credentials))
     }
 
-    async fn ensure_provider_account_vault_unlocked_for_launch(
+    pub(super) async fn ensure_provider_account_vault_unlocked_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
         operation: &'static str,
@@ -134,6 +134,17 @@ impl KernelRuntimeState {
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
+        // MP-08 / MP-10 / MP-11: retirement during human unlock must precede
+        // credential resolution or a billed first-use check, not just PTY spawn.
+        self.authorize_current_external_command()?;
+        let current = self.owned.provider_store.get_run(run.id())?;
+        if current.state() == crate::provider::ProviderRunState::Ended {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().to_string(),
+                state: current.state(),
+                operation,
+            });
+        }
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
             crate::account_profile::provider_account_authority_owner_user_id(

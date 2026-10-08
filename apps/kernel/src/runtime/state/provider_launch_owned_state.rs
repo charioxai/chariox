@@ -999,7 +999,7 @@ mod tests {
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
         .expect("vault should initialize");
-        crate::provider::store_provider_account_credential(
+        crate::provider::store_verified_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",

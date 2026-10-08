@@ -314,6 +314,31 @@ async fn setup_token_unchecked_vault_observation_wins_over_authenticated_native(
     pasted_setup_token_fixture("legacy-native").await;
 }
 
+#[tokio::test]
+async fn setup_token_pre_upgrade_native_observation_does_not_verify_legacy_token() {
+    pasted_setup_token_fixture("legacy-native-observed").await;
+}
+
+#[tokio::test]
+async fn setup_token_pre_upgrade_native_observation_launch_verifies_legacy_token() {
+    pasted_setup_token_fixture("legacy-native-observed-direct").await;
+}
+
+#[tokio::test]
+async fn setup_token_pre_upgrade_native_observation_cannot_gate_vault_usage() {
+    pasted_setup_token_fixture("legacy-native-observed-admission").await;
+}
+
+#[tokio::test]
+async fn setup_token_pre_upgrade_native_observation_cold_prompt_checks_before_spawn() {
+    pasted_setup_token_fixture("legacy-native-observed-cold-prompt").await;
+}
+
+#[tokio::test]
+async fn setup_token_verified_cold_prompt_does_not_repeat_credential_check() {
+    pasted_setup_token_fixture("verified-cold-prompt").await;
+}
+
 async fn pasted_setup_token_fixture(scenario: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -352,9 +377,9 @@ async fn pasted_setup_token_fixture(scenario: &str) {
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = auth ] && [ "$2" = status ]; then
-  if [ '{scenario}' = legacy-native ]; then
+  case '{scenario}' in legacy-native*)
     echo '{{"loggedIn":true,"authMethod":"oauth","email":"other@example.test","subscriptionType":"max"}}'; exit 0
-  fi
+  esac
   echo '{{"loggedIn":false,"authMethod":"none"}}'; exit 1
 fi
 if [ "$1" = -p ] && [ "$2" = /usage ]; then
@@ -362,6 +387,10 @@ if [ "$1" = -p ] && [ "$2" = /usage ]; then
   echo '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"usage":{{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}},"result":"Total cost: $0.0000"}}'
   exit 0
 fi
+case '{scenario}' in *-cold-prompt)
+  # A failed ordinary spawn must still be preceded by the credential check.
+  if [ "$1" = -p ] && [ "$2" != 'Reply with OK.' ]; then exit 90; fi
+esac
 if [ "$1" = -p ]; then
   echo turn >> "$(dirname "$0")/model-turns"
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{good}' ]; then
@@ -438,6 +467,56 @@ exit 90
         crate::account_profile::ProviderAccountAuthState::Authenticated
     );
 
+    if scenario.starts_with("legacy-native-observed") {
+        // Before the upgrade the native login ran agents and authenticated
+        // this profile; the registered token was an unverified fallback.
+        let mut native_usage = profile.usage.clone();
+        native_usage.source = "native-login".into();
+        native_usage.availability =
+            crate::account_profile::ProviderAccountUsageAvailability::Available;
+        native_usage.observed_at_ms = Some(crate::session::unix_epoch_ms());
+        native_usage
+            .meters
+            .push(crate::account_profile::ProviderAccountUsageMeter {
+                meter_id: "native-limit".into(),
+                label: "Native login allowance".into(),
+                service_id: None,
+                kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
+                scope: crate::account_profile::ProviderAccountUsageMeterScope::Account,
+                used_percent: Some(100.0),
+                used: None,
+                remaining: None,
+                total: None,
+                unit: None,
+                window_duration_minutes: None,
+                resets_at_ms: None,
+                state: crate::account_profile::ProviderAccountUsageMeterState::Exhausted,
+                source: "native-login".into(),
+                observed_at_ms: crate::session::unix_epoch_ms(),
+            });
+        if scenario.ends_with("-admission") {
+            // Claude may use paid credits after its subscription allowance.
+            // Both native capacities must be exhausted to exercise admission.
+            let mut credits = native_usage.meters.last().unwrap().clone();
+            credits.meter_id = "native-credits".into();
+            credits.label = "Native login credits".into();
+            credits.kind = crate::account_profile::ProviderAccountUsageMeterKind::CreditBalance;
+            native_usage.meters.push(credits);
+        }
+        router
+            .provider_account_profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                Some("other@example.test".into()),
+                Some("max".into()),
+                None,
+                Some(native_usage),
+            )
+            .unwrap();
+    }
     if scenario.starts_with("legacy") {
         crate::provider::store_provider_account_credential(
             &config,
@@ -448,52 +527,135 @@ exit 90
             false,
         )
         .unwrap();
-        for refresh in [false, true] {
-            if refresh {
-                let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        if scenario.ends_with("-admission") {
+            router
+                .provider_account_profiles
+                .require_authenticated(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    Some("claude-sonnet"),
+                    "test legacy admission",
+                )
+                .expect(
+                    "MP-08/MP-10/MP-11 native usage cannot gate the selected unchecked Vault token",
+                );
+        }
+        if !scenario.ends_with("-direct") && !scenario.ends_with("-admission") {
+            for refresh in [false, true] {
+                if refresh {
+                    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
                     "RefreshProviderAccountProfile": { "provider": "claude", "account_profile": profile.profile_id }
                 })).unwrap();
+                    let command =
+                        KernelCommand::from_local_request("legacy-refresh", None, None, &request);
+                    router.dispatch(command, request).await.unwrap();
+                    assert_eq!(
+                        auth_state(&router),
+                        crate::account_profile::ProviderAccountAuthState::Unknown
+                    );
+                }
+                let request = LocalDaemonRequest::GetProviderAuthStatus(
+                    crate::local::GetProviderAuthStatusRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                    },
+                );
                 let command =
-                    KernelCommand::from_local_request("legacy-refresh", None, None, &request);
-                router.dispatch(command, request).await.unwrap();
+                    KernelCommand::from_local_request("legacy-status", None, None, &request);
+                let LocalDaemonResponse::ProviderAuthStatus { status } =
+                    router.dispatch(command, request).await.unwrap()
+                else {
+                    panic!("expected auth status");
+                };
+                assert_eq!(status.auth_state, "unknown");
                 assert_eq!(
-                    auth_state(&router),
-                    crate::account_profile::ProviderAccountAuthState::Unknown
+                    (status.identity_summary, status.plan),
+                    (None, None),
+                    "MP-08/MP-10/MP-11 native identity is not the unchecked token's"
+                );
+                assert!(
+                    !root.join("usage-probes").exists(),
+                    "MP-08/MP-10/MP-11 refresh must not probe the unselected native account"
+                );
+                assert_eq!(
+                    router
+                        .provider_account_profiles
+                        .get("local", "claude", &profile.profile_id)
+                        .unwrap()
+                        .usage,
+                    profile.usage
+                );
+                let hint = status.login_hint.unwrap();
+                assert!(
+                    hint.contains("checked automatically") && !hint.contains("--replace"),
+                    "{hint}"
                 );
             }
-            let request = LocalDaemonRequest::GetProviderAuthStatus(
-                crate::local::GetProviderAuthStatusRequest {
-                    provider: "claude".into(),
-                    account_profile: profile.profile_id.clone(),
-                },
-            );
-            let command = KernelCommand::from_local_request("legacy-status", None, None, &request);
-            let LocalDaemonResponse::ProviderAuthStatus { status } =
-                router.dispatch(command, request).await.unwrap()
-            else {
-                panic!("expected auth status");
-            };
-            assert_eq!(status.auth_state, "unknown");
-            assert_eq!(status.identity_summary, profile.identity_summary);
-            assert_eq!(status.plan, profile.plan);
-            assert!(
-                !root.join("usage-probes").exists(),
-                "MP-08/MP-10/MP-11 refresh must not probe the unselected native account"
-            );
-            assert_eq!(
-                router
-                    .provider_account_profiles
-                    .get("local", "claude", &profile.profile_id)
-                    .unwrap()
-                    .usage,
-                profile.usage
-            );
-            let hint = status.login_hint.unwrap();
-            assert!(
-                hint.contains("checked automatically") && !hint.contains("--replace"),
-                "{hint}"
-            );
         }
+    }
+    if scenario == "verified-cold-prompt" {
+        let (command, request) = paste(&good);
+        router.dispatch(command, request).await.unwrap();
+    }
+    if scenario.ends_with("-cold-prompt") {
+        let (session, agent, attachment) = {
+            let mut app = router.app.lock().await;
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                ))
+                .unwrap();
+            let agent = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "claude-p")
+                        .with_model("claude-sonnet")
+                        .with_account_profile(profile.profile_id.clone()),
+                )
+                .unwrap();
+            app.focus_agent(session.id(), agent.id()).unwrap();
+            let attachment = crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::new(
+                    session.id(),
+                    "cold-prompt-client",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ))
+                .unwrap();
+            (session, agent, attachment)
+        };
+        let count = || {
+            std::fs::read_to_string(root.join("model-turns"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        let before = count();
+        let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+            "SubmitPrompt": {"session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "prompt": "MP-08 / MP-10 / MP-11 cold ordinary prompt",
+                "attachments": []}
+        })).unwrap();
+        let command = KernelCommand::from_local_request("cold-prompt", None, None, &request);
+        // The fake provider deliberately rejects ordinary execution. This check
+        // tests credential admission before any spawn, not a fake successful turn.
+        let _ = router.dispatch(command, request).await;
+        let expected = if scenario.starts_with("legacy") { 1 } else { 0 };
+        assert_eq!(
+            count() - before,
+            expected,
+            "MP-08/MP-10/MP-11 real SubmitPrompt checks an unchecked token once before cold spawn"
+        );
+        assert!(
+            crate::provider::provider_account_credential_verification(
+                "local",
+                "claude",
+                &profile.profile_id
+            )
+            .unwrap()
+            .verified
+        );
+        return;
     }
     if scenario.starts_with("legacy") {
         let (session, agent) = {
@@ -517,7 +679,15 @@ exit 90
             "claude-sonnet",
         )
         .with_agent_id(agent.id());
-        for _ in 0..2 {
+        for launch in 0..2 {
+            if launch == 1 {
+                // The credential's verification survives a new runtime/cache.
+                drop(router);
+                router = CommandRouter::with_interactive_capacity(
+                    Arc::new(Mutex::new(DaemonApp::bootstrap(config.clone()).unwrap())),
+                    1,
+                );
+            }
             let prepared = router
                 .runtime_state
                 .prepare_provider_launch_request_with_vault(request.clone(), "test first use")
@@ -540,9 +710,18 @@ exit 90
             1,
             "MP-08/MP-10/MP-11 unchecked token must be checked once automatically at first use"
         );
+        let verified = router
+            .provider_account_profiles
+            .get("local", "claude", &profile.profile_id)
+            .unwrap();
+        assert_eq!(verified.usage, profile.usage);
+        assert_eq!(verified.plan, None);
         assert_eq!(
-            auth_state(&router),
-            crate::account_profile::ProviderAccountAuthState::Authenticated
+            (verified.auth_state, verified.identity_summary),
+            (
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None
+            )
         );
     }
     if scenario == "observation-failure" {
@@ -887,6 +1066,18 @@ exit 1
         std::fs::write(root.join("expired"), "expired").unwrap();
     }
     if mode.starts_with("expired") {
+        let verification = crate::provider::provider_account_credential_verification(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        assert!(crate::provider::mark_provider_account_credential_verified(
+            "local",
+            &profile.profile_id,
+            verification.revision
+        )
+        .unwrap());
         router
             .provider_account_profiles
             .update_observation(
@@ -1361,4 +1552,67 @@ async fn wait_for_enrollment_notice(
     })
     .await
     .expect("automatic enrollment must publish a sanitized failure and retry notice");
+}
+
+// MP-08/MP-10/MP-11: preserve the existing encrypted home-worker credential path.
+#[tokio::test]
+async fn setup_token_worker_launch_keeps_home_verified_credential_without_registration() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-token-worker-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let names = ["HOME", "CHARIOX_HOME", "CHARIOX_CLAUDE_BIN"];
+    let _cleanup = FixtureCleanup {
+        root: root.clone(),
+        environment: names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect(),
+    };
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("CHARIOX_HOME", root.join("state"));
+    std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("must-not-verify-on-worker"));
+    let config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed("local", "claude", "worker")
+        .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+    credentials.insert(
+        crate::provider::CLAUDE_OAUTH_TOKEN_ENV,
+        zeroize::Zeroizing::new("home-verified-test-credential".to_string()),
+    );
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        &profile.profile_id,
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_provider_credential_env(credentials);
+    let prepared = router
+        .runtime_state
+        .prepare_provider_launch_request_with_vault(request, "home-verified worker launch")
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared.provider_credential_env.iter().collect::<Vec<_>>(),
+        vec![(
+            crate::provider::CLAUDE_OAUTH_TOKEN_ENV,
+            "home-verified-test-credential"
+        )]
+    );
 }

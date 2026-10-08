@@ -13,6 +13,95 @@ pub(crate) struct StoredProviderAccountCredential {
     pub(crate) replaced: bool,
 }
 
+// This existing free-form provenance value records verification of this
+// registration. Native profile observations never grant it. Replacing the
+// stored credential resets it unless that replacement was itself verified.
+const VERIFIED_ACCOUNT_CREDENTIAL: &str = "verified_provider_account_profile";
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProviderAccountCredentialVerification {
+    pub(crate) registered: bool,
+    pub(crate) verified: bool,
+    pub(crate) revision: Option<u64>,
+}
+
+pub(crate) fn provider_account_credential_verification(
+    owner: &str,
+    provider: &str,
+    profile: &str,
+) -> Result<ProviderAccountCredentialVerification, DaemonError> {
+    let id = provider_account_credential_id(owner, provider, profile);
+    let credential = crate::credential::CharioxCredentialRegistry::user()?.get(&id)?;
+    let metadata = credential
+        .as_ref()
+        .and_then(|entry| entry.metadata.as_ref());
+    Ok(ProviderAccountCredentialVerification {
+        registered: credential.is_some(),
+        verified: metadata.is_some_and(|value| {
+            value.created_by_kind.as_deref() == Some(VERIFIED_ACCOUNT_CREDENTIAL)
+        }),
+        revision: metadata.and_then(|value| value.updated_at_ms),
+    })
+}
+
+/// Account observations from a pre-upgrade native login do not describe an
+/// unchecked Vault credential. Clear them before status or usage admission.
+pub(crate) fn reconcile_claude_vault_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner: &str,
+    profile: crate::account_profile::ProviderAccountProfile,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    if profile.provider != "claude" {
+        return Ok(profile);
+    }
+    let verification =
+        provider_account_credential_verification(owner, "claude", &profile.profile_id)?;
+    if !verification.registered || verification.verified {
+        return Ok(profile);
+    }
+    registry.update_observation(
+        owner,
+        "claude",
+        &profile.profile_id,
+        crate::account_profile::ProviderAccountAuthState::Unknown,
+        None,
+        None,
+        profile.detected_provider_version.clone(),
+        Some(
+            crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                &profile.profile_id,
+                "claude",
+            ),
+        ),
+    )
+}
+
+/// The caller holds the account login lane. A completed old first-use check
+/// must not verify a replacement registration. This writes no secret.
+pub(crate) fn mark_provider_account_credential_verified(
+    owner: &str,
+    profile: &str,
+    revision: Option<u64>,
+) -> Result<bool, DaemonError> {
+    let id = provider_account_credential_id(owner, "claude", profile);
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
+    let Some(mut credential) = registry.get(&id)? else {
+        return Ok(false);
+    };
+    if credential
+        .metadata
+        .as_ref()
+        .and_then(|value| value.updated_at_ms)
+        != revision
+    {
+        return Ok(false);
+    }
+    let metadata = credential.metadata.get_or_insert_with(Default::default);
+    metadata.created_by_kind = Some(VERIFIED_ACCOUNT_CREDENTIAL.into());
+    registry.upsert(credential)?;
+    Ok(true)
+}
+
 /// Stable handle for the Chariox-vault credential assigned to one provider
 /// account. The handle contains no provider secret or host-local path.
 pub(crate) fn provider_account_credential_id(
@@ -179,6 +268,7 @@ pub(crate) fn provider_account_credential_uses_vault(
         }))
 }
 
+#[cfg(test)]
 pub(crate) fn store_provider_account_credential(
     config: &DaemonConfig,
     owner_user_id: &str,
@@ -187,13 +277,60 @@ pub(crate) fn store_provider_account_credential(
     secret: &str,
     overwrite: bool,
 ) -> Result<StoredProviderAccountCredential, DaemonError> {
+    store_account_credential(
+        config,
+        owner_user_id,
+        provider,
+        profile_id,
+        secret,
+        overwrite,
+        false,
+    )
+}
+
+/// Only called after an official CLI verification of this exact replacement.
+pub(crate) fn store_verified_provider_account_credential(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+    overwrite: bool,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
+    store_account_credential(
+        config,
+        owner_user_id,
+        provider,
+        profile_id,
+        secret,
+        overwrite,
+        true,
+    )
+}
+
+fn store_account_credential(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    secret: &str,
+    overwrite: bool,
+    verified: bool,
+) -> Result<StoredProviderAccountCredential, DaemonError> {
     let provider = validate_provider_account_credential_input(provider, secret)?;
     let secret = secret.trim();
     let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
     let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let existing = registry.get(&credential_id)?;
     let replaced = existing.is_some();
-    let now_ms = crate::session::unix_epoch_ms();
+    // Monotonic per registration even for replacements within one millisecond.
+    let now_ms = crate::session::unix_epoch_ms().max(
+        existing
+            .as_ref()
+            .and_then(|entry| entry.metadata.as_ref())
+            .and_then(|metadata| metadata.updated_at_ms)
+            .map_or(0, |previous| previous.saturating_add(1)),
+    );
     let created_at_ms = existing
         .as_ref()
         .and_then(|credential| credential.metadata.as_ref())
@@ -209,7 +346,14 @@ pub(crate) fn store_provider_account_credential(
         allowed_uses: vec![crate::config::UserCredentialUse::Provider],
         injection: crate::config::UserCredentialInjectionConfig::Provider,
         metadata: Some(crate::config::UserCredentialMetadataConfig {
-            created_by_kind: Some("provider_account_profile".to_string()),
+            created_by_kind: Some(
+                if verified {
+                    VERIFIED_ACCOUNT_CREDENTIAL
+                } else {
+                    "provider_account_profile"
+                }
+                .to_string(),
+            ),
             created_by_id: Some(profile_id.to_string()),
             session_id: None,
             provider: Some(provider.to_string()),
@@ -545,6 +689,16 @@ mod tests {
             resolved.iter().collect::<Vec<_>>(),
             vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]
         );
+        let first = provider_account_credential_verification("local", "claude", "work").unwrap();
+        assert!(!first.verified);
+        assert!(
+            mark_provider_account_credential_verified("local", "work", first.revision).unwrap()
+        );
+        assert!(
+            provider_account_credential_verification("local", "claude", "work")
+                .unwrap()
+                .verified
+        );
         let duplicate = store_provider_account_credential(
             &config,
             "local",
@@ -565,6 +719,17 @@ mod tests {
         )
         .expect("explicit replacement should succeed");
         assert!(replacement.replaced);
+        let current = provider_account_credential_verification("local", "claude", "work").unwrap();
+        assert!(!current.verified);
+        assert!(current.revision > first.revision);
+        assert!(
+            !mark_provider_account_credential_verified("local", "work", first.revision).unwrap()
+        );
+        assert!(
+            !provider_account_credential_verification("local", "claude", "work")
+                .unwrap()
+                .verified
+        );
         let resolved = resolve_provider_account_credentials(&config, "local", "claude", "work")
             .expect("replacement should resolve");
         assert_eq!(

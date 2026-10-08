@@ -328,7 +328,12 @@ pub(super) async fn record_verified_token(
             None,
             None,
             None,
-            None,
+            Some(
+                crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    account_profile,
+                    "claude",
+                ),
+            ),
         )
     {
         crate::logging::warn_with_fields(
@@ -350,6 +355,15 @@ async fn store_token(
     token: Zeroizing<String>,
     passphrase: Option<Zeroizing<String>>,
 ) -> Result<ProviderLoginStatus, DaemonError> {
+    let credential_id = crate::provider::provider_account_credential_id(
+        owner_user_id,
+        "claude",
+        &record.account_profile,
+    );
+    let _login_lane = runtime_state
+        .provider_runtime_lanes
+        .acquire(&format!("claude-account-login:{credential_id}"))
+        .await;
     let store = runtime_state.provider_login_process_store();
     let outcome = runtime_state
         .store_claude_setup_token(
