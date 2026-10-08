@@ -15,7 +15,9 @@ impl ProfileFixture {
             rand::thread_rng().gen::<u64>()
         ));
         fs::create_dir_all(&root).unwrap();
-        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json"))
+            .unwrap()
+            .with_machine_identity("source-machine", "source-kernel");
         let profile = registry
             .create_managed("owner", "opencode", "Work")
             .unwrap();

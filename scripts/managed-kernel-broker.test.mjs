@@ -780,7 +780,7 @@ test("managed slice broker materializes bounded credential bytes privately", asy
   const provisioner = join(root, "provisioner.sh")
   await writeFile(provisioner, `#!${process.execPath}
 const { readFileSync, statSync } = require("node:fs")
-const credential = process.env.CHARIOX_SLICE_CODEX_AUTH
+const credential = process.env.CHARIOX_SLICE_GITHUB_TOKEN_FILE
 const mode = statSync(credential).mode & 0o777
 if (mode !== 0o600) {
   console.error("credential mode is " + mode.toString(8) + ", expected 600")
@@ -798,8 +798,8 @@ process.stdout.write(readFileSync(credential))
       CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
     },
     files: [{
-      environment: "CHARIOX_SLICE_CODEX_AUTH",
-      name: "codex-auth.json",
+      environment: "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+      name: "github-token.txt",
       contentsBase64: Buffer.from("credential-bytes").toString("base64"),
     }],
   }
@@ -859,7 +859,7 @@ server.listen(process.argv[1], () => process.stdout.write("ready\\n"))
 
   const injected = validate({
     ...request,
-    environment: { ...request.environment, CHARIOX_SLICE_CODEX_AUTH: "/etc/passwd" },
+    environment: { ...request.environment, CHARIOX_SLICE_GITHUB_TOKEN_FILE: "/etc/passwd" },
     files: [],
   }, share)
   assert.equal(injected.status, 1)

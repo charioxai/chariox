@@ -107,6 +107,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         )
         .unwrap();
     let plaintext = serde_json::to_vec(&RelayPeerEvent::LeasedRuntimeProjection {
+        account_copy_observations: Vec::new(),
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),
         provider_run_id: "remote:worker:provider-run-1".to_string(),

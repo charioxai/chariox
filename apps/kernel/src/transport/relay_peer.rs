@@ -184,6 +184,8 @@ pub struct RelayManagedContextImportedRepository {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_accounts: Vec<crate::account_profile::ManagedContextProviderAccountReceipt>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -605,6 +607,10 @@ pub enum RelayPeerRequest {
         subscription_id: String,
         envelope: crate::local::WorkflowNotificationEnvelope,
     },
+    ImportManagedSliceProviderAccountCopy {
+        slice_id: String,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1020,6 +1026,9 @@ pub enum RelayPeerResponse {
     WorkflowNotificationAccepted {
         ack: crate::local::WorkflowNotificationAck,
     },
+    ManagedSliceProviderAccountCopyImported {
+        profile: crate::account_profile::ProviderAccountProfile,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1241,6 +1250,8 @@ pub enum RelayPeerResponse {
         materialized: Vec<RemoteSkillMaterialization>,
     },
     RemoteProviderAccountEnsured {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        copy: Option<crate::account_profile::ProviderAccountMaterializationStatus>,
         provider: String,
         account_profile: String,
     },
@@ -1291,6 +1302,8 @@ pub struct RelayProjectedPrompt {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerEvent {
     LeasedRuntimeProjection {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        account_copy_observations: Vec<crate::account_profile::ProviderAccountCopyObservation>,
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,

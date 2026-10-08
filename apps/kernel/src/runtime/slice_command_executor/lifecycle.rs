@@ -1135,7 +1135,7 @@ fn relay_presence_from_started_slice<'a>(
     Ok(discovered)
 }
 
-async fn local_docker_slice_relay(
+pub(super) async fn local_docker_slice_relay(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
 ) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError> {
@@ -1660,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+    fn mp08_mp10_mp11_browser_artifact_peer_74_hosted_install_gate() {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();

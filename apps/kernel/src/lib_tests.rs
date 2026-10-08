@@ -296,6 +296,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         },
     );
     let event = RelayPeerEvent::LeasedRuntimeProjection {
+        account_copy_observations: Vec::new(),
         home_session_id: "home-session-1".to_string(),
         home_agent_id: "home-agent-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),

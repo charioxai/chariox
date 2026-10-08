@@ -185,6 +185,10 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
         94
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
+        copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+            machine_id: "synthetic-source-machine".into(),
+            kernel_id: "home-kernel".into(),
+        }),
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
@@ -350,7 +354,8 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
             archive_size_bytes: 42,
             expires_at_ms: 1_000,
             receipt: Some(RelayManagedContextImportReceipt {
-                transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                                provider_accounts: Vec::new(),
+transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
                 plan_digest: format!("sha256:{}", "f".repeat(64)),
                 development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {

@@ -879,7 +879,11 @@ impl SliceStore {
         let mut matches = state
             .records
             .values()
-            .filter(|record| record.id == slice_ref || record.name == slice_ref)
+            .filter(|record| {
+                record.id == slice_ref
+                    || record.name == slice_ref
+                    || record.worker_kernel_ref == slice_ref
+            })
             .map(|record| record.id.clone())
             .collect::<Vec<_>>();
         let slice_id = match matches.len() {
@@ -964,7 +968,11 @@ impl SliceStore {
         let mut matches = state
             .records
             .values()
-            .filter(|record| record.id == slice_ref || record.name == slice_ref)
+            .filter(|record| {
+                record.id == slice_ref
+                    || record.name == slice_ref
+                    || record.worker_kernel_ref == slice_ref
+            })
             .cloned()
             .collect::<Vec<_>>();
         match matches.len() {

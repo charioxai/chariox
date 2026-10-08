@@ -29,6 +29,7 @@ mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
+mod managed_login_copies;
 mod native_spawn_slice;
 mod notes;
 mod project_environment_manifest;

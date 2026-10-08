@@ -202,6 +202,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
             },
             materializations: vec![
                 crate::account_profile::ProviderAccountMaterializationStatus {
+                    copy: None,
                     target_kind:
                         crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
                     target_ref: "slice-1".to_string(),

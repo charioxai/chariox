@@ -153,11 +153,6 @@ SLICE_DAEMON_ALIAS="${CHARIOX_SLICE_DAEMON_ALIAS:-slice:linux}"
 SLICE_DAEMON_ID="${CHARIOX_SLICE_DAEMON_ID:-$SLICE_DAEMON_ALIAS}"
 SLICE_MACHINE_ID="${CHARIOX_SLICE_MACHINE_ID:-slice:linux}"
 SLICE_MACHINE_ALIAS="${CHARIOX_SLICE_MACHINE_ALIAS:-linux}"
-SLICE_CODEX_AUTH="${CHARIOX_SLICE_CODEX_AUTH:-$HOME/.codex/auth.json}"
-SLICE_OPENCODE_AUTH="${CHARIOX_SLICE_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
-SLICE_CLAUDE_JSON="${CHARIOX_SLICE_CLAUDE_JSON:-$HOME/.claude.json}"
-SLICE_CLAUDE_SETTINGS="${CHARIOX_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
-SLICE_CLAUDE_STATS="${CHARIOX_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
 SLICE_GITHUB_HOST="${CHARIOX_SLICE_GITHUB_HOST:-github.com}"
 SLICE_GITHUB_TOKEN_FILE="${CHARIOX_SLICE_GITHUB_TOKEN_FILE:-}"
 SLICE_OPENCODE_PROVIDER="${CHARIOX_SLICE_OPENCODE_PROVIDER:-openai}"
@@ -169,11 +164,11 @@ SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_PRIVATE_HOST_ROOT="${CHARIOX_SLICE_PRIVATE_HOST_ROOT:-}"
 SLICE_PRIVATE_ROOT="/var/lib/chariox/slice-private"
 SLICE_KERNEL_HOME="/home/slice/.chariox"
-SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
+SLICE_ACCOUNT_ROOT="$SLICE_KERNEL_HOME/state/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_PROVIDER_HOME="/home/slice/.chariox/provider-home"
 if [[ -n "$SLICE_PRIVATE_HOST_ROOT" ]]; then
   SLICE_KERNEL_HOME="$SLICE_PRIVATE_ROOT/kernel"
-  SLICE_ACCOUNT_ROOT="$SLICE_PRIVATE_ROOT/provider-accounts/$SLICE_ACCOUNT_OWNER"
+  SLICE_ACCOUNT_ROOT="$SLICE_KERNEL_HOME/state/provider-accounts/$SLICE_ACCOUNT_OWNER"
   SLICE_PROVIDER_HOME="$SLICE_PRIVATE_ROOT/provider-home"
 fi
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
@@ -1235,7 +1230,7 @@ start_slice_services() {
   fi
   ensure_protected_runtime_barrier
   if [[ "$SLICE_IMPORT_PROVIDER_AUTH" == "1" ]]; then
-    import_provider_auth
+    fail "CHARIOX_SLICE_IMPORT_PROVIDER_AUTH is retired; use /slice auth import after the receiving kernel starts so the copy is tracked"
   fi
   if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
     require_slice_free_space "desktop" /home/slice /tmp
@@ -1402,24 +1397,6 @@ run_required_phase() {
   return "$status"
 }
 
-copy_provider_auth_file() {
-  local source_path="$1"
-  local target_path="$2"
-  local label="$3"
-
-  if [[ ! -f "$source_path" ]]; then
-    log "$label auth not found at $source_path; skipping"
-    return 0
-  fi
-
-  local auth_writer auth_program_q target_q
-  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
-  printf -v auth_program_q '%q' "$auth_writer"
-  printf -v target_q '%q' "$target_path"
-  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
-    bash -lc "node -e $auth_program_q import $target_q"
-  log "imported $label auth into $target_path"
-}
 
 trust_claude_slice_workspace() {
   if ! run_with_timeout 30 docker exec -e "CHARIOX_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
@@ -1456,31 +1433,12 @@ NODE"
 }
 
 import_provider_auth() {
-  ensure_auth_target_container
-  require_slice_free_space "provider-auth" /home/slice /tmp
-  case "$SLICE_AUTH_PROVIDER" in
-    all)
-      import_codex_auth
-      import_opencode_auth
-      import_claude_auth
-      import_github_auth
-      ;;
-    codex)
-      import_codex_auth
-      ;;
-    opencode|opencode:*)
-      import_opencode_auth
-      ;;
-    claude)
-      import_claude_auth
-      ;;
-    github)
-      import_github_auth
-      ;;
-    *)
-      fail "unsupported provider auth import: $SLICE_AUTH_PROVIDER"
-      ;;
-  esac
+  if [[ "$SLICE_AUTH_PROVIDER" == "github" ]]; then
+    ensure_auth_target_container
+    import_github_auth
+  else
+    fail "provider login copies require kernel-managed /slice auth import through the authenticated home-worker relay"
+  fi
 }
 
 remove_provider_auth() {
@@ -1510,9 +1468,6 @@ remove_provider_auth() {
   esac
 }
 
-import_codex_auth() {
-  copy_provider_auth_file "$SLICE_CODEX_AUTH" "$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json" "Codex"
-}
 
 remove_codex_auth() {
   local auth_writer auth_program_q target_q
@@ -1523,20 +1478,12 @@ remove_codex_auth() {
   log "removed Codex auth from slice"
 }
 
-import_opencode_auth() {
-  copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data/opencode/auth.json" "OpenCode"
-}
 
 remove_opencode_auth() {
   exec_slice bash -lc "rm -rf '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data/opencode' '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config/opencode' '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/state/opencode'"
   log "removed OpenCode auth from slice"
 }
 
-import_claude_auth() {
-  local claude_root="$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude"
-  copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "$claude_root/settings.json" "Claude settings"
-  copy_provider_auth_file "$SLICE_CLAUDE_STATS" "$claude_root/stats-cache.json" "Claude stats"
-}
 
 remove_claude_auth() {
   exec_slice bash -lc "rm -rf '$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude'"
