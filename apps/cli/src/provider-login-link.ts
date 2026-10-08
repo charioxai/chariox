@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events"
 import { writeSync } from "node:fs"
 import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
@@ -36,34 +37,49 @@ type LoginLinkRenderer = {
   idle(): Promise<void>
 }
 
+type LoginLinkTerminal = {
+  input: Pick<EventEmitter, "on" | "once" | "removeListener"> & { isTTY?: boolean; setRawMode(mode: boolean): unknown; resume(): unknown }
+  output: { isTTY?: boolean; fd: number }
+}
+
+export type ProviderLoginLinkOptions = { userCode?: string | null; autoOpen?: boolean }
+
 /** Hand off to the normal terminal buffer, preserving the link in scrollback.
- * Mouse reporting is suspended, so native selection works without a modifier. */
-export function createProviderLoginLinkPresenter(renderer: LoginLinkRenderer) {
+ * Mouse reporting is suspended, so native selection works without a modifier.
+ * Each link is shown once; the transcript keeps it for later. */
+export function createProviderLoginLinkPresenter(
+  renderer: LoginLinkRenderer,
+  terminal: LoginLinkTerminal = { input: process.stdin, output: process.stdout },
+) {
   let active = false
-  const present = async (url: string, userCode?: string | null): Promise<boolean> => {
-    if (!providerLoginUrl(url) || !process.stdin.isTTY || !process.stdout.isTTY || active) return false
+  const shown = new Set<string>()
+  const present = async (url: string, options: ProviderLoginLinkOptions = {}): Promise<boolean> => {
+    const { input, output } = terminal
+    if (!providerLoginUrl(url) || shown.has(url) || !input.isTTY || !output.isTTY || active) return false
     active = true
-    const write = (text: string) => { writeSync(process.stdout.fd, text) }
+    shown.add(url)
+    const userCode = options.userCode
+    const write = (text: string) => { writeSync(output.fd, text) }
     try {
       renderer.suspend()
       // Drain an in-flight OpenTUI frame before writing outside its layout.
       await renderer.idle()
-      process.stdin.setRawMode(true)
-      process.stdin.resume()
+      input.setRawMode(true)
+      input.resume()
       write("\x1b[?1049l\x1b[0m\r\n\x1b[JProvider authorization link (Cmd-click if supported):\r\n")
       write(providerLoginLinkText(url))
       if (userCode && /^[A-Za-z0-9 -]{1,128}$/.test(userCode)) write(`Device code: ${userCode}\r\n`)
       write("C copies the full URL; O opens a local browser; Enter returns to Chariox.\r\nNative selection + terminal Copy also works here.\r\n")
-      if (localDesktopAvailable()) {
-        write(await openExternalUrl(url) ? "Browser open requested.\r\n" : "Could not open the browser; use the link above.\r\n")
-      } else {
+      if (!localDesktopAvailable()) {
         write("Open this link on your desktop (SSH/headless terminal).\r\n")
+      } else if (options.autoOpen) {
+        write(await openExternalUrl(url) ? "Browser open requested.\r\n" : "Could not open the browser; use the link above.\r\n")
       }
       await new Promise<void>((resolve, reject) => {
         let busy = false
         const finish = () => {
-          process.stdin.removeListener("data", onData)
-          process.stdin.removeListener("end", finish)
+          input.removeListener("data", onData)
+          input.removeListener("end", finish)
           resolve()
         }
         const onData = (chunk: Buffer) => {
@@ -78,17 +94,17 @@ export function createProviderLoginLinkPresenter(renderer: LoginLinkRenderer) {
               ? openExternalUrl(url).then(opened => write(opened ? "Browser open requested.\r\n" : "Could not open the browser; use the link above.\r\n"))
               : Promise.resolve(write("SSH/headless terminal: open the link on your desktop.\r\n")))
           void action.catch(error => {
-            process.stdin.removeListener("data", onData)
-            process.stdin.removeListener("end", finish)
+            input.removeListener("data", onData)
+            input.removeListener("end", finish)
             reject(error)
           }).finally(() => { busy = false })
         }
-        process.stdin.on("data", onData)
-        process.stdin.once("end", finish)
+        input.on("data", onData)
+        input.once("end", finish)
       })
       return true
     } finally {
-      process.stdin.setRawMode(false)
+      input.setRawMode(false)
       active = false
       renderer.resume()
     }
