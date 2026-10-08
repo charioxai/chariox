@@ -13,7 +13,8 @@ export function connectCdpPipe(input, output, requestTimeoutMs = 5000) {
   const flush = () => {
     if (socket.readyState !== 1 || !pending.length) return;
     const bytes = pending.join(''); pending = []; pendingBytes = 0;
-    input.write(bytes, error => { if (error) socket.close(); });
+    try { input.write(bytes, error => { if (error) socket.close(); }); }
+    catch { socket.close(); }
   };
   const socket = {
     readyState: 1,

@@ -56,3 +56,11 @@ test('MP-11 closing a private CDP pipe retires queued commands before flushing',
  const pending=connection.send('Page.getFrameTree',{},'s');const rejected=assert.rejects(pending);
  await connection.close();await rejected;await Promise.resolve();assert.equal(writes,0);
 });
+test('MP-11 a synchronous batched CDP write failure rejects every fence',async()=>{
+ const {input,output,connection}=pipe();
+ input.write=()=>{throw Error('MP-11: injected private pipe failure')};
+ const frame=connection.send('Page.getFrameTree',{},'s'),visibility=connection.send('Runtime.evaluate',{},'s');
+ const rejected=Promise.all([assert.rejects(frame),assert.rejects(visibility)]);
+ await rejected;assert.equal(connection.isOpen(),false);
+ assert.equal(input.destroyed,true);assert.equal(output.destroyed,true);
+});
