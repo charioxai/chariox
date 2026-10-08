@@ -321,7 +321,7 @@ impl KernelRuntimeOwnedState {
             let (active, queued) = self
                 .prompt_state_owner
                 .state_parts(&session, prepared.prompt.target_agent_id());
-            if !active.is_some_and(|p| p.id() == prepared.prompt.id())
+            if active.is_none_or(|p| p.id() != prepared.prompt.id())
                 && !queued.iter().any(|p| p.id() == prepared.prompt.id())
             {
                 // Failed/expired admission never becomes a supervised orphan.
