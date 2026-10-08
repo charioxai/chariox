@@ -597,12 +597,12 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
 }
 
 #[test]
-fn a03_recurring_timer_check_ins_never_block_their_task() {
+fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
     let f = Fixture::new();
     f.create("t1", "timer", Some(60_000), Some(60_000));
     f.wait_on(&["t1"]);
-    // Wake -> inspect -> nothing changed -> ack -> wait again, five times.
-    for n in 1..=5u64 {
+    // Wake -> inspect -> nothing changed -> ack -> wait; owner gate at three.
+    for n in 1..=3u64 {
         let now = n * 60_000;
         assert_eq!(f.wakes(Operation::FireWakes { now }).len(), 1);
         let e = f.inbox().pop().unwrap();
@@ -659,10 +659,20 @@ fn a03_recurring_timer_check_ins_never_block_their_task() {
         });
         assert_eq!(
             f.task().state,
-            ExecutionState::Waiting,
-            "handled check-in {n} is progress, not a no-progress strike"
+            if n < 3 {
+                ExecutionState::Waiting
+            } else {
+                ExecutionState::Blocked
+            },
+            "a check-in with no useful progress consumes its bounded wake budget"
         );
     }
+    assert!(f.wakes(Operation::FireWakes { now: 240_000 }).is_empty());
+    assert_eq!(
+        f.wake("t1").fire_count,
+        3,
+        "blocked timers stay inert until owner action"
+    );
 }
 
 #[test]
@@ -996,4 +1006,45 @@ fn security_f1_full_recipient_does_not_stop_peer_timers() {
     });
     f.apply(Operation::FireWakes { now: 1002 });
     assert_eq!(f.wake("healthy").state, "fired");
+}
+
+// MP-09/MP-11 F12: acknowledgement alone is not useful progress.
+#[test]
+fn security_f12_recurring_ack_does_not_reset_no_progress_budget() {
+    let f = Fixture::new();
+    f.create("check-in", "timer", Some(1000), Some(60000));
+    f.wait_on(&["check-in"]);
+    let before = f.task();
+    f.apply(Operation::FireWakes { now: 1000 });
+    let seq = f.inbox()[0].sequence;
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        prompt: "check-in-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1001,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        state: "accepted".into(),
+        now: 1002,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        handled: true,
+        now: 1003,
+    });
+    let after = f.task();
+    assert_eq!(
+        after.no_progress_wakes, 1,
+        "a handled timer cannot fund another endless wake turn"
+    );
+    assert_eq!(after.progress_sequence, before.progress_sequence);
+    assert_eq!(after.last_progress_at_ms, before.last_progress_at_ms);
 }

@@ -192,6 +192,11 @@ fn fire_one(
         cancel_settle(tx, &mut wake, now)?;
         return Ok(None);
     }
+    // Timer-only turns exhaust the existing no-progress budget. Wait for
+    // explicit owner disposition before emitting another paid check-in.
+    if t.state == ExecutionState::Blocked {
+        return Ok(None);
+    }
     if wake.interval_ms.is_some() {
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;
         if pending {
