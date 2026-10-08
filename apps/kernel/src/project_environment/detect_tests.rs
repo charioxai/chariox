@@ -74,9 +74,10 @@ fn envp02a_ambiguous_configuration_values_never_supply_hashes_or_gui_hints() {
             &format!(r#"{{"image":"node:22","containerEnv":{{"CUSTOM":"{value}"}}}}"#),
         );
     };
-    populate("Notion-private-one");
+    populate("Notion-private-one process.env.PRIVATE_LITERAL");
     let first = detect_environment(&[folder(&root)], "environment").unwrap();
     assert!(!first.proposals.iter().any(|p| matches!(&p.requirement.spec, RequirementSpec::Software { identity, .. } if identity == "Notion")));
+    assert!(!first.proposals.iter().any(|p| matches!(&p.requirement.spec, RequirementSpec::Secrets { name, .. } if name == "PRIVATE_LITERAL")));
     for proposal in &first.proposals {
         if let RequirementSpec::Files { entries, .. } = &proposal.requirement.spec {
             assert!(entries
