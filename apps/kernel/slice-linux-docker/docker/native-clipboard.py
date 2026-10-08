@@ -17,6 +17,16 @@ def clipboard_source(connection, processes, tree, accessibility):
     prop=owner.get_full_property(connection.intern_atom('_NET_WM_PID'),0)
     if prop is None or prop.format!=32 or len(prop.value)!=1:return None
     pid=int(prop.value[0])
+    # _NET_WM_PID is a client claim. XRes must independently identify the
+    # connection that owns the selection window; unsupported servers deny.
+    try:
+        if not connection.has_extension('X-Resource'):return None
+        version=connection.res_query_version()
+        if (version.server_major,version.server_minor)<(1,2):return None
+        identities=connection.res_query_client_ids([{'client':owner.id,'mask':2}]).ids
+        pids=[int(item.value[0]) for item in identities if item.spec.mask & 2 and len(item.value)==1]
+        if pids!=[pid]:return None
+    except Exception:return None
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]
     if not process or not accessibility.alive(process) or not nodes or any(n.get('protected') for n in nodes):return None

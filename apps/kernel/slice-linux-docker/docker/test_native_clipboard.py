@@ -13,7 +13,9 @@ class ClipboardTests(unittest.TestCase):
         tree={'available':True,'complete':True,'protected':False,'nodes':[{'pid':77,'protected':False}]}
         access=SimpleNamespace(snapshot=Mock(return_value=tree),alive=Mock(return_value=True),NativeInputDenied=ValueError)
         owner=SimpleNamespace(id=99,get_full_property=Mock(return_value=SimpleNamespace(format=32,value=[77])))
-        connection=SimpleNamespace(get_selection_owner=Mock(return_value=owner),intern_atom=lambda name:name,close=Mock())
+        connection=SimpleNamespace(get_selection_owner=Mock(return_value=owner),intern_atom=lambda name:name,close=Mock(),
+            has_extension=Mock(return_value=True),res_query_version=Mock(return_value=SimpleNamespace(server_major=1,server_minor=2)),
+            res_query_client_ids=Mock(return_value=SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[77])])))
         return process,tree,access,owner,connection
 
     def test_equivalent_native_paste_chords_are_classified(self):
@@ -34,6 +36,25 @@ class ClipboardTests(unittest.TestCase):
             a.alive.return_value=alive
             with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
                 self.assertIsNone(m.public_clipboard(processes,a));read.assert_not_called()
+
+    def test_forged_public_pid_is_not_clipboard_provenance(self):
+        p,t,a,o,c=self.setup()
+        c.has_extension=Mock(return_value=True)
+        c.res_query_version=Mock(return_value=SimpleNamespace(server_major=1,server_minor=2))
+        c.res_query_client_ids=Mock(return_value=SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[78])]))
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            self.assertIsNone(m.public_clipboard([p],a));read.assert_not_called()
+
+    def test_missing_or_unsupported_server_provenance_never_reads_bytes(self):
+        p,t,a,o,c=self.setup()
+        for version in [(1,1),(1,2)]:
+            c.res_query_version.return_value=SimpleNamespace(server_major=version[0],server_minor=version[1])
+            c.res_query_client_ids.return_value=SimpleNamespace(ids=[])
+            with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+                self.assertIsNone(m.public_clipboard([p],a));read.assert_not_called()
+        c.has_extension.return_value=False
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            self.assertIsNone(m.public_clipboard([p],a));read.assert_not_called()
 
     def test_complete_public_owned_source_allows_the_same_read_and_paste_policy(self):
         p,t,a,o,c=self.setup()
