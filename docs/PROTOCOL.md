@@ -573,12 +573,35 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    pairing, realm, account, user, Cloud origin or relay key changes (for example
    `LogoutCloudRelay`). The kernel owns expiry even if the browser stops timers.
 
-Clients require kernel protocol 464 and the user's explicit local-connect consent
-before trying the loopback endpoint (Cloud offers it only for the caller's own
-kernels, not to shared-session viewers), and fall back to the relay for the same kernel
-on any refusal, timeout or unreachable endpoint. A kernel-identity mismatch is a
-surfaced security diagnostic that blocks local attempts until the user retries.
+MP-08 / MP-11: the paired Cloud browser tries the authenticated loopback
+carrier automatically from protocol 464 for its own kernels. Shared-session
+viewers retain the relay. There is no application consent step; Chromium may
+present its own Local Network Access prompt. A pending browser permission
+request is not a connection failure. Once connected, the kernel-key challenge
+and bound-client grant are required before any runtime request is sent.
+Reload restores the automatic preference. After an ordinary carrier loss,
+clients keep working over the relay and retry local admission after a bounded
+cooldown. A kernel-key mismatch blocks local attempts until an explicit retry.
+V1 uses literal `ws://127.0.0.1`; a publicly trusted TLS endpoint is a separate
+future contract.
 
+The web Local/Relay indicator is projected only for a target that has completed
+a local kernel-key proof, including a remembered proof on reload. Cloud
+ownership, an issued loopback URL, and an immediate browser error do not prove
+same-machine placement. When a previously proven local kernel is online but
+its socket is immediately refused before reaching the listener, the indicator
+can carry one profile-wide notice suggesting Chrome or Firefox. Browser family
+controls wording only. First-visit Safari locality requires a trusted
+browser-machine association; this protocol does not currently provide one.
+
+Relay-addressed detached and native provider TUIs currently retain their
+ordinary authenticated relay carrier. Their long-lived relay token cannot mint
+or renew the short browser lease. Automatic direct terminal admission needs a
+short, key-bound terminal lease contract; local presence and a matching
+`RelayStatus.daemon_id` over TCP must never substitute for kernel identity proof.
+The TUI Local/Relay projection uses fresh same-machine discovery metadata for
+display only; it does not authorize a transport change. There is no indicator
+or offer for a target absent from that machine's kernel discovery.
 
 Current pushed event contract:
 
