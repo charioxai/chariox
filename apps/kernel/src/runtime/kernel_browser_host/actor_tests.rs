@@ -502,7 +502,7 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
-    for op in ["state", "start", "stop", "navigate", "close"] {
+    for op in ["state", "start", "navigate", "close"] {
         host.scope_browser_request(
             Some(&admission),
             "host.browser",
@@ -510,6 +510,15 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
+    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
+    assert!(host
+        .scope_browser_request(
+            Some(&admission),
+            "host.browser",
+            &json!({"op":"stop","tab_id":"tab"})
+        )
+        .unwrap_err()
+        .contains("not_focused_agent"));
     assert!(host
         .scope_browser_request(
             Some(&admission),
