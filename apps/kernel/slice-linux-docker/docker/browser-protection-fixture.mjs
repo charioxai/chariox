@@ -12,7 +12,9 @@ import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 export const VAULT_VALUE = 'disposable-vault-echo-7d1c';
 const M = 'background:#ff00ff', C = 'background:#00ffff';
 const page = body => `<!doctype html><meta charset=utf-8><body style="margin:0;font:14px sans-serif">${body}</body>`;
+// Query flags: novault (no Vault echo text), nomarkers (secret fields only).
 export function fixtureHtml(url, cross) {
+  const markers = !url.includes('nomarkers');
   switch (url.split('?')[0]) {
     case '/captcha': return page(`<div style="${C};width:300px;height:74px"><span style="display:inline-block;width:24px;height:24px;margin:24px;border:2px solid #555;background:#fff"></span></div>`);
     case '/login': return page(`<div style="${C};height:30px"></div><input type=password value=hunter2 style="${M};border:0;margin:10px;width:150px;height:24px">`);
@@ -23,10 +25,10 @@ export function fixtureHtml(url, cross) {
       <div id=consent role=dialog style="${C};position:absolute;left:20px;top:20px;width:360px;height:120px">We use cookies <button>Accept all</button></div>
       <input id=pw type=password style="${M};position:absolute;left:420px;top:30px;width:160px;height:28px;border:0">
       <input id=otp autocomplete=one-time-code style="${M};position:absolute;left:600px;top:30px;width:100px;height:28px;border:0">
-      <div data-chariox-observation-protected style="display:contents"><div style="${M};position:absolute;left:720px;top:30px;width:80px;height:28px"></div></div>
+      ${markers ? `<div data-chariox-observation-protected style="display:contents"><div style="${M};position:absolute;left:720px;top:30px;width:80px;height:28px"></div></div>` : ''}
       <iframe id=captcha src="${cross}/captcha" style="position:absolute;left:20px;top:170px;width:304px;height:78px;border:0"></iframe>
       <iframe id=login src="${cross}/login" style="position:absolute;left:360px;top:170px;width:200px;height:80px;border:2px solid #000;padding:3px"></iframe>
-      <iframe id=owner data-chariox-secret src="${cross}/whole" style="position:absolute;left:600px;top:170px;width:120px;height:80px;border:0"></iframe>
+      ${markers ? `<iframe id=owner data-chariox-secret src="${cross}/whole" style="position:absolute;left:600px;top:170px;width:120px;height:80px;border:0"></iframe>` : ''}
       <iframe id=same src="/same" style="position:absolute;left:760px;top:170px;width:160px;height:100px;border:0"></iframe>
       <iframe id=nested src="${cross}/nested" style="position:absolute;left:20px;top:280px;width:260px;height:110px;border:0"></iframe>
       <iframe id=scaled src="${cross}/login" style="position:absolute;left:320px;top:280px;width:200px;height:80px;border:0;transform:scale(.5);transform-origin:0 0"></iframe>
@@ -76,9 +78,10 @@ export async function openFixture(browser, url) {
   const { sessionId } = await browser.resolvePageTarget(target.targetId);
   await connection.send('Page.navigate', { url }, sessionId);
   for (let i = 0; i < 100; i++) {
-    const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: `document.readyState === 'complete' && [...document.querySelectorAll('iframe')].length === 6` }, sessionId);
+    const expected = url.includes('nomarkers') ? 5 : 6;
+    const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: `document.readyState === 'complete' && [...document.querySelectorAll('iframe')].length === ${expected}` }, sessionId);
     const frames = (await connection.send('Target.getTargets')).targetInfos.filter(info => info.type === 'iframe').length;
-    if (result.value && frames >= 6) break;
+    if (result.value && frames >= expected) break;
     await delay(50);
   }
   await delay(300);

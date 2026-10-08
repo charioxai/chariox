@@ -71,12 +71,12 @@ async function census(pid, protection) {
   assert.equal(code, 0, 'census helper failed');
   return JSON.parse(out);
 }
-async function withDesktop(run_) {
+async function withDesktop(run_, query = '') {
   const root = await mkdtemp(path.join(tmpdir(), 'cx-desktop-protection-'));
   const fixture = await serveFixture();
   const chromium = await launchChromium({ executable, dpr, root, headless: false, args: ['--force-renderer-accessibility', '--window-position=0,0'] });
   try {
-    const opened = await openFixture(chromium.browser, fixture.url);
+    const opened = await openFixture(chromium.browser, fixture.url + query);
     await delay(500); // AT-SPI exposes the document after its first accessibility update.
     await run_({ ...chromium, ...opened, pid: chromium.child.pid });
   } finally { await chromium.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
@@ -84,16 +84,16 @@ async function withDesktop(run_) {
 const policy = { values: [VAULT_VALUE], targets: [], unknown: false };
 const xdotool = (...args) => run('xdotool', args);
 
-test(`DPR ${dpr}: desktop masks cover every protected frame region; ordinary content stays visible`, () => withDesktop(async ({ browser, connection, sessionId, pid }) => {
+for (const [label, values, query] of [['Vault policy', [VAULT_VALUE], ''], ['no policy, fields only', [], '?novault&nomarkers']]) test(`DPR ${dpr} ${label}: desktop masks cover every protected frame region; ordinary content stays visible`, () => withDesktop(async ({ browser, connection, sessionId, pid }) => {
   for (const scroll of [0, 300]) {
     await connection.send('Runtime.evaluate', { expression: `scrollTo(0, ${scroll})` }, sessionId);
-    const result = await fenceBrowserCapture(browser, policy, protection => census(pid, protection));
+    const result = await fenceBrowserCapture(browser, { values, targets: [], unknown: false }, protection => census(pid, protection));
     assert.deepEqual(result.bound, [true], `scroll ${scroll}: window placement was not proven ${JSON.stringify(result.docs)}`);
     assert.ok(result.before[0] > 1000 * dpr * dpr, 'fixture shows protected pixels on the desktop');
     assert.equal(result.after[0], 0, `scroll ${scroll}: protected desktop pixels remain`);
     assert.ok(result.after[1] > result.before[1] * 0.9, `scroll ${scroll}: ordinary content withheld (${result.after[1]}/${result.before[1]})`);
   }
-}));
+}, query));
 
 test(`DPR ${dpr}: a window moved or resized after measurement is withheld`, () => withDesktop(async ({ browser, pid }) => {
   for (const change of [['windowmove', '%@', '37', '23'], ['windowsize', '%@', '900', '640']]) {
