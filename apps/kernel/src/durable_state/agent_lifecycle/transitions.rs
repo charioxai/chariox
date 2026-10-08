@@ -151,7 +151,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 task_id: task.task_id.clone(),
                                 source_id: source,
                                 obligation_id: Some(o.id.clone()),
-                                source_cursor: 0,
+                                // Spawn has no prompt: every prior agent-ID
+                                // outcome belongs to an earlier incarnation.
+                                source_cursor: if o.kind == "delegate" {
+                                    let seq: i64 = tx.query_row("SELECT COALESCE(MAX(sequence),0) FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2", params![task.room_id, o.resource_id], |r| r.get(0)).map_err(sql)?;
+                                    u64::try_from(seq)
+                                        .map_err(|_| error("corrupt source sequence"))?
+                                } else {
+                                    0
+                                },
                                 live: true,
                             };
                             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![reg.id,reg.task_id,encode(&reg)?]).map_err(sql)?;

@@ -2449,3 +2449,24 @@ fn a02_security_f1_done_task_closes_registrations() {
     assert_eq!(f.task().state, ExecutionState::Done);
     assert!(!f.store.agent_registrations("p").unwrap()[0].live);
 }
+#[test]
+fn a02_security_f2_reused_child_id_cannot_recover_old_answer() {
+    let f = Fixture::new();
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "deleted-child-result".into(),
+        success: true,
+        public_answer: Some(serde_json::json!("old answer")),
+        now: 1,
+    });
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    assert_eq!(f.task().obligations[0].status, "open");
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}
