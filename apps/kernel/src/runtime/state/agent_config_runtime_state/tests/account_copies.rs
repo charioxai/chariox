@@ -14,12 +14,17 @@ struct CopyFixture {
     session: String,
     agent: String,
     account: String,
+    provider: String,
     relay: Arc<RwLock<RelayClientState>>,
     requests: mpsc::Receiver<RelayEnvelope>,
 }
 
 impl CopyFixture {
     async fn new() -> Self {
+        Self::for_provider("codex").await
+    }
+
+    async fn for_provider(provider: &str) -> Self {
         let mut home = crate::config::DaemonConfig::for_tests();
         home.relay_url = Some("ws://127.0.0.1:1".into());
         home.relay_token = Some("synthetic-relay".into());
@@ -56,22 +61,28 @@ impl CopyFixture {
         let profile = registry
             .create_managed(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "codex",
+                provider,
                 "Selected copy",
             )
             .unwrap();
         let environment = registry
             .resolve_environment(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "codex",
+                provider,
                 &profile.profile_id,
             )
             .unwrap();
-        std::fs::write(
-            std::path::Path::new(&environment["CODEX_HOME"]).join("auth.json"),
-            br#"{"tokens":{"refresh_token":"synthetic-copy-login"}}"#,
-        )
-        .unwrap();
+        let (auth, bytes): (_, &[u8]) = if provider == "opencode" {
+            (std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json"),
+             br#"{"openai":{"type":"oauth","refresh":"synthetic-copy-login","access":"synthetic","expires":9999999999999}}"#)
+        } else {
+            (
+                std::path::Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+                br#"{"tokens":{"refresh_token":"synthetic-copy-login"}}"#,
+            )
+        };
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(auth, bytes).unwrap();
         Self {
             _app: app,
             runtime,
@@ -80,6 +91,7 @@ impl CopyFixture {
             session,
             agent,
             account: profile.profile_id,
+            provider: provider.into(),
             relay,
             requests,
         }
@@ -90,13 +102,14 @@ impl CopyFixture {
         let session = self.session.clone();
         let agent = self.agent.clone();
         let account = self.account.clone();
+        let provider = self.provider.clone();
         tokio::spawn(async move {
             runtime
                 .update_agent_profile(
                     &session,
                     &agent,
                     crate::session::DEFAULT_LOCAL_USER_ID,
-                    Some("codex".into()),
+                    Some(provider),
                     Some(account),
                     Some("copy-model".into()),
                     None,
@@ -186,7 +199,15 @@ impl CopyFixture {
         };
         let leased = crate::execution_lease::LeasedAgent::new(
             leased_agent_id,
-            "copy-lease".into(),
+            self.runtime
+                .owned
+                .agent_store
+                .get_agent(&self.agent)
+                .unwrap()
+                .remote_execution()
+                .unwrap()
+                .execution_lease_id
+                .clone(),
             self.agent.clone(),
             provider,
             account_profile,
@@ -358,4 +379,167 @@ async fn rejected_receipt_retry(stale_generation: bool) {
         .materializations
         .iter()
         .any(|status| status.copy.is_some()));
+}
+
+#[tokio::test]
+async fn review_ack_lost_first_response_reconciles_the_production_receivers_copy() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("lost-copy-ack");
+    let binary = root.path().join("opencode");
+    std::fs::write(&binary, "#!/bin/sh\nprintf 'synthetic-opencode\\n'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::env::set_var("CHARIOX_OPENCODE_BIN", binary);
+    let mut fixture = CopyFixture::for_provider("opencode").await;
+    fixture.worker.accept_remote_leases = true;
+    let mut receiver = DaemonApp::bootstrap(fixture.worker.clone()).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut receiver)
+        .create_execution_lease(
+            &fixture.home.daemon_id,
+            &fixture.session,
+            &fixture.agent,
+            false,
+            owner,
+        )
+        .unwrap();
+    let mut binding = fixture
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&fixture.agent)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    binding.execution_lease_id = lease.id;
+    fixture
+        ._app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&fixture.agent, binding)
+        .unwrap();
+    assert_eq!(
+        fixture.runtime.owned.config_projection.snapshot().relay_url,
+        fixture.home.relay_url
+    );
+    assert_eq!(
+        fixture.relay.read().await.connected_relay_url(),
+        fixture.home.relay_url
+    );
+    assert!(fixture
+        .relay
+        .read()
+        .await
+        .peer_public_key(&fixture.worker.daemon_id)
+        .is_some());
+    let mut first = fixture.update();
+    let (id, request) = tokio::select! {
+        response = &mut first => panic!("first profile change rejected before account transfer: {response:?}"),
+        request = fixture.request() => request,
+    };
+    let RelayPeerRequest::EnsureRemoteProviderAccount {
+        context,
+        materialization,
+    } = request
+    else {
+        panic!("first attempt must transfer the account")
+    };
+    let generation = materialization.generated_at_ms;
+    let received = crate::app::RemoteLeaseRuntime::new(&mut receiver)
+        .ensure_remote_provider_account(context, materialization)
+        .unwrap();
+    assert_eq!(received.auth_state, ProviderAccountAuthState::Authenticated);
+    // The receiver committed successfully, but the first response is lost.
+    crate::transport::relay_client::resolve_pending_peer_error_for_test(
+        &fixture.relay,
+        id,
+        fixture.worker.daemon_id.clone(),
+        chariox_relay::protocol::RelayError {
+            code: "request_timeout".into(),
+            message: "successful copy acknowledgement lost".into(),
+            retryable: true,
+        },
+    )
+    .await;
+    assert!(first.await.unwrap().is_err());
+    // Failed transport evicts the peer key; the fake relay models authenticated rediscovery.
+    fixture.relay.write().await.remember_peer_public_key(
+        &fixture.worker.daemon_id,
+        fixture.worker.relay_public_key.clone(),
+    );
+    assert!(!fixture
+        .runtime
+        .owned
+        .provider_account_profiles
+        .get(owner, "opencode", &fixture.account)
+        .unwrap()
+        .is_installed_at(
+            ProviderAccountMaterializationTargetKind::Worker,
+            &fixture.worker.daemon_id
+        ));
+    // Retry exports a genuinely newer generation and goes through the real receiver again.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let mut retry = fixture.update();
+    let (id, request) = tokio::select! {
+        response = &mut retry => panic!("retry rejected before account confirmation: {response:?}"),
+        request = fixture.request() => request,
+    };
+    let RelayPeerRequest::EnsureRemoteProviderAccount {
+        context,
+        materialization,
+    } = request
+    else {
+        panic!("lost acknowledgement must retry confirmation")
+    };
+    assert!(materialization.generated_at_ms > generation);
+    let received = crate::app::RemoteLeaseRuntime::new(&mut receiver)
+        .ensure_remote_provider_account(context, materialization)
+        .unwrap();
+    let copy = received
+        .materializations
+        .iter()
+        .find(|status| status.copy.is_some())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        copy.copy.as_ref().unwrap().copied_at_ms,
+        generation,
+        "receiver preserves its first login"
+    );
+    fixture
+        .reply(
+            id,
+            RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: "opencode".into(),
+                account_profile: received.profile_id,
+                copy: Some(copy),
+            },
+        )
+        .await;
+    let worker_request = tokio::select! {
+        response = &mut retry => panic!("home rejected the committed first copy on retry: {response:?}"),
+        request = fixture.request() => request,
+    };
+    fixture
+        .acknowledge_profile(worker_request.0, worker_request.1)
+        .await;
+    assert_eq!(
+        retry.await.unwrap().unwrap().provider_account_profile(),
+        fixture.account
+    );
+    let profile = fixture
+        .runtime
+        .owned
+        .provider_account_profiles
+        .get(owner, "opencode", &fixture.account)
+        .unwrap();
+    assert!(profile.is_installed_at(
+        ProviderAccountMaterializationTargetKind::Worker,
+        &fixture.worker.daemon_id
+    ));
 }
