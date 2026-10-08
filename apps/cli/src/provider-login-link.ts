@@ -1,8 +1,7 @@
 import type { EventEmitter } from "node:events"
 import { writeSync } from "node:fs"
-import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
+import { clipboardCopyMessage, copyTextToClipboard, isSshTerminal } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
-import { isSshTerminal } from "./terminal-copy.js"
 
 /** Only complete web URLs, never terminal controls or alternate URL schemes. */
 export function providerLoginUrl(value: string): string | null {
@@ -31,7 +30,7 @@ export function providerLoginLinkText(url: string): string {
   return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\\r\n`
 }
 
-type LoginLinkRenderer = {
+type LoginLinkRenderer = Parameters<typeof copyTextToClipboard>[1] & {
   suspend(): void
   resume(): void
   idle(): Promise<void>
@@ -88,7 +87,7 @@ export function createProviderLoginLinkPresenter(
           if (busy || !/^[co]$/i.test(key)) return
           busy = true
           const action = key.toLowerCase() === "c"
-            ? copyTextToClipboard(url, { copyToClipboardOSC52: () => false })
+            ? copyTextToClipboard(url, renderer)
               .then(result => write(`${clipboardCopyMessage(result)}\r\n`))
             : (localDesktopAvailable()
               ? openExternalUrl(url).then(opened => write(opened ? "Browser open requested.\r\n" : "Could not open the browser; use the link above.\r\n"))

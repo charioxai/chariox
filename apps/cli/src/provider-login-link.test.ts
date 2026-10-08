@@ -55,7 +55,7 @@ test("MP-08/MP-11 the link view shows each authorization link once", async () =>
   const fd = openSync(outputPath, "w")
   const input = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: () => {}, resume: () => {} })
   const calls: string[] = []
-  const renderer = { suspend: () => { calls.push("suspend") }, resume: () => { calls.push("resume") }, idle: async () => {} }
+  const renderer = { suspend: () => { calls.push("suspend") }, resume: () => { calls.push("resume") }, idle: async () => {}, copyToClipboardOSC52: () => false }
   try {
     const present = createProviderLoginLinkPresenter(renderer, { input, output: { isTTY: true, fd } })
     const first = present(url, { autoOpen: false })
@@ -89,4 +89,36 @@ test("MP-08/MP-11 the transcript keeps the complete link after the link view clo
   verificationUrl = "https://user:secret@example.org/authorize"
   await handleProviderSlashCommand(deps, { kind: "provider", value: "login claude", raw: "/provider login claude" })
   assert.doesNotMatch(flashes.at(-1) ?? "", /authorization link below/)
+})
+
+test("MP-08/MP-11 the link view copies through the renderer's OSC 52 gate", async () => {
+  const directory = mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "login-link-"))
+  const outputPath = path.join(directory, "terminal")
+  const fd = openSync(outputPath, "w")
+  const input = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: () => {}, resume: () => {} })
+  const ssh = process.env.SSH_CONNECTION
+  process.env.SSH_CONNECTION = "fixture 1 fixture 2"
+  try {
+    for (const supported of [true, false]) {
+      const copies: string[] = []
+      const renderer = { suspend: () => {}, resume: () => {}, idle: async () => {}, copyToClipboardOSC52: (text: string) => { copies.push(text); return supported } }
+      const link = `${url}${supported}`
+      const present = createProviderLoginLinkPresenter(renderer, { input, output: { isTTY: true, fd } })
+      const shown = present(link, { autoOpen: false })
+      await new Promise(resolve => setImmediate(resolve))
+      input.emit("data", Buffer.from("c"))
+      await new Promise(resolve => setTimeout(resolve, 50))
+      input.emit("data", Buffer.from("\r"))
+      assert.equal(await shown, true)
+      assert.deepEqual(copies, [link])
+      const written = readFileSync(outputPath, "utf8")
+      assert.ok(written.includes(supported ? "OSC 52, unconfirmed" : "clipboard unavailable"))
+      assert.ok(!written.includes("\x1b]52;"))
+    }
+  } finally {
+    if (ssh === undefined) delete process.env.SSH_CONNECTION
+    else process.env.SSH_CONNECTION = ssh
+    closeSync(fd)
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

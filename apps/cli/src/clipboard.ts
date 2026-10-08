@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process"
 import process from "node:process"
-import { isSshTerminal, requestTerminalCopy } from "./terminal-copy.js"
 
 type ClipboardRenderer = {
   copyToClipboardOSC52(text: string): boolean
@@ -20,7 +19,6 @@ export async function copyTextToClipboard(
   options: {
     remote?: boolean
     nativeCopy?: (text: string) => Promise<void>
-    terminalCopy?: (text: string) => boolean
   } = {},
 ): Promise<ClipboardCopyResult> {
   // A clipboard helper on the SSH host cannot confirm the user's clipboard.
@@ -30,12 +28,16 @@ export async function copyTextToClipboard(
       return "copied"
     } catch { /* Try the terminal transport, retaining an honest fallback. */ }
   }
+  // OSC 52 is a request, never an acknowledgement. OpenTUI declines it for
+  // terminals without support; never write around its output.
   try {
-    if (renderer.copyToClipboardOSC52(text) || (options.terminalCopy ?? requestTerminalCopy)(text)) {
-      return "requested"
-    }
+    if (renderer.copyToClipboardOSC52(text)) return "requested"
   } catch { /* Terminal failure must not be reported as a successful copy. */ }
   return "unavailable"
+}
+
+export function isSshTerminal(): boolean {
+  return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY)
 }
 
 async function copyTextNatively(text: string) {
