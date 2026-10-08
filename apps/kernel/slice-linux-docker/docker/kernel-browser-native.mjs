@@ -39,7 +39,7 @@ export class LinuxCapture {
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Fence even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
-  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.guard?.hasRegions)){
+  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){
    if(!this.attested){this.fence();return;}
    // MP-08/MP-10/MP-11: the owned window/document binding stays intact.
    // Retire all pixels and queued consumers by revision, refresh only trusted
