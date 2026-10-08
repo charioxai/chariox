@@ -390,5 +390,6 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
 
 #[cfg(unix)]
 mod credential_copy_recovery;
+mod worker_copied_claude;
 
 mod popup_notices;
