@@ -295,6 +295,7 @@ impl ManagedContextOutboundOperationStore {
             crate::session::unix_epoch_ms(),
         )?;
         drop(guard);
+        store.reclaim_operation_metadata(None)?;
         Ok(store)
     }
 
@@ -385,6 +386,9 @@ impl ManagedContextOutboundOperationStore {
         ),
         DaemonError,
     > {
+        self.reclaim_operation_metadata(Some(context_id))?;
+        // Serialize recovery/admission with retirement and owner rebinding.
+        let _guard = self.artifact_lock.lock().expect("operation admission lock");
         let recovered = self.get(context_id);
         let mut state = self
             .state

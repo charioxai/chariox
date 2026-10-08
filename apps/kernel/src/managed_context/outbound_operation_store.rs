@@ -1,6 +1,9 @@
 //! MP-08/MP-11: restart-safe status and owner/target operation bindings.
 use super::*;
 
+#[path = "outbound_operation_retention.rs"]
+mod retention;
+
 impl ManagedContextOutboundOperationStore {
     pub(crate) fn get(&self, context_id: &str) -> Option<ManagedContextOutboundOperationStatus> {
         let memory = self
@@ -53,6 +56,7 @@ impl ManagedContextOutboundOperationStore {
     ) -> Result<ManagedContextTransferTicket, DaemonError> {
         let candidate =
             crate::managed_context::owner_managed::prepare_ticket(config, runtime, selection)?;
+        self.reclaim_operation_metadata(Some(candidate.context_plan.context_id()))?;
         let Some(parent) = self.status_parent() else {
             return Ok(candidate);
         };
@@ -174,6 +178,7 @@ impl ManagedContextOutboundOperationStore {
         config: &DaemonConfig,
         ticket: &ManagedContextTransferTicket,
     ) -> Result<(), DaemonError> {
+        self.reclaim_operation_metadata(Some(ticket.context_plan.context_id()))?;
         let Some(parent) = self.status_parent() else {
             return Ok(());
         };
@@ -278,70 +283,274 @@ mod tests {
         let ticket = super::super::tests::persisted_test_ticket(context_id);
         let plan = ticket.context_plan.package_binding();
         let saved = PersistedOwnerTicket {
-            account_id: "account".into(), user_id: "owner".into(), ticket,
+            account_id: "account".into(),
+            user_id: "owner".into(),
+            ticket,
             consumption_attempted: Some(false),
         };
         let bytes = serde_json::to_vec(&saved).unwrap();
         let parent = store.status_parent().unwrap();
-        for name in [format!("{context_id}-owner.json"), format!("owner-{}.json", plan.plan_digest.trim_start_matches("sha256:"))] {
+        for name in [
+            format!("{context_id}-owner.json"),
+            format!(
+                "owner-{}.json",
+                plan.plan_digest.trim_start_matches("sha256:")
+            ),
+        ] {
             crate::config::write_private_file(&parent.join(name), &bytes).unwrap();
         }
     }
 
     #[test]
     fn mp08_mp11_durable_terminal_metadata_reclaims_capacity_across_restarts() {
-        let root = std::env::temp_dir().join(format!("chariox-operation-retention-{:032x}", rand::random::<u128>()));
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-retention-{:032x}",
+            rand::random::<u128>()
+        ));
         let _cleanup = ArtifactRootCleanup::new(root.clone());
         let mut store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
         for index in 0..MAX_OUTBOUND_OPERATIONS * 4 {
             let context_id = format!("context-retention-{index:04}");
             let ticket = super::super::tests::persisted_test_ticket(&context_id);
-            let (_, permit) = store.start(&context_id, &ticket.context_plan.package_binding().plan_digest)
+            let (_, permit) = store
+                .start(
+                    &context_id,
+                    &ticket.context_plan.package_binding().plan_digest,
+                )
                 .expect("ordinary completions and cancellations cannot consume lifetime capacity");
             write_owner_metadata(&store, &context_id);
             assert!(store.update(&context_id, |status| {
-                status.phase = if index % 2 == 0 { ManagedContextOutboundOperationPhase::Completed } else { ManagedContextOutboundOperationPhase::Failed };
+                status.phase = if index % 2 == 0 {
+                    ManagedContextOutboundOperationPhase::Completed
+                } else {
+                    ManagedContextOutboundOperationPhase::Failed
+                };
                 status.retryable = false;
             }));
-            drop(permit); store.finish(&context_id);
-            if index % 32 == 31 { store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap(); }
+            drop(permit);
+            store.finish(&context_id);
+            if index % 32 == 31 {
+                store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+            }
         }
         let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
-        assert!(reopened.start("context-after-reopen", "sha256:next").is_ok());
-        assert!(reopened.get("context-retention-0000").is_none(), "evicted durable status must disappear too");
-        assert!(!root.join(".operations/context-retention-0000-owner.json").exists());
-        assert!(fs::read_dir(root.join(".operations")).unwrap().count() < MAX_OUTBOUND_OPERATIONS * 3);
+        assert!(reopened
+            .start("context-after-reopen", "sha256:next")
+            .is_ok());
+        assert!(
+            reopened.get("context-retention-0000").is_none(),
+            "evicted durable status must disappear too"
+        );
+        assert!(!root
+            .join(".operations/context-retention-0000-owner.json")
+            .exists());
+        assert!(
+            fs::read_dir(root.join(".operations")).unwrap().count() < MAX_OUTBOUND_OPERATIONS * 3
+        );
     }
 
     #[test]
     fn mp08_mp11_metadata_retirement_preserves_unfinished_and_retryable_bindings() {
-        let root = std::env::temp_dir().join(format!("chariox-operation-expiry-{:032x}", rand::random::<u128>()));
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-expiry-{:032x}",
+            rand::random::<u128>()
+        ));
         let _cleanup = ArtifactRootCleanup::new(root.clone());
         let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
         for (id, phase, retryable) in [
-            ("context-active", ManagedContextOutboundOperationPhase::Preparing, false),
-            ("context-retry", ManagedContextOutboundOperationPhase::Failed, true),
-            ("context-completed", ManagedContextOutboundOperationPhase::Completed, false),
-            ("context-cancelled", ManagedContextOutboundOperationPhase::Failed, false),
+            (
+                "context-active",
+                ManagedContextOutboundOperationPhase::Preparing,
+                false,
+            ),
+            (
+                "context-retry",
+                ManagedContextOutboundOperationPhase::Failed,
+                true,
+            ),
+            (
+                "context-completed",
+                ManagedContextOutboundOperationPhase::Completed,
+                false,
+            ),
+            (
+                "context-cancelled",
+                ManagedContextOutboundOperationPhase::Failed,
+                false,
+            ),
         ] {
             let ticket = super::super::tests::persisted_test_ticket(id);
-            let (_, permit) = store.start(id, &ticket.context_plan.package_binding().plan_digest).unwrap();
+            let (_, permit) = store
+                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .unwrap();
             write_owner_metadata(&store, id);
-            let mut status = store.get(id).unwrap(); status.phase = phase; status.retryable = retryable; status.updated_at_ms = 1;
+            let mut status = store.get(id).unwrap();
+            status.phase = phase;
+            status.retryable = retryable;
+            status.updated_at_ms = 1;
             store.persist_status(&status).unwrap();
-            drop(permit); store.finish(id);
+            drop(permit);
+            store.finish(id);
         }
         drop(store);
         let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
         for id in ["context-active", "context-retry"] {
             assert!(reopened.get(id).is_some());
-            assert!(root.join(".operations").join(format!("{id}-owner.json")).is_file());
+            assert!(root
+                .join(".operations")
+                .join(format!("{id}-owner.json"))
+                .is_file());
         }
         for id in ["context-completed", "context-cancelled"] {
-            assert!(reopened.get(id).is_none(), "expired terminal status must retire");
-            assert!(!root.join(".operations").join(format!("{id}-owner.json")).exists());
+            assert!(
+                reopened.get(id).is_none(),
+                "expired terminal status must retire"
+            );
+            assert!(!root
+                .join(".operations")
+                .join(format!("{id}-owner.json"))
+                .exists());
         }
-        assert!(reopened.start("context-retry", &super::super::tests::persisted_test_ticket("context-retry").context_plan.package_binding().plan_digest).unwrap().1.is_some());
+        assert!(reopened
+            .start(
+                "context-retry",
+                &super::super::tests::persisted_test_ticket("context-retry")
+                    .context_plan
+                    .package_binding()
+                    .plan_digest
+            )
+            .unwrap()
+            .1
+            .is_some());
+    }
+
+    #[test]
+    fn mp08_mp11_retirement_tombstone_settles_after_crash() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-tombstone-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let id = "context-retiring";
+        let ticket = super::super::tests::persisted_test_ticket(id);
+        let digest = ticket.context_plan.package_binding().plan_digest;
+        let (_, permit) = store.start(id, &digest).unwrap();
+        write_owner_metadata(&store, id);
+        assert!(store.update(id, |status| status.phase =
+            ManagedContextOutboundOperationPhase::Completed));
+        drop(permit);
+        store.finish(id);
+        let parent = store.status_parent().unwrap();
+        fs::rename(
+            parent.join(format!("{id}.json")),
+            parent.join(format!(".retired-{id}.json")),
+        )
+        .unwrap();
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert!(reopened.get(id).is_none());
+        assert_eq!(
+            fs::read_dir(parent).unwrap().count(),
+            0,
+            "a young retirement tombstone must settle all matching owner files on reopen"
+        );
+    }
+
+    #[test]
+    fn mp08_mp11_retirement_keeps_rebound_plan_index_and_live_terminal_status() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-rebound-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let first = "context-old";
+        let second = "context-new";
+        let digest = super::super::tests::persisted_test_ticket(first)
+            .context_plan
+            .package_binding()
+            .plan_digest;
+        let (_, permit) = store.start(first, &digest).unwrap();
+        write_owner_metadata(&store, first);
+        assert!(store.update(first, |status| status.phase =
+            ManagedContextOutboundOperationPhase::Completed));
+        let mut status = store.get(first).unwrap();
+        status.updated_at_ms = 1;
+        store.persist_status(&status).unwrap();
+        store.reclaim_operation_metadata(None).unwrap();
+        assert!(
+            store.get(first).is_some(),
+            "live terminal update still owns its recovery bindings"
+        );
+        drop(permit);
+        store.finish(first);
+        let (_, second_permit) = store.start(second, &digest).unwrap();
+        write_owner_metadata(&store, second);
+        // Model a shared plan index already rebound while an old receipt remains.
+        crate::config::write_private_file(
+            &store.status_parent().unwrap().join(format!("{first}.json")),
+            &serde_json::to_vec(&status).unwrap(),
+        )
+        .unwrap();
+        write_owner_metadata(&store, first);
+        write_owner_metadata(&store, second);
+        drop(second_permit);
+        store.finish(second);
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert!(reopened.get(first).is_none());
+        assert!(reopened.get(second).is_some());
+        let parent = reopened.status_parent().unwrap();
+        assert!(!parent.join(format!("{first}-owner.json")).exists());
+        let saved: PersistedOwnerTicket = serde_json::from_slice(
+            &fs::read(parent.join(format!(
+                "owner-{}.json",
+                digest.trim_start_matches("sha256:")
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.ticket.context_plan.context_id(), second);
+    }
+
+    #[test]
+    fn mp08_mp11_retirement_preserves_ambiguous_tombstone_with_unfinished_status() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-ambiguous-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let id = "context-ambiguous";
+        let digest = super::super::tests::persisted_test_ticket(id)
+            .context_plan
+            .package_binding()
+            .plan_digest;
+        let (_, permit) = store.start(id, &digest).unwrap();
+        write_owner_metadata(&store, id);
+        let mut old = store.get(id).unwrap();
+        old.phase = ManagedContextOutboundOperationPhase::Completed;
+        old.updated_at_ms = 1;
+        let parent = store.status_parent().unwrap();
+        crate::config::write_private_file(
+            &parent.join(format!(".retired-{id}.json")),
+            &serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        drop(permit);
+        store.finish(id);
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root).unwrap();
+        assert_eq!(
+            reopened.get(id).unwrap().phase,
+            ManagedContextOutboundOperationPhase::Preparing
+        );
+        assert!(parent.join(format!("{id}-owner.json")).exists());
+        assert!(
+            parent.join(format!(".retired-{id}.json")).exists(),
+            "ambiguous retirement must retain unfinished authority"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
