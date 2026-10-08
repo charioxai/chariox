@@ -18,12 +18,6 @@ class ClipboardTests(unittest.TestCase):
             res_query_client_ids=Mock(return_value=SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[77])])))
         return process,tree,access,owner,connection
 
-    def test_equivalent_native_paste_chords_are_classified(self):
-        for key in ['Ctrl+V','Control_R+Shift+v','SHIFT+Insert','shift_r+KP_Insert','Super+v','Meta_L+V','XF86Paste']:
-            self.assertTrue(m.is_paste_chord(key),key)
-        for key in ['Ctrl+s','v','Ctrl+Insert','Shift+a','alt+v']:
-            self.assertFalse(m.is_paste_chord(key),key)
-
     def test_unknown_selection_owner_never_reads_clipboard_contents(self):
         p,t,a,o,c=self.setup();o.get_full_property.return_value=None;c.res_query_client_ids.return_value=SimpleNamespace(ids=[])
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
@@ -65,7 +59,7 @@ class ClipboardTests(unittest.TestCase):
         p,t,a,o,c=self.setup()
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public')):
             self.assertEqual(m.public_clipboard([p],a),('public',(99,77,'1')))
-            m.paste_guard([p],a)()
+            m.input_admission([p],a)()
 
     def test_coverage_change_discards_bytes_before_delivery(self):
         p,t,a,o,c=self.setup();a.snapshot.side_effect=[t,{**t,'protected':True}]
@@ -77,11 +71,36 @@ class ClipboardTests(unittest.TestCase):
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'canary')):
             with self.assertRaises(ValueError):m.public_clipboard([p],a)
 
-    def test_clipboard_replacement_is_readmitted_before_every_press(self):
+    def test_mp11_empty_clipboard_admits_input_without_reading_or_traversing(self):
+        p,t,a,o,c=self.setup();c.get_selection_owner.return_value=0
+        a.snapshot.return_value={**t,'complete':False,'uncovered':[[0,0,9,9]]}
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            m.input_admission([p],a)()
+        read.assert_not_called();a.snapshot.assert_not_called()
+
+    def test_mp11_public_owner_admits_input_while_other_windows_are_masked(self):
         p,t,a,o,c=self.setup()
-        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',side_effect=[SimpleNamespace(stdout=b'public'),SimpleNamespace(stdout=b'canary')]):
-            guard=m.paste_guard([p],a)
-            with self.assertRaises(ValueError):guard()
+        a.snapshot.return_value={**t,'complete':False,'protected':True,'uncovered':[[0,0,9,9]],'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True}]}
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            m.input_admission([p],a)()
+        read.assert_not_called()
+
+    def test_mp11_unproved_or_protected_owner_refuses_input(self):
+        p,t,a,o,c=self.setup()
+        for tree,pid in [(t,78),({**t,'nodes':[{'pid':77,'protected':False},{'pid':77,'protected':True}]},77),({**t,'nodes':[]},77)]:
+            a.snapshot.return_value=tree
+            c.res_query_client_ids.return_value=SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[pid])])
+            with patch('Xlib.display.Display',return_value=c):
+                with self.assertRaises(ValueError):m.input_admission([p],a)
+
+    def test_mp11_owner_change_is_refused_before_the_next_press(self):
+        p,t,a,o,c=self.setup()
+        other=SimpleNamespace(id=55,get_full_property=Mock(return_value=None))
+        for owners in [[0,o],[o,o,0],[o,o,other]]:
+            c.get_selection_owner.side_effect=owners
+            with patch('Xlib.display.Display',return_value=c):
+                check=m.input_admission([p],a)
+                with self.assertRaises(ValueError):check()
 
     def test_registry_or_native_protection_never_reads_bytes(self):
         p,t,a,o,c=self.setup()

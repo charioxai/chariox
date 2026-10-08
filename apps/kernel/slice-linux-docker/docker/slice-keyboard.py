@@ -243,7 +243,8 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
         expected_target=None
         if before_press is not None:
             if duration_ms!=1:raise ValueError('agent native repeats unavailable')
-            expected_target=focused_target(connection)
+            # MP-11: keys bind to the focused control; clicks choose their own target.
+            if kind=="key":expected_target=focused_target(connection)
             before_press()
         if kind == "key":
             if not value or len(value.encode("utf-8")) > 128 or not value.isascii():
@@ -362,15 +363,18 @@ def room_clipboard_guard():
         spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
     room=load('room-native-protection')
-    return load('native-clipboard').paste_guard(room.binding(),room.accessibility())
+    try:return load('native-clipboard').input_admission(room.binding(),room.accessibility())
+    except Exception as error:raise room.RoomInputDenied('native Room clipboard unavailable') from error
 
 
-def paste_chord(value):
-    import importlib.util
-    from pathlib import Path
-    spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
-    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    return module.is_paste_chord(value)
+def room_agent_guard():
+    """MP-11: every agent Room key/text press may reach a Paste control."""
+    admit_focus=room_input_guard()
+    admit_clipboard=room_clipboard_guard()
+    def guard():
+        admit_focus()
+        admit_clipboard()
+    return guard
 
 
 def main(args, stream):
@@ -381,24 +385,18 @@ def main(args, stream):
         spec=importlib.util.spec_from_file_location('room_native_protection',Path(__file__).with_name('room-native-protection.py'))
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         raise module.RoomInputDenied('native Room holds require human or approved Vault input')
-    guard = room_input_guard() if agent and (not args or args[0] == 'key-repeat') else None
+    guard = room_agent_guard() if agent and (not args or args[0] == 'key-repeat') else None
     if args == ['prepare-owned-keymap'] and not agent:
         prepare_owned_text_keymap()
     elif len(args) == 2 and args[0] == 'key-repeat':
-        key=stream.read(129).decode('ascii', errors='strict')
-        if agent and paste_chord(key):
-            admit_clipboard=room_clipboard_guard()
-            admit_focus=guard
-            def guard():
-                admit_focus()
-                admit_clipboard()
-        key_repeat(key, int(args[1]), before_press=guard)
+        key_repeat(stream.read(129).decode('ascii', errors='strict'), int(args[1]), before_press=guard)
     elif len(args) == 2 and args[0] == 'hold-key':
         hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
     elif len(args) == 5 and args[0] == 'hold-button':
         hold_input('button', args[1], int(args[2]), int(args[3]), int(args[4]))
     elif len(args) == 5 and args[0] == 'pointer-click' and agent:
-        # MP-11 review R1: every native click can activate a Paste control.
+        # MP-11: every native click can activate a Paste control. Admit the
+        # clipboard owner once per click action; each press only fences it.
         if args[1] not in ('left','right') or args[2] not in ('1','2'):
             raise ValueError('invalid admitted pointer click')
         admit_clipboard=room_clipboard_guard()

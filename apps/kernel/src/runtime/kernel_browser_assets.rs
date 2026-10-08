@@ -31,14 +31,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py"),
     ),
     (
-        "browser-controller-image.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
-    ),
-    (
-        "browser-controller-artifacts.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
-    ),
-    (
         "kernel-browser-stripes.py",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py"),
     ),
@@ -113,14 +105,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "room-native-accessibility.mjs",
         include_bytes!("../../slice-linux-docker/docker/room-native-accessibility.mjs"),
-    ),
-    (
-        "browser-controller-artifacts.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
-    ),
-    (
-        "browser-controller-image.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
     ),
     (
         "native-keyboard-channel.mjs",

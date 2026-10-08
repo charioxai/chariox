@@ -328,11 +328,11 @@ def act(request):
     interface=node.queryAction()
     index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
     if request.get('agent_input'):
-        # MP-11 review R1: fence clipboard ownership/content again at doAction.
+        # MP-11: doAction can invoke Paste without naming that effect.
         import importlib.util
         spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
         clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
         protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied)
-        clipboard.paste_guard(request['processes'],protection,request.get('browser_processes'))()
+        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'))()
     if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}

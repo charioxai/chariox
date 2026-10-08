@@ -17,7 +17,6 @@ test('MP-11 native Room handles refuse cross-observer reuse, stale trees and pro
  const binding={surface_id:'slice:s',generation:'epoch',environment:{},ownedProcesses:async()=>[{pid:42,started:'1'}]};
  let name='File';let applied=0;
  const native=new RoomNativeAccessibility({binding:()=>binding,execute:async request=>{
-   if(request.op==='clipboard_read')return {text:'public'};
    if(request.op==='accessibility')return {available:true,complete:true,nodes:[{pid:42,started:'1',path:[0],role:'menu item',name,states:['showing'],actions:['click']}]};
    applied++;return {applied:true};
  }});
