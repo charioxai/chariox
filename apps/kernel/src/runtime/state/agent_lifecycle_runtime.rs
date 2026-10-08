@@ -436,14 +436,14 @@ impl KernelRuntimeState {
                         }
                         _ => Some(false),
                     },
-                    "workflow"
+                    "workflow" | "workflow_run"
                         if self
                             .owned
                             .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
                     {
                         None
                     }
-                    "workflow" => session
+                    "workflow" | "workflow_run" => session
                         .workflow_runs()
                         .iter()
                         .find(|r| r.id() == source)

@@ -457,8 +457,10 @@ native provider turn ends. The returned workflow run ID stays live and
 addressable for cancellation. Wake and owner continuations retain the same
 workflow/node context; cancelling the run cancels its bound tasks and resources.
 Orphan reconciliation and workflow completion must respect those retained
-tasks, including physical resource settlement after cancellation. This lineage
-is private kernel storage and adds no serialized client fields.
+tasks, including physical resource settlement after cancellation. The canonical
+`workflow_run` obligation and legacy `workflow` spelling share completion-source
+admission and settlement, so cancellation also releases the parent's wait.
+This lineage is private kernel storage and adds no serialized client fields.
 
 A final answer with unresolved obligations gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is

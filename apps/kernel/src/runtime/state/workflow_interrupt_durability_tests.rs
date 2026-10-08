@@ -211,6 +211,30 @@ async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_tas
         owned.agent_workflow_task_context(&promoted).unwrap(),
         Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
     );
+    // MP-08 / MP-09 / MP-10 / MP-11: the real room command registers
+    // workflow_run, rather than the legacy workflow spelling.
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: session.owner_user_id().into(),
+            room: task.room_id.clone(),
+            agent: fixture.unrelated_agent_id.clone(),
+            prompt: "g14-supervisor".into(),
+            run: None,
+            id: "g14-workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some(run.id().into()),
+            now,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::DispatchReceipt {
+            id: "g14-workflow-obligation".into(),
+            accepted: true,
+            resource: Some(run.id().into()),
+        })
+        .unwrap();
     let (cancelled, _) = fixture
         .runtime
         .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
@@ -245,6 +269,24 @@ async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_tas
             .state,
         "cancelled"
     );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let parent = owned
+        .durable_state_store
+        .agent_tasks(Some(&task.room_id), Some(&fixture.unrelated_agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == "g14-supervisor")
+        .unwrap();
+    assert_ne!(
+        parent.obligations[0].status, "open",
+        "cancelled workflow must settle its real workflow_run obligation"
+    );
+    assert!(owned
+        .durable_state_store
+        .agent_inbox(&task.room_id, &fixture.unrelated_agent_id, 0)
+        .unwrap()
+        .iter()
+        .any(|e| e.source_id == run.id() && e.kind == "source_lost"));
 }
 
 #[tokio::test]

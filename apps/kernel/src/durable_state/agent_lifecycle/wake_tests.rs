@@ -1252,3 +1252,33 @@ fn security_f12_recurring_ack_does_not_reset_no_progress_budget() {
     assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.last_progress_at_ms, before.last_progress_at_ms);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: canonical room workflow admission
+// and legacy persisted admission both get a completion registration.
+#[test]
+fn a03_workflow_run_receipt_admits_a_live_completion_registration() {
+    for kind in ["workflow", "workflow_run"] {
+        let f = Fixture::new();
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "agent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "workflow-obligation".into(),
+            kind: kind.into(),
+            resource: Some("workflow-run".into()),
+            now: 10,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: "workflow-obligation".into(),
+            accepted: true,
+            resource: Some("workflow-run".into()),
+        });
+        let regs = f.store.agent_registrations("p").unwrap();
+        assert!(
+            regs.iter().any(|r| r.source_id == "workflow-run" && r.live),
+            "{kind} must admit its completion source"
+        );
+    }
+}
