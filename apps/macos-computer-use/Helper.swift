@@ -28,7 +28,7 @@ func launchIdentity() throws -> [String: Any] {
             for receipt in try await run(request, source: MacSource()) { print(receipt) }
         } catch {
             // Never print framework errors or app-supplied AX data.
-            fputs("refused: \(error as? Refusal ?? .native)\n", stderr)
+            fputs("\(refusalMessage(error))\n", stderr)
             exit(1)
         }
     }

@@ -16,19 +16,26 @@ struct ClickGeometry: Equatable {
 }
 
 func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
+                         releaseFence: (CGEvent) throws -> Void,
                          releaseAllowed: () -> Bool, post: (CGEvent) -> Void) throws {
     var release: CGEvent?
-    defer {
-        // Best effort for a fence failure between paired events; fatal death is unproven.
-        if let release, (try? fence(release)) != nil, releaseAllowed() {
-            release.flags = []; post(release)
+    do {
+        for event in events {
+            try fence(event)
+            guard releaseAllowed() else { throw Refusal.permission }
+            event.flags = []; post(event)
+            if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
+            if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
         }
-    }
-    for event in events {
-        try fence(event)
-        if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
-        event.flags = []; post(event)
-        if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
+    } catch {
+        guard let release else { throw error }
+        // Cleanup of an owned pair has its own fence. Fatal death remains unproven.
+        do {
+            try releaseFence(release)
+            guard releaseAllowed() else { throw Refusal.permission }
+        } catch { throw Refusal.ownedInput }
+        release.flags = []; post(release)
+        throw error
     }
 }
 

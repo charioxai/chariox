@@ -21,7 +21,7 @@ func testPointerInput() throws {
             try dispatchInputEvents(staleEvents, fence: { event in
                 let hit = try saved.checkedLocation(event.location, current: current)
                 guard current.elementBounds.contains(hit) else { throw Refusal.target }
-            }, releaseAllowed: { true }, post: { posted.append($0.type) })
+            }, releaseFence: { _ in preconditionFailure() }, releaseAllowed: { true }, post: { posted.append($0.type) })
             print("FAIL changed geometry admitted stale click"); failures += 1
         } catch Refusal.target { }
         if !posted.isEmpty { print("FAIL stale mouse-down sent after geometry changed"); failures += 1 }
@@ -30,33 +30,78 @@ func testPointerInput() throws {
     posted = []
     try dispatchInputEvents(staleEvents, fence: { event in
         hits.append(try saved.checkedLocation(event.location, current: saved))
-    }, releaseAllowed: { true }, post: { posted.append($0.type) })
+    }, releaseFence: { _ in preconditionFailure() }, releaseAllowed: { true }, post: { posted.append($0.type) })
     precondition(posted == [.leftMouseDown, .leftMouseUp] &&
                  hits == [CGPoint(x: 250, y: 180), CGPoint(x: 250, y: 180)])
+    for moved in changed {
+        posted = []
+        var current = saved, cleanupCalls = 0
+        do {
+            try dispatchInputEvents(staleEvents, fence: { event in
+                _ = try saved.checkedLocation(event.location, current: current)
+            }, releaseFence: { event in
+                precondition(event === staleEvents[1] && event.type == .leftMouseUp)
+                cleanupCalls += 1
+            }, releaseAllowed: { true }, post: { event in
+                posted.append(event.type); current = moved
+            })
+            print("FAIL move between paired events admitted"); failures += 1
+        } catch Refusal.target { }
+        if posted != [.leftMouseDown, .leftMouseUp] || cleanupCalls != 1 {
+            print("FAIL geometry change stranded owned mouse-down without cleanup"); failures += 1
+        }
+    }
+    // Ownership/security loss and permission loss cannot silently strand a press.
+    for denied in [Refusal.target, .secure, .permission] {
+        posted = []
+        var current = saved
+        do {
+            try dispatchInputEvents(staleEvents, fence: { event in
+                _ = try saved.checkedLocation(event.location, current: current)
+            }, releaseFence: { _ in
+                if denied != .permission { throw denied }
+            }, releaseAllowed: { posted.isEmpty || denied != .permission }, post: { event in
+                posted.append(event.type); current = changed[0]
+            })
+            print("FAIL unsafe cleanup admitted"); failures += 1
+        } catch Refusal.ownedInput {
+            precondition(refusalMessage(Refusal.ownedInput) ==
+                "refused: ownedInput; unresolved owned input; owner reset required")
+        } catch {
+            print("FAIL owned input reported as ordinary refusal"); failures += 1
+        }
+        precondition(posted == [.leftMouseDown])
+    }
+    // A revoked posting grant is checked on normal dispatch as well as cleanup.
     posted = []
-    var current = saved
     do {
-        try dispatchInputEvents(staleEvents, fence: { event in
-            _ = try saved.checkedLocation(event.location, current: current)
-        }, releaseAllowed: { true }, post: { event in
-            posted.append(event.type); current = changed[0]
-        })
-        print("FAIL move between paired events admitted"); failures += 1
-    } catch Refusal.target { }
-    precondition(posted == [.leftMouseDown]) // Neither normal nor deferred up uses stale geometry.
+        try dispatchInputEvents(staleEvents, fence: { _ in }, releaseFence: { _ in },
+                                releaseAllowed: { posted.isEmpty }, post: { posted.append($0.type) })
+        print("FAIL posting permission loss admitted"); failures += 1
+    } catch Refusal.ownedInput { }
+    precondition(posted == [.leftMouseDown])
+    // Before a press there is no owned release and no owner reset requirement.
+    posted = []
+    do {
+        try dispatchInputEvents(staleEvents, fence: { _ in },
+                                releaseFence: { _ in preconditionFailure() },
+                                releaseAllowed: { false }, post: { posted.append($0.type) })
+        print("FAIL missing posting permission admitted"); failures += 1
+    } catch Refusal.permission { }
+    precondition(posted.isEmpty)
     for alteredPoint in [CGPoint(x: 255, y: 180), CGPoint(x: 450, y: 180)] {
         staleEvents[0].location = alteredPoint
         posted = []
         do {
             try dispatchInputEvents(staleEvents, fence: { event in
                 _ = try saved.checkedLocation(event.location, current: saved)
-            }, releaseAllowed: { true }, post: { posted.append($0.type) })
+            }, releaseFence: { _ in preconditionFailure() }, releaseAllowed: { true }, post: { posted.append($0.type) })
             print("FAIL changed event coordinate admitted"); failures += 1
         } catch Refusal.target { }
         precondition(posted.isEmpty)
     }
     if failures > 0 { exit(1) }
-    print("PASS injected geometry changes refuse stale clicks; hit-tests use event coordinates")
+    print("PASS stale presses refused; geometry changes clean up owned releases or require owner reset")
     let events = try windowClickEvents(window: 123, location: CGPoint(x: 250, y: 180),
                                        windowBounds: CGRect(x: 160, y: 100, width: 540, height: 360), eventNumber: 7)
     for event in events {

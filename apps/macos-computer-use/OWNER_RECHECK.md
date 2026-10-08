@@ -110,6 +110,10 @@ If there is no visible caret movement, record TextEdit click as UNPROVEN,
 not PASS. Do not add any helper text operation to this recheck.
 Stop and record a refusal or failure; do not replay, switch delivery paths or
 modify permissions again to hide a failed input result.
+If stderr reports `refused: ownedInput; unresolved owned input; owner reset
+required`, stop all helper input. The owner must reset the target application's
+input/tracking state and confirm it is clear before any further helper operation.
+This is an application input reset, not a login, credential or TCC reset.
 
 ## Delivery choice and remaining proof
 
@@ -133,9 +137,10 @@ defines the explicit M0 scroll-value path and per-PID coordinate click scope.
 The [capture and display section](../../docs/COMPUTER_USE_MACOS_PLAN.md#capture-and-display)
 reserves system cursor movement for future session/HID input.
 
-All paths retain frontmost, unique CG/AX window binding, focused-window,
+New input retains frontmost, unique CG/AX window binding, focused-window,
 PID/AX ancestry, inside-window geometry, live hit-test, permission and secure
-fences. Completion polls recheck them after dispatch. Source/policy tests and
+fences. Completion polls recheck them after dispatch. An already owned mouse-up
+has the separate cleanup validation described below. Source/policy tests and
 the build do not prove real GUI delivery; this owner recheck remains required.
 
 ## 2026-10-08, review at 4667722815
@@ -144,7 +149,8 @@ The P2 stale-coordinate finding in #920 is corrected. Coordinate click pairs
 retain the selected window bounds, element bounds and center used at
 construction. Each posting fence refuses changed bounds or event coordinates,
 hit-tests the actual event location, and rechecks geometry after the AX hit-test.
-The deferred mouse-up uses the same fence and refuses stale geometry too.
+At that revision the deferred mouse-up used the same fence and refused stale
+geometry too. The review at 871da04be below corrects that cleanup behavior.
 
 The injected regression first failed by recording a stale mouse-down after
 the element moved between construction and dispatch. It now passes for element
@@ -157,3 +163,37 @@ verified both ad-hoc bundles in `/Users/miguel/.chariox/dev/cumac/build`.
 This review pass did not launch either bundle or perform the owner steps above.
 TCC and login state were left unchanged. Real GUI delivery remains UNPROVEN;
 the owner recheck still applies to this rebuilt helper's changed cdhash.
+
+## 2026-10-08, review at 871da04be
+
+The P2 owned mouse-up cleanup finding in #920 is corrected. Saved geometry and
+event-coordinate checks still refuse a new press after movement or resizing.
+When an ordinary dispatch fence fails after a posted down, cleanup validates
+only the already owned up against the original running application and launch
+date, selected AppKit/CG window number and retained AX window identity. It
+rechecks app allowlisting, live CG PID/window ownership, frontmost/focused and
+unique window binding, AX PID, secure input and Accessibility permission.
+Posting permission is checked immediately before every normal or cleanup event.
+Cleanup can therefore release the original pair after geometry changes without
+admitting another press or retargeting a window. The original dispatch refusal
+is still returned; a cleanup post does not prove application completion.
+
+If cleanup validation or permission fails, the helper reports `refused:
+ownedInput; unresolved owned input; owner reset required` and exits with failure,
+ending the operation batch. The stop/reset rule above applies. Key-up cleanup
+keeps its strict typing fence and uses the same unresolved-state reporting.
+Fatal process death recovery remains deferred and unproven.
+
+The non-posting regression first failed with `FAIL geometry change stranded
+owned mouse-down without cleanup`. It now verifies exactly one owned up after
+each between-event window/element move or resize, and explicit unresolved input
+on ownership/security or posting-permission loss. The pre-down movement, resize
+and changed-coordinate tests still require zero posted events; an unchanged
+pair never invokes cleanup. Policy/event tests and all six structural checks
+pass. `build.sh` compiled and verified both ad-hoc bundles only in
+`/Users/miguel/.chariox/dev/cumac/build`.
+
+Neither bundle was launched. No TCC, Keychain, login, revocation, re-login,
+kernel, CI or push operations were performed. Real GUI delivery and tracking
+state recovery remain UNPROVEN; the owner recheck applies to the rebuilt
+helper's changed cdhash. No shared serialized protocol changed.

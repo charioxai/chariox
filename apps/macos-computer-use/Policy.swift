@@ -1,6 +1,11 @@
 import Foundation
 
-enum Refusal: Error { case disabled, target, secure, text, arguments, permission, native }
+enum Refusal: Error { case disabled, target, secure, text, arguments, permission, native, ownedInput }
+
+func refusalMessage(_ error: Error) -> String {
+    let refusal = error as? Refusal ?? .native
+    return "refused: \(refusal)" + (refusal == .ownedInput ? "; unresolved owned input; owner reset required" : "")
+}
 enum Operation: Equatable { case capture(String), read, click, scroll, text(String) }
 struct Request {
     var enabled = false

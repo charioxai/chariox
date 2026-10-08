@@ -160,6 +160,25 @@ struct MacSource: NativeSource {
         }
         throw Refusal.target
     }
+    func mouseReleaseFence(_ request: Request, application: NSRunningApplication,
+                           launchDate: Date, window: AXUIElement, event: CGEvent) throws {
+        // Only the already owned up may bypass saved geometry and hit-testing.
+        guard event.type == .leftMouseUp, !application.isTerminated,
+              application.processIdentifier == request.pid,
+              let current = NSRunningApplication(processIdentifier: request.pid),
+              current.launchDate == launchDate,
+              NSEvent(cgEvent: event)?.windowNumber == Int(request.window),
+              event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == Int64(request.window),
+              event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == Int64(request.window)
+        else { throw Refusal.target }
+        try validateTarget(request)
+        let app = AXUIElementCreateApplication(request.pid)
+        let selected = try selectedWindow(request, app: app)
+        guard CFEqual(selected, window) else { throw Refusal.target }
+        try bind(window, to: selected, pid: request.pid)
+        _ = try focusedElement(app: app, window: selected)
+        try checkPermission(.click)
+    }
     func fixtureCounter(_ request: Request, element: AXUIElement) -> Int? {
         guard !request.ownerWindow, request.target == "button",
               let title = try? attribute(element, kAXTitleAttribute) as? String,
@@ -271,9 +290,20 @@ struct MacSource: NativeSource {
         }
         guard CGPreflightPostEventAccess() else { throw Refusal.permission }
         let typing: Bool = { if case .text = operation { return true }; return false }()
+        guard let admittedApp = NSRunningApplication(processIdentifier: request.pid),
+              !admittedApp.isTerminated, let admittedLaunchDate = admittedApp.launchDate else { throw Refusal.target }
+        let admittedWindow = try selectedWindow(request, app: AXUIElementCreateApplication(request.pid))
         try dispatchInputEvents(events, fence: { event in
             try fence(request, element: element, typing: typing,
                       clickGeometry: clickGeometry, eventLocation: event.location)
+        }, releaseFence: { event in
+            if typing {
+                try fence(request, element: element, typing: true)
+                try checkPermission(operation)
+            } else {
+                try mouseReleaseFence(request, application: admittedApp, launchDate: admittedLaunchDate,
+                                      window: admittedWindow, event: event)
+            }
         }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { $0.postToPid(request.pid) })
         try fence(request, element: element, typing: typing,
                   clickGeometry: clickGeometry, eventLocation: events.last?.location)
