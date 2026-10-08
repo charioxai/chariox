@@ -1717,8 +1717,10 @@ fn finish_committed_account_package(
     artifact_root: &Path,
     record_receipt: impl FnOnce() -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
-    record_receipt()?;
-    remove_artifact_root(artifact_root)
+    // The target has committed. Credential retention must not depend on source
+    // metadata still existing or on a well-formed account receipt.
+    remove_artifact_root(artifact_root)?;
+    record_receipt()
 }
 
 fn remove_artifact_root(path: &Path) -> Result<(), DaemonError> {
