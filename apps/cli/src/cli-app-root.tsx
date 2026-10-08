@@ -751,7 +751,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
 
   const {
-    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
+    mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
     client,
@@ -891,7 +891,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
-    clearTextSelection: () => renderer.clearSelection(),
+    clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
     showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
@@ -1024,7 +1024,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      handleRootMouseUp={() => {
+        if (!kernelApprovals.ownsInput()) retainPromptFocus()
+        // OpenTUI finishes or clears the selection after this handler returns.
+        startTimeout(flushDeferredRebuild, 0)
+      }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
