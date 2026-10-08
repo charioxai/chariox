@@ -172,7 +172,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // MP-08/MP-10: protocol 475 kernels push frames on a relay display
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
-  const binding = { ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }), ...tab };
+  // The reply's generation wins: the kernel may restart its browser at the
+  // viewer's device scale (protocol 475), rotating the generation.
+  const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion);
@@ -294,8 +296,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     get running() { return running; },
     get error() { return failure; },
     input: async input => {presenter.prediction?.restore();idle.wake();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!stopped){idle.wake();if(epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1)}return reply;},
-    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', ...tab });},
-    release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', ...tab });},
+    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
+    release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
     async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
@@ -367,8 +369,8 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     get error() { return failure; },
     requestKey: () => ack(presenter.sequence, true),
     input: async input => {presenter.prediction?.restore();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!closed&&epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1);return reply;},
-    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', ...tab });},
-    release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', ...tab });},
+    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
+    release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
     async close() { closed = true; running = false; clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };

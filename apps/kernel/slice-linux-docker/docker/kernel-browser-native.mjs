@@ -28,9 +28,19 @@ export function nativeRefusalReason(error,helperStage){
  if(message.includes('native readback unavailable'))return helperStage??'first_frame_timeout';
  return 'other';
 }
+// Pixels inside protected regions of the reference capture (null: none).
+export function attestationMask(regions,width,height){
+ if(!regions.length)return null;
+ const mask=new Uint8Array(width*height);
+ for(const r of regions){
+  const l=Math.max(0,Math.floor(r.x)-2),t=Math.max(0,Math.floor(r.y)-2),right=Math.min(width,Math.ceil(r.x+r.width)+2),bottom=Math.min(height,Math.ceil(r.y+r.height)+2);
+  for(let y=t;y<bottom;y++)mask.fill(1,y*width+l,y*width+Math.max(l,right));
+ }
+ return mask;
+}
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,screenshot,allowed,timing=()=>{}}){
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
@@ -55,7 +65,11 @@ export class LinuxCapture {
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
    // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale,height:geometry.height*this.scale+87}});
+   // Window bounds are host DIPs: the negotiated raster divided by host scale.
+   const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
+   await this.connection.send('Browser.setWindowBounds',{windowId,bounds});
+   // The X window resize is asynchronous; the worker needs its final size.
+   for(let n=0;n<50;n++){const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
    await this.connection.send('Page.bringToFront',{},this.sessionId);
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
@@ -107,12 +121,22 @@ export class LinuxCapture {
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.
    for(let attempt=0;attempt<3&&!matched;attempt++){
-    const reference=decodePng((await this.screenshot()).data_base64,this.scale);
+    const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
     await delay(50);
     const raw=this.latest?.raw;if(!raw||!this.valid())break;
     matched=reference.width===raw.width&&reference.height===raw.height;
     const nativePixels=raw.pixels;
-    for(let n=0;matched&&n<nativePixels.length;n+=4)matched=reference.pixels[n]===nativePixels[n+2]&&reference.pixels[n+1]===nativePixels[n+1]&&reference.pixels[n+2]===nativePixels[n];
+    // MP-08/MP-11: the reference is the protected capture; its masked
+    // regions (+2 px for rounding) are excluded. The same trusted regions
+    // mask every native frame before any encoder or client sees it.
+    const masked=attestationMask(shot[displayMaskRegions]??[],raw.width,raw.height);
+    // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
+    let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
+    for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
+    // A mostly masked viewport cannot attest the surface; stay on CDP.
+    if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
+    if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
+    else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
    }
    if(!matched)throw Error('native attestation RGB differed');
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);

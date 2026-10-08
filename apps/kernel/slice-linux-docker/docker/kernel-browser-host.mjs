@@ -89,7 +89,7 @@ export class KernelBrowserHost {
   }
   async save() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    const data = { generation: this.generation, scale: this.chromium.scale ?? 1, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -120,6 +120,8 @@ export class KernelBrowserHost {
       throw new Error("MD-2: invalid browser tab registry");
     }
     assertNotCancelled(signal);
+    // MP-08/MP-10: relaunch at the device scale of the last display viewer.
+    if (geometry.width !== 1920 && [1, 2].includes(saved.scale)) this.chromium.scale = saved.scale;
     const connection = await this.chromium.start();
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
@@ -165,11 +167,14 @@ export class KernelBrowserHost {
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      let source=await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
+      // MP-08/MP-10: a refused native start is retried after 5 s, not per credit.
+      const retryAt=this.nativeRetryAt?.get(tab.tab_id);
+      let source=retryAt?.document===tab.document_id&&performance.now()<retryAt.at?null:await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
         if(this.tabs.size!==1){this.nativeScope('tab_count');throw Error('native tab scope');}
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
-        return await source.start();
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        try{return await source.start();}
+        catch(error){(this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,at:performance.now()+5000});throw error;}
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
@@ -412,7 +417,7 @@ export class KernelBrowserHost {
     // Explicit physical input already names an observed tab/document. Read
     // that live target directly; whole-tab discovery still runs afterward.
     // Per-dispatch document/cancellation and secret-focus checks remain below.
-    const tab = command.op === 'input' && typeof command.document_id === 'string'
+    let tab = command.op === 'input' && typeof command.document_id === 'string'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
     if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
@@ -425,10 +430,25 @@ export class KernelBrowserHost {
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+      // MP-08/MP-10 (1.4): the owned window must render at the viewer's scale
+      // (emulated view scaling fails native attestation on text). With no
+      // other live display/mirror viewer, restart Chromium at that scale;
+      // tabs restore from tabs.json under a new generation, which the reply
+      // carries. Otherwise the stream keeps the emulated scale.
+      if ((this.chromium.scale ?? 1) !== command.device_scale_factor && geometry.width !== 1920 && !this.restoring &&
+        ![...this.displays.values()].some(s => s.expires > Date.now()) && this.mirror.streams.size === 0) {
+        this.chromium.scale = command.device_scale_factor;
+        this.timing(`display_rescale ${command.device_scale_factor}`, timestamp());
+        await this.save();
+        await this.stop();
+        await this.start({ signal });
+        tab = this.tabs.get(command.tab_id);
+        if (!tab) throw new UserDomainRefusal("stale_reference");
+      }
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor), sessionId);
+      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor,this.chromium.scale??1), sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
