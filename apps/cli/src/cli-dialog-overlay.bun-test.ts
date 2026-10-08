@@ -8,7 +8,7 @@ import { renderCliDialogOverlay } from "./cli-dialog-overlay.js"
 import { projectEnvironmentPageSize } from "./project-environment-read-controller.js"
 import { sessionBrowserFixture } from "./session-browser-card.test-fixture.js"
 
-for (const [width, height, count] of [[80, 24, 16], [140, 48, 35], [140, 100, 76]]) {
+for (const [width, height, count] of [[80, 24, 16], [140, 48, 35], [140, 100, 76]] as const) {
   test(`MP-08/MP-10: Environment keeps every page row visible at ${width}x${height}`, async () => {
     assert.equal(projectEnvironmentPageSize(height), count)
     const harness = await createTestRenderer({ width, height, useThread: false })
