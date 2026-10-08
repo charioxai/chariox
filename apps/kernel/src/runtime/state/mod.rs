@@ -373,6 +373,7 @@ use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
+mod structured_prompt_dispatch;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;

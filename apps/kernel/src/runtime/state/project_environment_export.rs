@@ -292,7 +292,7 @@ impl KernelRuntimeState {
             &crate::local::AgentUtilityKind::ProjectEnvironmentSetup,
         )
         .await?;
-        let scratch = EnvironmentDiscoveryScratch::new(
+        let scratch = MetadataUtilityScratch::new(
             &self
                 .owned
                 .config_projection
@@ -303,7 +303,7 @@ impl KernelRuntimeState {
         let output = run_provider_utility_prompt(self, run, AgentUtilityPromptParts {
             visible_user_prompt: project_environment_discovery_prompt(input)?,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
-        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery).await?;
+        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
         parse_project_environment_discovery_output(&output, input)
     }
 
@@ -377,12 +377,14 @@ pub(super) fn environment_failure(message: &'static str) -> DaemonError {
         message: message.into(),
     }
 }
-struct EnvironmentDiscoveryScratch(PathBuf);
-impl EnvironmentDiscoveryScratch {
-    fn new(root: &Path) -> Result<Self, DaemonError> {
+/// A private, empty working directory for a metadata-only utility run, which
+/// must not see any source.
+pub(super) struct MetadataUtilityScratch(pub(super) PathBuf);
+impl MetadataUtilityScratch {
+    pub(super) fn new(root: &Path) -> Result<Self, DaemonError> {
         std::fs::create_dir_all(root)
             .map_err(|_| environment_failure("discovery state root unavailable"))?;
-        let path = root.join(format!("project-discovery-{}", rand::random::<u64>()));
+        let path = root.join(format!("metadata-utility-{}", rand::random::<u64>()));
         std::fs::create_dir(&path)
             .map_err(|_| environment_failure("discovery scratch unavailable"))?;
         #[cfg(unix)]
@@ -394,7 +396,7 @@ impl EnvironmentDiscoveryScratch {
         Ok(Self(path))
     }
 }
-impl Drop for EnvironmentDiscoveryScratch {
+impl Drop for MetadataUtilityScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.0);
     }

@@ -3,24 +3,36 @@
 use crate::error::DaemonError;
 use crate::history::{HistoryEvent, HistoryEventKind, OperationalHistoryStore};
 
-/// The default handoff size. A Claude native turn renders it into the room its
-/// other hidden context leaves under the hook ceiling instead.
+use super::facts::{KernelFacts, ToolCall};
+
+/// The handoff size the tests render at: the old fixed budget.
+#[cfg(test)]
 pub(super) const MAX_HANDOFF_BYTES: usize = 24_000;
 const MAX_LATEST_TURN_BYTES: usize = 6_500;
 const MAX_LATEST_ITEM_BYTES: usize = 1_500;
 const MAX_PRIOR_USER_BYTES: usize = 1_000;
 const MAX_PRIOR_ASSISTANT_BYTES: usize = 600;
+/// The prior turns right before the latest keep longer answers: the verbatim
+/// recent tail a new session continues from.
+const RECENT_TAIL_TURNS: usize = 3;
+const MAX_RECENT_ASSISTANT_BYTES: usize = 3_000;
 const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
 const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
 const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request.";
+const BRIEF_HEADER: &str =
+    "Handoff brief (written by a model from the conversation; the turns below are verbatim):\n";
+const FACTS_HEADER: &str = "Recorded by the Chariox kernel:\n";
 const PRIOR_TURNS_HEADER: &str = "Prior turns:\n";
 const LATEST_TURN_HEADER: &str = "Latest turn:\n";
 const TRUNCATED: &str = "\n[truncated]";
 
-/// An agent's protected conversation, rendered on demand within a byte budget.
+/// An agent's protected conversation with the kernel's facts about it and
+/// its handoff brief, rendered on demand within a byte budget.
 #[derive(Debug, Clone, Default)]
 pub(super) struct AgentConversation {
     turns: Vec<HandoffTurn>,
+    pub(super) facts: KernelFacts,
+    pub(super) brief: Option<String>,
 }
 
 pub(super) fn load_agent_conversation(
@@ -41,8 +53,12 @@ pub(super) fn load_agent_conversation(
 
 impl AgentConversation {
     pub(super) fn from_events(events: &[HistoryEvent]) -> Self {
+        let mut sorted = events.to_vec();
+        sorted.sort_by_key(|event| event.sequence);
         Self {
-            turns: collect_turns(events),
+            turns: collect_turns(&sorted),
+            facts: KernelFacts::from_events(&sorted),
+            brief: None,
         }
     }
 
@@ -72,28 +88,82 @@ impl AgentConversation {
         self.turns.is_empty()
     }
 
-    /// The handoff packet in at most `max_bytes`. Prior turns give way first,
-    /// then the latest turn's details; `None` when not even its frame fits.
+    /// Whether the deterministic packet keeps every turn without shortening
+    /// prompts, answers or hiding tool details. Whitespace folding is harmless.
+    pub(super) fn fits_without_brief(&self, max_bytes: usize) -> bool {
+        let Some(packet) = self.render(max_bytes) else {
+            return self.is_empty();
+        };
+        if packet.contains("earlier turns omitted") || packet.contains("[truncated]") {
+            return false;
+        }
+        self.turns.iter().enumerate().all(|(index, turn)| {
+            let latest = index + 1 == self.turns.len();
+            let contains = |text: &str| {
+                let text = if latest {
+                    text.trim().to_string()
+                } else {
+                    single_line(text)
+                };
+                packet.contains(&text)
+            };
+            contains(&turn.user_prompt)
+                && contains(&turn.answer())
+                && (turn.latest_details.is_empty()
+                    || (latest
+                        && turn
+                            .latest_details
+                            .iter()
+                            .all(|(_, detail)| packet.contains(detail))))
+        })
+    }
+
+    /// The handoff packet in at most `max_bytes`: the brief, the kernel's
+    /// facts, the prior turns and the latest turn. Under a tight budget prior
+    /// turns give way first, then the facts, the latest turn's details and the
+    /// brief; `None` when not even the frame fits.
     pub(super) fn render(&self, max_bytes: usize) -> Option<String> {
+        let (brief, facts) = (self.brief.as_deref(), self.facts.render(max_bytes));
         let (latest, prior) = self.turns.split_last()?;
         let mut packet = format!("{HANDOFF_OPEN}\n{HANDOFF_PREAMBLE}\n\n");
         let mut room = max_bytes.checked_sub(packet.len() + HANDOFF_CLOSE.len())?;
-        let latest_text = format_latest_turn(
-            latest,
-            room.saturating_sub(LATEST_TURN_HEADER.len() + 2)
-                .min(MAX_LATEST_TURN_BYTES),
+        let section = |header: &str, text: String, room: &mut usize| {
+            if !text.is_empty() {
+                *room -= header.len() + text.len() + 2;
+            }
+            text
+        };
+        let fit = |header: &str, room: usize| room.saturating_sub(header.len() + 2);
+        let brief = section(
+            BRIEF_HEADER,
+            truncate_bytes(
+                brief.unwrap_or_default().trim(),
+                fit(BRIEF_HEADER, room) / 2,
+            ),
+            &mut room,
         );
-        if !latest_text.is_empty() {
-            room -= LATEST_TURN_HEADER.len() + latest_text.len() + 2;
-        }
-        let prior_text =
-            format_prior_turns(prior, room.saturating_sub(PRIOR_TURNS_HEADER.len() + 2));
-        if latest_text.is_empty() && prior_text.is_empty() {
+        let latest = section(
+            LATEST_TURN_HEADER,
+            format_latest_turn(
+                latest,
+                fit(LATEST_TURN_HEADER, room).min(MAX_LATEST_TURN_BYTES),
+            ),
+            &mut room,
+        );
+        let facts = section(
+            FACTS_HEADER,
+            truncate_bytes(&facts, fit(FACTS_HEADER, room) / 2),
+            &mut room,
+        );
+        let prior = format_prior_turns(prior, fit(PRIOR_TURNS_HEADER, room));
+        if latest.is_empty() && prior.is_empty() {
             return None;
         }
         for (header, text) in [
-            (PRIOR_TURNS_HEADER, prior_text),
-            (LATEST_TURN_HEADER, latest_text),
+            (BRIEF_HEADER, brief),
+            (FACTS_HEADER, facts),
+            (PRIOR_TURNS_HEADER, prior),
+            (LATEST_TURN_HEADER, latest),
         ] {
             if !text.is_empty() {
                 packet.push_str(header);
@@ -114,7 +184,8 @@ struct HandoffTurn {
     assistant_outputs: Vec<String>,
     /// The merge key of the item the last output row extended.
     output_item: Option<Option<String>>,
-    latest_details: Vec<String>,
+    /// Each detail line with the tool call id it reports, if any.
+    latest_details: Vec<(Option<String>, String)>,
     // Notices are attributed by sequence and do not prove this request ran.
     has_provider_attempt: bool,
 }
@@ -123,11 +194,7 @@ impl HandoffTurn {
     /// Deltas of one streamed item join as written; separate items, or text
     /// on either side of a tool call, start a new line.
     fn push_output(&mut self, event: &HistoryEvent, content: &str) {
-        let item = event
-            .metadata
-            .get("merge_key")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
+        let item = answer_item(event).map(str::to_string);
         match self.assistant_outputs.last_mut() {
             Some(output) if self.output_item.as_ref() == Some(&item) => output.push_str(content),
             _ => self.assistant_outputs.push(content.to_string()),
@@ -138,11 +205,31 @@ impl HandoffTurn {
     fn answer(&self) -> String {
         self.assistant_outputs.join("\n")
     }
+
+    /// A tool call reads as one line, what ran and how it ended, and its
+    /// later updates replace that line.
+    fn add_detail(&mut self, kind: HistoryEventKind, content: &str) {
+        let call = (kind == HistoryEventKind::ProviderTool)
+            .then(|| ToolCall::parse(content))
+            .flatten();
+        let Some(call) = call else {
+            self.latest_details
+                .push((None, format!("{}: {content}", event_kind_label(kind))));
+            return;
+        };
+        let line = format!("tool: {}", call.transcript_line(MAX_LATEST_ITEM_BYTES));
+        match self
+            .latest_details
+            .iter()
+            .position(|(id, _)| id.is_some() && *id == call.id)
+        {
+            Some(index) => self.latest_details[index].1 = line,
+            None => self.latest_details.push((call.id, line)),
+        }
+    }
 }
 
-fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
-    let mut sorted = events.to_vec();
-    sorted.sort_by_key(|event| event.sequence);
+fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
     let mut turns: Vec<HandoffTurn> = Vec::new();
     for event in sorted {
         match event.kind {
@@ -174,11 +261,7 @@ fn collect_turns(events: &[HistoryEvent]) -> Vec<HandoffTurn> {
                         turn.output_item = None;
                     }
                     turn.has_provider_attempt |= event.kind != HistoryEventKind::Notice;
-                    turn.latest_details.push(format!(
-                        "{}: {}",
-                        event_kind_label(event.kind),
-                        content
-                    ));
+                    turn.add_detail(event.kind, &content);
                 }
             }
             HistoryEventKind::ProviderReasoning => {
@@ -228,10 +311,17 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
             )
         })
         .collect::<Vec<_>>();
+    let recent_from = turns.len().saturating_sub(RECENT_TAIL_TURNS);
     let answers = turns
         .iter()
-        .map(|turn| {
-            let answer = single_line(&truncate_bytes(&turn.answer(), MAX_PRIOR_ASSISTANT_BYTES));
+        .enumerate()
+        .map(|(index, turn)| {
+            let max_bytes = if index >= recent_from {
+                MAX_RECENT_ASSISTANT_BYTES
+            } else {
+                MAX_PRIOR_ASSISTANT_BYTES
+            };
+            let answer = single_line(&truncate_bytes(&turn.answer(), max_bytes));
             (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
         })
         .collect::<Vec<_>>();
@@ -281,7 +371,15 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
     }
-    let details = truncate_bytes(&turn.latest_details.join("\n"), MAX_LATEST_ITEM_BYTES * 2);
+    let details = truncate_bytes(
+        &turn
+            .latest_details
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        MAX_LATEST_ITEM_BYTES * 2,
+    );
     if !details.trim().is_empty() {
         lines.push(format!(
             "- Latest-turn tool/status/error details:\n{}",
@@ -289,6 +387,14 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
         ));
     }
     truncate_bytes(&lines.join("\n"), max_bytes)
+}
+
+/// The streamed item or whole block an answer row belongs to.
+pub(super) fn answer_item(event: &HistoryEvent) -> Option<&str> {
+    event
+        .metadata
+        .get("merge_key")
+        .and_then(serde_json::Value::as_str)
 }
 
 fn non_empty_content(event: &HistoryEvent) -> Option<String> {
@@ -310,12 +416,30 @@ fn event_kind_label(kind: HistoryEventKind) -> &'static str {
     }
 }
 
-fn single_line(text: &str) -> String {
+pub(super) fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The start and end of `text` in at most `max_bytes`, on one line.
+pub(super) fn excerpt(text: &str, max_bytes: usize) -> String {
+    let text = single_line(text);
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let half = max_bytes.saturating_sub(5) / 2;
+    let mut head = half;
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len() - half;
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{} ... {}", &text[..head], &text[tail..])
+}
+
 /// At most `max_bytes`, marker included.
-fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+pub(super) fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
@@ -563,6 +687,135 @@ mod tests {
             handoff.contains("Checking.\nThe parser is half migrated."),
             "{handoff}"
         );
+    }
+
+    #[test]
+    fn the_packet_leads_with_the_brief_and_the_kernel_facts() {
+        let mut events = vec![
+            user_event(
+                1,
+                "session",
+                "agent",
+                "Remember the codename amber-kestrel.",
+            ),
+            output_event(2, "session", "agent", "run-1", "OK"),
+            HistoryEvent::transcript(
+                3,
+                &SessionHistoryEntry::provider_output(
+                    "session",
+                    "run-1",
+                    Some("agent"),
+                    TerminalOutputKind::ProviderTool,
+                    None,
+                    r#"{"id":"exec-1","tool":"bash","status":"completed","input":{"command":"cargo test"},"raw":"exit_code: 0"}"#,
+                ),
+                HistoryEventTurnContext::default(),
+            ),
+        ];
+        for index in 0..200u64 {
+            events.push(user_event(
+                index * 2 + 4,
+                "session",
+                "agent",
+                &format!("filler {index} {}", "f".repeat(800)),
+            ));
+            events.push(output_event(
+                index * 2 + 5,
+                "session",
+                "agent",
+                "run-1",
+                &"a".repeat(800),
+            ));
+        }
+        let mut conversation = AgentConversation::from_events(&events);
+        conversation.brief = Some("## Goal\nShip amber-kestrel.\n## Next Steps\nTest.".to_string());
+
+        let packet = conversation.render(90_000).unwrap();
+        let brief = packet.find(BRIEF_HEADER).expect("brief");
+        let facts = packet.find(FACTS_HEADER).expect("facts");
+        let prior = packet.find(PRIOR_TURNS_HEADER).expect("prior turns");
+        assert!(brief < facts && facts < prior, "{packet}");
+        assert!(packet.contains("- `cargo test` -> exit 0"));
+        assert!(packet.contains("earlier turns omitted"));
+        assert!(packet.len() <= 90_000);
+
+        // A small room keeps the brief and the latest request before anything else.
+        let small = conversation.render(2_000).unwrap();
+        assert!(small.len() <= 2_000, "{}", small.len());
+        assert!(small.contains("Ship amber-kestrel."), "{small}");
+        assert!(small.contains("filler 199"), "{small}");
+    }
+
+    #[test]
+    fn the_turns_before_the_latest_keep_their_answers_verbatim_longer() {
+        let mut events = Vec::new();
+        for index in 0..6u64 {
+            events.push(user_event(
+                index * 2 + 1,
+                "session",
+                "agent",
+                &format!("question {index}"),
+            ));
+            events.push(output_event(
+                index * 2 + 2,
+                "session",
+                "agent",
+                "run-1",
+                &format!("answer {index} {} end-{index}", "w".repeat(2_000)),
+            ));
+        }
+        let packet = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        assert!(
+            packet.contains("end-4") && packet.contains("end-2"),
+            "{packet}"
+        );
+        assert!(!packet.contains("end-1"), "{packet}");
+    }
+
+    #[test]
+    fn the_latest_tool_call_reads_as_one_line_with_its_result() {
+        let events = vec![
+            user_event(1, "session", "agent", "Multiply."),
+            tool_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                r#"{"id":"call-1","tool":"bash","status":"running","input":{"command":"python3 -c 'print(7*6)'"}}"#,
+            ),
+            tool_event(
+                3,
+                "session",
+                "agent",
+                "run-1",
+                r#"{"id":"call-1","tool":"bash","status":"completed","input":{"command":"python3 -c 'print(7*6)'"},"output":"42","raw":"exit_code: 0"}"#,
+            ),
+        ];
+
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+
+        assert!(
+            handoff.contains("tool: bash python3 -c 'print(7*6)' -> exit 0: 42"),
+            "{handoff}"
+        );
+        let latest = handoff.split(LATEST_TURN_HEADER).nth(1).unwrap();
+        assert_eq!(latest.matches("print(7*6)").count(), 1, "{handoff}");
+    }
+
+    #[test]
+    fn a_complete_deterministic_packet_needs_no_brief() {
+        let small = vec![
+            user_event(1, "s", "a", "remember amber-kestrel"),
+            output_event(2, "s", "a", "r", "OK"),
+        ];
+        assert!(AgentConversation::from_events(&small).fits_without_brief(MAX_HANDOFF_BYTES));
+        let mut large = small.clone();
+        large.push(user_event(3, "s", "a", &"varied notes ".repeat(500)));
+        assert!(!AgentConversation::from_events(&large).fits_without_brief(MAX_HANDOFF_BYTES));
+        let mut tool = small;
+        tool.push(tool_event(3, "s", "a", "r", "edited parse.rs"));
+        tool.push(user_event(4, "s", "a", "next request"));
+        assert!(!AgentConversation::from_events(&tool).fits_without_brief(MAX_HANDOFF_BYTES));
     }
 
     fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {

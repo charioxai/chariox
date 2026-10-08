@@ -27,7 +27,7 @@ use crate::runtime::semantic_recall_utility::{
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
-const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
@@ -243,6 +243,7 @@ async fn run_workspace_commit_message_utility(
         prompt.into(),
         "run workspace commit message utility",
         ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
     )
     .await
 }
@@ -272,6 +273,7 @@ async fn run_semantic_recall_search_utility(
         prompt.into(),
         "run semantic recall search utility",
         ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
     )
     .await?;
     let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
@@ -294,6 +296,7 @@ async fn run_project_environment_setup_utility(
         prompt.into(),
         "run project environment setup utility",
         ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
+        AGENT_UTILITY_TIMEOUT,
     )
     .await?;
     let definition = if allow_definition_revision {
@@ -326,6 +329,7 @@ pub(crate) async fn run_provider_utility_prompt(
     prompt: AgentUtilityPromptParts,
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
 ) -> Result<String, DaemonError> {
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
@@ -344,7 +348,7 @@ pub(crate) async fn run_provider_utility_prompt(
                 provider_run,
                 prompt.visible_user_prompt,
                 prompt.hidden_system_context,
-                AGENT_UTILITY_TIMEOUT,
+                timeout,
                 policy,
             )
             .await;
@@ -354,7 +358,7 @@ pub(crate) async fn run_provider_utility_prompt(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
-            AGENT_UTILITY_TIMEOUT,
+            timeout,
             operation,
             policy,
         )
@@ -366,6 +370,7 @@ pub(crate) async fn run_provider_utility_prompt(
     })?
 }
 
+#[derive(Clone)]
 pub(crate) struct AgentUtilityPromptParts {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,

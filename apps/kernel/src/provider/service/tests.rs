@@ -830,3 +830,125 @@ fn merge_opencode_run_selection_keeps_the_existing_run_when_sync_has_no_metadata
     assert_eq!(merged.model.as_deref(), Some("anthropic/claude-sonnet-4"));
     assert_eq!(merged.variant.as_deref(), None);
 }
+
+#[test]
+fn a_long_utility_does_not_lock_other_provider_runs() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let root = std::env::temp_dir().join(format!(
+        "chariox-utility-lock-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let marker = root.join("started");
+    let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+    let mut utility = RuntimeProviderRun::new("utility", &request, ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(),
+        pty_target: None, pty_program: Some("/bin/sh".into()),
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do touch '{}'; sleep 1; printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"brief\"}}]}}}}' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display())],
+        pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
+    });
+    utility.set_execution_config(
+        crate::provider::AgentExecutionMode::Plan,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+    utility.mark_running();
+    let other_request =
+        LaunchProviderRequest::new("s", "dev-stub", "slow-structured", "default", "m");
+    let mut other = RuntimeProviderRun::new(
+        "other",
+        &other_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    other.mark_running();
+    let store = crate::provider::ProviderProcessServiceStore::new(ProviderProcessService::new());
+    store.write().insert_run_for_test(utility.clone());
+    store.write().insert_run_for_test(other.clone());
+    store.initialize_runtime(&utility).unwrap();
+    let worker_store = store.clone();
+    let worker = std::thread::spawn(move || {
+        worker_store.run_structured_utility_prompt(
+            &utility,
+            "brief",
+            "",
+            Duration::from_secs(3),
+            crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !marker.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !marker.exists() {
+        let result = worker.join().unwrap();
+        drop(store);
+        std::fs::remove_dir_all(&root).unwrap();
+        panic!("utility should be executing: {result:?}");
+    }
+    let query_store = store.clone();
+    let (tx, rx) = mpsc::channel();
+    let query = std::thread::spawn(move || {
+        query_store.get_run("other").unwrap();
+        query_store
+            .enqueue_structured_prompt_submit(
+                "s".into(),
+                "other".into(),
+                "a".into(),
+                "p".into(),
+                "p",
+                &other,
+                "next",
+                "",
+                &[],
+                crate::prompt_assembly::PromptAssemblyMode::UtilityTurn,
+                false,
+            )
+            .unwrap();
+        tx.send(()).unwrap();
+    });
+    let progressed = rx.recv_timeout(Duration::from_millis(300));
+    let result = worker.join().unwrap();
+    query.join().unwrap();
+    assert_eq!(result.unwrap(), "brief");
+    // The supplied remaining deadline ends the fresh utility child and
+    // releases its actor slot instead of leaving an orphan behind.
+    let started = Instant::now();
+    let run = store.get_run("utility").unwrap();
+    let timed_out = store.run_structured_utility_prompt(
+        &run,
+        "brief",
+        "",
+        Duration::from_millis(100),
+        crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+    );
+    assert!(timed_out.is_err());
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(
+        store
+            .run_structured_utility_prompt(
+                &run,
+                "brief",
+                "",
+                Duration::from_secs(3),
+                crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            )
+            .unwrap(),
+        "brief"
+    );
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        progressed.is_ok(),
+        "another run must be queried and dispatched before the utility completes"
+    );
+}
