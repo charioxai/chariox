@@ -225,7 +225,11 @@ async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
         account_id: "review-account".into(),
         user_id: owner.into(),
         realm_id: "review-realm".into(),
-        machine_id: Some("source-machine-test".into()),
+        machine_id: Some(config.host_machine_id.clone()),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_public_key_thumbprint: Some(
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        ),
         kernel_credential: Some("synthetic-review-fixture".into()),
         ..Default::default()
     });
@@ -271,32 +275,93 @@ async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
             .unwrap(),
         };
         let context = ticket.context_plan.context_id().to_string();
-        let response = serde_json::to_vec(&ticket).unwrap();
+        let source = serde_json::json!({
+            "relayRealmId": "review-realm", "machineId": config.host_machine_id,
+            "kernelId": config.daemon_id, "relayPublicKey": config.relay_public_key,
+            "keyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        });
+        let selected = serde_json::to_value(&selection.context_selection).unwrap();
+        let binding = serde_json::json!({ "kind": "owner_managed_machine", "sourceTargetId": "review-source-target",
+            "source": source, "target": target, "contextSelection": selected });
+        let plan = ticket.context_plan.package_binding();
         let cloud = async {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut chunk = [0; 4096];
-                let size = socket.read(&mut chunk).await.unwrap();
-                assert_ne!(size, 0);
-                request.extend_from_slice(&chunk[..size]);
-                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                    let length = String::from_utf8_lossy(&request[..end])
+            for step in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let (headers, body) = loop {
+                    let mut chunk = [0; 4096];
+                    let size = socket.read(&mut chunk).await.unwrap();
+                    assert_ne!(size, 0);
+                    request.extend_from_slice(&chunk[..size]);
+                    let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..end]).into_owned();
+                    let length = headers
                         .lines()
                         .find_map(|line| {
                             line.to_ascii_lowercase()
                                 .strip_prefix("content-length:")
                                 .and_then(|value| value.trim().parse::<usize>().ok())
                         })
-                        .unwrap();
+                        .unwrap_or(0);
                     if request.len() >= end + 4 + length {
-                        break;
+                        let body = if length == 0 {
+                            serde_json::json!({})
+                        } else {
+                            serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap()
+                        };
+                        break (headers, body);
                     }
-                }
+                };
+                assert!(body.get("environmentId").is_none());
+                let (status, response) = match step {
+                    0 => {
+                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
+                        assert_eq!(body["ownerManagedExport"]["contextId"], plan.context_id);
+                        (
+                            "403 Forbidden",
+                            serde_json::json!({"error":{"code":"authorization_expired"}}),
+                        )
+                    }
+                    1 => {
+                        assert!(headers.starts_with("GET /v1/owner-managed-context-tickets/peers "));
+                        assert!(headers
+                            .to_ascii_lowercase()
+                            .contains("x-chariox-kernel-credential:"));
+                        (
+                            "200 OK",
+                            serde_json::json!({"peers":[{"targetId":"review-source-target","peer":source}]}),
+                        )
+                    }
+                    2 => {
+                        assert!(headers.starts_with("POST /v1/owner-managed-context-tickets "));
+                        assert!(headers
+                            .to_ascii_lowercase()
+                            .contains("x-chariox-kernel-credential:"));
+                        assert_eq!(body["sourceTargetId"], binding["sourceTargetId"]);
+                        assert_eq!(body["target"], binding["target"]);
+                        assert_eq!(body["contextSelection"], selected);
+                        let mut issued = binding.clone();
+                        issued["ticket"] = serde_json::json!("synthetic-owner-ticket");
+                        ("200 OK", issued)
+                    }
+                    _ => {
+                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
+                        assert_eq!(body["ownerManaged"]["ticket"], "synthetic-owner-ticket");
+                        assert_eq!(body["ownerManaged"]["contextId"], plan.context_id);
+                        assert_eq!(body["ownerManaged"]["planDigest"], plan.plan_digest);
+                        assert_eq!(body["ownerManaged"]["source"], source);
+                        assert_eq!(body["ownerManaged"]["contextSelection"], selected);
+                        ("200 OK", binding.clone())
+                    }
+                };
+                let response = serde_json::to_vec(&response).unwrap();
+                let header = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", response.len());
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(&response).await.unwrap();
             }
-            let header = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", response.len());
-            socket.write_all(header.as_bytes()).await.unwrap();
-            socket.write_all(&response).await.unwrap();
         };
         start_managed_context_outbound_operation(
             config.clone(),

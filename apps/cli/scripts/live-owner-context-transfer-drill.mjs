@@ -22,12 +22,12 @@ const samples = []
 const steps = []
 const secrets = [randomBytes(32).toString('hex')]
 const issuer = 'byomctx-owner-drill', realm = 'byomctx-owner-realm', user = 'byomctx-owner', account = 'byomctx-account'
-const ownerProfiles = new Map(), tickets = new Map(), presences = new Map(), deviceEnrollments = new Map()
+const ownerProfiles = new Map(), tickets = new Map(), bindings = new Map(), presences = new Map(), deviceEnrollments = new Map()
 const legacyLocal = mode.startsWith('legacy-local-')
 const scenario = legacyLocal ? mode.slice('legacy-local-'.length) : mode
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let root, workRoot, cloud, source, target, tui, automationSocket, faultContext
-let failed = null, cleanup = false, faultInjected = false
+let failed = null, cleanup = false, faultInjected = false, cloudOutage = false
 const sanitize = text => secrets.reduce((out, secret) => out.replaceAll(secret, '[redacted]'), text)
   .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted-jwt]')
 async function sha256(file) {
@@ -145,27 +145,49 @@ async function handleCloud(req,res) {
       assert.equal(ownerProfiles.get(body.kernelId)?.credential,body.kernelCredential)
       presences.set(body.kernelId,{kernelId:body.kernelId,machineId:body.machineId,status:body.status,metadata:body.metadata})
       response={ok:true}
-    } else if(req.url==='/v1/owner-managed-kernels/context/ticket') {
-      assert.equal(ownerProfiles.get(body.kernelId)?.credential,body.kernelCredential)
-      assert.equal(body.accountId,account); assert.equal(body.userId,user)
-      if(body.admission==='source') {
-        response={contextPlan:body.contextPlan,target:body.target}
-        tickets.set(body.contextPlan.contextId,response)
+    } else if(req.url==='/v1/owner-managed-context-tickets/peers' || req.url==='/v1/owner-managed-context-tickets') {
+      const actor=[...ownerProfiles.values()].find(actor=>actor.credential===req.headers['x-chariox-kernel-credential'])
+      assert(actor,'directory/issuance requires enrolled kernel credential')
+      if(cloudOutage) {res.writeHead(503,{'content-type':'application/json'});res.end('{"error":{"code":"dependency_unavailable"}}');return}
+      const peers=[...ownerProfiles.values()].map(({profile})=>({targetId:'directory:'+profile.kernelId,peer:{
+        relayRealmId:profile.realmId,machineId:profile.machineId,kernelId:profile.kernelId,
+        relayPublicKey:presences.get(profile.kernelId)?.metadata?.relay_public_key,keyThumbprint:profile.publicKeyThumbprint}}))
+      if(req.url.endsWith('/peers')) {
+        assert.equal(req.method,'GET');response={peers}
       } else {
-        response=tickets.get(body.contextId); assert(response)
-        assert.equal(body.source.kernelId,source.identity.kernelId)
-        assert.equal(body.source.keyThumbprint,source.identity.publicKeyThumbprint)
-        assert.equal(body.source.userId,user)
-        assert.equal(body.source.relayRealmId,realm)
-        assert.equal(body.kernelId,target.identity.kernelId)
-        assert.equal(body.keyThumbprint,target.identity.publicKeyThumbprint)
-        if(faultContext===body.contextId && !faultInjected) {
-          const filename=path.join(source.outbound,'.operations',`${faultContext}.json`)
-          await rename(filename,filename+'.saved'); await mkdir(filename); faultInjected=true
-          steps.push({name:'inject-source-status-storage-failure',mpItems:['MP-08','MP-10','MP-11']})
-        }
+        assert.equal(req.method,'POST');assert.equal(body.sourceTargetId,'directory:'+actor.profile.kernelId)
+        const sourcePeer=peers.find(p=>p.targetId===body.sourceTargetId);assert(sourcePeer)
+        const targetPeer=peers.find(p=>p.peer.kernelId===body.target.kernelId);assert(targetPeer);assert.deepEqual(targetPeer.peer,body.target)
+        const binding={kind:'owner_managed_machine',sourceTargetId:sourcePeer.targetId,source:sourcePeer.peer,target:body.target,contextSelection:body.contextSelection}
+        const ticket=randomBytes(32).toString('hex');secrets.push(ticket);tickets.set(ticket,binding)
+        response={...binding,ticket,expiresAt:new Date(Date.now()+300_000).toISOString()}
       }
-    } else if(req.url.startsWith('/kernels') || req.url.startsWith('/v1/')) {
+    } else if(req.url==='/v1/managed-kernels/context/ticket') {
+      const actor=[...ownerProfiles.values()].find(actor=>actor.credential===body.kernelCredential);assert(actor)
+      assert.equal(body.environmentId,undefined,'owner admission never accepts an environment substitute')
+      const request=body.ownerManaged??body.ownerManagedExport??body.ownerManagedImport;assert(request)
+      if(cloudOutage) {res.writeHead(503,{'content-type':'application/json'});res.end('{"error":{"code":"dependency_unavailable"}}');return}
+      let stored=bindings.get(request.contextId)
+      if(body.ownerManaged) {
+        const binding=tickets.get(request.ticket);assert(binding,'single-use ticket must exist')
+        assert.equal(actor.profile.kernelId,binding.source.kernelId)
+        assert.deepEqual(request.source,binding.source);assert.deepEqual(request.target,binding.target)
+        assert.deepEqual(request.contextSelection,binding.contextSelection)
+        assert(!stored,'one binding per context');tickets.delete(request.ticket)
+        stored={binding,planDigest:request.planDigest};bindings.set(request.contextId,stored)
+      } else if(!stored) {
+        res.writeHead(403,{'content-type':'application/json'});res.end('{"error":{"code":"authorization_expired"}}');return
+      }
+      assert.equal(request.planDigest,stored.planDigest)
+      assert.deepEqual(request.source,stored.binding.source);assert.deepEqual(request.target,stored.binding.target)
+      assert.equal(actor.profile.kernelId,body.ownerManagedImport?stored.binding.target.kernelId:stored.binding.source.kernelId)
+      response=stored.binding
+      if(body.ownerManagedImport && faultContext===request.contextId && !faultInjected) {
+        const filename=path.join(source.outbound,'.operations',`${faultContext}.json`)
+        await rename(filename,filename+'.saved');await mkdir(filename);faultInjected=true
+        steps.push({name:'inject-source-status-storage-failure-at-import-reauthorization',mpItems:['MP-08','MP-10','MP-11']})
+      }
+    } else if(req.url.startsWith('/kernels')) {
       response={kernels:[],machines:[],items:[]}
     } else throw new Error('unexpected Cloud path '+req.url)
     res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(response))
@@ -178,7 +200,7 @@ async function kernel(name, enroll=true) {
   const env={...baseEnv,HOME:home,CHARIOX_HOME:state,CHARIOX_KERNEL_PORT:String(kp),CHARIOX_MCP_PORT:String(mp),
     CHARIOX_OPENCODE_PORT:String(await port()),CHARIOX_CODEX_PORT:String(await port()),
     CHARIOX_LOG_DIR:path.join(root,name,'logs'),CHARIOX_TEST_TUI:'1',
-    BUN_BIN:'/var/lib/chariox/dev/toolchains/bun/bin/bun',PATH:'/var/lib/chariox/dev/toolchains/bun/bin:'+process.env.PATH,
+    BUN_BIN:process.env.BUN_BIN??'bun',PATH:process.env.PATH,
     CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),OPENCODE_CONFIG_DIR:path.join(home,'.opencode'),
     XDG_CONFIG_HOME:path.join(home,'.config'),XDG_STATE_HOME:path.join(home,'.local/state'),XDG_DATA_HOME:path.join(home,'.local/share')}
   for(const key of ['CHARIOX_RELAY_URL','CHARIOX_RELAY_TOKEN','CHARIOX_CLOUD_RELAY_CONFIG_PATH','CHARIOX_CLOUD_RELAY_CONFIG_JSON','CHARIOX_KERNEL_LOCAL_AUTH_TOKEN','CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE'])delete env[key]
@@ -365,6 +387,21 @@ try {
   const blocked=path.join(source.outbound,'.operations',`${broken.contextId}.json`);await rm(blocked,{recursive:true});await rename(blocked+'.saved',blocked)
   source.child=start('source-restarted',path.join(binaryDir,'chariox-kernel'),[],source.env);source.child.stdin.end()
   await until(async()=> (await rpc(source,{RelayStatus:{}})).RelayStatus?.status.connected,'source process restart')
+  if(scenario==='cloud-outage') {
+    const artifact=path.join(source.outbound,broken.contextId)
+    const originalPackage=await readFile(path.join(artifact,'managed-context.pkg'))
+    const originalCheckpoint=await readFile(path.join(artifact,'transfer.json'))
+    cloudOutage=true
+    const started=(await cli('04-outage-retry',source,['copy',selectionPath])).ManagedContextTransferStarted.status
+    assert.equal(started.contextId,broken.contextId)
+    const outage=await until(async()=>{const status=(await cli('04-outage-status-'+steps.length,source,['status',broken.contextId])).ManagedContextTransferStatus.status;return status.phase==='failed'&&status},'retryable Cloud outage')
+    assert.equal(outage.retryable,true,'temporary Cloud outage must retain recovery')
+    assert.deepEqual(await readFile(path.join(artifact,'managed-context.pkg')),originalPackage)
+    assert.deepEqual(await readFile(path.join(artifact,'transfer.json')),originalCheckpoint)
+    await assert.rejects(access(path.join(artifact,'retired')))
+    cloudOutage=false
+    steps.push({name:'temporary-cloud-outage-retains-original-context-package-and-checkpoint',mpItems:['MP-08','MP-10','MP-11'],contextId:broken.contextId})
+  }
   const recovered=await copy('05-recovery');assert.equal(recovered.contextId,broken.contextId);assert.equal(recovered.phase,'completed');assert.deepEqual(recovered.receipt,broken.receipt)
   const targetReceipt=(await cli('06-recovered-target-launch',target,['launch-target',recovered.contextId,recovered.planDigest])).ManagedContextLaunchTarget.target
   assert.equal(targetReceipt.contextId,recovered.contextId)
