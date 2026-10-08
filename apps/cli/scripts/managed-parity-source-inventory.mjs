@@ -470,11 +470,20 @@ function parseLsTree(output) {
   }).filter((entry) => entry.type === "blob");
 }
 
-function parseStatus(output) {
-  return output.split("\0").filter(Boolean).map((record) => {
-    const path = record.length > 3 && record[2] === " " ? record.slice(3) : record.slice(3);
-    return path.includes(" -> ") ? path.slice(path.indexOf(" -> ") + 4) : path;
-  });
+export function parseStatus(output) {
+  const records = output.split("\0");
+  const paths = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) continue;
+    paths.push(record.slice(3));
+    if (/[RC]/.test(record.slice(0, 2))) {
+      const originalPath = records[++index];
+      if (!originalPath) throw new Error("incomplete git status rename/copy record");
+      paths.push(originalPath);
+    }
+  }
+  return paths;
 }
 
 function isIgnoredPath(path) {
