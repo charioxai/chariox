@@ -45,7 +45,12 @@ try{
   stage=site;const row={site,url,status:'RED',screenshots:[],clicks:[],typing:[]};r.sites.push(row);await sample();
   try{
    row.step='address';await page.getByRole('textbox',{name:'Browser address'}).fill(url);row.step='open';await page.getByRole('button',{name:await page.getByRole('button',{name:'Close tab',exact:true}).count()?'Go':'Open tab',exact:true}).click();
-   row.step='tab';await page.getByRole('button',{name:'Close tab',exact:true}).waitFor({timeout:30000});row.step='presentation';const readiness=Date.now();await page.waitForFunction(()=>{const mode=document.querySelector('[data-paint-mode]')?.getAttribute('data-paint-mode');return mode==='mirror'||mode==='video'&&Boolean(document.querySelector('[data-display-sequence]'))||document.querySelector('.kernel-browser-fallback')?.textContent?.includes('Image fallback')},{},{timeout:60000});row.mode_ready_ms=Date.now()-readiness;
+   row.step='tab';await page.getByRole('button',{name:'Close tab',exact:true}).waitFor({timeout:30000});
+   // MP-08/MP-10: a prior surface stays mounted during real navigation. Wait
+   // for the user-visible busy control to settle before measuring this site.
+   row.step='navigation_ready';await page.waitForTimeout(100);
+   await page.waitForFunction(()=>{const button=[...document.querySelectorAll('button')].find(b=>b.textContent==='Close tab');return button&&!button.disabled},null,{timeout:60000});
+   row.step='presentation';const readiness=Date.now();await page.waitForFunction(()=>{const mode=document.querySelector('[data-paint-mode]')?.getAttribute('data-paint-mode');return mode==='mirror'||mode==='video'&&Boolean(document.querySelector('[data-display-sequence]'))||document.querySelector('.kernel-browser-fallback')?.textContent?.includes('Image fallback')},{},{timeout:60000});row.mode_ready_ms=Date.now()-readiness;
    row.mode=await page.locator('[data-paint-mode]').count()?await page.locator('[data-paint-mode]').getAttribute('data-paint-mode'):'image';
    row.alerts=await page.locator('[role=alert]').allTextContents();
    const mirrored=page.frames().find(f=>f!==page.mainFrame()&&f.name()==='');
