@@ -59,6 +59,8 @@ export class HostChromium {
       if (this.connection?.isOpen()) return this.connection;
       await this.stop();
     }
+    // MP-08/MP-11: settle a previously owned display before failed recovery.
+    await this.display?.close(); this.display = null;
     let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
