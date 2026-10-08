@@ -1002,3 +1002,23 @@ impl Drop for FixtureProviderHomes {
         }
     }
 }
+
+#[test]
+fn secrev_f4_context_copy_rejects_provenance_outside_authenticated_package_binding() {
+    use base64::Engine;
+    let fixture = PackageFixture::new("copy-source-authority");
+    let registry = ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json")).unwrap()
+        .with_machine_identity("target-machine", "target-kernel-1");
+    let materialization = ProviderAccountMaterialization {
+        copy_source: Some(crate::account_profile::ProviderAccountCopySource { machine_id: "source-machine".into(), kernel_id: "other-home-kernel".into() }),
+        profile: crate::account_profile::ProviderAccountReplicaMetadata { owner_user_id: "owner".into(), provider: "codex".into(), profile_id: "spoofed-copy".into(), label: "Spoofed source".into(), origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated, is_default: false },
+        files: vec![crate::account_profile::ProviderAccountMaterializationFile { relative_path: "auth.json".into(), contents_base64: base64::engine::general_purpose::STANDARD.encode(br#"{"OPENAI_API_KEY":"synthetic"}"#) }], generated_at_ms: 1,
+    };
+    let mut binding = fixture.binding.clone();
+    binding.plan.provider_accounts = ManagedContextProviderAccountSelection::Selected { accounts: vec![ManagedContextProviderAccount {provider: "codex".into(), account_profile: "spoofed-copy".into()}] };
+    let request = ManagedContextPackageApplicationRequest { transfer_id: "source-authority".into(), package_path: fixture.root.join("unused"), expected_package_sha256: "a".repeat(64), expected_binding: binding, development_destination_root: fixture.root.join("unused-development"), target_private_key: "unused".into(), project_environment_target: None, provider_account_target: Some(ManagedContextProviderAccountImportTarget {registry: registry.clone(), owner_user_id: "owner".into()}), git_credential_target: None };
+    let result = import_provider_accounts(&request, &ManagedContextPackageProviderAccounts::Selected {materializations: vec![materialization]});
+    assert!(result.is_err(), "package binding did not bind copy source kernel");
+    assert!(registry.get("owner", "codex", "spoofed-copy").is_err());
+    fixture.cleanup();
+}

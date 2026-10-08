@@ -673,7 +673,7 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => match (|| {
+            Ok(result) => match finish_committed_account_package(&prepared.artifact_root, || {
                 let owner = crate::account_profile::provider_account_authority_owner_user_id(
                     &config,
                     config
@@ -709,8 +709,8 @@ pub(crate) fn start_managed_context_outbound_operation(
                         )?;
                     }
                 }
-                remove_artifact_root(&prepared.artifact_root)
-            })() {
+                Ok(())
+            }) {
                 Ok(()) => task_store.update(&task_context_id, |status| {
                     status.phase = ManagedContextOutboundOperationPhase::Completed;
                     status.accepted_bytes = result.package_size_bytes;
@@ -1712,6 +1712,14 @@ fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, Daemo
     Ok(bytes)
 }
 
+fn finish_committed_account_package(
+    artifact_root: &Path,
+    record_receipt: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    record_receipt()?;
+    remove_artifact_root(artifact_root)
+}
+
 fn remove_artifact_root(path: &Path) -> Result<(), DaemonError> {
     if path_entry_exists(path)? {
         validate_artifact_root(path)?;
@@ -1801,6 +1809,17 @@ mod tests {
     };
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
+
+    #[test]
+    fn secrev_f5_committed_package_is_removed_when_receipt_bookkeeping_fails() {
+        let root = crate::test_support::TestWorktree::new("committed-package-cleanup");
+        let artifact = root.path().join("outbound");
+        create_private_directory(&artifact).unwrap();
+        fs::write(artifact.join("managed-context.pkg"), b"synthetic-credential-package").unwrap();
+        let result = finish_committed_account_package(&artifact, || Err(outbound_service_error("source profile removed after commit", false)));
+        assert!(result.is_err());
+        assert!(!artifact.exists(), "completed credential package outlived failed bookkeeping");
+    }
 
     fn git_enrollment_test_ticket(
         config: &DaemonConfig,

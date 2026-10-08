@@ -70,6 +70,25 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    // Receiver identity is checked here so projection wiring cannot bypass it.
+    pub(crate) fn apply_remote_account_copy_observation(
+        &self, owner: &str, _provider: &str, _source_account: &str,
+        _target_kind: ProviderAccountMaterializationTargetKind,
+        target_machine: &str, target_kernel: &str,
+        observation: &ProviderAccountCopyObservation,
+    ) -> Result<(), DaemonError> {
+        if let Some(copy) = &observation.status.copy {
+            if self.copy_identity.as_ref().is_some_and(|identity|
+                copy.source_kernel_id == identity.kernel_id && copy.source_machine_id == identity.machine_id)
+                && copy.target_kernel_id == target_kernel && copy.target_machine_id == target_machine
+                && self.get(owner, &observation.provider, &copy.source_account_id).is_ok()
+            {
+                self.update_materialization_status(owner, &observation.provider, &copy.source_account_id, observation.status.clone())?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn received_copy_observations(
         &self,
         owner: &str,
@@ -526,6 +545,40 @@ pub(super) fn observe_received_copies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrev_f3_copy_observations_cannot_retarget_or_replace_issued_inventory() {
+        let root = crate::test_support::TestWorktree::new("copy-observation-authority");
+        let registry = ProviderAccountProfileRegistry::open(root.path().join("registry.json")).unwrap()
+            .with_machine_identity("home-machine", "home-kernel");
+        let source = registry.create_managed("owner", "codex", "Source").unwrap();
+        let other = registry.create_managed("owner", "codex", "Other").unwrap();
+        let issued = ProviderAccountMaterializationStatus {
+            target_kind: ProviderAccountMaterializationTargetKind::Worker, target_ref: "worker-a".into(),
+            state: ProviderAccountMaterializationState::Materialized, observed_at_ms: 1, last_error: None,
+            copy: Some(ProviderAccountCopyMetadata { source_machine_id: "home-machine".into(), source_kernel_id: "home-kernel".into(), source_account_id: source.profile_id.clone(), target_machine_id: "machine-a".into(), target_kernel_id: "worker-a".into(), target_account_id: "receiver-account".into(), renewable_services: vec!["codex".into()], auth_state: ProviderAccountCopyAuthState::Authenticated, copied_at_ms: 1, warning_seen: false }),
+        };
+        registry.update_materialization_status("owner", "codex", &source.profile_id, issued.clone()).unwrap();
+        for attack in 0..6 {
+            let mut status = issued.clone();
+            status.copy.as_mut().unwrap().auth_state = ProviderAccountCopyAuthState::NeedsLogin;
+            match attack {
+                0 => status.target_ref = "worker-b".into(),
+                1 => status.target_kind = ProviderAccountMaterializationTargetKind::Slice,
+                2 => status.copy.as_mut().unwrap().source_account_id = other.profile_id.clone(),
+                3 => status.copy.as_mut().unwrap().copied_at_ms = 2,
+                4 => status.copy.as_mut().unwrap().renewable_services = vec!["attacker".into()],
+                _ => status.copy.as_mut().unwrap().target_account_id = "other-receiver".into(),
+            }
+            registry.apply_remote_account_copy_observation("owner", "codex", &source.profile_id, ProviderAccountMaterializationTargetKind::Worker, "machine-a", "worker-a", &ProviderAccountCopyObservation {provider: "codex".into(), status}).unwrap();
+            assert_eq!(registry.get("owner", "codex", &source.profile_id).unwrap().materializations, vec![issued.clone()], "attack {attack} changed the issued copy");
+            assert!(registry.get("owner", "codex", &other.profile_id).unwrap().materializations.is_empty());
+        }
+        let mut observed = issued.clone();
+        observed.copy.as_mut().unwrap().auth_state = ProviderAccountCopyAuthState::NeedsLogin;
+        registry.apply_remote_account_copy_observation("owner", "codex", &source.profile_id, ProviderAccountMaterializationTargetKind::Worker, "machine-a", "worker-a", &ProviderAccountCopyObservation {provider: "codex".into(), status: observed}).unwrap();
+        assert_eq!(registry.get("owner", "codex", &source.profile_id).unwrap().materializations[0].copy.as_ref().unwrap().auth_state, ProviderAccountCopyAuthState::NeedsLogin);
+    }
 
     #[test]
     fn mp08_mp10_mp11_only_renewable_logins_get_copy_notices() {

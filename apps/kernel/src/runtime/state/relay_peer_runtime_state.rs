@@ -1400,30 +1400,15 @@ impl KernelRuntimeState {
             if let Some(binding) = agent.remote_execution() {
                 let config = self.owned.config_projection.snapshot();
                 let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+                let target_kind = if self.list_slices().iter().any(|slice| slice.worker_kernel_ref == binding.worker_kernel_id) {
+                    crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+                } else { crate::account_profile::ProviderAccountMaterializationTargetKind::Worker };
+                let _ = config;
                 for observation in copy_observations {
-                    if let Some(copy) = &observation.status.copy {
-                        if copy.source_kernel_id == config.daemon_id
-                            && copy.source_machine_id == config.host_machine_id
-                            && copy.target_kernel_id == binding.worker_kernel_id
-                            && copy.target_machine_id == binding.worker_machine_id
-                        {
-                            if self
-                                .owned
-                                .provider_account_profiles
-                                .get(&owner, &observation.provider, &copy.source_account_id)
-                                .is_ok()
-                            {
-                                self.owned
-                                    .provider_account_profiles
-                                    .update_materialization_status(
-                                        &owner,
-                                        &observation.provider,
-                                        &copy.source_account_id,
-                                        observation.status.clone(),
-                                    )?;
-                            }
-                        }
-                    }
+                    self.owned.provider_account_profiles.apply_remote_account_copy_observation(
+                        &owner, agent.provider(), agent.provider_account_profile(), target_kind,
+                        &binding.worker_machine_id, &binding.worker_kernel_id, &observation,
+                    )?;
                 }
             }
         }
