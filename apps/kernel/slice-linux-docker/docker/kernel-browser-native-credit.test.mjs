@@ -69,3 +69,13 @@ test('MP-08/MP-10/MP-11 identical refresh readbacks keep an exact canvas only wh
   assert.equal(identicalToDelivered(stream,{serial:8,raw:{identical:false}}),false);
   assert.equal(identicalToDelivered({compositorSerial:null},{serial:1,raw:{identical:true}}),false);
 });
+
+test('MP-08/MP-10/MP-11 attested CDP fallback cannot enter native region reuse or crash display credits',async()=>{
+ const {CompositorSource}=await import('./kernel-browser-compositor.mjs');
+ const policy={},source=new CompositorSource({tab:{tab_id:'t',document_id:'d'},policy,allowed:()=>true});
+ source.attested=true;
+ const stream={tab_id:'t',document_id:'d',exact:true,producer:{source},compositorMasks:'[]'};
+ assert.equal(nativeRegionPending(stream,source,'d',policy),false);
+ source.latest={tab_id:'t',document_id:'d',raw:{nativeExact(){},base_serial:1}};stream.compositorSerial=1;
+ assert.equal(nativeRegionBaseCurrent(stream,source,'d',policy),false,'native proof is mandatory even with otherwise matching bookkeeping');
+});

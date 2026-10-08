@@ -8,6 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
+import { hostErrorLabel } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
@@ -693,9 +694,8 @@ export class KernelBrowserHost {
       }
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
-      // MP-08/MP-10: opt-in diagnostics keep only fixed product error labels.
-      const label=/^(MD|MP)-[0-9A-Z-]+: [a-z ]{1,48}/.exec(String(error?.message))?.[0];
-      if(label)this.timing('host_error '+label,timestamp());
+      // MP-11: only fixed error classes/codes and public source positions.
+      this.timing(hostErrorLabel(error),timestamp());
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id) await this.stop();
