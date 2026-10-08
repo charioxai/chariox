@@ -18,8 +18,8 @@ try{
  const ctx=await browser.newContext({viewport:{width:1440,height:1200},deviceScaleFactor:dpr});page=await ctx.newPage();page.setDefaultTimeout(30000);
  r.bootstrap_protocol=[];page.on('response',async response=>{if(new URL(response.url()).pathname!=='/browser/relay-kernel/bootstrap')return;try{const value=await response.json();r.bootstrap_protocol.push({at:Date.now(),status:response.status(),protocol:value.target?.localDaemonProtocolVersion,daemon_id:value.target?.daemonId})}catch{r.bootstrap_protocol.push({at:Date.now(),status:response.status(),code:'unreadable'})}});
  page.on('pageerror',e=>r.errors.push({stage,code:e.name}));page.on('console',async msg=>{if(!msg.text().startsWith('[chariox:kernel-transport]'))return;let fields=await msg.args()[1]?.jsonValue().catch(()=>({}));if(!fields){try{fields=JSON.parse(msg.text().slice(msg.text().indexOf('{')))}catch{fields={}}}r.errors.push({event:msg.text().split(' ')[1],stage,request_kind:fields?.requestKind,code:fields?.code,rtt_ms:fields?.rttMs,lane:fields?.lane})});
- const cdp=await ctx.newCDPSession(page);await cdp.send('Network.enable');if(process.env.MD_DIAGNOSTIC==='1'){r.debug_exceptions=[];await cdp.send('Debugger.enable');await cdp.send('Debugger.setPauseOnExceptions',{state:'all'});cdp.on('Debugger.paused',async event=>{const line=String(event.data?.description??'').split('\n')[0];r.debug_exceptions.push({reason:event.reason,labels:['kernel_browser','MD-DISPLAY:','MP-11:','stale browser','Failed to fetch dynamically imported module'].filter(label=>line.includes(label)),location:event.callFrames?.[0]?.location});await cdp.send('Debugger.resume').catch(()=>{})})}
- cdp.on('Network.webSocketFrameReceived',e=>{if(r.wire.length<100000)r.wire.push({at:Date.now(),opcode:e.response.opcode,bytes:e.response.opcode===2?Math.floor(e.response.payloadData.length*3/4):e.response.payloadData.length})});
+ const cdp=await ctx.newCDPSession(page);r.wire_instrumentation=process.env.MD_WIRE==='1';if(r.wire_instrumentation)await cdp.send('Network.enable');if(process.env.MD_DIAGNOSTIC==='1'){r.debug_exceptions=[];await cdp.send('Debugger.enable');await cdp.send('Debugger.setPauseOnExceptions',{state:'all'});cdp.on('Debugger.paused',async event=>{const line=String(event.data?.description??'').split('\n')[0];r.debug_exceptions.push({reason:event.reason,labels:['kernel_browser','MD-DISPLAY:','MP-11:','stale browser','Failed to fetch dynamically imported module'].filter(label=>line.includes(label)),location:event.callFrames?.[0]?.location});await cdp.send('Debugger.resume').catch(()=>{})})}
+ if(r.wire_instrumentation)cdp.on('Network.webSocketFrameReceived',e=>{if(r.wire.length<100000)r.wire.push({at:Date.now(),opcode:e.response.opcode,bytes:e.response.opcode===2?Math.floor(e.response.payloadData.length*3/4):e.response.payloadData.length})});
  await page.addInitScript(()=>{
   globalThis.mdHosted={frames:[],inputs:[]};
   const stats=globalThis.mdHosted;
@@ -37,8 +37,8 @@ try{
  for(const [site,url]of sites){
   stage=site;const row={site,url,status:'RED',screenshots:[],clicks:[],typing:[]};r.sites.push(row);await sample();
   try{
-   await page.getByRole('textbox',{name:'Browser address'}).fill(url);await page.getByRole('button',{name:site===sites[0][0]?'Open tab':'Go',exact:true}).click();
-   await page.getByRole('button',{name:'Close tab',exact:true}).waitFor({timeout:30000});const readiness=Date.now();await page.waitForFunction(()=>{const mode=document.querySelector('[data-paint-mode]')?.getAttribute('data-paint-mode');return mode==='mirror'||mode==='video'&&Boolean(document.querySelector('[data-display-sequence]'))||document.querySelector('.kernel-browser-fallback')?.textContent?.includes('Image fallback')},{},{timeout:60000});row.mode_ready_ms=Date.now()-readiness;
+   row.step='address';await page.getByRole('textbox',{name:'Browser address'}).fill(url);row.step='open';await page.getByRole('button',{name:site===sites[0][0]?'Open tab':'Go',exact:true}).click();
+   row.step='tab';await page.getByRole('button',{name:'Close tab',exact:true}).waitFor({timeout:30000});row.step='presentation';const readiness=Date.now();await page.waitForFunction(()=>{const mode=document.querySelector('[data-paint-mode]')?.getAttribute('data-paint-mode');return mode==='mirror'||mode==='video'&&Boolean(document.querySelector('[data-display-sequence]'))||document.querySelector('.kernel-browser-fallback')?.textContent?.includes('Image fallback')},{},{timeout:60000});row.mode_ready_ms=Date.now()-readiness;
    row.mode=await page.locator('[data-paint-mode]').count()?await page.locator('[data-paint-mode]').getAttribute('data-paint-mode'):'image';
    row.alerts=await page.locator('[role=alert]').allTextContents();
    const mirrored=page.frames().find(f=>f!==page.mainFrame()&&f.name()==='');
@@ -57,7 +57,7 @@ try{
     row.final_canvas=await canvas.evaluate(c=>({width:c.width,height:c.height,kind:c.dataset.displayKind,sequence:c.dataset.displaySequence}));
    }
    const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.status=!['mirror','video'].includes(row.mode)?'RED_RENDER_NOT_READY':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);
-  }catch(e){row.failedStage=stage;row.errorCode=e.name;await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).catch(()=>{})}
+  }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).catch(()=>{})}
   await save();shaped?.check();
  }
  r.observations=await page.evaluate(()=>mdHosted);r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';
