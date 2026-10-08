@@ -980,20 +980,26 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// MP-08 / MP-10 / MP-11: an owned utility is temporary; its source Project is not.
+    /// MP-08 / MP-10 / MP-11: retire only the session this utility created, retaining its Project.
     pub(crate) async fn delete_environment_utility_session(
         &self,
-        session_id: &str,
-        project_id: &str,
+        created: &crate::session::RuntimeSession,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let session = self.owned.session_store.get_session(session_id)?;
-        if session.project_id() != project_id {
+        let session = self.owned.session_store.get_session(created.id())?;
+        // Hidden sessions intentionally have no Project ID. Bind to their creation snapshot,
+        // so cleanup also settles when the source Project was deleted during discovery.
+        if session.owner_user_id() != created.owner_user_id()
+            || session.workspace_id() != created.workspace_id()
+            || session.worktree_id() != created.worktree_id()
+            || session.project_id() != created.project_id()
+            || session.is_hidden() != created.is_hidden()
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "environment.utility.cleanup",
-                message: "utility session Project binding mismatch".into(),
+                message: "utility session binding mismatch".into(),
             });
         }
-        self.delete_session_id_with_project_retention(session_id, true)
+        self.delete_session_id_with_project_retention(created.id(), true)
             .await
     }
 

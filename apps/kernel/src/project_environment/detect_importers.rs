@@ -241,13 +241,20 @@ impl Importer {
             }
         }
         match name {
-            ".nvmrc" | ".python-version" => self.software(
-                file,
-                if name == ".nvmrc" { "node" } else { "python" },
-                Some(text.trim()),
-                Some(1),
-                false,
-            ),
+            ".nvmrc" | ".python-version" => {
+                let version = text.trim();
+                let line = version_token(version)
+                    .then(|| text.lines().position(|line| !line.trim().is_empty()))
+                    .flatten()
+                    .map(|n| n as u32 + 1);
+                self.software(
+                    file,
+                    if name == ".nvmrc" { "node" } else { "python" },
+                    Some(version),
+                    line,
+                    false,
+                )
+            }
             ".tool-versions" => {
                 for (n, line) in text.lines().enumerate() {
                     let mut parts = line.split_whitespace();
@@ -539,9 +546,9 @@ impl Importer {
                 }
             }
             "AGENTS.md" | "CLAUDE.md" | "GEMINI.md" => {
-                self.tool(file, AgentToolKind::InstructionFile, name, Some(1))
+                self.tool(file, AgentToolKind::InstructionFile, name, text.lines().next().map(|_| 1))
             }
-            "SKILL.md" => self.tool(file, AgentToolKind::Skill, &file.path, Some(1)),
+            "SKILL.md" => self.tool(file, AgentToolKind::Skill, &file.path, text.lines().next().map(|_| 1)),
             _ => {}
         }
         // Structured dependency declarations are language-independent evidence.

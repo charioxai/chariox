@@ -300,9 +300,6 @@ impl KernelRuntimeState {
                     &folder.local_workspace_binding,
                 )
                 .with_owner_user_id(project.owner_user_id())
-                .with_project_selection(crate::session::SessionProjectSelection::Existing {
-                    project_id: project.id().into(),
-                })
                 .with_hidden(true)
                 .with_agent_defaults(
                     crate::session::SessionAgentDefaults::new(provider)
@@ -316,19 +313,18 @@ impl KernelRuntimeState {
         };
         let cleanup_guard = EnvironmentUtilityCleanup {
             runtime: self.clone(),
-            session_id: Some(session.id().into()),
-            project_id: project.id().into(),
+            session: Some(session.clone()),
         };
         let result = self
             .discover_project_environment(session.id(), agent.id(), input)
             .await;
         // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
         let cleanup = self
-            .delete_environment_utility_session(session.id(), project.id())
+            .delete_environment_utility_session(&session)
             .await;
         let mut cleanup_guard = cleanup_guard;
         if cleanup.is_ok() {
-            cleanup_guard.session_id = None;
+            cleanup_guard.session = None;
         }
         result?;
         cleanup?;
@@ -417,8 +413,7 @@ impl KernelRuntimeState {
                 agent.id().into(),
                 Some(EnvironmentUtilityCleanup {
                     runtime: self.clone(),
-                    session_id: Some(session.id().into()),
-                    project_id: project.id().into(),
+                    session: Some(session.clone()),
                 }),
             )),
             _ => Err(environment_failure(
@@ -466,25 +461,23 @@ pub(crate) struct PreparedProjectEnvironmentExport {
 // MP-08 / MP-11: Only the temporary session created by this utility is retired.
 struct EnvironmentUtilityCleanup {
     runtime: KernelRuntimeState,
-    session_id: Option<String>,
-    project_id: String,
+    session: Option<crate::session::RuntimeSession>,
 }
 impl Drop for EnvironmentUtilityCleanup {
     fn drop(&mut self) {
         let runtime = self.runtime.clone();
-        let project_id = self.project_id.clone();
-        let Some(session_id) = self.session_id.take() else {
+        let Some(session) = self.session.take() else {
             return;
         };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(error) = runtime
-                    .delete_environment_utility_session(&session_id, &project_id)
+                    .delete_environment_utility_session(&session)
                     .await
                 {
                     tracing::warn!(
-                        session_id,
-                        "MP-08 / MP-11: utility session cleanup failed: {}",
+                        session_id = session.id(),
+                        "MP-08 / MP-10 / MP-11: utility session cleanup failed: {}",
                         error
                     );
                 }

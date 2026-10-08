@@ -31,6 +31,16 @@ fn envp02a_empty_declarations_do_not_invent_line_origins() {
             }
         }
     }
+    write(&root, ".nvmrc", "\n22\n");
+    let result = detect_environment(&[folder(&root)], "environment").unwrap();
+    let node = result.proposals.iter().find(|proposal| matches!(
+        &proposal.requirement.spec,
+        RequirementSpec::Software { identity, .. } if identity == "node"
+    )).unwrap();
+    assert!(node.requirement.origins.iter().any(|origin| matches!(
+        origin, RequirementOrigin::Detected { line: Some(2), .. }
+    )));
+
 }
 
 #[test]
