@@ -19,19 +19,26 @@ for argument do
   previous=$argument
 done
 case "$version" in ''|*@*) printf '%s\n' 'MP-07: use a published versioned installer' >&2; exit 1 ;; esac
-# MP-07/MP-11: macOS's stock LibreSSL cannot verify Ed25519 with pkeyutl -rawin.
-case "$(openssl version 2>/dev/null || true)" in
-  'OpenSSL 3.'*) ;;
-  *)
-    printf '%s\n' 'MP-07/MP-11: Setup requires OpenSSL 3.x with Ed25519 support on PATH; macOS system LibreSSL is unsupported.' >&2
-    case "$platform" in
-      darwin-arm64) printf '%s\n' 'MP-07/MP-11: Run brew install openssl@3, then export PATH="$(brew --prefix openssl@3)/bin:$PATH" and rerun this installer.' >&2 ;;
-      *) printf '%s\n' 'MP-07/MP-11: Install OpenSSL 3 using your system package manager, put its bin directory on PATH and rerun this installer.' >&2 ;;
-    esac
-    exit 1 ;;
-esac
 stage=$(mktemp -d "${TMPDIR:-/tmp}/chariox-setup.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
+# MP-07/MP-11: probe the required capability, independent of version labels.
+# RFC 8032 section 7.1 test 2 contains only public verification inputs here.
+python3 - "$stage" <<'PY'
+import base64, pathlib, sys
+stage = pathlib.Path(sys.argv[1])
+spki = bytes.fromhex('302a300506032b65700321003d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c')
+(stage / 'probe.pem').write_text('-----BEGIN PUBLIC KEY-----\n' + base64.b64encode(spki).decode() + '\n-----END PUBLIC KEY-----\n')
+(stage / 'probe.message').write_bytes(b'r')
+(stage / 'probe.signature').write_bytes(bytes.fromhex('92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00'))
+PY
+if ! openssl pkeyutl -verify -pubin -inkey "$stage/probe.pem" -rawin -in "$stage/probe.message" -sigfile "$stage/probe.signature" >/dev/null 2>&1; then
+    printf '%s\n' 'MP-07/MP-11: Setup requires OpenSSL with Ed25519 pkeyutl -rawin verification on PATH; macOS system LibreSSL is unsupported.' >&2
+    case "$platform" in
+      darwin-arm64) printf '%s\n' 'MP-07/MP-11: Run brew install openssl@3, then export PATH="$(brew --prefix openssl@3)/bin:$PATH" and rerun this installer.' >&2 ;;
+      *) printf '%s\n' 'MP-07/MP-11: Install a compatible OpenSSL using your system package manager, put its bin directory on PATH and rerun this installer.' >&2 ;;
+    esac
+    exit 1
+fi
 curl -fsS --location --max-redirs 5 --proto-redir '=https' --proto '=https' --max-time 300 --max-filesize 268435456 "$base/v$version/chariox-setup-$version-$platform" -o "$stage/chariox-setup"
 curl -fsS --location --max-redirs 5 --proto-redir '=https' --proto '=https' --max-time 30 --max-filesize 128 "$base/v$version/chariox-setup-$version-$platform.sig" -o "$stage/signature.hex"
 python3 - "$release_key" "$stage" <<'PY'

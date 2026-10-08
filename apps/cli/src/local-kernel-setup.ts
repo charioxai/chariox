@@ -64,14 +64,16 @@ export async function startLocalKernelSetup(profile: RelayCloudProfile, notice?:
   // A terminal launched from a managed/slice kernel must not redirect this install's state.
   for (const key of Object.keys(env)) if (key.startsWith("CHARIOX_")) delete env[key]
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, args, { env, stdio: notice ? ["ignore", "pipe", "ignore"] : "inherit" })
+    const child = spawn(executable, args, { env, stdio: notice ? ["ignore", "pipe", "pipe"] : "inherit" })
     let total = 0
     const stop = () => {
       if (child.exitCode !== null || child.signalCode !== null) return
       if (typeof child.pid !== "number" || !Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("refusing unsafe Setup process signal")
       child.kill("SIGKILL")
     }
-    child.stdout?.on("data", (chunk: Buffer) => { total += chunk.length; if (total > 32768) stop(); else notice?.(chunk.toString("utf8")) })
+    for (const output of [child.stdout, child.stderr]) {
+      output?.on("data", (chunk: Buffer) => { total += chunk.length; if (total > 32768) stop(); else notice?.(chunk.toString("utf8")) })
+    }
     const timer = setTimeout(stop, 900_000)
     child.once("error", () => { clearTimeout(timer); reject(new Error("Chariox Setup could not start")) })
     child.once("close", code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error("Chariox Setup failed; check the release, user service and machine approval")) })

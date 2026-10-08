@@ -9,7 +9,7 @@ import { promisify } from "node:util"
 import test from "node:test"
 import { renderInstallScript } from "./build-chariox-setup.mjs"
 const execute = promisify(execFile), source = await readFile(new URL("../deploy/setup/install.sh", import.meta.url), "utf8")
-async function harness(t, { platform = "Linux", stockLibreSSL = false } = {}) {
+async function harness(t, { platform = "Linux", stockLibreSSL = false, openssl4 = false } = {}) {
   const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-setup-script-")); t.after(() => rm(root, { recursive: true, force: true }))
   const bin = join(root, "bin"), payload = join(root, "payload"), sig = join(root, "sig"), script = join(root, "install.sh"), log = join(root, "executed"), downloads = join(root, "downloads"), verifier = join(root, "verifier")
   await mkdir(bin)
@@ -33,6 +33,11 @@ esac
 exit 1
 `, { mode: 0o755 })
   }
+  if (openssl4) {
+    const executable = (await execute("sh", ["-c", "command -v openssl"])).stdout.trim()
+    assert.match(executable, /^\/[A-Za-z0-9/_.-]+$/)
+    await writeFile(join(bin, "openssl"), `#!/bin/sh\nif [ "$1" = version ]; then echo 'OpenSSL 4.0.3'; exit 0; fi\nexec '${executable}' "$@"\n`, { mode: 0o755 })
+  }
   const env = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TMPDIR: root, SETUP_FIXTURE_SCRIPT: script, SETUP_FIXTURE_LOG: log, SETUP_FIXTURE_PAYLOAD: payload, SETUP_FIXTURE_SIG: sig, SETUP_FIXTURE_DOWNLOAD_LOG: downloads, SETUP_FIXTURE_VERIFIER_LOG: verifier }
   const run = async (args = [], input) => {
     const child = execFile("sh", [script, ...args], { env, timeout: 15_000 })
@@ -42,17 +47,30 @@ exit 1
   return { root, payload, sig, log, downloads, verifier, env, script, run }
 }
 for (const valid of [true, false]) {
+  test(`MP-07/MP-11 compatible OpenSSL 4 label ${valid ? "verifies" : "refuses tampered"} signed Setup`, async t => {
+    const h = await harness(t, { openssl4: true })
+    if (!valid) await writeFile(h.sig, "b".repeat(128))
+    const result = await execute("sh", [h.script], { env: h.env, timeout: 15_000 }).catch(error => error)
+    assert.equal(result.code ?? 0, valid ? 0 : 1)
+    if (valid) assert.equal(await readFile(h.log, "utf8"), "--install-only --login\n")
+    else assert.match(result.stderr, /Setup signature refused/)
+  })
+}
+for (const valid of [true, false]) {
   test(`MP-07/MP-11 Darwin stock LibreSSL reports its prerequisite before downloads (${valid ? "valid" : "invalid"} signature)`, async t => {
     const h = await harness(t, { platform: "Darwin", stockLibreSSL: true })
     if (!valid) await writeFile(h.sig, "b".repeat(128))
     const result = await execute("sh", [h.script], { env: h.env, timeout: 15_000 }).catch(error => error)
     assert.equal(result.code, 1)
-    assert.match(result.stderr, /requires OpenSSL 3/)
+    assert.match(result.stderr, /requires OpenSSL with Ed25519/)
     assert.match(result.stderr, /LibreSSL/)
     assert.match(result.stderr, /brew install openssl@3/)
     assert.match(result.stderr, /PATH/)
     assert.doesNotMatch(result.stderr, /Setup signature refused/)
-    assert.equal(await readFile(h.verifier, "utf8"), "version\n")
+    const verifier = await readFile(h.verifier, "utf8")
+    assert.match(verifier, /^pkeyutl -verify /)
+    assert.match(verifier, /-rawin/)
+    assert.equal(verifier.trim().split("\n").length, 1)
     await assert.rejects(readFile(h.downloads))
     await assert.rejects(readFile(h.log))
     assert.equal((await readdir(h.root)).some(name => name.startsWith("chariox-setup.")), false)

@@ -68,6 +68,15 @@ for (const installId of ["local", "second"]) {
     const handoff = JSON.parse(readFileSync(join(home, "handoff.json"), "utf8"))
     assert.deepEqual(handoff.args, ["--api-url", profile.apiUrl, "--user-id", "owner", "--id", installId, "--port", "55149", "--repair"])
     assert.equal(handoff.inheritedKernelHome, null, "handoff must still isolate inherited kernel state")
+    const explanation = "MP-07/MP-08/MP-11: Setup failed: another install operation owns this install ID; confirm no installer is running, then remove only the empty lock directory."
+    writeFileSync(join(bin, "chariox-setup"), `#!/usr/bin/env node\nprocess.stderr.write(${JSON.stringify(explanation + "\n")});process.exitCode=1\n`, { mode: 0o700 })
+    const notices: string[] = []
+    await assert.rejects(startLocalKernelSetup(profile, message => notices.push(message)), /Setup failed/)
+    assert.ok(notices.join("").includes(explanation), "the TUI must receive Setup's recovery explanation")
+    writeFileSync(join(bin, "chariox-setup"), '#!/usr/bin/env node\nprocess.stderr.write(Buffer.alloc(32769,120));setInterval(()=>{},1000)\n', { mode: 0o700 })
+    const bounded: string[] = []
+    await assert.rejects(startLocalKernelSetup(profile, message => bounded.push(message)), /Setup failed/)
+    assert.ok(Buffer.byteLength(bounded.join("")) <= 32768, "stdout and stderr share the output bound")
     for (const invalid of [{ installId: "foreign" }, { port: 43118 }, { port: "55149" }, { port: 65535 }, { service: "chariox-md-staging.service" }]) {
       writeFileSync(join(root, "install.json"), JSON.stringify({ ...marker, ...invalid }), { mode: 0o600 })
       await assert.rejects(startLocalKernelSetup(profile), /invalid identity or port/, "invalid marked selection must not fall back to another install")

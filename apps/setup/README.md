@@ -58,9 +58,10 @@ node scripts/build-chariox-setup.mjs --version VERSION --public-key PUBLIC_HEX \
   --target linux-x64 --output /absolute/task-owned/output
 ```
 
-MP-07 / MP-11: the shell bootstrap requires curl, Python 3 and OpenSSL 3.x
-with Ed25519 support on `PATH`. It checks the OpenSSL version before downloading
-Setup; macOS's system LibreSSL is refused with a prerequisite diagnostic.
+MP-07 / MP-11: the shell bootstrap requires curl, Python 3 and an OpenSSL build
+with Ed25519 `pkeyutl -rawin` verification on `PATH`. It verifies a public RFC 8032
+test vector before downloading Setup; compatible OpenSSL versions pass, while
+macOS's system LibreSSL is refused with a prerequisite diagnostic.
 On macOS, install and select a compatible verifier before running the script:
 
 ```sh
