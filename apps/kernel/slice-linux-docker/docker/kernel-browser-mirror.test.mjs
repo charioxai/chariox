@@ -240,3 +240,27 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
 });
+
+// MP-11: no new packet is produced after the live page/native focus moves.
+test('MP-11: plain keys fence live focus before keyDown and pair release after focus moves',async()=>{
+ for(const key of ['Enter','Backspace','Delete','Tab']) {
+  const {service,state}=fixture();state.snapshot.focused='n1';
+  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const packet=await service.next(next(sub.subscription_id),'a');
+  let live='unobserved',calls=0;
+  service.evaluate=async(_world,expression)=>{assert(expression.includes('.activeTarget('));calls++;return live;};
+  const resolve=()=>service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:sub.subscription_id,sequence:packet.sequence,action:{kind:'key',key}},'a');
+  const moved=await resolve();assert.equal(calls,0,'MP-11: validate at dispatch');
+  await assert.rejects(async()=>moved.guard(),/focus|target/);
+  live='n1';const admitted=await resolve();await admitted.guard();assert.equal(calls,3);
+  live='unobserved';service.evaluate=async()=>assert.fail('MP-11: keyUp stays paired after keyDown moved focus');await admitted.guard();
+ }
+});
+
+test('MP-11: plain key refuses a display fallback without painted DOM focus',async()=>{
+ const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const evaluate=service.evaluate.bind(service);
+ service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('MP-11: observer unavailable');return evaluate(world,expression);};
+ const packet=await service.next(next(s.subscription_id),'a');
+ await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
+});

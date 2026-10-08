@@ -35,6 +35,12 @@ apply. Navigation, policy change, close and expiry clear admission. Old targets
 are checked against their observed and current identities, current protection,
 selection text/offsets and pointer geometry; the isolated world checks connected
 nodes, live geometry/attributes and existing focus/hit guards before dispatch.
+MP-11: a plain key's first dispatch requires the live active leaf and its
+ancestors to match the painted focus, including current protection, attributes
+and geometry. This check runs after text-key preflight. The paired keyUp keeps
+document/epoch checks without rechecking focus moved by keyDown (such as Tab).
+Coordinate-wrapped keyboard input follows validated native focus. Plain keys
+refuse when display fallback has no painted DOM focus.
 The exact `MP-11: stale mirror input epoch` marker is reserved for sequence-only
 refusal before dispatch. Document/policy/target/later-fence failures never carry
 that retry marker. The existing command deduplication remains authoritative.
