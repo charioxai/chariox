@@ -3198,8 +3198,25 @@ Multiple admitted viewers share one protected capture source. Each lease remains
 bound to its authenticated terminal, native generation and controller generation;
 disconnect, expiry and last-viewer close release its resources. Per-credit
 cancellation does not own the encoder lifetime. The existing display attach,
-next and unsubscribe operations address these leases. No relay frame changes
-are introduced; peer 97 remains unused.
+next and unsubscribe operations address these leases. This section adds no
+relay frame of its own; its events use the display encoding below. Peer 97
+remains unused.
+
+Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
+events change; every other event stays JSON. On the local WebSocket they are
+binary messages; over the relay they are the encrypted plaintext. The format is
+`CXD1`, a big-endian u32 header length, the JSON event header naming its
+segments, then the raw segment bytes in order. JSON plaintexts never start with
+`CXD1`. These events are sent only on a display delivery: a local
+`display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
+that never register display delivery never receive `CXD1`. Peer 96 adds an
+optional `CXR1` WebSocket binary relay envelope, negotiated with the
+`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
+relay reads only the routing header. Kernels fall back to JSON/base64 for older
+relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
+that decodes `CXD1` before kernels at 466 or later serve it Browser display;
+an older bundle cannot parse these frames.
 
 The shared presenter accepts desktop pixels only at the exact admitted physical
 geometry, with CSS dimensions divided by the selected DPR. It converts viewer
