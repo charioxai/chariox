@@ -57,6 +57,8 @@ impl SudoWindowProjection {
 /// Ratified owner constants: default window, selectable durations (maximum
 /// eight hours per fresh passkey verification) and the expiry warning.
 pub(crate) const SUDO_DEFAULT_MINUTES: u32 = 60;
+/// Listed to the agent only while its window is live.
+pub(crate) const SUDO_TOOL: &str = "chariox_kernel_request";
 pub(crate) const SUDO_WINDOW_MINUTES: [u32; 4] = [60, 120, 240, 480];
 const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 /// A due warning/expiry handled later than this by the sweep means its

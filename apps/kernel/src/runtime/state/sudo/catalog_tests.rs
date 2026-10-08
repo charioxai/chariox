@@ -1,7 +1,8 @@
 //! MP-08/MP-10/MP-11: an idle native run may still have a busy catalog lane.
 use super::relaunch_tests::queued_reload;
 use super::tests::{
-    fixture_with_catalog_reload, fixture_with_run_profile, popup, Fixture, PASSKEY,
+    fixture_with_catalog_reload, fixture_with_options, fixture_with_run_profile, popup, running,
+    Fixture, PASSKEY,
 };
 use super::*;
 use crate::provider::{
@@ -188,6 +189,70 @@ async fn sudo_native_first_turn_waits_for_deferred_catalog_refresh() {
     }
 }
 
+// MP-08/MP-10/MP-11 A04: listing a sudo tool never arms a catalog continuation.
+// The first turn refreshes explicitly; later window changes must not replay
+// ordinary prompts when another catalog hint arrives.
+#[tokio::test]
+async fn sudo_window_never_changes_the_catalog_change_signature() {
+    let f = fixture_with_options(None, true);
+    let agent = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(f.request.target_agent_id.as_deref().unwrap())
+        .unwrap();
+    let checkpoint = |name: &'static str| {
+        let listed = f
+            .router
+            .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
+            .iter()
+            .any(|spec| spec.name == "chariox_kernel_request");
+        (
+            name,
+            listed,
+            f.state.runtime_catalog_signature_for_agent(&agent),
+        )
+    };
+    let mut seen = vec![checkpoint("before")];
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let pending = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    popup(&f.state).await;
+    seen.push(checkpoint("pending"));
+    f.state
+        .revoke_sudo(Some("local"), None, "fixture_cleanup")
+        .unwrap();
+    assert!(pending.await.unwrap().is_err());
+    seen.push(checkpoint("pending revoked"));
+    let turn = running(&f);
+    seen.push(checkpoint("bound"));
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "fixture_cleanup")
+        .unwrap();
+    seen.push(checkpoint("ended"));
+    let listed: Vec<_> = seen
+        .iter()
+        .map(|(name, listed, _)| (*name, *listed))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("before", false),
+            ("pending", false),
+            ("pending revoked", false),
+            ("bound", true),
+            ("ended", false)
+        ]
+    );
+    for (name, _, signature) in &seen {
+        assert_eq!(signature, &seen[0].2, "{name}: catalog signature changed");
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Native {
@@ -213,6 +278,7 @@ enum Step {
     QueuedReload,
     BreakRelaunch,
     AckCatalog,
+    AssertStableCatalog,
 }
 
 // MP-08/MP-10/MP-11: the first turn's 60 s catalog budget counts only idle
@@ -223,7 +289,13 @@ enum Step {
 async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
     crate::test_support::isolated_env_test!();
     use Step::*;
-    let rows: [(&str, Kind, &'static [Step], Option<&str>); 10] = [
+    let rows: [(&str, Kind, &'static [Step], Option<&str>); 11] = [
+        (
+            "sudo visibility never arms an ordinary prompt continuation",
+            Kind::Native { room_tools: true },
+            &[HoldLane, Busy, Approve, AssertStableCatalog, Idle, ReleaseLane, AckCatalog],
+            None,
+        ),
         ("idle refresh ok", Kind::Native { room_tools: true }, &[Approve, AckCatalog], None),
         (
             "idle refresh fails",
@@ -320,6 +392,8 @@ async fn catalog_row(
         .clone();
     let mut watch = changes.subscribe(f.run.id());
     let initial = watch.as_ref().map(|watch| watch.current().desired);
+    let catalog_agent = f.state.owned.agent_store.get_agent(&agent).unwrap();
+    let initial_signature = f.state.runtime_catalog_signature_for_agent(&catalog_agent);
     let mut lane = None;
     let mut task = None;
     for step in steps {
@@ -398,6 +472,33 @@ async fn catalog_row(
             }
             // Its prepared cwd disappears during the policy relaunch delay.
             BreakRelaunch => std::fs::remove_dir_all(f.run.working_directory().unwrap()).unwrap(),
+            AssertStableCatalog => {
+                // Native launch preparation allocates a fresh MCP bearer;
+                // wait for the authorization future to open its window.
+                let token = f.run.runtime_mcp_auth_token().unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !f.state.sudo_window_open_for_auth_token(token) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("approved window should list its tool");
+                assert_eq!(
+                    f.state.runtime_catalog_signature_for_agent(&catalog_agent),
+                    initial_signature,
+                    "{name}: sudo visibility changed the catalog signature"
+                );
+                f.state
+                    .runtime_catalog_registration_changed(&catalog_agent, &initial_signature);
+                assert!(
+                    !f.state
+                        .owned
+                        .pending_mcp_continuations
+                        .write()
+                        .contains_key(&agent),
+                    "{name}: ordinary prompt continuation armed"
+                );
+            }
             AckCatalog => {
                 // Supplementary tools/list acknowledgement; no live claim.
                 tokio::time::timeout(Duration::from_secs(5), async {
