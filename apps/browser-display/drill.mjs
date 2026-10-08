@@ -159,12 +159,15 @@ try {
   try {
    const name=new URL(req.url,'http://localhost').pathname;
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
+   // MP-11 (owner 2026-10-08): a cross-site (isolated) consent-style frame with a protected field.
+   if(name==='/frame-consent'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><body style="margin:0;background:rgb(0,90,200)" onclick="document.body.style.background=\'rgb(0,200,90)\'"><input type="password" value="fixture" style="position:absolute;left:250px;top:120px;width:120px;height:40px;border:0"></body>');return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
    if(page){
     res.setHeader('Content-Type','text/html');const dynamic=process.env.MD_DYNAMIC_PROTECTED==='1'&&!dynamicFixtureServed;if(dynamic)dynamicFixtureServed=true;
     const overlay=`<div id="protected-fixture" ${dynamic?'':'data-chariox-observation-protected'} style="position:fixed;left:900px;top:200px;width:150px;height:80px;background:red;color:white;z-index:100">Protected fixture</div>`;
     const button=dynamic?`<button style="position:fixed;left:720px;top:200px;width:160px;height:80px;z-index:100" onclick="document.querySelector('#protected-fixture').setAttribute('data-chariox-observation-protected','')">Protect</button>`:'';
-    res.end(process.env.MD_PROTECTED==='1'?page.replace('</body>',overlay+button+'</body>'):page);return;
+    const frame=process.env.MD_FRAMES==='1'?`<iframe src="http://localhost:${server.address().port}/frame-consent" style="position:fixed;left:600px;top:400px;width:400px;height:200px;border:0;z-index:100"></iframe>`:'';
+    res.end(process.env.MD_PROTECTED==='1'||frame?page.replace('</body>',(process.env.MD_PROTECTED==='1'?overlay+button:'')+frame+'</body>'):page);return;
    }
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
@@ -318,6 +321,18 @@ try {
  const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('settled-verification-'+attempt));
  receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,verification_attempts:settled.verification_attempts,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:settled.fidelity};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
+ if(process.env.MD_FRAMES==='1'){
+  // MP-11: the isolated frame is visible and clickable; its protected field stays masked.
+  const dpr=geometry.dpr,read=async()=>{await page.evaluate(()=>mdStream.next());return PNG.sync.read(Buffer.from((await actual()).png.split(',')[1],'base64'))};
+  const px=(img,x,y)=>{const i=(y*dpr*img.width+x*dpr)*4;return [img.data[i],img.data[i+1],img.data[i+2]]},near=(a,b)=>a.every((v,i)=>Math.abs(v-b[i])<=24);
+  let img=await read();receipt.frame_checks={visible:px(img,620,420),field:px(img,910,540)};
+  if(!near(receipt.frame_checks.visible,[0,90,200]))throw Error('MP-11: isolated consent frame must be visible');
+  if(!near(receipt.frame_checks.field,[0,0,0]))throw Error('MP-11: protected field inside an isolated frame must be masked');
+  await page.evaluate(()=>mdStream.input({kind:'click',x:650,y:450}));
+  for(const deadline=performance.now()+5000;!near(px(img=await read(),620,420),[0,200,90]);await new Promise(r=>setTimeout(r,50)))if(performance.now()>deadline)throw Error('MP-11: click into the isolated frame was not presented');
+  Object.assign(receipt.frame_checks,{clicked:px(img,620,420),field_after:px(img,910,540)});await writeFile(path.join(output,'frames-clicked-viewer.png'),PNG.sync.write(img));
+  if(!near(receipt.frame_checks.field_after,[0,0,0]))throw Error('MP-11: protected field inside an isolated frame must stay masked');
+ }
  // A source compositor may finish painting after its first protected snapshot.
  // Permit bounded distinct refinements, then require an unchanged exact poll.
  receipt.idle_refinements=0;
