@@ -85,12 +85,15 @@ try {
  receipt.binary={source_path:binary,copied_sha256:digest.digest('hex')};
  receipt.client_assets=[];for(const name of ['harness.html','presenter.mjs','stripe-presenter.mjs','decoder-worker.mjs','scroll-prediction.mjs','motion-samples.mjs']){const contents=await readFile(path.join(here,name));receipt.client_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
  const override = {};
+ const assetRoot=process.env.MD_ASSET_ROOT??path.resolve(here,'../kernel/slice-linux-docker/docker');
+ if(!path.isAbsolute(assetRoot))throw Error('MP-11: explicit asset root must be absolute');
+ receipt.controller_asset_root=assetRoot;
  if(process.env.MD_SOURCE_ASSETS==='1') {
    const assets=path.join(root,'controller-assets');await mkdir(assets);
    const inventory=await readFile(path.resolve(here,'../kernel/src/runtime/kernel_browser_assets.rs'),'utf8');
    receipt.controller_assets=[];
    for(const match of inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"/]+)"\)/g)) {
-     const contents=await readFile(path.resolve(here,'../kernel/slice-linux-docker/docker',match[1]));
+     const contents=await readFile(path.join(assetRoot,match[1]));
      await writeFile(path.join(assets,match[1]),contents);
      receipt.controller_assets.push({name:match[1],sha256:createHash('sha256').update(contents).digest('hex')});
    }
@@ -190,7 +193,7 @@ try {
   if(directories.length!==1)throw Error('MD-DISPLAY: ambiguous materialized controller assets');
   const inventory=await readFile(path.resolve(here,'../kernel/src/runtime/kernel_browser_assets.rs'),'utf8');receipt.controller_assets=[];
   for(const match of inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"/]+)"\)/g)){
-   const actual=await readFile(path.join(base,directories[0].name,match[1]));const expected=await readFile(path.resolve(here,'../kernel/slice-linux-docker/docker',match[1]));
+   const actual=await readFile(path.join(base,directories[0].name,match[1]));const expected=await readFile(path.join(assetRoot,match[1]));
    const sha256=createHash('sha256').update(actual).digest('hex');if(sha256!==createHash('sha256').update(expected).digest('hex'))throw Error('MD-DISPLAY: embedded controller differs from measured source');
    receipt.controller_assets.push({name:match[1],sha256});
   }

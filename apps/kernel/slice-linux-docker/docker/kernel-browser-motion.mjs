@@ -37,10 +37,13 @@ export class MotionEncoder {
     // this already-protected exact raster. Never freeze a newly masked field.
     this.key=true;
     if(this.closed||!this.valid()||revision!==this.revision)continue;
-    let png=sample.data_base64;
+    let png=sample.data_base64,nativeExact;
     if(sample.raw?.nativeExact){
      const raw=sample.raw,exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],patch:false});
      png=exact.data_base64;
+     // MP-08/MP-10/MP-11: the native exact contract includes indexed PNGs
+     // and prepared repair tiles; never send it through the RGBA-only decoder.
+     nativeExact={...exact,refinement_serial:sample.serial};
     }else if(sample.raw){
      const raw=sample.raw,pixels=Buffer.from(raw.pixels);
      for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
@@ -51,7 +54,7 @@ export class MotionEncoder {
     // MP-11: exact fallback uses the bounded PNG budget. The smaller video
     // packet budget must not prevent a safe Retina raster from settling.
     if(png.length+this.frames.reduce((n,f)=>n+frameBytes(f),0)>4*1024*1024){this.invalidate(false);throw Error('MP-11: protected fallback exceeds bounded queue');}
-    this.frames.push({...protectedSample,data_base64:png,motion:false,force_lossless:true});this.wakeReady();
+    this.frames.push({...protectedSample,...nativeExact,data_base64:png,motion:false,force_lossless:true});this.wakeReady();
     continue;
    }
    if(this.encoder.hardwareFallback)this.timing('motion_hardware_fallback',performance.timeOrigin+this.now());

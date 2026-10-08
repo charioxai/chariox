@@ -32,3 +32,10 @@ test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordi
  assert(launchArguments('/private',false,true).includes('--disable-lcd-text'));
  assert(!launchArguments('/private',false,false).includes('--disable-lcd-text'));
 });
+
+// MP-08/MP-10/MP-11: physical browser scale stays independent of the
+// negotiated page raster. Both clients must attest the same bounded window.
+test('MP-10 host display uses physical DPR1 for negotiated DPR1/2 pages',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ assert(launchArguments('/private',false,true).includes('--force-device-scale-factor=1'));
+});
