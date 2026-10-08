@@ -315,5 +315,20 @@ class TraversalTest(unittest.TestCase):
             self.assertEqual(tree['masks'],[[20,30,246,152],[100,80,300,200]])
             self.assertIsNone(tree['active_window'])
 
+    def test_mp11_finding1_repeated_focus_checks_use_live_ancestors_and_leaf(self):
+        leaf=Node('public','text');leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+        rect=types.SimpleNamespace(x=30,y=50,width=200,height=30)
+        leaf.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda coords:rect)
+        frame=Node('Editor','frame',[leaf]);self.desktop=Node('Desktop','desktop',[Node('Editor','application',[frame])])
+        expected={'pid':200,'started':'1','path':[0,0],'bounds':[30,50,200,30]}
+        processes=[{'pid':200,'started':'1'}]
+        self.assertEqual(self.driver.input_target(processes,expected),expected)
+        frame.role='document web'
+        with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
+        frame.role='frame';leaf.secret=True
+        with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
+        leaf.secret=False;leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:False)
+        with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
+
 
 if __name__ == '__main__': unittest.main()

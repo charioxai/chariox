@@ -236,6 +236,27 @@ def input_target(processes, expected=None):
     web input uses the existing document-bound Browser path instead; this
     native fallback refuses it, including nested frame/shadow descendants.
     """
+    if expected is not None:
+        # MP-11: recheck the bound native leaf/ancestors before every press,
+        # without repeatedly traversing unrelated/background applications.
+        # X focus/geometry is independently fenced by the keyboard helper.
+        process=next((item for item in processes if item['pid']==expected['pid'] and item['started']==expected['started']),None)
+        if not process or not alive(process):raise ValueError('native app changed during input')
+        desktop=pyatspi.Registry.getDesktop(0)
+        apps=[desktop.getChildAtIndex(i) for i in range(min(desktop.childCount,64))]
+        apps=[app for app in apps if app and app.get_process_id()==expected['pid']]
+        if len(apps)!=1 or not 0<len(expected['path'])<=MAX_DEPTH:raise ValueError('native app ambiguous')
+        node=apps[0]
+        for index in expected['path']:
+            if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise ValueError('protected native ancestor')
+            node=node.getChildAtIndex(index)
+            if node is None:raise ValueError('native focused leaf changed')
+        if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise ValueError('protected native focus')
+        state=node.getState()
+        rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        if not state.contains(pyatspi.STATE_FOCUSED) or not state.contains(pyatspi.STATE_SHOWING) or [rect.x,rect.y,rect.width,rect.height]!=expected['bounds']:
+            raise ValueError('native focus changed during input')
+        return expected
     tree=snapshot(processes)
     active=tree.get('active_window')
     if not tree['available'] or not tree['complete'] or not active:
@@ -252,7 +273,6 @@ def input_target(processes, expected=None):
     if any(node.get('native_protected',node['protected']) or node['role'] in ('document web','password text') for node in ancestors):
         raise ValueError('protected target requires Browser or Vault input')
     identity={key:leaf[key] for key in ('pid','started','path','bounds')}
-    if expected is not None and identity!=expected:raise ValueError('native focus changed during input')
     return identity
 
 
