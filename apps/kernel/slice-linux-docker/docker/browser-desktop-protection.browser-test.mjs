@@ -132,3 +132,14 @@ test(`DPR ${dpr}: docked DevTools (page data outside page markers) withholds the
   assert.equal(result.after[0], 0);
   assert.equal(result.after[1], 0);
 }));
+
+test(`DPR ${dpr}: page zoom keeps placement exact (CSS to DIP to device pixels)`, () => withDesktop(async ({ browser, pid }) => {
+  await xdotool('search', '--onlyvisible', '--pid', String(pid), '--name', '.', 'windowactivate', '--sync');
+  for (let i = 0; i < 2; i++) { await xdotool('key', 'ctrl+plus'); await delay(400); }
+  await delay(800);
+  const result = await fenceBrowserCapture(browser, policy, async protection => ({ protection, ...(await census(pid, protection)) }));
+  assert.ok(result.protection.pages[0].dpr > dpr * 1.2, 'page zoom applied');
+  assert.deepEqual(result.bound, [true]);
+  assert.equal(result.after[0], 0);
+  assert.ok(result.after[1] > result.before[1] * 0.9);
+}));
