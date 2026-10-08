@@ -194,6 +194,13 @@ export class LinuxCapture {
   if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
   return this.control({click:[px,py]},true);
  }
+ // MP-08/MP-10: one key press/release on the owned display (X keysym:
+ // printable ASCII or a named editing key); callers fence the text target.
+ key(keysym,shift=false){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  if(!Number.isSafeInteger(keysym)||!(keysym>=0x20&&keysym<=0x7e||keysym>=0xff08&&keysym<=0xffff))return false;
+  return this.control({key:[keysym,shift?1:0]},true);
+ }
  // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
  // them only while a viewer canvas is exact and unprotected.
  plans(enabled){

@@ -6,13 +6,16 @@ const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
+// MP-08/MP-10: X keysyms for owned-display viewer keys (printable ASCII maps 1:1).
+const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backspace: 0xff08, Delete: 0xffff,
+  ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54, Home: 0xff50, End: 0xff57 };
 // MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
 // owned display (Selkies forwards every wheel event as X button notches).
 // Viewers report a notch as 120 (wheelDelta), 100 (Chrome on Windows,
 // automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
 // stay precise on CDP.
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
@@ -36,13 +39,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (frameTree.frame.loaderId === tab.document_id) cache.set(tab.target_id, { document: tab.document_id, contextId: executionContextId });
       return executionContextId;
     };
-    const checkTextTarget = async () => {
-      const evaluate = async contextId => connection.send("Runtime.evaluate", {
-        contextId,
-        // MP-08/MP-11: admitted mirrors may target observed same-origin frame
-        // descendants. Inspect the live leaf in this isolated world; direct
-        // frame input and inaccessible/protected frames still fail closed.
-        expression: `(() => { let e = document.activeElement; while(e) {
+    // MP-08/MP-11: admitted mirrors may target observed same-origin frame
+    // descendants. Inspect the live leaf in this isolated world; direct
+    // frame input and inaccessible/protected frames still fail closed.
+    const sensitive = () => `(() => { let e = document.activeElement; while(e) {
           if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
           if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
           if(e.tagName === 'IFRAME') {
@@ -50,13 +50,14 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
             try { const leaf = e.contentDocument?.activeElement; if(!leaf) return true; e = leaf; continue; } catch { return true; }
           }
           return false;
-        } return true; })()`,
-        returnByValue: true,
-      }, sessionId);
-      let reply;
-      try { reply = await evaluate(await textWorld()); }
-      catch { reply = await evaluate(await textWorld(true)); }
-      if (reply?.result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
+        } return true; })()`;
+    const evaluateText = async expression => {
+      const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression, returnByValue: true }, sessionId)).result?.value;
+      try { return await evaluate(await textWorld()); }
+      catch { return await evaluate(await textWorld(true)); }
+    };
+    const checkTextTarget = async () => {
+      if (await evaluateText(sensitive()) !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     let mirrorGuard;
     const sendInput = async (method, params) => {
@@ -97,6 +98,18 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         const key = { key: name === "Space" ? " " : name, code: name,
           ...(input.key === "Shift+Tab" ? { modifiers: 8 } : {}),
           windowsVirtualKeyCode: { Tab:9, Enter:13, Space:32, Escape:27, Backspace:8, Delete:46, ArrowLeft:37, ArrowUp:38, ArrowRight:39, ArrowDown:40, Home:36, End:35 }[name] };
+        // MP-08/MP-10: a viewer key on the owned display goes through XTest
+        // after the same document, text-target and mirror fences, and only
+        // while the page itself has focus (never browser UI); otherwise CDP.
+        const keysym = printable ? (/^[\x20-\x7e]$/.test(input.key) ? input.key.charCodeAt(0) : null) : keysyms[name];
+        if (nativeKey && !resolved && keysym != null) {
+          await check();
+          const text = printable || ["Enter", "Space"].includes(input.key);
+          const focused = await evaluateText(text ? `${sensitive()} ? 'sensitive' : document.hasFocus()` : "document.hasFocus()");
+          if (focused === "sensitive") throw new UserDomainRefusal("sensitive_requires_focus");
+          await check(); await mirrorGuard?.();
+          if (focused === true && nativeKey(keysym, input.key === "Shift+Tab")) { onDispatch?.(); return; }
+        }
         await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
           ...(["Enter", "Space"].includes(input.key) || printable ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
         // MP-08: paired releases keep document and live cancellation checks.

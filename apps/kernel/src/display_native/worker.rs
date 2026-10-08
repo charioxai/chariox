@@ -60,6 +60,9 @@ enum Command {
     Click {
         click: [i32; 2],
     },
+    Key {
+        key: [u32; 2],
+    },
     Plans {
         plans: bool,
     },
@@ -335,6 +338,15 @@ pub(super) fn run() -> Result<(), String> {
                 Command::Click { click: [x, y] } => {
                     if unsafe { ffi::cx_capture_click(capture.0, x, y) } != 0 {
                         return Err("MP-11: native click refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                // MP-08/MP-10: [keysym, shift] one key press/release.
+                Command::Key {
+                    key: [keysym, shift],
+                } => {
+                    if unsafe { ffi::cx_capture_key(capture.0, keysym.into(), shift as i32) } != 0 {
+                        return Err("MP-11: native key refused".into());
                     }
                     wake = Some(epoch());
                 }

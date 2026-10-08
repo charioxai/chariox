@@ -163,3 +163,27 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
   await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native click falls back to CDP press/release');
 });
+// MP-08/MP-10: viewer keys on the owned display use XTest after the document,
+// text-target and focus fences; anything else stays on CDP.
+test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non-sensitive page',async()=>{
+  const run=async({sensitive=false,focused=true,native=()=>true,key='a'})=>{
+    const sent=[],keys=[];let dispatched=0;
+    const connection={send:async(method,params)=>{sent.push({method,params});
+      if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'doc'}}};
+      if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+      if(method==='Runtime.evaluate')return {result:{value:params.expression==='document.hasFocus()'?focused:params.expression.includes("? 'sensitive'")?(sensitive?'sensitive':focused):sensitive}};
+      return {};}};
+    const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
+    const result=await inputHostTab(browser,tab,{kind:'key',key},{nativeKey:(...a)=>{keys.push(a);return native(...a)},onDispatch:()=>dispatched++}).then(()=>'ok',e=>e.code??e.message);
+    return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length};
+  };
+  assert.deepEqual(await run({}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:0});
+  assert.deepEqual(await run({key:'Shift+Tab'}),{result:'ok',keys:[[0xff09,true]],dispatched:1,cdp:0});
+  assert.deepEqual(await run({key:'Enter'}),{result:'ok',keys:[[0xff0d,false]],dispatched:1,cdp:0});
+  const refused=await run({sensitive:true});
+  assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');
+  assert.match(String(refused.result),/sensitive/);
+  assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:2,cdp:2},'unfocused page (browser UI focus) stays on CDP');
+  assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:2,cdp:2},'non-ASCII text stays on CDP');
+  assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:2,cdp:2},'MP-11: refused native key falls back to CDP');
+});
