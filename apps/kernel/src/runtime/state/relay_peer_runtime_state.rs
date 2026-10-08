@@ -9,7 +9,6 @@ use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
     RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
     RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
-    REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
 };
 
 use super::*;
