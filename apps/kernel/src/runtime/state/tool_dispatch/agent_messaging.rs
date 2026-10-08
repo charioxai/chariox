@@ -535,10 +535,15 @@ fn resolve_session_agent<'a>(
         return Err("agent must be a unique alias, agent ref, or agent id".to_string());
     }
     let mut matches = agents.iter().filter(|agent| {
-        agent.id() == reference || agent.agent_ref() == reference
-            || agent.alias().is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
+        agent.id() == reference
+            || agent.agent_ref() == reference
+            || agent
+                .alias()
+                .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
     });
-    let target = matches.next().ok_or_else(|| format!("agent `{reference}` does not exist in this session"))?;
+    let target = matches
+        .next()
+        .ok_or_else(|| format!("agent `{reference}` does not exist in this session"))?;
     if matches.next().is_some() {
         return Err(format!("ambiguous room agent reference `{reference}`"));
     }

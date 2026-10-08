@@ -104,6 +104,19 @@ impl KernelRuntimeState {
         request: crate::local::AddWorkflowRegistryEntryRequest,
         caller_agent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.execute_workflow_registry_add(request, caller_agent_id, None)
+            .await
+    }
+
+    async fn execute_workflow_registry_add(
+        &self,
+        request: crate::local::AddWorkflowRegistryEntryRequest,
+        caller_agent_id: Option<&str>,
+        from_workflow: Option<(
+            String,
+            crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+        )>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller_agent_id = caller_agent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let (registry, limits, scope) = self
@@ -131,11 +144,12 @@ impl KernelRuntimeState {
             })
             .await?;
         self.with_authorized_app_side_effect(move |app| {
-            app.durable_state_store().append_event(
-                "workflow_registry.added",
-                Some(event_session),
-                serde_json::json!({ "entry": &entry }),
-            )?;
+            let (kind, payload) = match from_workflow {
+                Some((workflow_ref, agent_mode)) => ("workflow_registry.added_from_workflow",
+                    serde_json::json!({ "entry": &entry, "workflow_ref": workflow_ref, "agent_mode": agent_mode })),
+                None => ("workflow_registry.added", serde_json::json!({ "entry": &entry })),
+            };
+            app.durable_state_store().append_event(kind, Some(event_session), payload)?;
             Ok(LocalDaemonResponse::WorkflowRegistryEntryAdded { entry })
         })
         .await
@@ -161,7 +175,7 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
-        self.execute_workflow_registry_add_request(
+        self.execute_workflow_registry_add(
             crate::local::AddWorkflowRegistryEntryRequest {
                 session_id: request.session_id,
                 name: request.name,
@@ -173,6 +187,7 @@ impl KernelRuntimeState {
                 },
             },
             caller_agent_id,
+            Some((request.workflow_ref, request.agent_mode)),
         )
         .await
     }

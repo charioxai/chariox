@@ -114,7 +114,10 @@ impl KernelRuntimeOwnedState {
             // Recheck persisted definitions too: restored workflows may predate
             // the binding fence. Do this before enqueue or provider preflight.
             if let LocalDaemonRequest::InvokeWorkflowEndpoint(r) = request {
-                let workflow = self.session_store.read().resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
+                let workflow = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
                 for node in workflow.nodes() {
                     let target = self.agent_store.get_agent(node.agent_id())?;
                     crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;

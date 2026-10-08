@@ -83,8 +83,13 @@ impl WorkflowRuntime {
         let caller_user_id = command_workflow_actor_user_id(&command);
         let caller_metaagent_id = command.caller.metaagent_id.clone();
         let grant_id = command.external_grant_id();
-        let command_state = self.store.state
-            .with_room_provider_origin(caller_metaagent_id.as_deref(), command.provider_run_id.as_deref())
+        let command_state = self
+            .store
+            .state
+            .with_room_provider_origin(
+                caller_metaagent_id.as_deref(),
+                command.provider_run_id.as_deref(),
+            )
             .with_room_request_origin(caller_metaagent_id.as_deref(), &request)
             .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
         let telemetry = LaneCommandTrace::new(
@@ -262,10 +267,17 @@ async fn run_workflow_command_lane(
         let result = match command_state.authorize_current_external_command() {
             Err(error) => Err(error),
             Ok(()) => {
-                let result = executor.with_command_state(command_state.clone()).execute(
-                    envelope.request, envelope.caller_user_id, envelope.caller_metaagent_id,
-                ).await;
-                command_state.authorize_current_external_command().and(result)
+                let result = executor
+                    .with_command_state(command_state.clone())
+                    .execute(
+                        envelope.request,
+                        envelope.caller_user_id,
+                        envelope.caller_metaagent_id,
+                    )
+                    .await;
+                command_state
+                    .authorize_current_external_command()
+                    .and(result)
             }
         };
         log_lane_completed(
