@@ -439,19 +439,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         }
         Operation::CancelWake { id, task, prompt } => {
             let mut wake = load_wake(tx, &id)?;
-            if wake.task_id != task {
-                return Err(error("wake belongs to another task"));
-            }
-            if terminal(&wake) {
-                return Ok(Outcome::Wakes(vec![wake]));
-            }
-            let mut t = load(tx, &task)?;
+            let caller = load(tx, &task)?;
+            let mut t = load(tx, &wake.task_id)?;
             if let Some(prompt) = &prompt {
-                current(&t, prompt)?;
-            } else if t.state != ExecutionState::Cancelled {
+                current(&caller, prompt)?;
+                // A fresh user turn is its own task. It may cancel a retained
+                // source of this same agent, without taking over that task.
+                if caller.room_id != t.room_id
+                    || caller.agent_id != t.agent_id
+                    || caller.owner_user_id.is_empty()
+                    || caller.owner_user_id != t.owner_user_id
+                {
+                    return Err(error(
+                        "wake cancellation requires the owning agent and room",
+                    ));
+                }
+            } else if caller.task_id != wake.task_id || t.state != ExecutionState::Cancelled {
                 return Err(error(
                     "only the owning turn or task cancellation cancels a wake",
                 ));
+            }
+            if terminal(&wake) {
+                return Ok(Outcome::Wakes(vec![wake]));
             }
             if wake.kind == "process" {
                 // A signal request cannot settle an executing resource.
@@ -467,25 +476,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             wake.state = "cancelled".into();
             wake.next_due_ms = None;
             match prompt {
-                Some(prompt) => {
-                    current(&t, &prompt)?;
+                Some(_) => {
                     if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
                         o.status = "cancelled".into();
                     }
-                    if let Some(mut reg) = registrations(tx, &task)?
-                        .into_iter()
-                        .find(|r| r.id == wake.registration_id)
-                    {
-                        reg.live = false;
-                        tx.execute(
-                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                            params![reg.id, encode(&reg)?],
-                        )
-                        .map_err(sql)?;
-                    }
                     t.revision += 1;
                     save(tx, &t)?;
-                    save_wake(tx, &wake)?;
+                    // Invalidate the original wait through its normal source
+                    // outcome. Otherwise a successor cancels the clock while
+                    // leaving the owning task asleep on its dead registration.
+                    cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
                 }
                 None => {
                     if t.state != ExecutionState::Cancelled {

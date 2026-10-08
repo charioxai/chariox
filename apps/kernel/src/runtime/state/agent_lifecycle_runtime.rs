@@ -22,7 +22,7 @@ impl KernelRuntimeOwnedState {
             )?
             .iter()
             .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
-        self.durable_state_store.agent_lifecycle(Operation::Begin {
+        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
             owner: self
                 .session_store
                 .get_session(&prepared.session_id)?
@@ -33,7 +33,11 @@ impl KernelRuntimeOwnedState {
             prompt: prepared.prompt.id().into(),
             run: None,
             now: crate::session::unix_epoch_ms(),
-        })?;
+        })?
+        else {
+            unreachable!()
+        };
+        self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
     pub(super) fn withdraw_agent_task(&self, prompt: &str) -> Result<(), DaemonError> {
@@ -330,14 +334,22 @@ impl KernelRuntimeState {
             .pending_prompt_id
             .clone()
             .ok_or_else(|| ledger::error("missing durable continuation intent"))?;
+        let workflow = self.owned.agent_workflow_task_context(task)?;
+        let workflow_attachment = workflow
+            .as_ref()
+            .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
-            attachment,
+            workflow_attachment.as_deref().unwrap_or(attachment),
             &task.agent_id,
             text,
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, &format!("task:{}:{}", task.task_id, task.revision));
+        let prompt = match workflow {
+            Some((run, node)) => prompt.with_workflow_context(run, node),
+            None => prompt,
+        };
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -424,6 +436,13 @@ impl KernelRuntimeState {
                         }
                         _ => Some(false),
                     },
+                    "workflow"
+                        if self
+                            .owned
+                            .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
+                    {
+                        None
+                    }
                     "workflow" => session
                         .workflow_runs()
                         .iter()

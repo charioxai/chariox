@@ -2,6 +2,251 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+// MP-08 / MP-09 / MP-10 / MP-11 G14: native turn settlement is not
+// workflow completion while its kernel task still owns a supervised wait.
+#[tokio::test]
+async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_task() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_config(
+        crate::test_support::TestWorktree::new("a03-workflow-wait"),
+        config,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let Outcome::Task(task) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    assert_eq!(
+        owned.agent_workflow_task_context(&task).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+    assert!(owned
+        .durable_state_store
+        .agent_lifecycle(Operation::BindWorkflow {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            run: "foreign-run".into(),
+            node: fixture.node_run_id.clone()
+        })
+        .is_err());
+    let wake = AgentWake {
+        id: "workflow-timer".into(),
+        task_id: task.task_id.clone(),
+        room_id: task.room_id.clone(),
+        agent_id: task.agent_id.clone(),
+        registration_id: "completion-workflow-timer".into(),
+        kind: "timer".into(),
+        label: "workflow wait".into(),
+        state: String::new(),
+        created_at_ms: now,
+        verified_at_ms: None,
+        next_due_ms: Some(now + 60_000),
+        interval_ms: Some(60_000),
+        command: vec![],
+        match_text: None,
+        matched_at_ms: None,
+        pid: None,
+        exit_code: None,
+        fire_count: 0,
+        missed_fires: 0,
+        last_fired_at_ms: None,
+        last_sequence: None,
+        last_delivery: None,
+        last_delivered_at_ms: None,
+        last_acknowledged_at_ms: None,
+        alerted_sequence: None,
+    };
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            wake,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            registrations: vec!["completion-workflow-timer".into()],
+            cursor: 0,
+            deadline: now + 120_000,
+            reason: "wait for actual source".into(),
+            now,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: "interrupt-provider-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    // Remove the same workflow's duplicate fixture prompts, then reserve the
+    // actual native completion, as the provider settlement path does. Only
+    // the Waiting task remains to keep this run alive.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    for agent in owned.agent_store.get_session_agents(&fixture.session_id) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(&fixture.session_id, agent.id(), active, queued)
+            .unwrap();
+    }
+    owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            prompt.id(),
+        )
+        .unwrap()
+        .expect("reserve native completion");
+    owned
+        .workflow_complete_prompt(&fixture.session_id, &prompt, None)
+        .unwrap();
+    let run = owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&fixture.session_id, &fixture.workflow_run_id)
+        .expect("returned run must remain addressable during a task wait");
+    assert_eq!(
+        run.status(),
+        crate::session::WorkflowRunStatus::Running,
+        "native end must not complete a supervised workflow node"
+    );
+    let targets = owned
+        .supervised_workflow_targets(&fixture.session_id)
+        .unwrap();
+    assert_eq!(
+        owned
+            .session_store
+            .write()
+            .reconcile_live_orphaned_workflow_runs_with_tasks(
+                &fixture.session_id,
+                u64::MAX,
+                5_000,
+                &targets
+            )
+            .unwrap(),
+        0,
+        "a workflow with a Waiting task is not an orphan"
+    );
+    // The same private task binding survives inbox turn promotion.
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::FireWakes { now: now + 60_000 })
+        .unwrap();
+    let event = owned
+        .durable_state_store
+        .agent_inbox(&task.room_id, &task.agent_id, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.source_id == "workflow-timer")
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Attempt {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            sequence: event.sequence,
+            prompt: "workflow-event".into(),
+            target: None,
+            run: None,
+            now: now + 60_001,
+        })
+        .unwrap();
+    let Outcome::Task(promoted) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: "workflow-event".into(),
+            run: Some("interrupt-provider-run".into()),
+            now: now + 60_002,
+        })
+        .unwrap()
+    else {
+        panic!("promoted task")
+    };
+    assert_eq!(promoted.task_id, task.task_id);
+    assert_eq!(
+        owned.agent_workflow_task_context(&promoted).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+    let (cancelled, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: run.id().into(),
+        })
+        .await;
+    let LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } = cancelled.unwrap() else {
+        panic!("cancel response")
+    };
+    assert_eq!(workflow_run.id(), run.id());
+    assert_eq!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == task.task_id)
+            .unwrap()
+            .state,
+        ExecutionState::Cancelled
+    );
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()[0]
+            .state,
+        "cancelled"
+    );
+}
+
 #[tokio::test]
 async fn pause_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(true).await;

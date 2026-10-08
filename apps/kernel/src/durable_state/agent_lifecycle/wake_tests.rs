@@ -109,6 +109,193 @@ impl Drop for Fixture {
     }
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a new user turn remains a separate task,
+// but may explicitly cancel this same agent's retained watcher.
+#[test]
+fn a03_successor_turn_cancels_waiting_watch_without_transferring_ownership() {
+    let f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "process".into(),
+        pid: 42,
+        now: 20,
+    });
+    f.wait_on(&["process"]);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "cancel-turn".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::CancelWake {
+        id: "process".into(),
+        task: "cancel-turn".into(),
+        prompt: Some("cancel-turn".into()),
+    });
+    assert_eq!(f.wake("process").state, "cancelling");
+    assert_eq!(f.wake("process").task_id, "p");
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::ProcessExited {
+        id: "process".into(),
+        exit_code: Some(143),
+        tail: String::new(),
+        now: 50,
+    });
+    assert_eq!(f.wake("process").state, "cancelled");
+    assert_eq!(f.task().obligations[0].status, "cancelled");
+    assert!(f
+        .inbox()
+        .iter()
+        .any(|e| e.kind == "source_lost" && e.payload["task_id"] == "p"));
+}
+
+#[test]
+fn a03_successor_timer_cancellation_wakes_original_wait() {
+    let f = Fixture::new();
+    f.create("timer", "timer", Some(1_000), Some(60_000));
+    f.wait_on(&["timer"]);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "cancel-turn".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::CancelWake {
+        id: "timer".into(),
+        task: "cancel-turn".into(),
+        prompt: Some("cancel-turn".into()),
+    });
+    assert_eq!(f.wake("timer").state, "cancelled");
+    assert!(f
+        .inbox()
+        .iter()
+        .any(|e| e.kind == "source_lost" && e.payload["task_id"] == "p"));
+    f.apply(Operation::FireWakes { now: 100_000 });
+    assert_eq!(f.wake("timer").fire_count, 0);
+}
+
+#[test]
+fn a03_successor_cancel_rejects_foreign_room_agent_owner_and_stale_turn() {
+    for (room, agent, owner, prompt) in [
+        ("foreign", "agent", "owner", "cancel-turn"),
+        ("room", "other", "owner", "cancel-turn"),
+        ("room", "agent", "foreign", "cancel-turn"),
+        ("room", "agent", "owner", "stale"),
+    ] {
+        let f = Fixture::new();
+        f.create("timer", "timer", Some(1_000), None);
+        f.wait_on(&["timer"]);
+        f.apply(Operation::Begin {
+            owner: owner.into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: "cancel-turn".into(),
+            run: Some("run".into()),
+            now: 40,
+        });
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::CancelWake {
+                id: "timer".into(),
+                task: "cancel-turn".into(),
+                prompt: Some(prompt.into())
+            })
+            .is_err());
+        assert_eq!(f.wake("timer").state, "scheduled");
+    }
+}
+
+#[test]
+fn a03_owner_resume_delivery_cannot_create_a_second_task_before_continuation() {
+    let f = Fixture::new();
+    f.create("timer", "timer", Some(1_000), Some(60_000));
+    f.apply(Operation::FireWakes { now: 1_000 });
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "owner action".into(),
+    });
+    let revision = f.task().blocked_revision;
+    let sequence = f.inbox()[0].sequence;
+    f.apply(Operation::OwnerResponse {
+        task: "p".into(),
+        revision,
+        resume: true,
+        now: 1_001,
+    });
+    let resumed = f.task();
+    let continuation = resumed.pending_prompt_id.clone().unwrap();
+    let attempt = || Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence,
+        prompt: "event-turn".into(),
+        target: None,
+        run: None,
+        now: 1_002,
+    };
+    assert!(
+        f.store.agent_lifecycle(attempt()).is_err(),
+        "an event must not overtake the owner continuation"
+    );
+    assert_eq!(f.inbox()[0].state, "pending");
+    assert_eq!(f.task(), resumed);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: continuation.clone(),
+        run: Some("run".into()),
+        now: 1_003,
+    });
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: continuation.clone(),
+        registrations: vec!["completion-timer".into()],
+        cursor: 0,
+        deadline: 100_000,
+        reason: "resume waiting".into(),
+        now: 1_004,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: continuation,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 1_005,
+    });
+    f.apply(attempt());
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "event-turn".into(),
+        run: Some("run".into()),
+        now: 1_006,
+    });
+    assert_eq!(f.task().task_id, "p");
+    assert_eq!(f.task().prompt_id, "event-turn");
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("agent"))
+            .unwrap()
+            .len(),
+        1
+    );
+    f.apply(Operation::CancelWake {
+        id: "timer".into(),
+        task: "p".into(),
+        prompt: Some("event-turn".into()),
+    });
+    assert_eq!(f.wake("timer").state, "cancelled");
+}
+
 #[test]
 fn a03_interval_keeps_receipts_when_an_earlier_fire_is_acknowledged_late() {
     let f = Fixture::new();

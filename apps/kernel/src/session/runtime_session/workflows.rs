@@ -11,6 +11,19 @@ impl RuntimeSession {
         now_ms: u64,
         grace_period_ms: u64,
     ) -> usize {
+        self.reconcile_live_orphaned_workflow_runs_with_tasks(
+            now_ms,
+            grace_period_ms,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn reconcile_live_orphaned_workflow_runs_with_tasks(
+        &mut self,
+        now_ms: u64,
+        grace_period_ms: u64,
+        supervised_tasks: &BTreeSet<(String, String)>,
+    ) -> usize {
         let durable_workflow_prompt_targets = self
             .prompt_runtime
             .prompt_states()
@@ -41,6 +54,10 @@ impl RuntimeSession {
                     .iter()
                     .any(|(run_id, _)| run_id == workflow_run.id())
                 || settling_workflow_run_ids.contains(workflow_run.id())
+                || supervised_tasks.iter().any(|(run, node)| {
+                    run == workflow_run.id()
+                        && workflow_run.node_runs().iter().any(|n| n.id() == node)
+                })
             {
                 continue;
             }

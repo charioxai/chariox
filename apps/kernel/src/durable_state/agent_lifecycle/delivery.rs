@@ -65,6 +65,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }
+            // Owner Resume/correction already owns the next turn. Do not let
+            // an idle inbox attempt race its admission into a second task.
+            if target.is_none()
+                && e.kind != "message"
+                && tasks(tx)?.iter().any(|t| {
+                    t.room_id == room
+                        && t.agent_id == agent
+                        && t.pending_prompt_id.is_some()
+                        && (e.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                            || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                            }))
+                })
+            {
+                return Err(error("task continuation must settle before inbox delivery"));
+            }
             replies::bind(tx, &e, target.as_deref())?;
             e.state = "submitting".into();
             e.prompt_id = Some(prompt.clone());

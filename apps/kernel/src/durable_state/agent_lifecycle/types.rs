@@ -255,6 +255,13 @@ pub(crate) enum Operation {
     Withdraw {
         task: String,
     },
+    /// Private kernel lineage; not a serialized client contract.
+    BindWorkflow {
+        task: String,
+        prompt: String,
+        run: String,
+        node: String,
+    },
     OwnerResponse {
         task: String,
         revision: u64,
