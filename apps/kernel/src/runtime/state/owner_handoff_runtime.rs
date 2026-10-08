@@ -211,7 +211,11 @@ impl KernelRuntimeState {
             message.push_str("\nIntended change:\n");
             message.push_str(&change_text(&handoff.change));
         }
-        message.push_str("\nUse Chariox protected entry or the live browser, then Done.");
+        message.push_str(if handoff.kind == HandoffKind::Click {
+            "\nReview the scoped view and authorize the click, or use the live browser, then Done."
+        } else {
+            "\nUse Chariox protected entry to enter the value into this field."
+        });
         let interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
