@@ -87,7 +87,14 @@ export class KernelBrowserHost {
     return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
       width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
-  async save() {
+  // MP-08/MP-10: concurrent reconciles (e.g. a native click that navigates)
+  // share one writer; parallel renames of one temporary file raced (ENOENT).
+  save() {
+    const run = (this.saving ?? Promise.resolve()).catch(() => {}).then(() => this.write());
+    this.saving = run;
+    return run;
+  }
+  async write() {
     const name = path.join(this.root, "tabs.json");
     const data = { generation: this.generation, scale: this.chromium.scale ?? 1, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);

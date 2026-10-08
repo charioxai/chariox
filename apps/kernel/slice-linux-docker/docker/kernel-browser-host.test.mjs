@@ -843,3 +843,18 @@ test('MP-10 a live viewer keeps the browser scale; another scale is emulated',()
  assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:2,mobile:false});
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
+
+// MP-08/MP-10: overlapping reconciles must not race one temporary tabs file.
+test("MP-08/MP-10 concurrent tab saves are serialized", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(path.join(tmpdir(), "tabs-save-"));
+  try {
+    const host = new KernelBrowserHost(root);
+    host.tabs.set("a", { tab_id: "a", url: "https://example.com/" });
+    const first = host.save();
+    host.tabs.set("b", { tab_id: "b", url: "https://example.org/" });
+    await Promise.all([first, host.save(), host.save()]);
+    assert.equal(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).tabs.length, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
