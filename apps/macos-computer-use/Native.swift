@@ -46,8 +46,6 @@ struct MacSource: NativeSource {
     }
     func target(_ request: Request) throws -> AXUIElement {
         try validateTarget(request)
-        guard AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary)
-        else { throw Refusal.permission }
         let app = AXUIElementCreateApplication(request.pid)
         guard AXUIElementSetMessagingTimeout(app, 0.5) == .success else { throw Refusal.target }
         let window = try selectedWindow(request, app: app)
@@ -140,12 +138,10 @@ struct MacSource: NativeSource {
         }
     }
     func perform(_ operation: Operation, request: Request) async throws -> String {
-        try validateTarget(request)
-        try checkPermission(operation)
         let element = try target(request)
         try fence(request, element: element, typing: false)
         if case .capture(let path) = operation {
-            guard #available(macOS 14.0, *), CGPreflightScreenCaptureAccess() else { throw Refusal.permission }
+            guard #available(macOS 14.0, *) else { throw Refusal.permission }
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             guard let window = content.windows.first(where: { $0.windowID == request.window && $0.owningApplication?.processID == request.pid })
             else { throw Refusal.target }
