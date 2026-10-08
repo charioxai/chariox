@@ -639,3 +639,37 @@ fn agent_message_target_label(agent: &crate::agent::AgentInstance) -> String {
         .map(|alias| format!("@{alias}"))
         .unwrap_or_else(|| agent.agent_ref().to_string())
 }
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn security_f6_messages_reject_restored_reference_collisions() {
+        let agent = |id: &str, alias: &str| {
+            crate::agent::AgentInstance::new(
+                id,
+                format!("ref-{id}"),
+                "room",
+                Some(alias.into()),
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        // Legacy snapshots may already contain an alias that is another ID.
+        let mut agents = vec![agent("agent-1", "agent-2"), agent("agent-2", "peer")];
+        for _ in 0..2 {
+            assert!(resolve_session_agent(&agents, "agent-2")
+                .unwrap_err()
+                .contains("ambiguous"));
+            assert_eq!(
+                resolve_session_agent(&agents, "@PEER").unwrap().id(),
+                "agent-2"
+            );
+            agents.reverse();
+        }
+    }
+}
