@@ -18,7 +18,7 @@ const RECENT_TAIL_TURNS: usize = 3;
 const MAX_RECENT_ASSISTANT_BYTES: usize = 3_000;
 const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
 const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
-const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request.";
+const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request. Prior turn bodies use JSON string escaping; decode escapes to recover exact line boundaries and spacing.";
 const BRIEF_HEADER: &str =
     "Handoff brief (written by a model from the conversation; the turns below are verbatim):\n";
 const FACTS_HEADER: &str = "Recorded by the Chariox kernel:\n";
@@ -89,7 +89,7 @@ impl AgentConversation {
     }
 
     /// Whether the deterministic packet keeps every turn without shortening
-    /// prompts, answers or hiding tool details. Whitespace folding is harmless.
+    /// prompts, answers or hiding tool details. Prior bodies use JSON string escaping to preserve value boundaries.
     pub(super) fn fits_without_brief(&self, max_bytes: usize) -> bool {
         let Some(packet) = self.render(max_bytes) else {
             return self.is_empty();
@@ -103,7 +103,7 @@ impl AgentConversation {
                 let text = if latest {
                     text.trim().to_string()
                 } else {
-                    single_line(text)
+                    transcript_text(text)
                 };
                 packet.contains(&text)
             };
@@ -307,7 +307,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
         .map(|turn| {
             format!(
                 "- User: {}",
-                single_line(&truncate_bytes(&turn.user_prompt, MAX_PRIOR_USER_BYTES))
+                truncate_bytes(&transcript_text(&turn.user_prompt), MAX_PRIOR_USER_BYTES)
             )
         })
         .collect::<Vec<_>>();
@@ -321,7 +321,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
             } else {
                 MAX_PRIOR_ASSISTANT_BYTES
             };
-            let answer = single_line(&truncate_bytes(&turn.answer(), max_bytes));
+            let answer = truncate_bytes(&transcript_text(&turn.answer()), max_bytes);
             (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
         })
         .collect::<Vec<_>>();
@@ -416,15 +416,24 @@ fn event_kind_label(kind: HistoryEventKind) -> &'static str {
     }
 }
 
+pub(super) fn transcript_text(text: &str) -> String {
+    let escaped = serde_json::to_string(text.trim()).expect("a string is JSON serializable");
+    escaped[1..escaped.len() - 1].to_string()
+}
+
 pub(super) fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The start and end of `text` in at most `max_bytes`, on one line.
 pub(super) fn excerpt(text: &str, max_bytes: usize) -> String {
-    let text = single_line(text);
+    bounded_excerpt(&single_line(text), max_bytes)
+}
+
+/// The start and end of text without changing its value boundaries or spacing.
+pub(super) fn bounded_excerpt(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
-        return text;
+        return text.to_string();
     }
     let half = max_bytes.saturating_sub(5) / 2;
     let mut head = half;
@@ -619,6 +628,28 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_handoff_preserves_exact_value_line_boundaries() {
+        let events = vec![
+            user_event(1, "session", "agent", "Propose a name and explain it."),
+            output_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                "proposal=Switch Queue Continuity\nChecks native-session preservation.",
+            ),
+            user_event(3, "session", "agent", "Continue the audit."),
+        ];
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        assert!(
+            handoff.contains(
+                "Assistant: proposal=Switch Queue Continuity\\nChecks native-session preservation."
+            ),
+            "{handoff}"
+        );
+    }
+
+    #[test]
     fn streamed_answer_chunks_render_as_one_answer() {
         let events = vec![
             user_event(1, "session", "agent", "Invent a release name."),
@@ -663,7 +694,7 @@ mod tests {
         let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
 
         assert!(
-            handoff.contains("Assistant: Let me check the file. The file contains a parser."),
+            handoff.contains("Assistant: Let me check the file.\\nThe file contains a parser."),
             "{handoff}"
         );
         assert!(

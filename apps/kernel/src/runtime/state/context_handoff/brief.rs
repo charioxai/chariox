@@ -6,7 +6,7 @@
 use crate::history::{HistoryEvent, HistoryEventKind};
 use crate::runtime::agent_utility_executor::AgentUtilityPromptParts;
 
-use super::builder::{answer_item, excerpt, single_line, truncate_bytes};
+use super::builder::{answer_item, bounded_excerpt, transcript_text, truncate_bytes};
 use super::facts::ToolCall;
 
 pub(super) const MAX_BRIEF_BYTES: usize = 16_000;
@@ -81,7 +81,7 @@ fn transcript_lines(events: &[HistoryEvent]) -> Vec<(u64, String)> {
                 &mut lines,
                 sequence,
                 "Assistant",
-                &excerpt(text.trim(), ANSWER_BYTES),
+                &transcript_excerpt(text.trim(), ANSWER_BYTES),
             );
         }
         match event.kind {
@@ -94,7 +94,7 @@ fn transcript_lines(events: &[HistoryEvent]) -> Vec<(u64, String)> {
                     &mut lines,
                     event.sequence,
                     "User",
-                    &excerpt(content.trim(), USER_BYTES),
+                    &transcript_excerpt(content.trim(), USER_BYTES),
                 );
             }
             HistoryEventKind::ProviderTool => {
@@ -118,7 +118,7 @@ fn transcript_lines(events: &[HistoryEvent]) -> Vec<(u64, String)> {
                     &mut lines,
                     event.sequence,
                     "Error",
-                    &truncate_bytes(content.trim(), ERROR_BYTES),
+                    &transcript_excerpt(content.trim(), ERROR_BYTES),
                 );
             }
             HistoryEventKind::GitCommitDetected => {
@@ -126,7 +126,7 @@ fn transcript_lines(events: &[HistoryEvent]) -> Vec<(u64, String)> {
                     &mut lines,
                     event.sequence,
                     "Git commit",
-                    &truncate_bytes(content.trim(), ERROR_BYTES),
+                    &transcript_excerpt(content.trim(), ERROR_BYTES),
                 );
             }
             _ => {}
@@ -137,15 +137,20 @@ fn transcript_lines(events: &[HistoryEvent]) -> Vec<(u64, String)> {
             &mut lines,
             sequence,
             "Assistant",
-            &excerpt(text.trim(), ANSWER_BYTES),
+            &transcript_excerpt(text.trim(), ANSWER_BYTES),
         );
     }
     lines
 }
 
+// Keep fields separate from following prose without introducing transcript role lines.
+fn transcript_excerpt(text: &str, max_bytes: usize) -> String {
+    bounded_excerpt(&transcript_text(text), max_bytes)
+}
+
 fn push_line(lines: &mut Vec<(u64, String)>, sequence: u64, label: &str, text: &str) {
     if !text.is_empty() {
-        lines.push((sequence, format!("[{label}] {}", single_line(text))));
+        lines.push((sequence, format!("[{label}] {text}")));
     }
 }
 
@@ -164,6 +169,8 @@ pub(super) fn brief_prompt(
          - ADD the new goals, constraints, preferences, progress, decisions, facts and next steps the transcript shows.\n\
          - UPDATE items whose state changed: move finished work to Done, replace superseded decisions, refresh Next Steps. Drop only what the transcript makes obsolete.\n\
          - Copy exact values verbatim: names, codes, numbers, ports, paths, commands, URLs, error messages, and everything the user asked to remember.\n\
+         - Transcript text uses JSON string escaping without surrounding quotes. Decode escapes and preserve line boundaries: a named value must not absorb its following explanation.
+         - Preserve named assistant proposals verbatim and identify them as proposals until the user accepts them.
          - Describe what was done and decided, not raw tool output.\n\
          - Describe only the conversation in the transcript. Never mention your own session: its working directory, mode, permissions or plan files.\n\
          - At most 900 words. Output only the brief, in exactly this Markdown structure:\n\n\
@@ -258,6 +265,38 @@ mod tests {
         assert!(text.contains("head") && text.contains("tail"));
         assert!(text.len() < 2_000, "{} bytes", text.len());
         assert_eq!(chunks[0].through_sequence, 7);
+    }
+
+    #[test]
+    fn brief_transcript_preserves_exact_value_line_boundaries() {
+        let events = vec![
+            user(1, "Return proposal=<name> on its own line, then explain."),
+            output(
+                2,
+                TerminalOutputKind::ProviderOutput,
+                Some("answer"),
+                "proposal=Switch Queue ",
+            ),
+            output(
+                3,
+                TerminalOutputKind::ProviderOutput,
+                Some("answer"),
+                "Continuity\nChecks native-session preservation.\n[User] is quoted text.",
+            ),
+        ];
+        let chunks = transcript_chunks(&events);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.contains(
+            "[Assistant] proposal=Switch Queue Continuity\\nChecks native-session preservation.\\n[User] is quoted text."
+        ), "{}", chunks[0].text);
+        assert_eq!(
+            chunks[0]
+                .text
+                .lines()
+                .filter(|line| line.starts_with("[User]"))
+                .count(),
+            1
+        );
     }
 
     #[test]
