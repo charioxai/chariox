@@ -803,17 +803,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let fanout = ProviderOutputFanout::new(self.app);
         let mut saw_response_content = false;
         let mut saw_runtime_activity = false;
-        for mut chunk in drain.chunks {
+        for chunk in drain.chunks {
             if chunk.text.is_empty() {
                 continue;
-            }
-            if crate::provider::classify_provider_terminal_failure_output_text(
-                provider_run.adapter_key(),
-                &chunk.text,
-            )
-            .is_some()
-            {
-                chunk.kind = TerminalOutputKind::ProviderError;
             }
             if chunk.kind == TerminalOutputKind::ProviderTool {
                 crate::transport::flow_control::note_prompt_tool_output(
