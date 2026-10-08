@@ -257,16 +257,18 @@ export class MirrorService {
     const call=async method=>{assertNotCancelled(signal);assertEpoch();await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertEpoch();const result=await this.evaluate(world,`(()=>{globalThis.__charioxMirror.validate(${JSON.stringify(targets.map(id=>records.get(id)))});return globalThis.__charioxMirror.${method}(${JSON.stringify(action)})})()`);assertEpoch();return result;};
     if(action.kind==='selection')return {perform:(_send,mark)=>{mark?.();return call('select');}};
     if(action.kind==='focus')return {perform:(_send,mark)=>{mark?.();return call('focus');}};
-    if(action.kind==='coordinate') {
-      if(!stream.fullFallback&&['text','key'].includes(action.input?.kind)) {
-        // MP-08/MP-11: following native input, resolve native focus at dispatch.
+    if(action.kind==='key'||action.kind==='coordinate') {
+      const physical=action.kind==='key'?{kind:'key',key:action.key}:action.input;
+      if(!stream.fullFallback&&['text','key'].includes(physical?.kind)) {
+        // MP-08/MP-11: bind plain keys to painted focus; coordinate-wrapped
+        // input follows native focus after Tab. Validate both at dispatch.
         // Never refocus the old viewer field. Unknown/protected/new focus fails.
         // A Tab keyDown may move focus; its keyUp must stay paired.
-        const editable=action.input.kind==='text';let checked=false;
+        const editable=physical.kind==='text';let checked=false;
         const guard=async()=>{
           assertEpoch();assertNotCancelled(signal);if(checked)return;
           const id=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget([],${editable})`);assertEpoch();
-          if(!unchanged(id))throw new Error('MP-11: changed native mirror text focus');
+          if(!unchanged(id)||action.kind==='key'&&id!==epoch.focused)throw new Error('MP-11: changed native mirror text focus');
           const expected=[];for(let node=records.get(id);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
             if(!unchanged(node.id))throw new Error('MP-11: changed native mirror text ancestor');
             const old=JSON.parse(epoch.nodes.get(node.id));expected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
@@ -275,10 +277,11 @@ export class MirrorService {
           if(focused!==id)throw new Error('MP-11: changed native mirror text focus');
           checked=true;
         };
-        if(!editable)return {input:action.input,guard,observedFrameInput:true};
-        if(typeof action.input.text!=='string'||action.input.text.length>16384)throw new Error('MP-11: invalid native mirror text');
-        return {guard,observedFrameInput:true,perform:send=>send('Input.insertText',{text:action.input.text})};
+        if(!editable)return {input:physical,guard,observedFrameInput:true};
+        if(typeof physical.text!=='string'||physical.text.length>16384)throw new Error('MP-11: invalid native mirror text');
+        return {guard,observedFrameInput:true,perform:send=>send('Input.insertText',{text:physical.text})};
       }
+      if(action.kind==='key')throw new Error('MP-11: mirror key requires observed focus; use coordinate input for display fallback');
       let checked=false;
       const guard=async()=>{
         assertEpoch();
@@ -294,7 +297,6 @@ export class MirrorService {
       };
       return {input:action.input,guard};
     }
-    if(action.kind==='key')return {input:{kind:'key',key:action.key},guard:assertEpoch};
     const point=await call('locate');
     if(action.kind==='click')return {input:{kind:'click',...point},guard:assertEpoch};
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};

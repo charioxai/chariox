@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
@@ -49,7 +49,7 @@ async function native(markup, operation, instrument = true) {
       assert(!result.exceptionDetails, 'MP-10: credential-free fixture setup/read failed');
       return result.result.value;
     };
-    await operation({ host, bound, input, status, events, evaluate });
+    await operation({ host, bound, input, status, events, evaluate, connection });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -158,3 +158,60 @@ test(`MP-08/MP-10/MP-11: protected ${target} rejects ${retained ? "retained" : "
     }
   }
 },false));
+
+// MP-11: use actual controller, isolated observer and physical Chromium dispatch.
+// This is supplementary security regression evidence, not hosted-client acceptance.
+for (const dpr of [1, 2]) test(`MP-11: plain mirror keys require live painted focus at DPR ${dpr}`, () => native(
+  `${field}<div id="ancestor"><input id="other" value="ordinary"></div><button id="pay" onclick="window.effects++">Public action</button>`,
+  async ({host,bound,input,events,evaluate,connection}) => {
+    const sub=await host.request({op:'mirror_subscribe',...bound,device_scale_factor:dpr});
+    const rows=[];let sequence=0;
+    for(const scenario of ['observed-focus-move','unobserved-focus-move','protected-field','password-field','otp-field','protected-ancestor','protected-shadow-host','changed-geometry','focus-during-preflight']) {
+      for(const key of (scenario==='focus-during-preflight'?['Enter']:['Enter','Backspace','Delete'])) {
+        await evaluate(`(() => {
+          document.querySelector('#late')?.remove(); document.querySelector('#shadow-host')?.remove();
+          const field=document.querySelector('#field'),other=document.querySelector('#other'),ancestor=document.querySelector('#ancestor');
+          field.type='text';field.removeAttribute('autocomplete');field.style.marginLeft='';field.removeAttribute('data-observation-protected');ancestor.removeAttribute('data-observation-protected');
+          field.value='ordinary';other.value='ordinary';window.effects=0;field.focus();
+        })()`);
+        const packet=await host.request({op:'mirror_next',subscription_id:sub.subscription_id,generation:bound.generation,after_sequence:sequence,drift_nodes:[]});sequence=packet.sequence;
+        assert(packet.focused,'MP-11: fixture focus must be painted');
+        await evaluate(`(() => {
+          if(${JSON.stringify(scenario)}==='observed-focus-move')document.querySelector(${JSON.stringify(key==='Enter'?'#pay':'#other')}).focus();
+          if(${JSON.stringify(scenario)}==='unobserved-focus-move'){const e=document.createElement('input');e.id='late';e.value='ordinary';document.body.append(e);e.focus();}
+          if(${JSON.stringify(scenario)}==='protected-field')document.querySelector('#field').setAttribute('data-observation-protected','');
+          if(${JSON.stringify(scenario)}==='password-field')document.querySelector('#field').type='password';
+          if(${JSON.stringify(scenario)}==='otp-field')document.querySelector('#field').setAttribute('autocomplete','one-time-code');
+          if(${JSON.stringify(scenario)}==='protected-ancestor'){document.querySelector('#ancestor').setAttribute('data-observation-protected','');document.querySelector('#other').focus();}
+          if(${JSON.stringify(scenario)}==='protected-shadow-host'){const e=document.createElement('div');e.id='shadow-host';e.setAttribute('data-observation-protected','');document.body.append(e);const field=document.createElement('input');field.value='ordinary';e.attachShadow({mode:'open'}).append(field);field.focus();}
+          if(${JSON.stringify(scenario)}==='changed-geometry')document.querySelector('#field').style.marginLeft='50px';
+        })()`);
+        // Deliberately do not ask for a new mirror packet between focus change/key.
+        events.length=0;let refused=false;
+        const send=connection.send.bind(connection);
+        if(scenario==='focus-during-preflight') connection.send=async(method,params,session)=>{
+          const reply=await send(method,params,session);
+          if(method==='Runtime.evaluate'&&params.expression.includes('let e = document.activeElement'))
+            await send('Runtime.evaluate',{expression:"document.querySelector('#pay').focus()",returnByValue:true},session);
+          return reply;
+        };
+        try {await input({kind:'mirror',subscription_id:sub.subscription_id,sequence,action:{kind:'key',key}});} catch {refused=true;} finally {connection.send=send;}
+        const effects=await evaluate('window.effects');
+        rows.push({scenario,key,dpr,sequence,refused,dispatches:events.length,effects,pass:refused&&events.length===0&&effects===0});
+      }
+    }
+    // Tab moves native focus during keyDown: the release must remain paired.
+    await evaluate("document.querySelector('#field').style.marginLeft='';document.querySelector('#field').removeAttribute('data-observation-protected');document.querySelector('#field').focus()");
+    const packet=await host.request({op:'mirror_next',subscription_id:sub.subscription_id,generation:bound.generation,after_sequence:sequence,drift_nodes:[]});
+    events.length=0;
+    await input({kind:'mirror',subscription_id:sub.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Tab'}});
+    assert.deepEqual(events.map(event=>event.type),['keyDown','keyUp']);
+    if(process.env.CHARIOX_MIRROR_KEY_EVIDENCE) {
+      const evidence=process.env.CHARIOX_MIRROR_KEY_EVIDENCE;await mkdir(evidence,{recursive:true});
+      const screenshot=await host.request({op:'screenshot',...bound});
+      await writeFile(path.join(evidence,`plain-key-dpr${dpr}.png`),Buffer.from(screenshot.data_base64,'base64'));
+      await writeFile(path.join(evidence,`plain-key-dpr${dpr}.json`),JSON.stringify({mp:['MP-08','MP-10','MP-11'],scope:'Real sandboxed host Chromium/controller fixture; no hosted client/provider acceptance',rows,pairedRelease:events.map(event=>event.type)},null,2)+'\n');
+    }
+    assert(rows.every(row=>row.pass),JSON.stringify(rows.filter(row=>!row.pass)));
+  }
+));

@@ -455,7 +455,10 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_explicit_revoc
     let second = spawn_alice_agent(&app, &session).await;
     let state = &router.runtime_state;
     start_room(&app, &session).await;
-    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
     // Only the App's owner foregrounds it for their agents.
     open_view(&router, &session, "bob-view", "bob", "installed");
     show_tabs(&router, &session, &["bob-view"], "bob-view");
@@ -469,13 +472,19 @@ async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_explicit_revoc
     );
     assert!(granted(&app, &first).await && !granted(&app, &second).await);
     // The next focus agent gets the App of the focused Tab too.
-    state.focus_agent(&session, &second, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &second, "alice", true)
+        .await
+        .unwrap();
     assert!(granted(&app, &second).await);
     state.unbind_uninstalled_app("alice", "installed").await;
     assert!(!granted(&app, &first).await && !granted(&app, &second).await);
     // Its Tab stays on screen, unbound: it is no foreground App.
     let third = spawn_alice_agent(&app, &session).await;
-    state.focus_agent(&session, &third, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &third, "alice", true)
+        .await
+        .unwrap();
     assert!(!granted(&app, &third).await);
 }
 
@@ -496,7 +505,10 @@ async fn the_foreground_app_is_the_app_of_the_rooms_focused_tab() {
     // Todo open and focused: the focus agent gets Todo.
     open_view(&router, &session, "todo", "alice", "installed");
     show_tabs(&router, &session, &["page", "todo"], "todo");
-    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
     assert!(granted(&app, &first).await);
     // Two Apps open: opening Documents binds it; its Tab is in front.
     open_view(&router, &session, "docs", "alice", "docs");
@@ -505,29 +517,44 @@ async fn the_foreground_app_is_the_app_of_the_rooms_focused_tab() {
         state.foreground_app(&session, "docs").await,
         Some(first.clone())
     );
-    state.focus_agent(&session, &second, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &second, "alice", true)
+        .await
+        .unwrap();
     assert!(granted_app(&app, &second, "docs").await && !granted(&app, &second).await);
     // Switching Tabs: the next focus agent gets the App now in front.
     show_tabs(&router, &session, &["page", "todo", "docs"], "todo");
-    state.focus_agent(&session, &third, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &third, "alice", true)
+        .await
+        .unwrap();
     assert!(granted(&app, &third).await && !granted_app(&app, &third, "docs").await);
     // Documents, the App opened last, closes and the Room shows Todo again:
     // a focus change binds Todo, never Documents.
     close_views_except(&router, &session, &["todo"]);
     show_tabs(&router, &session, &["page", "todo"], "todo");
     let fourth = spawn_alice_agent(&app, &session).await;
-    state.focus_agent(&session, &fourth, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &fourth, "alice", true)
+        .await
+        .unwrap();
     assert!(granted(&app, &fourth).await && !granted_app(&app, &fourth, "docs").await);
     // A plain page in front: no foreground App.
     show_tabs(&router, &session, &["page", "todo"], "page");
     let fifth = spawn_alice_agent(&app, &session).await;
-    state.focus_agent(&session, &fifth, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &fifth, "alice", true)
+        .await
+        .unwrap();
     assert!(!granted(&app, &fifth).await);
     // The Room still shows an App Tab whose view is gone: nothing is bound.
     close_views_except(&router, &session, &[]);
     show_tabs(&router, &session, &["page", "todo"], "todo");
     let sixth = spawn_alice_agent(&app, &session).await;
-    state.focus_agent(&session, &sixth, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &sixth, "alice", true)
+        .await
+        .unwrap();
     assert!(!granted(&app, &sixth).await);
 }
 
@@ -541,13 +568,19 @@ async fn a_revoked_foreground_binding_returns_only_when_the_app_is_opened_again(
     start_room(&app, &session).await;
     open_view(&router, &session, "todo", "alice", "installed");
     show_tabs(&router, &session, &["todo"], "todo");
-    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
     assert_eq!(
         state.foreground_app(&session, "todo").await,
         Some(first.clone())
     );
     // Cycling the focus binds the next focus agent too.
-    let cycled = state.cycle_agent_focus(&session, "alice").await.unwrap();
+    let cycled = state
+        .cycle_agent_focus(&session, "alice", true)
+        .await
+        .unwrap();
     assert_eq!(
         cycled.map(|agent| agent.id().to_owned()),
         Some(second.clone())
@@ -558,21 +591,33 @@ async fn a_revoked_foreground_binding_returns_only_when_the_app_is_opened_again(
         .revoke_agent_extension(&second, ExtensionKind::App, "installed", "alice")
         .await
         .unwrap();
-    state.focus_agent(&session, &first, "alice").await.unwrap();
-    state.focus_agent(&session, &second, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
+    state
+        .focus_agent(&session, &second, "alice", true)
+        .await
+        .unwrap();
     assert!(!granted(&app, &second).await);
     // Nor after the session's last App view closed and the App was opened
     // again for another agent.
     close_views_except(&router, &session, &[]);
     assert!(!state.app_control().views().keep_pumping(&session));
-    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
     open_view(&router, &session, "todo-again", "alice", "installed");
     show_tabs(&router, &session, &["todo-again"], "todo-again");
     assert_eq!(
         state.foreground_app(&session, "todo-again").await,
         Some(first.clone())
     );
-    state.focus_agent(&session, &second, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &second, "alice", true)
+        .await
+        .unwrap();
     assert!(!granted(&app, &second).await);
     // Opening the App with that agent in focus binds it again.
     assert_eq!(
@@ -591,7 +636,10 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
     start_room(&app, &session).await;
     open_view(&router, &session, "todo", "alice", "installed");
     show_tabs(&router, &session, &["todo"], "todo");
-    state.focus_agent(&session, &first, "alice").await.unwrap();
+    state
+        .focus_agent(&session, &first, "alice", true)
+        .await
+        .unwrap();
     assert_eq!(
         state.foreground_app(&session, "todo").await,
         Some(first.clone())
