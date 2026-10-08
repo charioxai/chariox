@@ -343,8 +343,11 @@ mod tests {
     fn mp10_repeated_gate_closure_reports_congestion() {
         let start = Instant::now();
         let mut state = PumpState::default();
+        // A 5 ms RTT floor: 150 ms of lag exceeds floor + allowance.
+        state.sent.push_back((0, start));
+        state.acknowledge(0, false, start + Duration::from_millis(5));
         for round in 0..2u64 {
-            let at = start + Duration::from_millis(400 * round);
+            let at = start + Duration::from_millis(10 + 400 * round);
             state.sent.push_back((round + 1, at));
             assert_eq!(state.admit(at + Duration::from_millis(150)), Gate::Closed);
             state.acknowledge(round + 1, false, at + Duration::from_millis(160));

@@ -317,8 +317,11 @@ test('MP-08/MP-10 rate-controlled video is never paced; exact repairs pay the li
  try{
   for(let n=1;n<=3;n++)await stream.frame(source(n),'d',n-1);
   assert.equal(now,0,'video ships as encoded; its encoder and the ACK gate bound bytes');assert.deepEqual(waits,[]);
+  // A lossless scroll frame (native moves + WebP residuals) is budgeted by shiftFits.
+  stream.exact=true;const shift={generation:1,width:1280,height:800,data_base64:'shift',motion:false,moves:[[0,0,1280,700,-100]],native_tiles:[{x:0,y:700,width:1280,height:100,format:'webp',data_base64:'A'.repeat(60000)}]};
+  await stream.frame(shift,'d',3);assert.equal(now,0,'lossless scroll frames are not token paced');
   const repair={generation:1,width:1280,height:800,data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,7)),force_lossless:true};
-  await stream.frame(repair,'d',3);assert.ok(now>0,'exact repair bytes are paced');
+  await stream.frame(repair,'d',4);assert.ok(now>0,'exact repair bytes are paced');
  }finally{await stream.close()}
 });
 

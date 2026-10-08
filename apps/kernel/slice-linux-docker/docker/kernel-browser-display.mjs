@@ -350,8 +350,10 @@ export class DisplayStream {
     // so later input/motion repays it; large repairs never bypass the ceiling.
     const urgent=source.input_triggered===true&&bytes<=32768&&this.tokens>=0;
     // MP-08/MP-10: rate-controlled video is bounded by its encoder and the
-    // client ACK gate; only exact repairs (PNG/WebP tiles) are link paced.
-    const video=['video','stripes'].includes(payload.kind);
+    // client ACK gate; native exact patches and lossless scroll frames by
+    // their own budgets (patch limit, shiftFits). Only bulk exact repairs
+    // (full PNG and verified repair batches) are link paced.
+    const video=['video','stripes'].includes(payload.kind)||Boolean(source.native_tiles);
     const deadline = this.now() + (urgent||video?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
     if(deadline<=this.now()&&!video)await this.wait(0);
     while(this.now()<deadline){
