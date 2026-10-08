@@ -301,6 +301,34 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_opencode_servers_disable_blocking_native_filewatcher() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "chariox-opencode-filewatcher-{}",
+            std::process::id()
+        ));
+        fs::write(&path, "fixture").unwrap();
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default");
+        let launches = [None, Some(&request)].map(|request| plan_opencode_launch(request).unwrap());
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        fs::remove_file(path).unwrap();
+        for launch in launches {
+            assert_eq!(
+                launch
+                    .pty_env
+                    .get("OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER")
+                    .map(String::as_str),
+                Some("true"),
+                "catalog and agent servers must not enter OpenCode's blocking Linux watcher"
+            );
+        }
+    }
+
     #[test]
     fn plans_external_launch_when_structured_endpoint_is_supplied() {
         let request =
