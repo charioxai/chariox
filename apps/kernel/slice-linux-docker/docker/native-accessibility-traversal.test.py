@@ -59,7 +59,7 @@ class TraversalTest(unittest.TestCase):
         atspi.ROLE_TABLE_CELL = 3
         atspi.STATE_MANAGES_DESCENDANTS = 2
         self.connection = types.SimpleNamespace(
-            screen=lambda: types.SimpleNamespace(root=types.SimpleNamespace(get_full_property=lambda *args: None)),
+            screen=lambda: types.SimpleNamespace(root=types.SimpleNamespace(get_full_property=lambda *args: None,query_tree=lambda:types.SimpleNamespace(children=[]))),
             intern_atom=lambda value: value, close=lambda: None)
         xlib = types.ModuleType('Xlib')
         xlib.X = types.SimpleNamespace(AnyPropertyType=0, IsViewable=2)
@@ -83,7 +83,7 @@ class TraversalTest(unittest.TestCase):
     def foreground(self, pid=200, name='Writer'):
         window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
-        root = types.SimpleNamespace(get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]))
+        root = types.SimpleNamespace(get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]))
         self.connection.screen = lambda: types.SimpleNamespace(root=root)
         self.connection.create_resource_object = lambda kind, value: window
 
@@ -285,6 +285,13 @@ class TraversalTest(unittest.TestCase):
         self.assertNotIn('canary',str(tree))
         self.assertEqual(tree['masks'],[[20,30,246,152]])
         self.assertTrue(all(node['protected'] and not node['actions'] for node in tree['nodes']))
+
+    def test_mp11_finding3_popup_is_masked_on_an_all_accessible_desktop(self):
+        popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
+            get_geometry=lambda:types.SimpleNamespace(x=300,y=40,width=100,height=60,border_width=1))
+        self.terminal(200,[popup])
+        tree=self.snapshot([Node('Office','application',[Node('xterm','frame')])])
+        self.assertEqual(tree['masks'],[[300,40,102,62]])
 
 
 if __name__ == '__main__': unittest.main()
