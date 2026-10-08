@@ -44,7 +44,7 @@ fn history_context_requires_the_exact_local_session_agent_and_turn() {
             Some(agent_id),
             crate::terminal::TerminalOutputKind::ProviderTool,
             None,
-            "{}".into(),
+            "{}",
         )
     };
     assert_eq!(
@@ -100,8 +100,8 @@ fn history_context_requires_the_exact_local_session_agent_and_turn() {
         crate::provider::projected_leased_provider_run_id("leased-agent", "provider-run-1");
     app.update_remote_provider_run_projection(run.projected_for_home_agent_with_id(
         projected,
-        session.id().into(),
-        other_agent.id().into(),
+        session.id(),
+        other_agent.id(),
     ));
     assert_eq!(
         resolver.resolve(&entry(session.id(), agent.id())).provider,
