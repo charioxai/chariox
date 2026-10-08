@@ -419,3 +419,200 @@ async fn review_worker_missing_claude_copy_admits_first_prompt_before_human_logi
         .exists());
     fixture.app.lock().await.shutdown_cleanup().unwrap();
 }
+
+// MP-08/MP-10/MP-11: a receiving copy can be missing while token auth is usable.
+#[tokio::test]
+async fn review_worker_missing_claude_copy_with_supplied_token_delivers_prompts() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let leased = fixture.lease().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let (run_id, _) = fixture
+        .submit(&leased, "supplied-token-first", false, true)
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("supplied-token-first").await;
+    fixture
+        .submit(&leased, "supplied-token-second", true, false)
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("supplied-token-second").await;
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run(&run_id)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&leased.backing_session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+impl WorkerFixture {
+    async fn local_request(
+        &self,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let lanes = self.app.lock().await.provider_run_operation_lanes();
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity_and_provider_lanes(
+                Arc::clone(&self.app),
+                16,
+                lanes,
+            );
+        let mut caller = crate::runtime::command::KernelCaller::default()
+            .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+        caller.user_id = Some("owner".into());
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            format!("receiving-local-{}", rand::random::<u64>()),
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    }
+
+    async fn local_launch(
+        &self,
+        leased: &crate::execution_lease::LeasedAgent,
+    ) -> crate::provider::PublicProviderRun {
+        let response = self.local_request(crate::local::LocalDaemonRequest::LaunchProviderRun(crate::local::LaunchProviderRunRequest {
+            session_id: leased.backing_session_id.clone(), agent_id: Some(leased.backing_agent_id.clone()),
+            adapter_key: "claude".into(), provider: "claude".into(), account_profile: self.account.clone(),
+            model: "sonnet".into(), variant: None, structured_endpoint: None, provider_session_id: None, native_tui: false,
+        })).await.expect("public receiving-kernel launch must recover or use its registered token before preparation");
+        let (crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | crate::local::LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) = response
+        else {
+            panic!("launch response");
+        };
+        provider_run
+    }
+}
+
+#[tokio::test]
+async fn review_local_missing_claude_copy_requests_login_before_preparation() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let leased = fixture.lease().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let run = fixture.local_launch(&leased).await;
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+    assert!(!fixture
+        .runtime
+        .owned
+        .provider_run_projection
+        .is_leased_provider_run(run.id()));
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&leased.backing_session_id)
+        .unwrap();
+    let interaction = session
+        .active_interaction_for_agent(&leased.backing_agent_id)
+        .expect("human recovery interaction");
+    assert_eq!(
+        interaction.title(),
+        Some("Log in to Claude on this machine")
+    );
+    assert!(interaction.provider_login_is_human_only());
+    assert!(!fixture
+        .credential
+        .parent()
+        .unwrap()
+        .join("synthetic-process-started")
+        .exists());
+    assert!(!fixture
+        .credential
+        .parent()
+        .unwrap()
+        .join("UNEXPECTED_LOGIN")
+        .exists());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+#[tokio::test]
+async fn review_local_missing_claude_copy_with_registered_token_delivers_prompt() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let leased = fixture.lease().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let mut config = fixture.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    fixture
+        .runtime
+        .owned
+        .config_projection
+        .update(config.clone());
+    crate::provider::store_provider_account_credential(
+        &config,
+        "owner",
+        "claude",
+        &fixture.account,
+        "synthetic-registered-token",
+        false,
+    )
+    .unwrap();
+    let run = fixture.local_launch(&leased).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .unwrap()
+            .state()
+            == crate::provider::ProviderRunState::Starting
+        {
+            fixture.runtime.pump_transport_runtime().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("token-authenticated launch must complete");
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    fixture
+        .submit(&leased, "registered-token-prompt", false, false)
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("registered-token-prompt").await;
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&leased.backing_session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}

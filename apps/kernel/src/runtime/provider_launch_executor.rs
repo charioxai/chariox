@@ -100,7 +100,8 @@ impl ProviderLaunchCommandExecutor {
             .start_launch(request.clone(), caller_user_id)
             .await?;
         let (started, runtime_init_delay_ms) = match start_outcome {
-            ProviderLaunchStartOutcome::Reused(provider_run) => {
+            ProviderLaunchStartOutcome::WaitingForLogin(provider_run)
+            | ProviderLaunchStartOutcome::Reused(provider_run) => {
                 return Ok(LocalDaemonResponse::ProviderRunLaunched {
                     provider_run: provider_run.into(),
                 });

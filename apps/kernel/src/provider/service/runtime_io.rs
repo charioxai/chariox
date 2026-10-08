@@ -215,6 +215,7 @@ impl ProviderProcessService {
     }
 
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
+        self.claude_setup_token_runs.remove(provider_run_id);
         self.run_actor_mailbox.clear_runtime(provider_run_id);
         self.run_actor_mailbox.stop_run(provider_run_id);
     }

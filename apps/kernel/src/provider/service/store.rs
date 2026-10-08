@@ -93,6 +93,10 @@ impl ProviderProcessServiceStore {
         self.inner.lock().expect("provider service mutex poisoned")
     }
 
+    pub(crate) fn claude_run_uses_setup_token(&self, run_id: &str) -> bool {
+        self.read().claude_setup_token_runs.contains(run_id)
+    }
+
     pub fn registry(&self) -> ProviderRegistry {
         *self.read().registry()
     }
@@ -151,6 +155,7 @@ impl ProviderProcessServiceStore {
         &self,
         expected: &RuntimeProviderRun,
         binding: Option<ProviderRuntimeBinding>,
+        uses_claude_setup_token: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let mut service = self.write();
         let current = service.get_run(expected.id())?;
@@ -171,7 +176,13 @@ impl ProviderProcessServiceStore {
         if let Some(binding) = binding {
             service.apply_runtime_binding(expected.id(), binding)?;
         }
-        service.mark_run_running(expected.id())
+        let run = service.mark_run_running(expected.id())?;
+        // MP-08/MP-10/MP-11: runtime-only auth mode, never a persisted credential.
+        // Track it independently of structured actor I/O and native PTY bindings.
+        if run.adapter_key() == "claude" && uses_claude_setup_token {
+            service.claude_setup_token_runs.insert(run.id().to_string());
+        }
+        Ok(run)
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {

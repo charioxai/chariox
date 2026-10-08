@@ -293,7 +293,8 @@ impl KernelRuntimeState {
         }
         let start_outcome = self.start_provider_launch(request, caller_user_id).await?;
         let (started, runtime_init_delay_ms) = match start_outcome {
-            ProviderLaunchStartOutcome::Reused(provider_run) => return Ok(provider_run),
+            ProviderLaunchStartOutcome::WaitingForLogin(provider_run)
+            | ProviderLaunchStartOutcome::Reused(provider_run) => return Ok(provider_run),
             ProviderLaunchStartOutcome::Started(started, runtime_init_delay_ms) => {
                 (started, runtime_init_delay_ms)
             }

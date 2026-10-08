@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod outcomes;
 mod run_lifecycle;
@@ -21,6 +21,7 @@ pub struct ProviderProcessService {
     registry: ProviderRegistry,
     run_actor_mailbox: ProviderRunActorMailbox,
     runs: BTreeMap<String, RuntimeProviderRun>,
+    claude_setup_token_runs: BTreeSet<String>,
     next_run_number: u64,
 }
 
@@ -30,6 +31,7 @@ impl ProviderProcessService {
             registry: ProviderRegistry::new(),
             run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
+            claude_setup_token_runs: BTreeSet::new(),
             next_run_number: 0,
         }
     }

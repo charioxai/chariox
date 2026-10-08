@@ -23,6 +23,12 @@ impl ProviderCredentialEnvironment {
             .map(|(name, value)| (name.as_str(), value.as_str()))
     }
 
+    pub(crate) fn contains_nonempty(&self, name: &str) -> bool {
+        self.values
+            .get(name)
+            .is_some_and(|value| !value.trim().is_empty())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.values.is_empty()
     }

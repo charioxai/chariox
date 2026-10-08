@@ -30,19 +30,25 @@ impl KernelRuntimeState {
     ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
         if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
             || request.agent_id.is_none()
-            || !request.provider_credential_env.is_empty()
+            || request
+                .provider_credential_env
+                .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
         {
             return Ok(None);
         }
         let owner = self.provider_account_authority_owner_user_id(&request.owner_user_id);
+        let profile =
+            self.owned
+                .provider_account_profiles
+                .get(&owner, "claude", &request.account_profile)?;
         if !self
             .owned
             .provider_account_profiles
-            .copied_login_artifact_missing(&owner, "claude", &request.account_profile)?
+            .copied_login_artifact_missing(&owner, "claude", &profile.profile_id)?
             || crate::provider::provider_account_credential_registered(
                 &owner,
                 "claude",
-                &request.account_profile,
+                &profile.profile_id,
             )?
         {
             return Ok(None); // Retain supplied and registered setup-token fallbacks.
@@ -51,9 +57,6 @@ impl KernelRuntimeState {
             .owned
             .prepare_provider_login_recovery_launch_request(request.clone())?;
         let started = self.owned.start_provider_launch(request)?;
-        self.owned
-            .provider_run_projection
-            .mark_leased_provider_run(started.run.id());
         self.owned
             .provider_run_projection
             .update(started.run.clone());
