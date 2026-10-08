@@ -287,6 +287,10 @@ fn open_schema_beneath(
 mod linux;
 
 #[cfg(target_os = "linux")]
+#[path = "compiler_seccomp.rs"]
+mod seccomp;
+
+#[cfg(target_os = "linux")]
 pub(super) fn compiler_command(
     node: &Path,
     limits: &WorkflowCodeLimitsConfig,
@@ -304,11 +308,14 @@ pub(super) fn compiler_command(
         .env_clear()
         .args([
             "--unshare-all",
+            "--disable-userns",
             "--die-with-parent",
             "--new-session",
             "--cap-drop",
             "ALL",
             "--clearenv",
+            "--perms",
+            "0500",
             "--size",
         ])
         .arg(limits.script_memory_bytes.max(4096).to_string())
@@ -320,7 +327,8 @@ pub(super) fn compiler_command(
         .arg("--ro-bind")
         .arg(&node)
         .arg("/compiler/node")
-        .args(["--remount-ro", "/", "/compiler/node"]);
+        .args(["--remount-ro", "/", "--seccomp", "3", "/compiler/node"]);
+    let filter = seccomp::compiler_filter()?;
     // V8's heap flag alone does not bound native allocations / ArrayBuffers.
     let address_limit = limits
         .script_memory_bytes
@@ -338,6 +346,7 @@ pub(super) fn compiler_command(
                 (libc::RLIMIT_AS, address_limit),
                 (libc::RLIMIT_CPU, cpu_seconds),
                 (libc::RLIMIT_CORE, 0),
+                (libc::RLIMIT_NPROC, 64),
             ] {
                 let limit = libc::rlimit {
                     rlim_cur: value as libc::rlim_t,
@@ -347,7 +356,7 @@ pub(super) fn compiler_command(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            Ok(())
+            seccomp::install_filter_fd(&filter)
         });
     }
     Ok(command)
@@ -377,7 +386,11 @@ mod tests {
         let output = command.args(["--disable-wasm-trap-handler", "-e",
             "const {spawnSync}=require('node:child_process'); const r=spawnSync(process.execPath,['--disable-wasm-trap-handler','-e','process.exit(0)']); if(!r.error || !['EPERM','EAGAIN'].includes(r.error.code)) process.exit(1);"
         ]).output().unwrap();
-        assert!(output.status.success(), "MP-11 F14: sandbox allowed a child Node: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "MP-11 F14: sandbox allowed a child Node: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
