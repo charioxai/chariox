@@ -409,12 +409,14 @@ if (process.cwd() !== '/tmp' || fs.readdirSync('/tmp').length) throw new Error('
 let readonly = false;
 try {fs.writeFileSync('/marker', 'x')} catch (error) {readonly = error.code === 'EROFS'}
 if (!readonly) throw new Error('root is writable');
-fs.writeFileSync('/tmp/marker', 'x'); fs.unlinkSync('/tmp/marker');
+let scratchReadonly = false;
+try {fs.writeFileSync('/tmp/marker', 'x')} catch (error) {scratchReadonly = ['EACCES', 'EPERM', 'EROFS'].includes(error.code)}
+if (!scratchReadonly) throw new Error('scratch is writable');
 for (const path of ['/root', '/etc/hostname', '/bin/sh', '/proc']) {
   if (fs.existsSync(path)) throw new Error('host file exposed');
 }
 const child = spawnSync('/bin/sh', ['-c', 'exit 0']);
-if (child.error?.code !== 'ENOENT') throw new Error('host command available');
+if (!['ENOENT', 'EPERM', 'EAGAIN'].includes(child.error?.code)) throw new Error('host command available');
 await new Promise((resolve, reject) => {
  const socket = net.connect({host: '1.1.1.1', port: 443});
  socket.on('connect', () => {socket.destroy(); reject(new Error('network available'))});
