@@ -17,6 +17,22 @@ fn write(root: &TestWorktree, name: &str, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 #[test]
+fn envp02a_utility_metadata_is_bounded_without_losing_deterministic_origins() {
+    let root = TestWorktree::new("envp02a-utility-budget");
+    write(&root, "package.json", "{\"name\":\"code\"}");
+    let source = (0..64).map(|i| format!("process.env.ENV_NAME_{i};\n")).collect::<String>();
+    for i in 0..40 { write(&root, &format!("src/file-{i}.ts"), &source); }
+    let folders = vec![folder(&root)];
+    let detection = detect_environment(&folders, "environment").unwrap();
+    let before = detection.proposals.clone();
+    let input = detection.discovery_input("project", &folders, &std::collections::BTreeSet::from(["folder".into()]));
+    assert!(input.references.len() <= 32);
+    assert!(input.references.iter().all(|r| r.uses.len() <= 1));
+    assert!(serde_json::to_vec(&input).unwrap().len() <= 32 * 1024);
+    assert_eq!(detection.proposals, before);
+    assert!(before.iter().any(|p| p.requirement.origins.len() >= 40));
+}
+#[test]
 fn envp02a_empty_declarations_do_not_invent_line_origins() {
     let root = TestWorktree::new("envp02a-empty-origins");
     for name in [".nvmrc", ".python-version", "AGENTS.md", "SKILL.md"] {
