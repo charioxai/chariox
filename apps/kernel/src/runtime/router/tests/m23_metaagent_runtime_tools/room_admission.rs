@@ -983,6 +983,107 @@ async fn compiler_does_not_lock_app() {
     assert!(available, "MP-11 F7: compiler holds the global app lock");
 }
 
+// MP-11 F7 / review R1: exercise authenticated Room create/update, not just validation.
+#[test]
+fn security_f7_room_artifact_create_timeout_keeps_other_rooms_responsive() {
+    run_large_stack_async_test("security-f7-artifact-create", || artifact_timeout(false));
+}
+
+#[test]
+fn security_f7_room_artifact_update_timeout_keeps_other_rooms_responsive() {
+    run_large_stack_async_test("security-f7-artifact-update", || artifact_timeout(true));
+}
+
+async fn artifact_timeout(update: bool) {
+    let env = TestMetaRuntimeEnv::new("security-f7-artifact-timeout");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
+        script_timeout_ms: Some(2_000),
+        ..Default::default()
+    });
+    let mut daemon = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (room, actor) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let actor_run = launch_test_provider(
+        &mut daemon,
+        room.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let auth = actor_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let (_, other) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let other_run = launch_test_provider(
+        &mut daemon,
+        other.session_id(),
+        other.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let other_auth = other_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![config
+        .workflow_code_artifact_root()
+        .join("rooms")
+        .join(room.id())]);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(daemon)), 4);
+    if update {
+        let created = router.dispatch_authenticated_runtime_tool_call(&auth, "chariox.workflow_code.create", serde_json::json!({"name":"timeout-check", "source":format!("workflow.define({{alias:'timeout-check'}});const node=workflow.node({{handle:'self',agent:workflow.existingAgent('{}'),canCompleteWorkflowRun:true}});workflow.endpoint(node,{{handle:'entry'}});",actor.id())})).await.unwrap();
+        assert!(created.ok, "{created:?}");
+    }
+    let before = registry.get("timeout-check").unwrap();
+    let marker = format!("// MP-11 F7 {}", workspace.display());
+    let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
+    let pending = tokio::spawn({
+        let router = router.clone();
+        async move {
+            router.dispatch_authenticated_runtime_tool_call(&auth, if update {"chariox.workflow_code.update"} else {"chariox.workflow_code.create"}, serde_json::json!({"name":"timeout-check", "source":format!("{marker}\nwhile (true) {{}}") })).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), started)
+        .await
+        .unwrap()
+        .unwrap();
+    // Release the test gate: the actual isolated script runs to its real timeout.
+    drop(release);
+    let responsive = tokio::time::timeout(
+        Duration::from_millis(500),
+        router.dispatch_authenticated_runtime_tool_call(
+            &other_auth,
+            "chariox.workflow_code.list",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    let compiler_result = pending.await.unwrap();
+    assert!(
+        !compiler_result.as_ref().is_ok_and(|result| result.ok),
+        "script must time out: {compiler_result:?}"
+    );
+    assert_eq!(
+        registry.get("timeout-check").unwrap().map(|a| a.metadata),
+        before.map(|a| a.metadata),
+        "timed-out compilation must not change stored source"
+    );
+    assert!(
+        responsive.is_ok_and(|result| result.is_ok_and(|result| result.ok)),
+        "MP-11 F7: Room artifact compilation blocks another room's command"
+    );
+}
+
 // MP-11 F5: a command admitted under a provider epoch must retain it in the lane.
 #[test]
 fn security_f5_workflow_lane_rechecks_queued_provider_epoch() {
