@@ -427,6 +427,36 @@ impl KernelRuntimeState {
         Ok(cancellation)
     }
 
+    /// A10: a leased turn's completion settles its home task through the same
+    /// settlement as a local turn, so delegators and reply waiters wake.
+    pub(super) async fn settle_leased_agent_task(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        completed: &crate::session::PromptQueueItem,
+        leased_agent_id: &str,
+        worker_provider_run_id: &str,
+    ) {
+        let run = crate::provider::projected_leased_provider_run_id(
+            leased_agent_id,
+            worker_provider_run_id,
+        );
+        let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
+        let settled = match self
+            .owned
+            .settle_agent_task(session_id, agent_id, completed, &run, cancelled)
+        {
+            Ok(settlement) => {
+                Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep");
+        }
+    }
+
     fn verify_remote_prompt_cancellation_run(
         &self,
         session_id: &str,
@@ -646,33 +676,15 @@ impl KernelRuntimeState {
             provider_termination.clone(),
             Some((completion_prompt.id(), &remote_execution)),
         )?;
-        // A10: home alone commits the leased task outcome through the same
-        // settlement as a local turn, so delegators wake on its completion.
-        let projected_run = crate::provider::projected_leased_provider_run_id(
-            &remote_execution.leased_agent_id,
-            &remote_provider_run_id,
-        );
-        match owned.settle_agent_task(
+        // A10: home alone commits the leased task outcome.
+        self.settle_leased_agent_task(
             session_id,
             target_agent_id,
             &completion.completed,
-            &projected_run,
-            false,
-        ) {
-            Ok(settlement) => {
-                if let Err(error) =
-                    Box::pin(self.finish_agent_task_settlement(settlement, &completion.completed))
-                        .await
-                {
-                    tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                        "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep");
-                }
-            }
-            Err(error) => {
-                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                    "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep");
-            }
-        }
+            &remote_execution.leased_agent_id,
+            &remote_provider_run_id,
+        )
+        .await;
         if completion.completed.workflow_run_id().is_some() {
             if let Some(diagnostic) = provider_termination
                 .as_ref()

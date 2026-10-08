@@ -169,14 +169,29 @@ async fn worker_receipt(
 
 #[test]
 fn mp10_a10_leased_delegate_completion_wakes_the_home_delegator() {
-    run_test(leased_delegate_completion_wakes_the_home_delegator);
+    run_test(home_completed_leased_turn_wakes_the_home_delegator);
+}
+
+#[test]
+fn mp10_a10_worker_completed_leased_turn_wakes_the_home_delegator() {
+    run_test(worker_completed_leased_turn_wakes_the_home_delegator);
+}
+
+async fn home_completed_leased_turn_wakes_the_home_delegator() {
+    leased_delegate_completion_wakes_the_home_delegator(false).await
+}
+
+/// The path official providers take: the worker finishes the turn and the
+/// home learns it from the leased runtime projection.
+async fn worker_completed_leased_turn_wakes_the_home_delegator() {
+    leased_delegate_completion_wakes_the_home_delegator(true).await
 }
 
 /// A leased child finishing its turn is a home-committed task outcome: the
 /// local delegator that waits on it receives exactly one completion event.
 /// On the base the leased completion never settled the home task, so the
 /// delegator kept waiting with nothing in its inbox.
-async fn leased_delegate_completion_wakes_the_home_delegator() {
+async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: bool) {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
@@ -205,9 +220,23 @@ async fn leased_delegate_completion_wakes_the_home_delegator() {
         .runtime_state
         .record_leased_answer_for_test(&room, &child, "MP-10 A10 delegated answer")
         .unwrap();
-    dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
+    if worker_completes {
+        let leased = binding(&fixture, &child).await.leased_agent_id;
+        let (backing_session, _) =
+            crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
+                .leased_agent_backing(&leased)
+                .expect("worker backing agent");
+        dispatch_json(
+            &fixture.worker,
+            json!({"CompletePrompt":{"session_id":backing_session}}),
+        )
         .await
-        .expect("the leased turn completes on the worker");
+        .expect("the worker finishes the leased turn");
+    } else {
+        dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
+            .await
+            .expect("the leased turn completes on the worker");
+    }
     let events = eventually("the delegator's completion event", || {
         let events: Vec<_> = store
             .agent_inbox(&room, &parent, 0)
