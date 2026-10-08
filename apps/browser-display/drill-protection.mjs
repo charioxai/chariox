@@ -15,10 +15,12 @@ export async function stressProtection({page,pair,pause,resource,repetitions}) {
   const settled=await verifyContinuousSettled(()=>pair(`mask-${iteration}-settle`));
   await page.evaluate(()=>mdStream.stop());
   const recovery=await page.evaluate(async()=>{
-   const previous=mdStream.presenter.sequence;mdStream.presenter.sequence=0;
+   // MP-08/MP-10 (475): a pushed stream recovers by an ACKed key request.
+   const previous=mdStream.presenter.sequence;if(mdStream.push)mdStream.requestKey();else mdStream.presenter.sequence=0;
    const deadline=performance.now()+10000;let frame;
-   while(!(frame=await mdStream.next())){if(performance.now()>deadline)throw Error('MP-11: stress reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
-   const independent=frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(r=>r.key);
+   const isIndependent=frame=>frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(r=>r.key);
+   while(!(frame=await mdStream.next())||mdStream.push&&!isIndependent(frame)){if(performance.now()>deadline)throw Error('MP-11: stress reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
+   const independent=isIndependent(frame);
    if(!independent)throw Error('MP-11: stress recovery reused a lost reference');
    return {previous,sequence:frame.sequence,kind:frame.kind,independent};
   });
