@@ -3,6 +3,16 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
+    ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
+    ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },
+    ProjectEnvironmentPlan { plan: crate::project_environment::EnvironmentApplyPlan },
+    EnvironmentOperation { operation: crate::project_environment::EnvironmentOperation },
+    ProjectEnvironmentExport { operation: crate::project_environment::EnvironmentOperation, envelope: Option<crate::project_environment::EnvironmentExportEnvelope>, artifact_id: Option<String> },
+    EnvironmentImportPreview { preview: crate::project_environment::EnvironmentImportPreview },
+    EnvironmentImportCommitted { project: RuntimeProject, environment: crate::project_environment::ProjectEnvironment, operation: crate::project_environment::EnvironmentOperation },
+    EnvironmentProviderAuthorizationLink { link: crate::project_environment::EnvironmentProviderAuthorizationLink },
+    ProjectEnvironment { environment: crate::project_environment::ProjectEnvironment },
     KernelSudoRequested { agent_id: String },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },

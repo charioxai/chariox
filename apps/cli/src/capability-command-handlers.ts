@@ -363,10 +363,10 @@ export async function handleEnvironmentSlashCommand(
 ): Promise<void> {
   const [action] = command.args
   if (!action || action === "list" || action === "ls") {
-    if (!deps.listEnvironments) return deps.flashFooter("environment registry is not available in this daemon", "error")
+    if (!deps.listEnvironments) return deps.flashFooter("Script runtime registry is not available in this daemon", "error")
     const environments = await deps.listEnvironments()
-    deps.appendNotice(environments.length === 0 ? "No Chariox environments registered." : environments.map(formatEnvironmentSummary).join("\n"))
-    deps.flashFooter(`listed ${environments.length} environment${environments.length === 1 ? "" : "s"}`, "info")
+    deps.appendNotice(environments.length === 0 ? "No Script runtimes registered." : `Script runtimes\n${environments.map(formatEnvironmentSummary).join("\n")}`)
+    deps.flashFooter(`listed ${environments.length} Script runtime${environments.length === 1 ? "" : "s"}`, "info")
     return
   }
   if (action === "show") {
@@ -374,22 +374,22 @@ export async function handleEnvironmentSlashCommand(
     if (!name || !deps.getEnvironment) return deps.flashFooter("usage: /env show <name>", "error")
     const environment = await deps.getEnvironment(name)
     deps.appendNotice(JSON.stringify(environment, null, 2))
-    deps.flashFooter(`showing environment ${environment.name}`, "info")
+    deps.flashFooter(`showing Script runtime ${environment.name}`, "info")
     return
   }
   if (action === "register") {
-    if (!deps.registerEnvironment) return deps.flashFooter("environment registration is not available in this daemon", "error")
+    if (!deps.registerEnvironment) return deps.flashFooter("Script runtime registration is not available in this daemon", "error")
     const config = parseEnvironmentConfig(command.args)
     if (!config) return deps.flashFooter("usage: /env register <name> --python <python-path> | /env register <name> --node <node-path> [--package-root <dir>]", "error")
     const environment = await deps.registerEnvironment(config)
-    deps.flashFooter(`registered environment ${environment.name}`, "info")
+    deps.flashFooter(`registered Script runtime ${environment.name}`, "info")
     return
   }
   if (action === "remove" || action === "unregister") {
     const name = command.args[1]
     if (!name || !deps.removeEnvironment) return deps.flashFooter(`usage: /env ${action} <name>`, "error")
     const environment = await deps.removeEnvironment(name)
-    deps.flashFooter(`removed environment ${environment.name}`, "info")
+    deps.flashFooter(`removed Script runtime ${environment.name}`, "info")
     return
   }
   deps.flashFooter("usage: /env list | /env show <name> | /env register <name> --python <path> | /env remove <name>", "error")

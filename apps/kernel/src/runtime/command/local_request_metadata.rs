@@ -603,6 +603,43 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
         LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::DetectProjectEnvironment(_) => {
+            "project.environment.DetectProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentDiff(_) => {
+            "project.environment.PreviewEnvironmentDiff"
+        }
+        LocalDaemonRequest::SaveProjectEnvironmentRevision(_) => {
+            "project.environment.SaveProjectEnvironmentRevision"
+        }
+        LocalDaemonRequest::PlanProjectEnvironment(_) => {
+            "project.environment.PlanProjectEnvironment"
+        }
+        LocalDaemonRequest::ApplyProjectEnvironment(_) => {
+            "project.environment.ApplyProjectEnvironment"
+        }
+        LocalDaemonRequest::CheckProjectEnvironment(_) => {
+            "project.environment.CheckProjectEnvironment"
+        }
+        LocalDaemonRequest::GetEnvironmentOperation(_) => {
+            "project.environment.GetEnvironmentOperation"
+        }
+        LocalDaemonRequest::CancelEnvironmentOperation(_) => {
+            "project.environment.CancelEnvironmentOperation"
+        }
+        LocalDaemonRequest::RetryEnvironmentOperation(_) => {
+            "project.environment.RetryEnvironmentOperation"
+        }
+        LocalDaemonRequest::ExportProjectEnvironment(_) => {
+            "project.environment.ExportProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentImport(_) => {
+            "project.environment.PreviewEnvironmentImport"
+        }
+        LocalDaemonRequest::CommitEnvironmentImport(_) => {
+            "project.environment.CommitEnvironmentImport"
+        }
+        LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
         LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",

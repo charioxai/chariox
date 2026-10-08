@@ -153,7 +153,7 @@ pub struct StoredProjectEnvironment {
 
 #[derive(Debug, Clone)]
 pub struct ProjectEnvironmentStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
 }
 impl ProjectEnvironmentStore {
     pub fn new(private_state_root: &Path) -> Self {
@@ -161,7 +161,7 @@ impl ProjectEnvironmentStore {
             root: private_state_root.join("project-environments"),
         }
     }
-    fn path(&self, project: &str) -> PathBuf {
+    pub(super) fn path(&self, project: &str) -> PathBuf {
         self.root
             .join(format!("{:x}.json", Sha256::digest(project.as_bytes())))
     }
@@ -264,6 +264,11 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
+        match fs::remove_file(self.path(project).with_extension("identity.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(environment_error("remove environment identity failed")),
+        }
         match fs::remove_file(self.path(project)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

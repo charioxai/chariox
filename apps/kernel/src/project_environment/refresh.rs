@@ -170,7 +170,7 @@ pub fn remove_project_environment(
             vault.delete_secret(&service, &project_environment_vault_key(entry))?;
         }
         super::forget_project_file_rules(&state.manifest);
-        store.remove(project_id)?;
     }
+    store.remove(project_id)?;
     Ok(())
 }

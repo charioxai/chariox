@@ -27,6 +27,7 @@ mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -62,6 +63,7 @@ pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -253,4 +255,5 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 435;
+/// Version 471 defines value-free Project Environment aggregates and reserves the complete Environment operation contract (MP-02/MP-03/MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 471;

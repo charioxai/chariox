@@ -27,6 +27,7 @@ mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;

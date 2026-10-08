@@ -44,3 +44,11 @@ test("unknown versions and unrelated requests retain existing transport behavior
   }
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
+
+// MP-08 / MP-10: VERSION(P01).
+test("standalone and reserved Project Environment operations require protocol 471", () => {
+  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 470), /Project Environment needs protocol ≥471/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 471))
+  }
+})
