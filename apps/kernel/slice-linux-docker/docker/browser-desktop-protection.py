@@ -19,8 +19,8 @@ STATUS_DIP = 24  # Link-status bubble over the content bottom.
 def _top_documents(app, pyatspi):
     """Outermost web documents: one in-process AT-SPI collection query."""
     collection = app.queryCollection()
-    rule = collection.createMatchRule(pyatspi.StateSet(), collection.MATCH_NONE, '', collection.MATCH_NONE,
-                                      [pyatspi.ROLE_DOCUMENT_WEB], collection.MATCH_ANY, '', collection.MATCH_NONE, False)
+    rule = collection.createMatchRule(pyatspi.StateSet(), collection.MATCH_NONE, [], collection.MATCH_NONE,
+                                      [pyatspi.ROLE_DOCUMENT_WEB], collection.MATCH_ANY, [], collection.MATCH_NONE, False)
     matches = collection.getMatches(rule, collection.SORT_ORDER_CANONICAL, MAX_DOCUMENTS+1, True)
     if len(matches) > MAX_DOCUMENTS:
         raise ValueError('browser document search exhausted')
@@ -64,7 +64,10 @@ def document_rects(app, pyatspi):
     """Every sized outermost web document of one browser application (desktop pixels)."""
     try:
         nodes = _top_documents(app, pyatspi)
-    except NotImplementedError:
+    except ValueError:
+        raise
+    except Exception:
+        # No (or an incompatible) collection interface: the walk is equivalent.
         nodes = _breadth_documents(app)
     docs = []
     for node in nodes:
