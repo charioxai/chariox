@@ -57,9 +57,6 @@ export class LinuxCapture {
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
    await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale,height:geometry.height*this.scale+87}});
    await this.connection.send('Page.bringToFront',{},this.sessionId);
-   const {frameTree}=await this.connection.send('Page.getFrameTree',{},this.sessionId);
-   const {executionContextId}=await this.connection.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'chariox-native-surface-fence',grantUniveralAccess:false},this.sessionId);
-   this.contextId=executionContextId;
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
    await this.screenshot();
@@ -125,13 +122,11 @@ export class LinuxCapture {
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
-   let at=performance.timeOrigin+performance.now();const fenced=at;
-   // Both fences follow this readback; each must pass. Concurrent, not skipped.
-   const [,visibility]=await Promise.all([
-    assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id).then(()=>this.timing('native_document_fence',fenced)),
-    this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId).then(value=>{this.timing('native_visibility_fence',fenced);return value})]);
-   if(visibility.result?.value!=='visible')throw Error('native source not visible');
-   at=performance.timeOrigin+performance.now();let regions;
+   // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
+   // page targets fence this source by event (onCdp); every delivered frame
+   // still passes the credit's document check, which CDP orders after those
+   // events. The owned single-tab window is never occluded or hidden.
+   let at=performance.timeOrigin+performance.now();let regions;
    try{
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
