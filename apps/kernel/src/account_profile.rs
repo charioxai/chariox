@@ -2999,6 +2999,11 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         let provider = normalize_provider(&materialization.profile.provider)?;
+        // Gate the canonical family at the shared installer, before provisioning.
+        // An empty file list remains available only to the separate Vault path.
+        if provider == "claude" && !materialization.files.is_empty() {
+            validate_managed_context_materialization_shape(provider, materialization)?;
+        }
         let profile_id = validate_profile_id(&materialization.profile.profile_id)?;
         let allowed = match provider {
             "codex" => "auth.json",
