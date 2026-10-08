@@ -33,7 +33,6 @@ try{
  await page.waitForTimeout(2000);
  const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(process.env.MD_OPEN_SESSION==='1'&&await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}
  await page.getByRole('button',{name:'Open Browser panel',exact:true}).click();
- r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
  for(const [site,url]of sites){
   stage=site;const row={site,url,status:'RED',screenshots:[],clicks:[],typing:[]};r.sites.push(row);await sample();
   try{
@@ -57,9 +56,10 @@ try{
     row.final_canvas=await canvas.evaluate(c=>({width:c.width,height:c.height,kind:c.dataset.displayKind,sequence:c.dataset.displaySequence}));
    }
    const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.status=!['mirror','video'].includes(row.mode)?'RED_RENDER_NOT_READY':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);
-  }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).catch(()=>{})}
+  }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;row.alerts=await page.locator('[role=alert]').allTextContents().catch(()=>[]);await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).catch(()=>{})}
   await save();shaped?.check();
  }
+ r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
  r.observations=await page.evaluate(()=>mdHosted);r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';
 }catch(e){r.failedStage=stage;r.errorCode=e.name;process.exitCode=1;if(page)await page.screenshot({path:output+'/failure.png',fullPage:true}).catch(()=>{})}
 finally{
