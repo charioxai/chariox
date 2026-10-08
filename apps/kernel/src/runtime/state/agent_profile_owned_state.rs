@@ -77,10 +77,21 @@ impl KernelRuntimeOwnedState {
             "update agent profile",
         )?;
         let target_provider = provider.as_deref().unwrap_or(agent.provider()).to_string();
-        let target_model = model.as_deref().or(agent.model()).map(str::to_string);
-        let requested_account_profile = account_profile
+        let family_changed = crate::provider::canonical_provider_family(&target_provider)
+            .unwrap_or(&target_provider)
+            != crate::provider::canonical_provider_family(agent.provider())
+                .unwrap_or(agent.provider());
+        // Omitted selections belong to the current provider family. A provider-only
+        // control selects the destination default rather than reusing a foreign ID.
+        let target_model = model
             .as_deref()
-            .unwrap_or(agent.provider_account_profile());
+            .or(if family_changed { None } else { agent.model() })
+            .map(str::to_string);
+        let requested_account_profile = account_profile.as_deref().unwrap_or(if family_changed {
+            "default"
+        } else {
+            agent.provider_account_profile()
+        });
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
@@ -101,6 +112,7 @@ impl KernelRuntimeOwnedState {
         };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
+            None if family_changed => None,
             None => agent.effort(),
         };
         let provider_model_or_account_changed = target_provider != agent.provider()
