@@ -75,6 +75,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-apps.mjs"),
     ),
     (
+        "browser-controller-artifacts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
+    ),
+    (
+        "browser-controller-image.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
+    ),
+    (
         "browser-controller-bar.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-bar.mjs"),
     ),
@@ -184,4 +192,25 @@ pub(super) fn materialize(root: &Path) -> Result<PathBuf, String> {
             .map_err(|_| "MD-2: cannot publish browser controller asset")?;
     }
     Ok(directory.join("kernel-browser-host.mjs"))
+}
+
+#[cfg(test)]
+mod tests {
+    /// MP-08/MP-11: the materialized host must load; every relative module
+    /// an embedded asset imports is embedded too.
+    #[test]
+    fn embedded_assets_include_every_relative_import() {
+        let names = super::ASSETS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        for (name, bytes) in super::ASSETS {
+            let text = String::from_utf8_lossy(bytes);
+            for quote in ['"', '\''] {
+                for part in text.split(&format!("{quote}./")).skip(1) {
+                    let import = part.split(quote).next().unwrap_or_default();
+                    if import.ends_with(".mjs") {
+                        assert!(names.contains(&import), "{name} imports missing {import}");
+                    }
+                }
+            }
+        }
+    }
 }
