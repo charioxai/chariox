@@ -33,13 +33,15 @@ test('markers, secret fields and policy targets protect themselves and all desce
   assert.deepEqual(documentProtection(doc, 0, { targetNodes: new Set([109]) }).regions, at(1, 2, 3, 4, 5, 6, 9));
 });
 
-test('Vault echoes and opaque media are protected only with registered values', () => {
+test('Vault echoes are protected only with registered values; media and plugins are not masked whole', () => {
   const doc = snapshot([
     ['#document', -1], ['P', 0], ['#text', 1, [], 'pre vault-value post'], ['INPUT', 0], ['A', 0, ['href', '/x?vault-value']],
     ['CANVAS', 0], ['IMG', 0], ['SVG', 0], ['VIDEO', 0], ['P', 0], ['EMBED', 0], ['OBJECT', 0],
   ], { inputValue: { 3: 'vault-value' } });
-  assert.deepEqual(documentProtection(doc, 0).regions, at(10, 11), 'plugins are never inspectable');
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4, 5, 6, 7, 8, 10, 11));
+  assert.deepEqual(documentProtection(doc, 0).regions, []);
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4));
+  // Plugins have no inspectable document: returned as owners to withhold.
+  assert.deepEqual(documentProtection(doc, 0).owners.map(owner => [owner.backendNodeId, owner.plugin]), [[110, true], [111, true]]);
 });
 
 test('frame owners are returned for mapping unless protected; scroll is removed', () => {

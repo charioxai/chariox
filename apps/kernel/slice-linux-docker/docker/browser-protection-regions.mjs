@@ -8,7 +8,6 @@ import { redactObservation } from './browser-controller-snapshot.mjs';
 
 const MAX_FRAMES = 64, MAX_REGIONS = 4096, MAX_PAGES = 32, FRAME_TIMEOUT_MS = 500;
 const MARKERS = ['data-chariox-secret', 'data-chariox-observation-protected', 'data-observation-protected'];
-const OPAQUE_MEDIA = new Set(['canvas', 'svg', 'img', 'video']);
 const FRAME_OWNERS = new Set(['iframe', 'frame']);
 const PLUGINS = new Set(['object', 'embed']);
 
@@ -44,8 +43,9 @@ async function nodeBox(connection, sessionId, backendNodeId, dpr) {
 // Pure: protected layout rectangles of one DOMSnapshot document, in device
 // pixels of that document's viewport. Protection is inherited by descendants
 // (display:contents, overflow, shadow content); markers, password/OTP/payment
-// fields, policy target nodes and Vault value echoes are protected. With Vault
-// values, opaque media is protected too. Frame owners are returned for mapping.
+// fields, policy target nodes and Vault value echoes are protected. Frame and
+// plugin owners are returned for mapping or withholding (owner decision
+// 2026-10-08: media and inspectable frames are not masked whole).
 export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
   const document = snapshot.documents[index], strings = snapshot.strings ?? [];
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
@@ -65,8 +65,6 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
       own = MARKERS.includes(key) || (key === 'autocomplete' && /password|one-time-code|cc-/i.test(value)) ||
         (name === 'input' && key === 'type' && value.toLowerCase() === 'password') || echoed(attributes[a + 1]);
     }
-    if (values.length && OPAQUE_MEDIA.has(name)) own = true;
-    if (PLUGINS.has(name)) own = true; // Plugin/PDF content has no inspectable document.
     const up = parent[i] ?? -1;
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
@@ -79,8 +77,9 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
     if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) throw new Error('MP-11: unknown layout region');
     const rect = [bounds[0] - scroll[0], bounds[1] - scroll[1], bounds[2], bounds[3]];
     if (marked[i]) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
-    if (FRAME_OWNERS.has(text(nodes.nodeName[i]).toLowerCase())) {
-      owners.push({ backendNodeId: nodes.backendNodeId[i], rect, contentDocument: contentDocument.get(i) });
+    const name = text(nodes.nodeName[i]).toLowerCase();
+    if (FRAME_OWNERS.has(name) || PLUGINS.has(name)) {
+      owners.push({ backendNodeId: nodes.backendNodeId[i], rect, contentDocument: contentDocument.get(i), ...(PLUGINS.has(name) ? { plugin: true } : {}) });
     }
   }
   return { regions, owners };
@@ -119,7 +118,7 @@ async function isolatedFrames(connection, top, frameIds) {
   return { owned, detach: () => Promise.all(frames.map(({ sessionId }) => connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}))) };
 }
 
-async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children) {
+async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children, withheld) {
   const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, entry.sessionId);
   const pending = [{ index: 0, origin, clip }];
   const ownersBySession = new Map(children.map(child => [child.ownerBackendNodeId, child]));
@@ -127,13 +126,15 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
     const doc = pending.shift();
     if ((snapshot.documents?.length ?? 0) <= doc.index) throw new Error('MP-11: missing frame document');
     const { regions: own, owners } = documentProtection(snapshot, doc.index, { values: policy.values, targetNodes });
-    const place = rect => { const placed = intersect([rect[0] + doc.origin[0], rect[1] + doc.origin[1], rect[2], rect[3]], doc.clip); if (placed) regions.push(placed); };
+    const place = rect => { const placed = intersect([rect[0] + doc.origin[0], rect[1] + doc.origin[1], rect[2], rect[3]], doc.clip); if (placed) regions.push(placed); return placed; };
     own.forEach(place);
     for (const owner of owners) {
       const isolated = ownersBySession.get(owner.backendNodeId);
       let box = null;
       try { box = await nodeBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
-      if (!box?.plain || (owner.contentDocument === undefined && !isolated)) { place(owner.rect); continue; }
+      // Plugin/PDF content has no inspectable document.
+      const reason = owner.plugin ? 'plugin' : !box?.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
+      if (reason) { if (place(owner.rect)) withheld.push(reason); continue; }
       const childOrigin = [origin[0] + box.content[0], origin[1] + box.content[1]];
       const childClip = intersect([childOrigin[0], childOrigin[1], box.content[2], box.content[3]], doc.clip);
       if (!childClip) continue; // Scrolled out of its parent: no pixels.
@@ -157,7 +158,7 @@ async function search(connection, sessionId, query) {
 // secret fields and frame owners, instead of a whole-page DOMSnapshot. A
 // marker protects its descendants, which this path cannot bound: false lets
 // the caller measure the session from a DOMSnapshot instead.
-async function searchedRegions(connection, entry, dpr, regions, children) {
+async function searchedRegions(connection, entry, dpr, regions, children, withheld) {
   const { sessionId, origin, clip } = entry;
   await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
   const describe = async nodeId => (await connection.send('DOM.describeNode', { nodeId }, sessionId)).node;
@@ -171,7 +172,10 @@ async function searchedRegions(connection, entry, dpr, regions, children) {
   for (const node of owners) {
     const found = await box(node), child = isolated.get(node.backendNodeId);
     if (!found || (FRAME_OWNERS.has(node.localName) && node.contentDocument)) continue; // In-process documents were searched.
-    if (!child || !found.plain) { place(found.border); continue; } // Plugin, uninspected or transformed frame.
+    if (!child || !found.plain) { // Plugin, uninspected or transformed frame.
+      if (place(found.border)) withheld.push(PLUGINS.has(node.localName) ? 'plugin' : child ? 'transformed_frame' : 'uninspected_frame');
+      continue;
+    }
     const childOrigin = [origin[0] + found.content[0], origin[1] + found.content[1]];
     const childClip = intersect([childOrigin[0], childOrigin[1], found.content[2], found.content[3]], clip);
     if (childClip) Object.assign(child, { origin: childOrigin, clip: childClip, ownerRect: intersect([origin[0] + found.border[0], origin[1] + found.border[1], found.border[2], found.border[3]], clip) });
@@ -208,7 +212,7 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
   if (visual?.scale !== 1 || !(visual?.zoom > 0)) throw new Error('MP-11: pinch-zoomed page'); // Visual offsets are not mapped.
   const scale = dpr / visual.zoom; // Screen DIP to device pixels; page zoom excluded.
   const viewport = [0, 0, Math.round(innerWidth * dpr), Math.round(innerHeight * dpr)];
-  const regions = [];
+  const regions = [], withheld = [];
   const frameIds = new Set(); const visit = tree => { frameIds.add(tree.frame.id); (tree.childFrames ?? []).forEach(visit); }; visit(top);
   const { owned = [], detach = async () => {} } = await isolatedFrames(connection, top, frameIds);
   try {
@@ -225,11 +229,11 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
       const prefix = entry === root ? '' : `frame:${entry.frame.id}:${entry.frame.loaderId}:`;
       try {
         const targetNodes = policyTargets(policy, targetId, prefix, top.frame.loaderId);
-        const searched = !policy.values.length && !targetNodes.size && await searchedRegions(connection, entry, dpr, regions, children);
-        if (!searched) await sessionRegions(connection, entry, dpr, entry.origin, entry.clip, policy, targetNodes, regions, children);
+        const searched = !policy.values.length && !targetNodes.size && await searchedRegions(connection, entry, dpr, regions, children, withheld);
+        if (!searched) await sessionRegions(connection, entry, dpr, entry.origin, entry.clip, policy, targetNodes, regions, children, withheld);
       } catch (error) {
         if (entry === root || !entry.ownerRect) throw error;
-        regions.push(entry.ownerRect); // MP-11: fail closed for this frame only.
+        regions.push(entry.ownerRect); withheld.push('frame_failed'); // MP-11: fail closed for this frame only.
         for (const child of owned) if (child.parent === entry) child.origin = null;
       }
     }
@@ -238,8 +242,10 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
       if (treeIdentity(await frameTree(connection, entry.sessionId)) !== treeIdentity(entry.tree)) throw new Error('MP-11: frame changed during protection');
     }
   } finally { await detach(); }
-  if (regions.length > MAX_REGIONS) return { url: top.frame.url, document_id: top.frame.loaderId, dpr, scale, viewport: viewport.slice(2), regions: [viewport] };
-  return { url: top.frame.url, document_id: top.frame.loaderId, dpr, scale, viewport: viewport.slice(2), regions: regions.map(outward) };
+  // withheld: why whole frames were masked (fixed labels, never page data).
+  const page = { url: top.frame.url, document_id: top.frame.loaderId, dpr, scale, viewport: viewport.slice(2) };
+  if (regions.length > MAX_REGIONS) return { ...page, regions: [viewport], withheld: ['region_bound'] };
+  return { ...page, regions: regions.map(outward), withheld };
 }
 
 // Every visible page target, with its window (screen DIP) for desktop placement.

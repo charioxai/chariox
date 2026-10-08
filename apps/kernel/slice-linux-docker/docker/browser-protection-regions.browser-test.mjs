@@ -39,6 +39,8 @@ for (const dpr of [1, 2]) for (const [label, values, query] of [['snapshot', [VA
       assert.equal(pages.length, 1);
       const [page] = pages;
       assert.equal(page.dpr, dpr);
+      // Every frame is inspected; only the CSS-scaled frame is withheld whole.
+      assert.ok(page.withheld.every(reason => reason === 'transformed_frame') && (scroll || page.withheld.length === 1), String(page.withheld));
       const pixels = await shot();
       assert.deepEqual(page.viewport, [pixels.width, pixels.height]);
       const before = census(pixels), after = census(pixels, page.regions);
