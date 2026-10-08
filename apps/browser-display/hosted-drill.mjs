@@ -3,6 +3,7 @@
 import {createRequire} from 'node:module';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {sourceIdentity} from './source-identity.mjs';
+import {driveHostedWheel} from './hosted-wheel.mjs';
 import {shapeHostedViewer} from './hosted-network.mjs';
 const [output,tools]=process.argv.slice(2),require=createRequire(tools+'/package.json');
 const {chromium}=require('playwright-core');
@@ -56,18 +57,18 @@ try{
     const b=await canvas.boundingBox();if(!b)throw Error('MP-10: video canvas missing');
     await page.mouse.move(b.x+b.width*.5,b.y+b.height*.5);
     const begin=await page.evaluate(()=>performance.timeOrigin+performance.now());
-    const until=Date.now()+10000;let wheelCalls=0;while(Date.now()<until){await page.mouse.wheel(0,Math.floor((10000-(until-Date.now()))/1000)%2===0?120:-120);wheelCalls++;await page.waitForTimeout(16)}
+    const driver=await driveHostedWheel(cdp,b);const wheelCalls=driver.sent;
     const end=await page.evaluate(()=>performance.timeOrigin+performance.now());await page.waitForTimeout(1000);
     const frames=await page.evaluate(({begin,end})=>mdHosted.frames.filter(f=>f.at>=begin&&f.at<=end),{begin,end});
-    const visible=[...new Map(frames.map(frame=>[frame.at,frame])).values()];row.scroll={begin,end,wheel_calls:wheelCalls,driver_hz:wheelCalls*1000/(end-begin),presented:visible.length,decoded:frames.length,fps:visible.length*1000/(end-begin),kinds:frames.reduce((o,f)=>(o[f.kind]=(o[f.kind]??0)+1,o),{})};
+    const visible=[...new Map(frames.map(frame=>[frame.at,frame])).values()];row.scroll={begin,end,driver,wheel_calls:wheelCalls,driver_hz:wheelCalls*1000/(end-begin),presented:visible.length,decoded:frames.length,fps:visible.length*1000/(end-begin),kinds:frames.reduce((o,f)=>(o[f.kind]=(o[f.kind]??0)+1,o),{})};
     row.final_canvas=await canvas.evaluate(c=>({width:c.width,height:c.height,kind:c.dataset.displayKind,sequence:c.dataset.displaySequence}));
    }
-   const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.status=!['mirror','video'].includes(row.mode)?'RED_RENDER_NOT_READY':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);
+   const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.thresholds={full_dom_mirror:row.mode==='mirror',streamed_scroll:row.mode!=='video'||row.scroll?.fps>=30,input_echo:'UNMEASURED',product_screenshot:'UNMEASURED'};row.status=!['mirror','video'].includes(row.mode)?'RED_RENDER_NOT_READY':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':row.mode==='video'&&row.scroll?.fps<30?'RED_SCROLL':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);
   }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;row.alerts=await page.locator('[role=alert]').allTextContents().catch(()=>[]);await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).then(()=>row.screenshots.push(output+'/'+site+'-failure.png')).catch(()=>{})}
   await save();shaped?.check();
  }
  r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
- r.observations=await page.evaluate(()=>mdHosted);r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';if(r.status==='RED')process.exitCode=1;
+ r.observations=await page.evaluate(()=>mdHosted);r.acceptance='NOT_ACCEPTED: pixel screenshots and cadence alone do not establish full DOM coverage, click/type echo or duration';r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';if(r.status==='RED')process.exitCode=1;
 }catch(e){r.failedStage=stage;r.errorCode=e.name;process.exitCode=1;if(page)await page.screenshot({path:output+'/failure.png',fullPage:true}).catch(()=>{})}
 finally{
  if(page)await page.getByRole('button',{name:'Close tab',exact:true}).click({timeout:5000}).catch(()=>{});await browser?.close();if(shaped)try{r.network_statistics=await shaped.close()}catch(e){r.cleanup_error=e.name;r.status='RED_CLEANUP';process.exitCode=1}await save();console.log(JSON.stringify({MP:r.MP,status:r.status,sites:r.sites.map(s=>({site:s.site,status:s.status,mode:s.mode,fps:s.scroll?.fps})),failedStage:r.failedStage,errorCode:r.errorCode}));
