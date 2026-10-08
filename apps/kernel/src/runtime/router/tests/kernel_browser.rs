@@ -97,7 +97,7 @@ async fn focus_check() {
             json!({"command":{"op":"stop"}})
         )
         .await
-        .is_ok());
+        .is_err());
     assert!(router
         .dispatch_authenticated_runtime_tool_call(
             first_token,

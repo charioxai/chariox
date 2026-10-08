@@ -379,6 +379,8 @@ impl KernelBrowserHost {
                 finished: false,
             };
             self.check_admission(admission)?;
+            // Focus can move while the all-tab actor action is being admitted.
+            self.scope_browser_request(admission, method, &params)?;
             let result = backend.stop();
             action.finish(if result.is_ok() {
                 EnvironmentActionTerminal::Completed
