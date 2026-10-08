@@ -18,7 +18,7 @@ use crate::error::DaemonError;
 
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
-pub(crate) use copy_notice::ProviderAccountCopyExpectation;
+pub(crate) use copy_notice::{validate_copy_source_kernel, ProviderAccountCopyExpectation};
 
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];

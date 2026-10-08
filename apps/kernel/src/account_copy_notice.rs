@@ -62,6 +62,14 @@ impl ProviderAccountCopyExpectation {
     }
 }
 
+pub(crate) fn validate_copy_source_kernel(materialization: &ProviderAccountMaterialization, authenticated_kernel: &str) -> Result<(), DaemonError> {
+    match materialization.copy_source.as_ref() {
+        Some(source) if source.kernel_id == authenticated_kernel && !source.machine_id.trim().is_empty() => Ok(()),
+        None if materialization.files.is_empty() => Ok(()), // Separate metadata-only Vault launch path.
+        _ => Err(registry_error("materialize account copy", "copy provenance does not match the authenticated source kernel")),
+    }
+}
+
 fn same_copy_generation(left: &ProviderAccountCopyMetadata, right: &ProviderAccountCopyMetadata) -> bool {
     let mut left = left.clone();
     left.auth_state = right.auth_state.clone();

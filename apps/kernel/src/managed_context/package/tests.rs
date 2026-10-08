@@ -297,7 +297,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     let _provider_homes = FixtureProviderHomes::new(&fixture.root.join("target-home"));
     let source_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
-            .map(|registry| registry.with_machine_identity("source-machine", "source-kernel"))
+            .map(|registry| registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id))
             .expect("open source account registry");
     let source_profile = source_registry
         .create_managed("owner-a", "codex", "Source default")
@@ -427,7 +427,7 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     let fixture = PackageFixture::new("provider-account-binding");
     let source_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
-            .map(|registry| registry.with_machine_identity("source-machine", "source-kernel"))
+            .map(|registry| registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id))
             .expect("open source account registry");
     let source_profile = source_registry
         .create_managed("owner-a", "codex", "Work")
@@ -589,7 +589,7 @@ esac
 fn provider_account_rollback_attempts_every_import_after_one_failure() {
     let fixture = PackageFixture::new("provider-account-rollback-all");
     let source = ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
-        .map(|registry| registry.with_machine_identity("source-machine", "source-kernel"))
+        .map(|registry| registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id))
         .expect("open source account registry");
     let mut materializations = Vec::new();
     for (provider, environment_key, relative_path) in [

@@ -66,6 +66,7 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
+        crate::account_profile::validate_copy_source_kernel(&materialization, &lease.home_kernel_id)?;
         if materialization.profile.provider == "claude" && !materialization.files.is_empty() {
             crate::account_profile::validate_managed_context_materialization_shape(
                 "claude",

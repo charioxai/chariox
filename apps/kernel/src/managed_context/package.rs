@@ -845,6 +845,9 @@ fn import_provider_accounts(
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
+            for materialization in materializations {
+                crate::account_profile::validate_copy_source_kernel(materialization, &request.expected_binding.source_kernel_id)?;
+            }
             let mut accounts = Vec::with_capacity(materializations.len());
             for materialization in materializations {
                 match target
