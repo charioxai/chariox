@@ -74,6 +74,20 @@ export async function command(program, args, capture = false, input, env = proce
     return out
   } finally { clearTimeout(timer) }
 }
+// MP-07/MP-08: an enabled user unit must survive the SSH login that installs it.
+// logind permits users to enable their own lingering where host policy allows it.
+// Never elevate privileges or claim readiness if that prerequisite is refused.
+export async function ensureSystemdUserPersistence(invoke = command, uid = process.getuid()) {
+  if (!Number.isSafeInteger(uid) || uid < 0) fail("cannot identify the user service owner")
+  const user = String(uid)
+  const lingering = async () => (await invoke("loginctl", ["show-user", user, "--property=Linger", "--value"], true)).trim() === "yes"
+  try {
+    if (await lingering()) return
+    await invoke("loginctl", ["enable-linger", user])
+    if (await lingering()) return
+  } catch { /* Keep host/service diagnostics bounded and value-free. */ }
+  fail(`The user service would stop after SSH logout. Ask the host administrator to run sudo loginctl enable-linger ${user}, then retry Setup. No enrollment code was consumed.`)
+}
 function quote(value) {
   if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)) fail("invalid user service environment")
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
@@ -153,7 +167,7 @@ async function inspectMachine(r, home, stage, serviceManager) {
   return { installId:r.installId,status:"installed",releaseDigest:r.releaseDigest,enrolled:false }
 }
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
-export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
+export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, servicePersistence = ensureSystemdUserPersistence, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
   const verify = releaseAdapter?.verify ?? verifyImage
   const kernelPath = releaseAdapter?.kernelPath ?? "usr/local/bin/chariox-kernel"
@@ -167,6 +181,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     if (releaseAdapter || serviceDefinition) fail("SSH inspection requires the original image/service contract")
     return inspectMachine(r, home, stage, serviceManager)
   }
+  if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) await servicePersistence()
   const service = serviceDefinition?.name ?? `chariox-ssh-${r.installId}.service`
   const renderUnit = () => serviceDefinition?.render(home, r, root, kernelPath) ?? unitFor(home, r, root, kernelPath)
   const installParent = await tree(home, ".local/share/chariox/ssh-machines", installing)

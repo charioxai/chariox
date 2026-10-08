@@ -24,7 +24,7 @@ async function harness(t, overrides = {}) {
   const server = createServer((req, res) => { requests.push(req.url); if (!responses.has(req.url)) { res.writeHead(404); return res.end() }; res.end(responses.get(req.url)) })
   await new Promise(r => server.listen(0, "127.0.0.1", r)); t.after(() => new Promise(r => server.close(r)))
   const root = join(home, ".local/share/chariox/ssh-machines/local")
-  const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
+  const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   return { dir, home, f, responses, requests, calls, root, options, serve }
 }
 test("MP-07 platform and URL admission reject credential URLs and unsupported targets", () => {

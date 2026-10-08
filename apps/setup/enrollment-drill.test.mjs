@@ -130,7 +130,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if ((args[0] === "stop" || (args[0] === "disable" && args.includes("--now"))) && services.has(id)) { await stopOwned(services.get(id)); services.delete(id); calls.push(`stop-${id}`) }
     return ""
   }
-  const notices = [], options = { home, port, version: f.version, publicKeyHex: f.publicKeyHex, apiUrl, releaseBase: `http://127.0.0.1:${release.address().port}`, extractorSource: await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8"), serviceManager, notice: value => notices.push(value), openBrowser: async url => { assert.equal(url, `${apiUrl}/approve`); for (const device of devices.values()) device.approved = true; calls.push("open-browser") } }
+  const notices = [], options = { home, port, version: f.version, publicKeyHex: f.publicKeyHex, apiUrl, releaseBase: `http://127.0.0.1:${release.address().port}`, extractorSource: await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8"), serviceManager, servicePersistence: async () => {}, notice: value => notices.push(value), openBrowser: async url => { assert.equal(url, `${apiUrl}/approve`); for (const device of devices.values()) device.approved = true; calls.push("open-browser") } }
   phase = "device install/start/readiness"
   const first = await installLocal(options)
   assert.equal(first.status, "ready"); assert.equal(first.userId, "owner")

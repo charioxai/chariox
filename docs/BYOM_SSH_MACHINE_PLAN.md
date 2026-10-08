@@ -25,6 +25,10 @@ plane; each independent kernel owns its runtime and provider execution.
 The source kernel runs the user's SSH config/agent, with host-key checking,
 batch authentication and no agent forwarding. Chariox stores no SSH password
 or key. PR1 supports Linux x86_64 with Python 3, Node 22 and systemd --user.
+MP-07 / MP-08 service start, repair and upgrade require logind lingering for the
+current user. The installer enables it where permitted and verifies it before
+redeeming enrollment; a refusal reports the administrator command and cannot
+claim persistent readiness from an SSH-bound user manager.
 An operator-owned `ssh-machine-releases.json` beside source `config.toml`
 selects the approved immutable release/version and independent public trust
 pins; clients never supply arbitrary paths or pins. Selected Project context

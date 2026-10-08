@@ -145,7 +145,7 @@ async function cliLink(home, root, id, remove = false) {
   }
 }
 export async function installLocal(options) {
-  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl = "https://chariox.com", installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, kernelCommand } = options
+  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl = "https://chariox.com", installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) fail("a pinned release version is required")
   const platform = targetPlatform(options.platform?.split("-")[0], options.platform?.split("-")[1])
 
@@ -169,7 +169,7 @@ export async function installLocal(options) {
     } else digest = await prepareRelease({ stage, version, platform, releaseBase, publicKeyHex })
     const request = { action: action === "start" ? "repair" : action, installId, port, releaseDigest: digest }
     const adapter = bundleAdapter({ version, platform, extractorSource })
-    const deps = { home, stage, releaseAdapter: adapter, ...(platform.startsWith("darwin") ? { serviceDefinition: launchdDefinition(installId), serviceManager: serviceManager ?? launchdManager(home, installId) } : serviceManager ? { serviceManager } : {}), ...(kernelCommand ? { kernelCommand } : {}) }
+    const deps = { home, stage, releaseAdapter: adapter, ...(platform.startsWith("darwin") ? { serviceDefinition: launchdDefinition(installId), serviceManager: serviceManager ?? launchdManager(home, installId) } : serviceManager ? { serviceManager } : {}), ...(servicePersistence ? { servicePersistence } : {}), ...(kernelCommand ? { kernelCommand } : {}) }
     const installed = await runMachine(request, { ...deps, enrollKernel: async () => { throw new Error("start requires enrollment") } })
     if (action === "remove") { await cliLink(home, root, installId, true); return installed }
     await cliLink(home, root, installId)
