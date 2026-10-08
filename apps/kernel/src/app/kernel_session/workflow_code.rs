@@ -127,6 +127,10 @@ impl<'a> KernelSessionService<'a> {
                         });
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
+                        if self.app.config().room_agent_tools {
+                            let actor = self.app.agents.get_agent(metaagent_id)?;
+                            crate::runtime::room_tool_admission::workflow_node(&actor, &agent)?;
+                        }
                         if !self.app.config().room_agent_tools
                             && agent.controlled_by_metaagent_id() != Some(metaagent_id)
                         {
@@ -632,8 +636,14 @@ impl<'a> KernelSessionService<'a> {
                                     ),
                                     Some(node.handle.clone()),
                                 );
-                            } else if !self.app.config().room_agent_tools && caller_metaagent_id.is_some_and(|metaagent_id| {
-                                agent.controlled_by_metaagent_id() != Some(metaagent_id)
+                             } else if caller_metaagent_id.is_some_and(|actor_id| {
+                                if self.app.config().room_agent_tools {
+                                    self.app.agents.get_agent(actor_id).map_or(true, |actor| {
+                                        crate::runtime::room_tool_admission::workflow_node(&actor, &agent).is_err()
+                                    })
+                                } else {
+                                    agent.controlled_by_metaagent_id() != Some(actor_id)
+                                }
                             }) {
                                 push_workflow_code_target_validation_error(
                                     validation,
