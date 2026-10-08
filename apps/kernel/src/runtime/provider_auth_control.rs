@@ -19,16 +19,56 @@ const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
 use crate::runtime::claude_setup_token_login::{self, CLAUDE_SETUP_TOKEN_METHOD};
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
-    owner_user_id: &str,
+    command: &crate::runtime::command::KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(
+        &crate::runtime::command::command_caller_user_id(command),
+    );
     match request {
         LocalDaemonRequest::GetProviderAuthStatus(request) => {
             execute_get_provider_auth_status_request(runtime_state, &owner_user_id, request).await
         }
         LocalDaemonRequest::StartProviderLogin(request) => {
-            execute_start_provider_login_request(runtime_state, &owner_user_id, request).await
+            // MP-08/MP-10/MP-11: browser/account enrollment uses the same
+            // session interaction as the scoped TUI setup-token command.
+            let target = if crate::provider::canonical_provider_family(&request.provider)
+                == Some("claude")
+                && matches!(request.method.as_deref(), None | Some("setup_token"))
+            {
+                if let Some(session_id) = command.session_id.as_deref() {
+                    Some((
+                        session_id,
+                        runtime_state
+                            .vault_prompt_agent(
+                                session_id,
+                                command.agent_id.as_deref(),
+                                "Claude authorization",
+                            )
+                            .await?,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let response =
+                execute_start_provider_login_request(runtime_state, &owner_user_id, request)
+                    .await?;
+            if let (
+                Some((session_id, agent_id)),
+                LocalDaemonResponse::ProviderLoginStarted { login },
+            ) = (target, &response)
+            {
+                runtime_state.spawn_provider_login_workflow(
+                    session_id,
+                    &agent_id,
+                    &owner_user_id,
+                    login.clone(),
+                );
+            }
+            Ok(response)
         }
         LocalDaemonRequest::GetProviderLoginStatus(request) => {
             execute_get_provider_login_status_request(runtime_state, &owner_user_id, request).await
@@ -202,6 +242,7 @@ async fn start_terminal_provider_auth(
     runtime_state.provider_login_process_store().insert(
         crate::runtime::state::ProviderLoginProcessRecord {
             owner_user_id: owner_user_id.to_string(),
+            kernel_id: runtime_state.provider_login_kernel_id(),
             provider: provider.to_string(),
             account_profile: profile.profile_id.clone(),
             credential_scope,
@@ -272,7 +313,7 @@ fn terminal_provider_auth_args(
         (
             "claude",
             crate::runtime::state::ProviderAuthProcessOperation::Login,
-            Some(CLAUDE_SETUP_TOKEN_METHOD),
+            Some(CLAUDE_SETUP_TOKEN_METHOD) | None,
         ) => vec!["setup-token".to_string()],
         (
             "opencode",
@@ -756,9 +797,14 @@ pub(crate) async fn execute_start_provider_login_request(
 pub(super) async fn execute_start_provider_login_with_overwrite(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
-    request: StartProviderLoginRequest,
+    mut request: StartProviderLoginRequest,
     overwrite: bool,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+        && request.method.is_none()
+    {
+        request.method = Some(CLAUDE_SETUP_TOKEN_METHOD.into());
+    }
     crate::account_profile::validate_provider_enrollment_method(
         &request.provider,
         request.method.as_deref(),
@@ -795,6 +841,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
             runtime_state.provider_login_process_store().insert(
                 crate::runtime::state::ProviderLoginProcessRecord {
                     owner_user_id: owner_user_id.to_string(),
+                    kernel_id: runtime_state.provider_login_kernel_id(),
                     provider: "codex".to_string(),
                     account_profile: login.account_profile.clone(),
                     credential_scope: login.account_profile.clone(),
@@ -1033,7 +1080,7 @@ mod tests {
         );
         assert_eq!(
             terminal_provider_auth_args("claude", ProviderAuthProcessOperation::Login, None),
-            ["auth", "login"]
+            ["setup-token"]
         );
     }
 

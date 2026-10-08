@@ -138,6 +138,9 @@ pub(crate) async fn execute_set_provider_account_credential_request(
         &token,
         request.overwrite,
     )?;
+    runtime_state
+        .invalidate_claude_token_check(&owner_user_id, &profile.profile_id)
+        .await;
     claude_setup_token_login::record_verified_token(
         runtime_state,
         &owner_user_id,

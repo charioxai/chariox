@@ -41,7 +41,7 @@ impl Drop for VaultUnlockGuard {
 }
 
 impl KernelRuntimeState {
-    pub(super) async fn prepare_provider_launch_request_with_vault(
+    pub(in crate::runtime) async fn prepare_provider_launch_request_with_vault(
         &self,
         request: crate::provider::LaunchProviderRequest,
         operation: &'static str,
@@ -50,8 +50,15 @@ impl KernelRuntimeState {
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
         let config = self.owned.config_projection.snapshot();
-        self.owned
-            .prepare_provider_launch_request(request, config.runtime_mcp_url())
+        let mut request = self
+            .owned
+            .prepare_provider_launch_request(request, config.runtime_mcp_url())?;
+        let credentials = std::mem::take(&mut request.provider_credential_env);
+        drop(_vault_unlock);
+        let credentials = self
+            .checked_claude_credentials(&request, credentials)
+            .await?;
+        Ok(request.with_provider_credential_env(credentials))
     }
 
     async fn ensure_provider_account_vault_unlocked_for_launch(
@@ -133,12 +140,14 @@ impl KernelRuntimeState {
                 &config,
                 run.owner_user_id(),
             );
-        crate::provider::resolve_provider_account_credentials(
+        let credentials = crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
             run.provider(),
             run.account_profile(),
-        )
+        )?;
+        drop(_vault_unlock);
+        self.checked_claude_credentials(&request, credentials).await
     }
 
     pub(super) async fn resolve_remote_provider_launch_credential(
@@ -188,12 +197,16 @@ impl KernelRuntimeState {
             agent.provider(),
             &profile.profile_id,
         )?;
+        drop(_vault_unlock);
+        environment = self
+            .checked_claude_credentials(&request, environment)
+            .await?;
         let token = environment
             .remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
             .filter(|value| !value.trim().is_empty())
             .ok_or(DaemonError::InvalidConfig {
                 field: "provider account credential",
-                message: "remote Claude launch requires a Chariox-vault setup token; use `provider setup-token claude <account-profile>` on the home kernel",
+                message: "remote Claude launch requires sign-in; choose Log in in Provider Accounts on the home kernel",
             })?;
         Ok(Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {

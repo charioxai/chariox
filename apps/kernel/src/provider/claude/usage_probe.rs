@@ -61,7 +61,7 @@ fn probe_claude_account_usage_with_timeout(
 }
 
 /// Why Claude did not accept an account credential.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClaudeCredentialCheckError {
     /// Claude's API refused the credential: invalid, expired or revoked.
     Rejected,
@@ -101,7 +101,7 @@ fn verify_claude_account_credential_with_timeout(
         result
             .get("api_error_status")
             .and_then(serde_json::Value::as_u64),
-        Some(401 | 403)
+        Some(401)
     ) {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
@@ -111,9 +111,14 @@ fn verify_claude_account_credential_with_timeout(
     let failed_result = result.get("type").and_then(serde_json::Value::as_str) == Some("result")
         && result.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
     let rejected_text = |text: &str| {
-        text.split_once("API Error: ")
-            .and_then(|(_, status)| status.split_whitespace().next())
-            .is_some_and(|status| matches!(status.trim_end_matches(':'), "401" | "403"))
+        let status = result
+            .get("api_error_status")
+            .and_then(serde_json::Value::as_u64);
+        crate::provider::renewal_failure::claude_api_auth_failure(text)
+            || (status == Some(403)
+                && crate::provider::renewal_failure::claude_api_auth_failure(&format!(
+                    "API Error: 403 {text}"
+                )))
     };
     if failed_result
         && (result
@@ -542,6 +547,16 @@ process.stdout.write(JSON.stringify({
             ),
             (
                 serde_json::json!({"type":"result", "is_error":true, "errors":["API Error: 403 access denied"]}),
+                1,
+                false,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":true, "api_error_status":403, "result":"permission_error: model access denied"}),
+                1,
+                false,
+            ),
+            (
+                serde_json::json!({"type":"result", "is_error":true, "api_error_status":403, "result":"Invalid authentication credentials"}),
                 1,
                 true,
             ),

@@ -123,7 +123,7 @@ exit 0
         let response = router.dispatch(command, request).await;
         if stored && !replace {
             assert!(
-                response.is_err_and(|error| error.to_string().contains("--replace")),
+                response.is_err_and(|error| error.to_string().contains("Choose Log in")),
                 "replacement must be explicit before spawning CLI"
             );
             assert!(!router
@@ -358,7 +358,7 @@ if [ "$1" = -p ]; then
   fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{unavailable}' ]; then exit 3; fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = '{expired}' ]; then
-    echo '{{"type":"result","is_error":true,"api_error_status":403}}'; exit 1
+    echo '{{"type":"result","is_error":true,"api_error_status":403,"result":"Invalid authentication credentials"}}'; exit 1
   fi
   echo '{{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid."}}'
   exit 1
@@ -413,7 +413,7 @@ exit 90
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("rejected the setup token") && error.contains("claude setup-token"),
+        error.contains("rejected the setup token") && error.contains("authorization link"),
         "an invalid token needs an actionable error: {error}"
     );
     assert!(!crate::provider::provider_account_credential_registered(
@@ -465,10 +465,53 @@ exit 90
             assert_eq!(status.auth_state, "unknown");
             let hint = status.login_hint.unwrap();
             assert!(
-                hint.contains("not been verified") && hint.contains("--replace"),
+                hint.contains("checked automatically") && !hint.contains("--replace"),
                 "{hint}"
             );
         }
+    }
+    if scenario == "legacy" {
+        let (session, agent) = {
+            let mut app = router.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                ))
+                .unwrap()
+        };
+        let before = std::fs::read_to_string(root.join("model-turns"))
+            .unwrap()
+            .lines()
+            .count();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            &profile.profile_id,
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id());
+        for _ in 0..2 {
+            router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(request.clone(), "test first use")
+                .await
+                .unwrap();
+        }
+        let after = std::fs::read_to_string(root.join("model-turns"))
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(
+            after - before,
+            1,
+            "MP-08/MP-10/MP-11 unchecked token must be checked once automatically at first use"
+        );
+        assert_eq!(
+            auth_state(&router),
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
     }
     if scenario == "observation-failure" {
         // The registry is cached in memory; force publication to fail only
@@ -529,7 +572,7 @@ exit 90
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("already exists") && error.contains("--replace"),
+            error.contains("already exists") && error.contains("Choose Log in"),
             "{error}"
         );
         assert_eq!(
@@ -619,4 +662,321 @@ exit 90
             "status checks must not downgrade a setup-token account (restart {restart})"
         );
     }
+}
+
+// MP-08/MP-10/MP-11: supplementary regression seams; never live acceptance.
+#[tokio::test]
+async fn setup_token_unchecked_rejection_opens_shared_oauth_without_terminal_commands() {
+    first_use_fixture("rejected").await;
+}
+
+#[tokio::test]
+async fn setup_token_inconclusive_first_use_checks_once_without_asking_for_login() {
+    first_use_fixture("network").await;
+}
+
+#[tokio::test]
+async fn setup_token_previously_expired_account_uses_the_same_oauth_interaction() {
+    first_use_fixture("expired").await;
+}
+
+#[tokio::test]
+async fn setup_token_oauth_does_not_hold_an_operation_vault_lease() {
+    first_use_fixture("expired-locked").await;
+}
+
+#[tokio::test]
+async fn setup_token_expired_observation_overrides_cached_first_use_success() {
+    first_use_fixture("expired-cached").await;
+}
+
+#[tokio::test]
+async fn setup_token_account_enrollment_projects_the_shared_oauth_interaction() {
+    first_use_fixture("enrollment").await;
+}
+
+async fn first_use_fixture(mode: &str) {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-first-use-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_CLAUDE_BIN",
+        "CHARIOX_LOG_DIR",
+        "CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT",
+    ];
+    let _cleanup = FixtureCleanup {
+        root: root.clone(),
+        environment: names
+            .iter()
+            .copied()
+            .map(|name| (name, std::env::var_os(name)))
+            .collect(),
+    };
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("CHARIOX_HOME", root.join("state"));
+    std::env::set_var("CHARIOX_LOG_DIR", root.join("logs"));
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let binary = root.join("claude");
+    std::env::set_var("CHARIOX_CLAUDE_BIN", &binary);
+    std::fs::write(&binary, format!(r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ "$1" = -p ]; then
+  echo check >> '{root}/checks'
+  [ '{mode}' = network ] && exit 3
+  if [ '{mode}' = expired-cached ] && [ ! -f '{root}/expired' ]; then
+    echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
+  fi
+  echo '{{"type":"result","is_error":true,"api_error_status":401,"result":"API Error: 401 Invalid authentication credentials"}}'
+  exit 1
+fi
+[ "$1" = setup-token ] || exit 90
+echo login >> '{root}/logins'
+printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
+printf 'Paste code here if prompted > '
+IFS= read -r response
+exit 1
+"#, root = root.display())).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    let vault_path = root.join("vault.enc");
+    if mode.ends_with("-locked") {
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Always;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+    }
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let profile = router
+        .provider_account_profiles
+        .create_managed("local", "claude", "fixture")
+        .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        "local",
+        "claude",
+        &profile.profile_id,
+        &format!("sk-ant-oat01-{}", "A".repeat(96)),
+        false,
+    )
+    .unwrap();
+    if mode.ends_with("-locked") {
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+        crate::secret::clear_vault_secret_process_cache().unwrap();
+    }
+    if mode == "expired-cached" {
+        let first = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            &profile.profile_id,
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id());
+        router
+            .runtime_state
+            .prepare_provider_launch_request_with_vault(first, "test first use")
+            .await
+            .unwrap();
+        std::fs::write(root.join("expired"), "expired").unwrap();
+    }
+    if mode.starts_with("expired") {
+        router
+            .provider_account_profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        &profile.profile_id,
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id());
+    if mode == "network" {
+        for _ in 0..2 {
+            router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(request.clone(), "test first use")
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("checks"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert!(!root.join("logins").exists());
+        return;
+    }
+    if mode != "enrollment" {
+        router
+            .provider_account_profiles
+            .require_authenticated(
+                "local",
+                "claude-headless",
+                &profile.profile_id,
+                None,
+                "test first-use admission",
+            )
+            .expect(
+                "MP-08/MP-10/MP-11 token observations must reach kernel first-use verification",
+            );
+    }
+    let mut prepared = Box::pin(async {
+        if mode == "enrollment" {
+            let start =
+                LocalDaemonRequest::StartProviderLogin(crate::local::StartProviderLoginRequest {
+                    provider: "claude".into(),
+                    account_profile: profile.profile_id.clone(),
+                    method: Some("setup_token".into()),
+                });
+            let mut command = KernelCommand::from_local_request("enroll", None, None, &start);
+            command.session_id = Some(session.id().into());
+            command.agent_id = Some(agent.id().into());
+            router.dispatch(command, start).await?;
+            // The dispatched account workflow owns the interaction and cancellation.
+            while router
+                .runtime_state
+                .provider_login_process_store()
+                .has_running_for_profile("local", "claude", &profile.profile_id)
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(DaemonError::InvalidConfig {
+                field: "test cancellation",
+                message: "login cancelled",
+            })
+        } else {
+            router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(request, "test first use")
+                .await
+        }
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let interaction = loop {
+        tokio::select! {
+            result = &mut prepared => panic!("MP-08/MP-10/MP-11 rejected token did not await OAuth: {}", result.is_ok()),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        let current = router
+            .app
+            .lock()
+            .await
+            .sessions()
+            .get_session(session.id())
+            .unwrap();
+        if mode.ends_with("-locked") {
+            if let Some(interaction) = current
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.title() == Some("Unlock Chariox Vault"))
+            {
+                let choice = interaction.custom_choice().unwrap().id();
+                let reply = LocalDaemonRequest::RespondToInteraction(
+                    crate::local::RespondToInteractionRequest {
+                        session_id: session.id().into(),
+                        interaction_id: interaction.id().into(),
+                        choice_id: choice.into(),
+                        custom_reply: Some("test-passphrase".into()),
+                        passkey: None,
+                        passkey_remember_minutes: None,
+                    },
+                );
+                let source = crate::runtime::command::KernelCommandSource::LocalCli;
+                let mut caller = crate::runtime::command::KernelCaller::for_source(&source)
+                    .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+                caller.user_id = Some("local".into());
+                let command = KernelCommand::from_local_request_with_caller(
+                    "unlock", source, caller, None, None, &reply,
+                );
+                router.dispatch(command, reply).await.unwrap();
+                continue;
+            }
+        }
+        if let Some(interaction) = current.active_interactions().iter().find(|interaction| {
+            interaction
+                .provider_login()
+                .is_some_and(|login| login.login.auth_url.is_some())
+        }) {
+            break interaction.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "shared OAuth link did not appear"
+        );
+    };
+    if mode.ends_with("-locked") {
+        assert!(
+            !crate::secret::chariox_encrypted_vault_status(&vault_path)
+                .unwrap()
+                .unlocked,
+            "MP-11 operation lease must end before human OAuth consent"
+        );
+    }
+    assert!(interaction.message().contains("authorization link"));
+    assert!(!interaction.message().contains("--replace"));
+    assert!(!interaction.message().contains("claude setup-token"));
+    router
+        .runtime_state
+        .resolve_runtime_interaction(session.id(), interaction.id(), "cancel", None)
+        .await
+        .unwrap();
+    assert!(prepared.await.is_err());
+    assert_eq!(
+        std::fs::read_to_string(root.join("logins"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let checks = std::fs::read_to_string(root.join("checks"))
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert_eq!(
+        checks,
+        usize::from(
+            mode != "enrollment" && (!mode.starts_with("expired") || mode == "expired-cached")
+        )
+    );
+    assert!(!router
+        .runtime_state
+        .provider_login_process_store()
+        .has_running_for_profile("local", "claude", &profile.profile_id));
 }

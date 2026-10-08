@@ -397,9 +397,9 @@ fn claude_vault_token_status(
         plan: profile.plan.clone(),
         login_hint: Some(
             if profile.auth_state == ProviderAccountAuthState::Authenticated {
-                "This account runs agents with its verified Chariox Vault setup token. To replace it, run `provider setup-token claude <account-profile> --replace`.".to_string()
+                "This account runs agents with its verified Chariox Vault setup token. Choose Log in to authorize a replacement.".to_string()
             } else {
-                "This account has a Chariox Vault setup token, but it has not been verified or its last verification failed. Re-store it with `provider setup-token claude <account-profile> --replace` to verify it.".to_string()
+                "This account has a Chariox Vault setup token. It will be checked automatically when first used. If Claude rejects it, an authorization link will appear.".to_string()
             },
         ),
         ..native.clone()
@@ -993,7 +993,9 @@ fn claude_auth_status_from_value(
             .get("subscriptionType")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
+        login_hint: Some(
+            "Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
+        ),
         detected_version,
     }
 }
@@ -1587,6 +1589,13 @@ exit 2
 
         assert_eq!(status.provider, "claude-p");
         assert_eq!(status.auth_state, "not_logged_in");
+        // MP-08/MP-10/MP-11: sign-in guidance stays in the OAuth UI.
+        assert!(status
+            .login_hint
+            .as_deref()
+            .unwrap()
+            .contains("authorization link"));
+        assert!(!status.login_hint.as_deref().unwrap().contains("Run `"));
         assert_eq!(status.account_profile, "work");
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
     }

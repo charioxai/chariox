@@ -38,7 +38,25 @@ pub(super) async fn start(
         &request.account_profile,
     )?;
     ensure_replacement_allowed(&owner, &profile.profile_id, request.overwrite).await?;
-    super::provider_auth_control::execute_start_provider_login_with_overwrite(
+    let target = if let Some(session_id) = request
+        .session_id
+        .as_deref()
+        .or(command.session_id.as_deref())
+    {
+        Some((
+            session_id,
+            runtime_state
+                .vault_prompt_agent(
+                    session_id,
+                    request.agent_id.as_deref().or(command.agent_id.as_deref()),
+                    "Claude authorization",
+                )
+                .await?,
+        ))
+    } else {
+        None
+    };
+    let response = super::provider_auth_control::execute_start_provider_login_with_overwrite(
         runtime_state,
         &owner,
         StartProviderLoginRequest {
@@ -48,7 +66,13 @@ pub(super) async fn start(
         },
         request.overwrite,
     )
-    .await
+    .await?;
+    if let (Some((session_id, agent_id)), LocalDaemonResponse::ProviderLoginStarted { login }) =
+        (target, &response)
+    {
+        runtime_state.spawn_provider_login_workflow(session_id, &agent_id, &owner, login.clone());
+    }
+    Ok(response)
 }
 
 /// Check the public credential handle before unlock prompts or a billed turn.
@@ -72,7 +96,7 @@ pub(super) async fn ensure_replacement_allowed(
     .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
     if exists {
         return Err(login_error(
-            "A setup token already exists for this profile; use --replace to authorize replacement",
+            "A setup token already exists for this profile. Choose Log in in Provider Accounts to authorize a replacement.",
         ));
     }
     Ok(())
@@ -242,11 +266,31 @@ pub(super) async fn verify(
     account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), String> {
+    let checked = check(runtime_state, owner_user_id, account_profile, token).await;
+    match checked {
+        Ok(()) => Ok(()),
+        Err(ClaudeCredentialCheckError::Rejected) => Err(
+            "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
+        ),
+        Err(ClaudeCredentialCheckError::Inconclusive(reason)) => Err(format!(
+            "Claude could not verify the setup token ({reason}). Nothing was stored. Check the network and the Claude CLI, then try again."
+        )),
+    }
+}
+
+/// Preserve the official harness verdict so first use distinguishes network
+/// trouble from a credential rejection without parsing user-facing text.
+pub(in crate::runtime) async fn check(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), ClaudeCredentialCheckError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
     let account_profile = account_profile.to_string();
     let token = token.clone();
-    let checked = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut environment = registry
             .resolve_environment(&owner_user_id, "claude", &account_profile)
             .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
@@ -263,16 +307,7 @@ pub(super) async fn verify(
         checked
     })
     .await
-    .unwrap_or_else(|error| Err(ClaudeCredentialCheckError::Inconclusive(error.to_string())));
-    match checked {
-        Ok(()) => Ok(()),
-        Err(ClaudeCredentialCheckError::Rejected) => Err(
-            "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Create a new token with `claude setup-token` and store it again.".to_string(),
-        ),
-        Err(ClaudeCredentialCheckError::Inconclusive(reason)) => Err(format!(
-            "Claude could not verify the setup token ({reason}). Nothing was stored. Check the network and the Claude CLI, then try again."
-        )),
-    }
+    .unwrap_or_else(|error| Err(ClaudeCredentialCheckError::Inconclusive(error.to_string())))
 }
 
 /// Records a verified, stored setup token: the account can run agents.
@@ -365,6 +400,7 @@ async fn store_token(
                 "Claude setup token verified and stored in the Chariox Vault. Unattended agents can now use this account.",
                 now_ms,
             )?;
+            runtime_state.invalidate_claude_token_check(owner_user_id, &record.account_profile).await;
             record_verified_token(runtime_state, owner_user_id, &record.account_profile).await;
             finish(runtime_state, owner_user_id, record, ProviderLoginProcessState::Succeeded)
         }
