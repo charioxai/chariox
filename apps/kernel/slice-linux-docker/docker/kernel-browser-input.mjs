@@ -23,13 +23,22 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     };
     // MP-11: all text-producing paths share the Vault-only target fence.
     // The public key string and MCP schema are not security boundaries.
-    const checkTextTarget = async () => {
+    // MP-08/MP-10 (2.3): one isolated world per document, reused by every
+    // keystroke; a destroyed context (navigation, reload) is recreated once.
+    const textWorld = async (fresh = false) => {
+      const cache = browser.chariox_text_worlds ??= new Map();
+      const cached = cache.get(tab.target_id);
+      if (!fresh && cached?.document === tab.document_id) return cached.contextId;
       const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
       const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
         frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
       }, sessionId);
-      const { result } = await connection.send("Runtime.evaluate", {
-        contextId: executionContextId,
+      if (frameTree.frame.loaderId === tab.document_id) cache.set(tab.target_id, { document: tab.document_id, contextId: executionContextId });
+      return executionContextId;
+    };
+    const checkTextTarget = async () => {
+      const evaluate = async contextId => connection.send("Runtime.evaluate", {
+        contextId,
         // MP-08/MP-11: admitted mirrors may target observed same-origin frame
         // descendants. Inspect the live leaf in this isolated world; direct
         // frame input and inaccessible/protected frames still fail closed.
@@ -44,7 +53,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         } return true; })()`,
         returnByValue: true,
       }, sessionId);
-      if (result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
+      let reply;
+      try { reply = await evaluate(await textWorld()); }
+      catch { reply = await evaluate(await textWorld(true)); }
+      if (reply?.result?.value !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     let mirrorGuard;
     const sendInput = async (method, params) => {
