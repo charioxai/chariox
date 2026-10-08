@@ -2,7 +2,7 @@
 use super::tests::{fixture_with_catalog_reload, popup, Fixture, PASSKEY};
 use super::*;
 
-async fn queued_reload(
+pub(super) async fn queued_reload(
     f: &Fixture,
 ) -> (
     KernelSudoTurn,
@@ -88,59 +88,6 @@ async fn queued_reload(
     .await
     .unwrap();
     (window, task)
-}
-
-#[tokio::test(start_paused = true)]
-async fn sudo_relaunch_failure_ends_the_request_and_releases_held_work() {
-    let f = fixture_with_catalog_reload();
-    let (window, task) = queued_reload(&f).await;
-    // Inject a real launch failure after Reloaded: its already-prepared cwd
-    // disappears during the relaunch delay. This removes only this fixture.
-    std::fs::remove_dir_all(f.run.working_directory().unwrap()).unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(65), task)
-        .await
-        .expect("failed provider relaunch must not wait for the hour-scale window")
-        .unwrap();
-    assert!(
-        matches!(result, Err(DaemonError::LocalTransport { operation: "kernel access", ref message })
-        if message.contains("provider relaunch failed")),
-        "{result:?}"
-    );
-    assert!(f.state.list_sudo_turns("local").is_empty());
-    let session = f
-        .state
-        .owned
-        .session_store
-        .get_session(&window.session_id)
-        .unwrap();
-    assert!(!f
-        .state
-        .owned
-        .prompt_state_owner
-        .sudo_work_held(&session, &window.agent_id));
-    assert!(f
-        .state
-        .owned
-        .session_snapshot(&window.session_id)
-        .unwrap()
-        .sudo_windows()
-        .is_empty());
-    assert!(f.state.owned.sudo_timers.lock().unwrap().is_empty());
-    assert!(f.state.owned.sudo_scopes.lock().unwrap().is_empty());
-    assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
-    let events = f
-        .state
-        .owned
-        .durable_state_store
-        .load_subject_events_by_kind(&window.entry_id, "kernel_access.sudo", 100)
-        .unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.payload["outcome"] == "refused_or_cancelled")
-            .count(),
-        1
-    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -3,8 +3,29 @@ use super::*;
 // MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
 const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn catalog_refresh_timeout() -> DaemonError {
-    error("provider catalog refresh failed: not ready within 60 seconds; sudo window ended; retry /sudo when the provider is available")
+fn not_ready() -> String {
+    format!(
+        "not ready within {} seconds",
+        SUDO_PROVIDER_RELAUNCH_TIMEOUT.as_secs()
+    )
+}
+
+fn sudo_ended(what: &str, detail: &str) -> DaemonError {
+    error(format!(
+        "{what}: {detail}; sudo window ended; retry /sudo when the provider is available"
+    ))
+}
+
+fn catalog_refresh_failed(cause: DaemonError) -> DaemonError {
+    let detail = match cause {
+        DaemonError::LocalTransport { message, .. } => message,
+        other => other.to_string(),
+    };
+    sudo_ended("provider catalog refresh failed", &detail)
+}
+
+fn catalog_not_ready() -> DaemonError {
+    sudo_ended("provider catalog refresh failed", &not_ready())
 }
 
 impl KernelRuntimeState {
@@ -242,32 +263,45 @@ impl KernelRuntimeState {
         })
         .await?;
         let mut relaunch_deadline = None;
+        // MP-08/MP-10/MP-11: the catalog budget counts only idle refresh
+        // attempts. Busy work restarts it; human vault popups precede it.
         let mut catalog_deadline = None;
+        let mut vault = None;
         loop {
-            // MP-08/MP-10/MP-11: ordinary work is not a failed refresh.
-            // Start a fresh budget when the agent next becomes idle.
             if reload && self.sudo_agent_busy(entry)? {
                 catalog_deadline = None;
-            }
-            if reload && !self.sudo_agent_busy(entry)? {
-                use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
+                vault = None;
+            } else if reload {
+                use super::super::provider_reload::ProviderReloadOutcome;
                 self.live_queued_sudo(entry)?;
+                if vault.is_none() {
+                    let unlock =
+                        self.unlock_vault_for_agent_reload(&entry.session_id, &entry.agent_id);
+                    vault = Some(
+                        self.while_sudo_queued(entry, unlock)
+                            .await?
+                            .map_err(catalog_refresh_failed)?,
+                    );
+                }
                 let deadline = *catalog_deadline
                     .get_or_insert(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(catalog_refresh_timeout());
-                }
-                let refresh = self.reload_agent_provider_if_idle_for_reason(
+                let refresh = self.reload_agent_provider_if_idle(
                     &entry.session_id,
                     &entry.agent_id,
-                    &ProviderReloadReason::RuntimeToolCatalog,
+                    &super::super::provider_reload::ProviderReloadReason::RuntimeToolCatalog,
+                    vault.as_ref(),
                 );
                 let outcome = tokio::time::timeout_at(deadline, refresh)
                     .await
-                    .map_err(|_| catalog_refresh_timeout())??;
+                    .map_err(|_| catalog_not_ready())?
+                    .map_err(catalog_refresh_failed)?;
                 reload = matches!(outcome, ProviderReloadOutcome::Deferred);
+                if reload && tokio::time::Instant::now() >= deadline {
+                    return Err(catalog_not_ready());
+                }
                 if !reload {
                     catalog_deadline = None;
+                    vault = None;
                 }
                 if matches!(outcome, ProviderReloadOutcome::Reloaded) {
                     relaunch_deadline =
@@ -280,9 +314,7 @@ impl KernelRuntimeState {
             if let Some(deadline) = relaunch_deadline {
                 self.live_queued_sudo(entry)?;
                 if tokio::time::Instant::now() >= deadline {
-                    return Err(error(
-                        "provider relaunch failed: not ready within 60 seconds; sudo window ended; retry /sudo when the provider is available",
-                    ));
+                    return Err(sudo_ended("provider relaunch failed", &not_ready()));
                 }
                 if !self.sudo_provider_running(entry) {
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -310,6 +342,23 @@ impl KernelRuntimeState {
                 });
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    /// Human waits are bounded by their own popup expiry; a window that ends
+    /// meanwhile drops `wait`, which closes its popups.
+    async fn while_sudo_queued<T>(
+        &self,
+        entry: &KernelSudoTurn,
+        wait: impl std::future::Future<Output = T>,
+    ) -> Result<T, DaemonError> {
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                done = &mut wait => return Ok(done),
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                    self.live_queued_sudo(entry)?;
+                }
+            }
         }
     }
     fn sudo_provider_running(&self, entry: &KernelSudoTurn) -> bool {

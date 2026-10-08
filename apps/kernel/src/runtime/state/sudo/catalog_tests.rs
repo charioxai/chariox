@@ -1,12 +1,19 @@
 //! MP-08/MP-10/MP-11: an idle native run may still have a busy catalog lane.
-use super::tests::{fixture_with_run_profile, popup, Fixture, PASSKEY};
+use super::relaunch_tests::queued_reload;
+use super::tests::{
+    fixture_with_catalog_reload, fixture_with_run_profile, popup, Fixture, PASSKEY,
+};
 use super::*;
 use crate::provider::{
     AgentEndpointMode, ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
 };
 
 async fn native_fixture(room_tools: bool) -> Fixture {
-    let mut f = fixture_with_run_profile(None, room_tools, "opencode", "sudo-native-fixture");
+    native_fixture_for(room_tools, "opencode", "sudo-native-fixture").await
+}
+
+async fn native_fixture_for(room_tools: bool, adapter: &str, provider: &str) -> Fixture {
+    let mut f = fixture_with_run_profile(None, room_tools, adapter, provider);
     let request = super::super::provider_reload::policy_reload_launch_request(
         &f.run,
         f.request.target_agent_id.as_deref().unwrap(),
@@ -181,151 +188,339 @@ async fn sudo_native_first_turn_waits_for_deferred_catalog_refresh() {
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn sudo_native_deferred_catalog_refresh_has_a_bounded_wait() {
-    let f = native_fixture(true).await;
-    let _lane = f
-        .state
-        .owned
-        .provider_store
-        .run_operation_lanes()
-        .try_acquire(f.run.id())
-        .unwrap();
-    let task = approve(&f).await;
-    let result = tokio::time::timeout(Duration::from_secs(65), task)
-        .await
-        .expect("catalog contention must not wait for the hour-scale sudo window")
-        .unwrap();
-    assert!(
-        matches!(result, Err(DaemonError::LocalTransport {
-        operation: "kernel access", ref message
-    }) if message.contains("provider catalog refresh failed")),
-        "{result:?}"
-    );
-    assert!(f.state.list_sudo_turns("local").is_empty());
-    let session = f
-        .state
-        .owned
-        .session_store
-        .get_session(&f.request.session_id)
-        .unwrap();
-    assert!(!f
-        .state
-        .owned
-        .prompt_state_owner
-        .sudo_work_held(&session, f.request.target_agent_id.as_deref().unwrap()));
-    assert!(f
-        .state
-        .owned
-        .session_snapshot(session.id())
-        .unwrap()
-        .sudo_windows()
-        .is_empty());
-    assert!(f.state.owned.sudo_timers.lock().unwrap().is_empty());
-    assert!(f.state.owned.sudo_scopes.lock().unwrap().is_empty());
+#[derive(Clone, Copy)]
+enum Kind {
+    Native {
+        room_tools: bool,
+    },
+    /// Native Claude whose launch credential is held in the locked vault.
+    VaultClaude,
+    Relaunch,
 }
 
-// MP-08/MP-10/MP-11: ordinary work must not consume the refresh budget.
-// Use the system clock through completion: native refresh owns a std deadline.
-#[tokio::test]
-async fn sudo_native_catalog_budget_restarts_after_ordinary_work() {
-    let f = native_fixture(false).await;
+#[derive(Clone, Copy)]
+enum Step {
+    Approve,
+    HoldLane,
+    ReleaseLane,
+    Busy,
+    Idle,
+    Sleep(u64),
+    LockVault,
+    AnswerVault,
+    Revoke,
+    /// Busy -> approve -> idle until the Reloaded branch terminates the run.
+    QueuedReload,
+    BreakRelaunch,
+    AckCatalog,
+}
+
+// MP-08/MP-10/MP-11: the first turn's 60 s catalog budget counts only idle
+// refresh attempts: never busy work, never a human popup. Every failure ends
+// the window with a typed error and leaves no popup, hold or timer behind.
+// Native refresh runs on the tokio clock, so every row runs on paused time.
+#[tokio::test(start_paused = true)]
+async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
+    crate::test_support::isolated_env_test!();
+    use Step::*;
+    let rows: [(&str, Kind, &'static [Step], Option<&str>); 8] = [
+        ("idle refresh ok", Kind::Native { room_tools: true }, &[Approve, AckCatalog], None),
+        (
+            "idle refresh fails",
+            Kind::Native { room_tools: true },
+            &[Approve, Sleep(31)],
+            Some("provider catalog refresh failed: provider did not fetch the changed runtime catalog"),
+        ),
+        (
+            "idle contention exhausts the budget",
+            Kind::Native { room_tools: true },
+            &[HoldLane, Approve, Sleep(61)],
+            Some("provider catalog refresh failed: not ready within 60 seconds"),
+        ),
+        (
+            "busy then idle",
+            Kind::Native { room_tools: false },
+            &[HoldLane, Approve, Sleep(30), Busy, Sleep(65), Idle, Sleep(40), ReleaseLane, AckCatalog],
+            None,
+        ),
+        (
+            "vault popup answered after 2 min",
+            Kind::VaultClaude,
+            &[Busy, Approve, LockVault, Idle, Sleep(120), AnswerVault, AckCatalog],
+            None,
+        ),
+        (
+            "vault popup ignored until it expires",
+            Kind::VaultClaude,
+            &[Busy, Approve, LockVault, Idle, Sleep(301)],
+            Some("provider catalog refresh failed: Chariox vault unlock was cancelled"),
+        ),
+        (
+            "window revoked while the vault popup is open",
+            Kind::VaultClaude,
+            &[Busy, Approve, LockVault, Idle, Sleep(120), Revoke, Sleep(1)],
+            Some("queued sudo was revoked"),
+        ),
+        (
+            "relaunch failure",
+            Kind::Relaunch,
+            &[QueuedReload, BreakRelaunch, Sleep(65)],
+            Some("provider relaunch failed: not ready within 60 seconds"),
+        ),
+    ];
+    let mut failed = vec![];
+    for (name, kind, steps, failure) in rows {
+        // A panicking row is reported by name; the other rows still run.
+        if tokio::spawn(catalog_row(name, kind, steps, failure))
+            .await
+            .is_err()
+        {
+            failed.push(name);
+        }
+    }
+    assert!(failed.is_empty(), "failed rows: {failed:?}");
+}
+
+async fn catalog_row(
+    name: &'static str,
+    kind: Kind,
+    steps: &'static [Step],
+    failure: Option<&'static str>,
+) {
+    use Step::*;
+    let f = match kind {
+        Kind::Native { room_tools } => native_fixture(room_tools).await,
+        Kind::VaultClaude => vault_claude_fixture().await,
+        Kind::Relaunch => fixture_with_catalog_reload(),
+    };
     let session = f
         .state
         .owned
         .session_store
         .get_session(&f.request.session_id)
         .unwrap();
-    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let agent = f.request.target_agent_id.clone().unwrap();
     let changes = f
         .state
         .owned
         .provider_run_projection
         .catalog_changes()
         .clone();
-    let mut watch = changes.subscribe(f.run.id()).unwrap();
-    let initial = watch.current().desired;
-    let lane = f
-        .state
-        .owned
-        .provider_store
-        .run_operation_lanes()
-        .try_acquire(f.run.id())
-        .unwrap();
-    let task = approve(&f).await;
-    // Let the idle refresh defer and start its budget before ordinary work.
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    assert!(!task.is_finished());
-    assert!(!f
-        .state
-        .owned
-        .prompt_state_owner
-        .sudo_work_held(&session, agent));
-    let submission = f
-        .state
-        .owned
-        .submit_local_prepared_prompt_with_queue_policy(
-            &crate::app::KernelPreparedPromptSubmission {
-                session_id: session.id().into(),
-                prompt: PromptQueueItem::new(
-                    "busy-after-native-refresh-deferral",
-                    &f.request.attachment_id,
-                    agent,
-                    "ordinary",
-                    PromptStatus::Queued,
-                ),
-                force_queue: false,
-                refresh_projection: true,
-            },
-            false,
-        )
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        submission.outcome,
-        PromptSubmissionOutcome::Started { .. }
-    ));
-    tokio::time::sleep(Duration::from_secs(65)).await;
-    assert!(
-        !task.is_finished(),
-        "ordinary work must not time out an unattempted catalog refresh"
-    );
-    assert_eq!(watch.current().desired, initial);
-    assert!(f.state.list_sudo_turns("local")[0].prompt_id.is_none());
-    f.state
-        .owned
-        .prompt_state_owner
-        .complete_active_prompt_only(&session, agent)
-        .unwrap();
-    // More than the old budget's remaining 30 s: idle retries get a fresh 60 s.
-    tokio::time::sleep(Duration::from_secs(40)).await;
-    assert!(!task.is_finished());
+    let mut watch = changes.subscribe(f.run.id());
+    let initial = watch.as_ref().map(|watch| watch.current().desired);
+    let mut lane = None;
+    let mut task = None;
+    for step in steps {
+        match *step {
+            Approve => task = Some(approve(&f).await),
+            HoldLane => {
+                lane = f
+                    .state
+                    .owned
+                    .provider_store
+                    .run_operation_lanes()
+                    .try_acquire(f.run.id())
+            }
+            ReleaseLane => lane = None,
+            Busy => {
+                f.state
+                    .owned
+                    .submit_local_prepared_prompt_with_queue_policy(
+                        &crate::app::KernelPreparedPromptSubmission {
+                            session_id: session.id().into(),
+                            prompt: PromptQueueItem::new(
+                                "ordinary-work",
+                                &f.request.attachment_id,
+                                &agent,
+                                "ordinary",
+                                PromptStatus::Queued,
+                            ),
+                            force_queue: false,
+                            refresh_projection: true,
+                        },
+                        false,
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            Idle => {
+                f.state
+                    .owned
+                    .prompt_state_owner
+                    .cancel_active_prompt_only(&session, &agent)
+                    .unwrap();
+            }
+            Sleep(seconds) => tokio::time::sleep(Duration::from_secs(seconds)).await,
+            LockVault => {
+                let vault = f.state.owned.config_projection.snapshot().user_config;
+                crate::secret::lock_chariox_encrypted_vault(&vault.credential_vault.path).unwrap();
+                crate::secret::clear_vault_secret_process_cache().unwrap();
+            }
+            AnswerVault => {
+                for (title, choice, reply) in [
+                    ("Unlock Chariox Vault", "passphrase", Some(PASSKEY)),
+                    ("Choose Vault Unlock Duration", "unlock_operation", None),
+                ] {
+                    let open = vault_popup(&f, &agent).await;
+                    assert_eq!(open.title(), Some(title), "{name}");
+                    f.state
+                        .resolve_terminal_runtime_interaction(
+                            session.id(),
+                            open.id(),
+                            choice,
+                            reply,
+                            Some("local"),
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            Revoke => {
+                let window = f.state.list_sudo_turns("local").pop().unwrap();
+                f.state
+                    .revoke_sudo(Some("local"), Some(&window.entry_id), "owner_revoked")
+                    .unwrap();
+            }
+            QueuedReload => {
+                task = Some(queued_reload(&f).await.1);
+            }
+            // Its prepared cwd disappears during the policy relaunch delay.
+            BreakRelaunch => std::fs::remove_dir_all(f.run.working_directory().unwrap()).unwrap(),
+            AckCatalog => {
+                // Supplementary tools/list acknowledgement; no live claim.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let watch = watch.as_mut().unwrap();
+                    while Some(watch.current().desired) == initial {
+                        watch.changed().await.unwrap();
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{name}: refresh never started"));
+                changes.observed(f.run.id(), changes.revision(f.run.id()).unwrap());
+            }
+        }
+        if let Some(task) = &task {
+            assert!(
+                !task.is_finished() || step_is_last(steps, step),
+                "{name}: finished early at a non-final step"
+            );
+        }
+    }
     drop(lane);
-    // Supplementary tools/list acknowledgement; no live acceptance claim.
+    let task = task.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap_or_else(|_| panic!("{name}: sudo request still waiting"))
+        .unwrap();
+    match failure {
+        None => {
+            assert!(
+                matches!(
+                    result,
+                    Ok(LocalDaemonResponse::PromptSubmitted {
+                        outcome: PromptSubmissionOutcome::Started { .. },
+                        ..
+                    })
+                ),
+                "{name}: {result:?}"
+            );
+            let window = f.state.list_sudo_turns("local").pop().unwrap();
+            assert_eq!(
+                window.provider_run_id.as_deref(),
+                Some(f.run.id()),
+                "{name}"
+            );
+            f.state
+                .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+                .unwrap();
+        }
+        Some(expected) => {
+            assert!(
+                matches!(&result, Err(DaemonError::LocalTransport {
+                        operation: "kernel access", message
+                    }) if message.contains(expected)),
+                "{name}: {result:?}"
+            );
+            assert!(f.state.list_sudo_turns("local").is_empty(), "{name}");
+            assert!(
+                !f.state
+                    .owned
+                    .prompt_state_owner
+                    .sudo_work_held(&session, &agent),
+                "{name}"
+            );
+            let snapshot = f.state.owned.session_snapshot(session.id()).unwrap();
+            assert!(snapshot.sudo_windows().is_empty(), "{name}");
+            assert!(
+                f.state.owned.sudo_timers.lock().unwrap().is_empty(),
+                "{name}"
+            );
+            assert!(
+                f.state.owned.sudo_scopes.lock().unwrap().is_empty(),
+                "{name}"
+            );
+        }
+    }
+    // No popup may outlive the request: an open vault popup would
+    // silently discard a passphrase typed after the window ended.
+    let open = f
+        .state
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .map(|i| i.title().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert!(open.is_empty(), "{name}: popups left open: {open:?}");
+    assert!(f.state.passkey_prompts_for("local").is_empty(), "{name}");
+}
+
+fn step_is_last(steps: &[Step], step: &Step) -> bool {
+    std::ptr::eq(steps.last().unwrap(), step)
+}
+
+async fn vault_popup(f: &Fixture, agent: &str) -> crate::session::RuntimeInteraction {
     tokio::time::timeout(Duration::from_secs(5), async {
-        while watch.current().desired == initial {
-            watch.changed().await.unwrap();
+        loop {
+            if let Some(open) = f
+                .state
+                .owned
+                .session_store
+                .get_session(&f.request.session_id)
+                .unwrap()
+                .active_interaction_for_agent(agent)
+                .filter(|i| i.id().starts_with("vault-"))
+            {
+                return open.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
+    .expect("vault popup should be open")
+}
+
+/// Native Claude with a Chariox-vault launch credential (isolated home only).
+async fn vault_claude_fixture() -> Fixture {
+    let f = native_fixture_for(true, "claude", "claude").await;
+    let config = f.state.owned.config_projection.snapshot();
+    let profile = f.run.account_profile().to_owned();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.user_config.credential_vault.path,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::Operation,
+    )
     .unwrap();
-    assert!(!task.is_finished());
-    changes.observed(f.run.id(), changes.revision(f.run.id()).unwrap());
-    let response = tokio::time::timeout(Duration::from_secs(5), task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        response,
-        LocalDaemonResponse::PromptSubmitted {
-            outcome: PromptSubmissionOutcome::Started { .. },
-            ..
-        }
-    ));
-    let window = f.state.list_sudo_turns("local").pop().unwrap();
-    assert_eq!(window.provider_run_id.as_deref(), Some(f.run.id()));
-    f.state
-        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
-        .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        "local",
+        "claude",
+        &profile,
+        "sudo-catalog-fixture-token",
+        false,
+    )
+    .unwrap();
+    f
 }
