@@ -903,6 +903,49 @@ fn security_sb01_external_prompt_cannot_borrow_human_attachment() {
     });
 }
 
+#[test]
+fn security_sb02_prompt_grant_cannot_stop_unrelated_browser() {
+    run_test(|| {
+        Box::pin(async {
+            let setup = setup("security-sb02-stop", &[], &["worker"]);
+            let (agent, token) = setup.agents[1].clone();
+            let room = start(setup, agent.owner_user_id());
+            running_prompt(
+                &room,
+                agent.id(),
+                ClientCapabilityLevel::FullTerminal,
+                "owner",
+            )
+            .await;
+            approved_tool(&room, &token, "chariox.load_kernel_browser", json!({}))
+                .await
+                .unwrap();
+            let before = human(&room.router, KernelBrowserCommand::State).await;
+            assert!(
+                tool(
+                    &room.router,
+                    &token,
+                    "chariox.kernel_browser",
+                    json!({"command":{"op":"stop"}})
+                )
+                .await
+                .is_err(),
+                "MP-11 SB-02: new-tabs approval cannot stop the whole browser"
+            );
+            assert_eq!(
+                human(&room.router, KernelBrowserCommand::State).await,
+                before,
+                "MP-11 SB-02: unrelated tab/browser remains live"
+            );
+            room.router
+                .runtime_state()
+                .shutdown_cleanup()
+                .await
+                .unwrap();
+            std::fs::remove_dir_all(&room.root).unwrap();
+        })
+    });
+}
 
 fn tool<'a>(
     router: &'a CommandRouter,

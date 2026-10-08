@@ -501,6 +501,11 @@ impl KernelBrowserHost {
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());
+        // MP-08/MP-11 SB-02: Stop shuts down the owner's entire browser,
+        // including unrelated tabs/displays. New-tabs approval cannot grant it.
+        if params["op"] == "stop" && state.access.focused(&admission.user) != Some(agent) {
+            return Err("MD-3: not_focused_agent: browser stop requires live owner focus".into());
+        }
         // MP-08/MP-11: a delegated subset never widens: no new tabs or lifecycle.
         if matches!(
             state.access.grant(&admission.user, agent)?.cause,
