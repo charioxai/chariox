@@ -5,8 +5,8 @@
 
 use super::*;
 
-mod agent_messaging;
 mod agent_events;
+mod agent_messaging;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
@@ -330,7 +330,9 @@ impl KernelRuntimeState {
                     .dispatch_permission_prompt_runtime_tool_call(run, arguments)
                     .await;
             }
-            if let Some(name) = crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name) {
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
                 let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
                 return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
