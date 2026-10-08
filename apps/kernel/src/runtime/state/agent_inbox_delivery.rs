@@ -413,8 +413,8 @@ impl KernelRuntimeState {
 }
 #[cfg(test)]
 impl KernelRuntimeState {
-    /// The leased turn's public answer as its projection records it at home
-    /// (the dev-stub provider emits none of its own).
+    /// The leased turn's public answer as its projection records it at home:
+    /// under the worker's own run id (the dev-stub provider emits none).
     pub(crate) fn record_leased_answer_for_test(
         &self,
         room: &str,
@@ -434,13 +434,10 @@ impl KernelRuntimeState {
             .remote_execution()
             .cloned()
             .ok_or_else(|| ledger::error("agent is not leased"))?;
-        let run = crate::provider::projected_leased_provider_run_id(
-            &remote.leased_agent_id,
-            remote
-                .active_worker_provider_run_id
-                .as_deref()
-                .ok_or_else(|| ledger::error("leased run not bound"))?,
-        );
+        let run = remote
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| ledger::error("leased run not bound"))?;
         self.owned.append_operational_history_entry_with_context(
             &crate::history::SessionHistoryEntry::provider_output(
                 room,

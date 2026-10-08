@@ -442,10 +442,14 @@ impl KernelRuntimeState {
             worker_provider_run_id,
         );
         let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
-        let settled = match self
-            .owned
-            .settle_agent_task(session_id, agent_id, completed, &run, cancelled)
-        {
+        let settled = match self.owned.settle_agent_task_answered_by(
+            session_id,
+            agent_id,
+            completed,
+            &run,
+            worker_provider_run_id,
+            cancelled,
+        ) {
             Ok(settlement) => {
                 Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
             }

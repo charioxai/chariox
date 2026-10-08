@@ -69,6 +69,19 @@ impl KernelRuntimeOwnedState {
         run: &str,
         cancelled: bool,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
+        self.settle_agent_task_answered_by(room, agent, prompt, run, run, cancelled)
+    }
+    /// `answer_run` names the run in the turn's public history; for a leased
+    /// turn that is the worker run the projection records (A10).
+    pub(super) fn settle_agent_task_answered_by(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+        run: &str,
+        answer_run: &str,
+        cancelled: bool,
+    ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
         if !self.config_projection.snapshot().room_agent_tools {
             return Ok(None);
         }
@@ -90,10 +103,13 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
-        let has_answer =
-            super::agent_task_projection::task_public_outputs(&entries, prompt.id(), Some(run))
-                .iter()
-                .any(|text| !text.trim().is_empty());
+        let has_answer = super::agent_task_projection::task_public_outputs(
+            &entries,
+            prompt.id(),
+            Some(answer_run),
+        )
+        .iter()
+        .any(|text| !text.trim().is_empty());
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {
