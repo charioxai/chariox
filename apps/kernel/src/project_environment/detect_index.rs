@@ -220,7 +220,15 @@ fn walk(
     }
     // Rejected names and read errors consume the enumeration budget too.
     budget.visited += enumerated.saturating_sub(names.len());
-    for (name, entry) in names {
+    // Inspect local manifests before descending into potentially large source trees.
+    let mut entries: Vec<_> = names.into_iter().collect();
+    entries.sort_by_key(|(name, entry)| {
+        (
+            entry.file_type().is_ok_and(|kind| kind.is_dir()),
+            name.clone(),
+        )
+    });
+    for (name, entry) in entries {
         if budget.visited >= MAX_FILES {
             index
                 .skips
