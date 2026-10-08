@@ -2,7 +2,7 @@
 use super::{
     exact::ExactWorker,
     ffi::{self, Capture},
-    raster::Slot,
+    raster::{self, Slot},
     sessions::{Encode, Exact, Sessions},
 };
 use serde::Deserialize;
@@ -24,14 +24,45 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Command {
-    Encode { encode: Encode },
-    Exact { exact: Exact },
-    Retire { retire: String },
-    Commit { commit: String, serial: u64 },
-    Delivered { delivered: String, revision: u64 },
-    Release { release: usize, serial: u64 },
-    Wake { wake: bool },
-    Refresh { refresh: bool },
+    Encode {
+        encode: Encode,
+    },
+    Exact {
+        exact: Exact,
+    },
+    Retire {
+        retire: String,
+    },
+    Commit {
+        commit: String,
+        serial: u64,
+        /// MP-08/MP-10: lossless scroll commits keep the session overlay only.
+        #[serde(default = "admit_default")]
+        admit: bool,
+    },
+    Delivered {
+        delivered: String,
+        revision: u64,
+    },
+    Release {
+        release: usize,
+        serial: u64,
+    },
+    Wake {
+        wake: bool,
+    },
+    Refresh {
+        refresh: bool,
+    },
+    Wheel {
+        wheel: [i32; 4],
+    },
+    Plans {
+        plans: bool,
+    },
+}
+fn admit_default() -> bool {
+    true
 }
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
@@ -42,7 +73,7 @@ pub(super) fn epoch() -> f64 {
 }
 fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
     let bytes = serde_json::to_vec(&header).map_err(|_| "MP-11: native header")?;
-    if bytes.len() > 8192 || payload.is_empty() || payload.len() > 2560 * 1600 * 4 {
+    if bytes.len() > 16384 || payload.is_empty() || payload.len() > 2560 * 1600 * 4 {
         return Err("MP-11: native reply bound".into());
     }
     let mut out = std::io::stdout().lock();
@@ -110,7 +141,34 @@ pub(super) fn run() -> Result<(), String> {
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut wake = None;
     let mut damage_at = epoch();
-    let mut sessions = Sessions::new(w, h, root);
+    // MP-08/MP-10: video encoding runs on its own thread so readback continues
+    // during x264; capture damage queues while that thread holds the sessions.
+    let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
+    let mut pending_rows = 0u8;
+    let (codec_tx, codec_rx) = std::sync::mpsc::sync_channel::<(Encode, usize)>(4);
+    let codec_sessions = sessions.clone();
+    std::thread::spawn(move || {
+        let lock = || {
+            codec_sessions
+                .lock()
+                .map_err(|_| "MP-11: native sessions poisoned".to_string())
+        };
+        while let Ok((q, pixels)) = codec_rx.recv() {
+            // x264 runs between two short critical sections.
+            let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
+                let outcome = Sessions::run_encode(&job, pixels as *const u8);
+                let mut sessions = lock()?;
+                match outcome {
+                    Ok(outcome) => sessions.finish_encode(&q, job, outcome),
+                    Err(error) => Err(error),
+                }
+            });
+            // Encoder failures stay fatal for the worker, as on the capture thread.
+            if result.and_then(|value| reply(q.id, value)).is_err() {
+                std::process::exit(2);
+            }
+        }
+    });
     let mut bounds = [0, 0, w, h];
     loop {
         if unsafe { ffi::cx_capture_damage(capture.0) } != 0 {
@@ -134,7 +192,11 @@ pub(super) fn run() -> Result<(), String> {
                     if changed == 0 {
                         bounds = [0, 0, w, h];
                     }
-                    sessions.damage(bounds);
+                    pending_rows |= Sessions::damage_rows(h, bounds);
+                    if let Ok(mut s) = sessions.try_lock() {
+                        s.damage(pending_rows);
+                        pending_rows = 0;
+                    }
                     serial = serial
                         .checked_add(1)
                         .ok_or("MP-11: native serial overflow")?;
@@ -168,6 +230,9 @@ pub(super) fn run() -> Result<(), String> {
                         None
                     };
                     let adjacent_headers = slot.adjacent.clone();
+                    slot.shift = raster::Shift::read(capture.0);
+                    slot.base = admitted;
+                    let shift_header = slot.shift.clone();
                     let motion_height = unsafe { ffi::cx_capture_motion_height(capture.0) };
                     let index = slots.iter().position(|s| s.serial == Some(serial)).unwrap();
                     let mut cpu = [0f64; 3];
@@ -175,7 +240,7 @@ pub(super) fn run() -> Result<(), String> {
                         ffi::cx_capture_cpu(capture.0, cpu.as_mut_ptr());
                     }
                     emit(
-                        json!({"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
+                        json!({"identical":changed == 0,"shift_adjacent":shift_header,"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
                         &[0],
                     )?;
                     refresh = false;
@@ -225,6 +290,14 @@ pub(super) fn run() -> Result<(), String> {
             let command: Command =
                 serde_json::from_slice(&control[..end]).map_err(|_| "MP-11: native control")?;
             control.drain(..=end);
+            let mut locked = || -> Result<std::sync::MutexGuard<'_, Sessions>, String> {
+                let mut s = sessions
+                    .lock()
+                    .map_err(|_| "MP-11: native sessions poisoned")?;
+                s.damage(pending_rows);
+                pending_rows = 0;
+                Ok(s)
+            };
             match command {
                 Command::Wake { wake: true } => wake = Some(epoch()),
                 Command::Refresh { refresh: true } => {
@@ -242,12 +315,30 @@ pub(super) fn run() -> Result<(), String> {
                     }
                     slot.serial = None;
                 }
-                Command::Retire { retire } => sessions.retire(&retire),
+                Command::Retire { retire } => locked()?.retire(&retire),
+                Command::Plans { plans } => unsafe {
+                    ffi::cx_capture_plans(capture.0, plans as i32)
+                },
+                // MP-08/MP-10: [x, y, dx, dy] in device pixels and notches.
+                Command::Wheel {
+                    wheel: [x, y, dx, dy],
+                } => {
+                    if unsafe { ffi::cx_capture_wheel(capture.0, x, y, dx, dy) } != 0 {
+                        return Err("MP-11: native wheel refused".into());
+                    }
+                    wake = Some(epoch());
+                }
                 Command::Commit {
                     commit,
                     serial: committed,
+                    admit,
                 } => {
-                    if committed == serial && sessions.commit(&commit, committed) {
+                    // MP-08/MP-10: admission (adjacency witnesses) stays bound to
+                    // the latest readback; the session overlay follows every commit.
+                    if locked()?.commit(&commit, committed, committed == serial)
+                        && committed == serial
+                        && admit
+                    {
                         if let Some(slot) = slots.iter().find(|s| s.serial == Some(committed)) {
                             unsafe {
                                 ffi::cx_capture_admit(capture.0, slot.pixels);
@@ -259,14 +350,15 @@ pub(super) fn run() -> Result<(), String> {
                 Command::Delivered {
                     delivered,
                     revision,
-                } => sessions.delivered(&delivered, revision),
+                } => locked()?.delivered(&delivered, revision),
                 Command::Encode { encode: q } => {
-                    let id = q.id;
                     let slot = slots
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
-                    reply(id, sessions.encode(q, slot)?)?;
+                    codec_tx
+                        .try_send((q, slot.pixels as usize))
+                        .map_err(|_| "MP-11: native codec queue unavailable")?;
                 }
                 Command::Exact { exact: q } => {
                     let id = q.id;
@@ -274,7 +366,34 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native exact lease")?;
-                    exact.submit(id, sessions.exact(q, slot)?)?;
+                    // MP-08/MP-10: scroll residuals encode synchronously while
+                    // this leased slot cannot be released or overwritten.
+                    // A plan that no longer matches the committed canvas is an
+                    // ordinary refusal; Node falls back to video. Never fatal.
+                    if q.shift.is_some() {
+                        let refused =
+                            |reason: String| json!({"shift_refused": true, "reason": reason});
+                        match locked()?.shift(q, slot) {
+                            Ok(job) => {
+                                if exact.submit_job(id, job).is_err() {
+                                    reply(id, refused("MP-10: native exact queue busy".into()))?;
+                                }
+                            }
+                            Err(reason) => reply(id, refused(reason))?,
+                        }
+                    } else {
+                        let plan = locked()?.exact(q, slot)?;
+                        // Input echo patches are bounded and latency-critical:
+                        // finish them here rather than behind queued repairs.
+                        if plan.patch {
+                            let value = plan.finish().unwrap_or_else(
+                                |_| json!({"error":"MP-11: exact preparation failed"}),
+                            );
+                            reply(id, value)?;
+                        } else {
+                            exact.submit(id, plan)?;
+                        }
+                    }
                 }
             }
         }

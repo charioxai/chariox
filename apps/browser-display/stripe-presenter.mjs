@@ -17,7 +17,7 @@ export class StripePresenter {
   for(const row of ordered){
    if(![row.row,row.y,row.height,row.sequence].every(Number.isSafeInteger)||row.row<0||row.row>7||row.y<bottom||row.height<1||row.y+row.height>frame.height||!['avc1.420033','vp8'].includes(row.codec)||typeof row.key!=='boolean'||seen.has(row.row)||row.sequence<1)throw Error('MP-11: stripe geometry');
    seen.add(row.row);bottom=row.y+row.height;
-   total+=row.data_base64?.length??Infinity;if(total>4*1024*1024)throw Error('MP-11: stripe bytes');
+   total+=row.data?.byteLength??Infinity;if(total>4*1024*1024)throw Error('MP-11: stripe bytes');
    const previous=this.rows.get(row.row);
    if(row.key){if(row.reference_sequence!==null)throw Error('MP-11: stripe key reference');}
    else if(!previous||previous.y!==row.y||previous.height!==row.height||previous.sequence!==row.reference_sequence||row.sequence!==row.reference_sequence+1)throw Error('MP-10: stripe reference lost');
@@ -31,7 +31,7 @@ export class StripePresenter {
    const jobs=await Promise.allSettled(ordered.map(async row=>{
     let state=this.rows.get(row.row);
     if(!state){state={decoder:new WorkerVideoDecoder()};this.rows.set(row.row,state)}
-    const output=await state.decoder.decode({...row,width:frame.width,height:row.height},decodeBytes(row.data_base64));
+    const output=await state.decoder.decode({...row,width:frame.width,height:row.height},decodeBytes(row.data));
     decoded.push({row,output});
     if(output.displayWidth!==frame.width||output.displayHeight!==row.height)throw Error('MP-11: stripe decoded geometry');
    }));

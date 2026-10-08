@@ -81,7 +81,7 @@ try {
  try{const magic=Buffer.alloc(4);const read=await binaryFile.read(magic,0,4,0);if(read.bytesRead!==4||!magic.equals(Buffer.from([127,69,76,70])))throw Error('MD-DISPLAY: copied Linux test binary is not ELF; wait for build completion')}finally{await binaryFile.close()}
  const digest=createHash('sha256');for await(const bytes of createReadStream(copiedBinary))digest.update(bytes);
  receipt.binary={source_path:binary,copied_sha256:digest.digest('hex')};
- receipt.client_assets=[];for(const name of ['harness.html','presenter.mjs','stripe-presenter.mjs','decoder-worker.mjs','tile-cache.mjs','scroll-prediction.mjs','motion-samples.mjs']){const contents=await readFile(path.join(here,name));receipt.client_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
+ receipt.client_assets=[];for(const name of ['harness.html','presenter.mjs','stripe-presenter.mjs','decoder-worker.mjs','scroll-prediction.mjs','motion-samples.mjs']){const contents=await readFile(path.join(here,name));receipt.client_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
  const override = {};
  if(process.env.MD_SOURCE_ASSETS==='1') {
    const assets=path.join(root,'controller-assets');await mkdir(assets);
@@ -163,7 +163,7 @@ try {
    }
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
-   const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/tile-cache.mjs':'tile-cache.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs'};
+   const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs'};
    if(!assets[name]){res.writeHead(404).end();return;}
    res.setHeader('Content-Type',name.endsWith('.mjs')?'text/javascript':'text/html');res.end(await readFile(path.join(here,assets[name])));
   }catch(error){errors.push(error);res.writeHead(500).end();}
@@ -232,7 +232,7 @@ try {
      if(message.error)p.reject(Error(message.error.message));else try{p.resolve(JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_response,daemonKey)))}catch(error){p.reject(error)}
     }else if(message.kind==='client_event'){
      timing('event_received',arrived);
-     const value=JSON.parse(await api.decryptRelayPayload(sender.privateKey,message.encrypted_event,daemonKey));
+     const value=await api.decryptRelayEvent(sender.privateKey,message.encrypted_event,daemonKey);
      timing('client_event_decrypt',arrived);
      window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:event.data.length});for(const listener of listeners)listener(value);
    }
@@ -503,6 +503,9 @@ finally {
   }
  }
  receipt.native_packet_batches=traces.filter(t=>t.stage==='motion_packet_native').length;
+ // MP-08/MP-10: headline numbers are native resolution; contention fallback frames are reported separately.
+ receipt.reduced_contention_frames=traces.filter(t=>t.stage==='motion_reduced_contention').length;
+ receipt.lossless_scroll_frames=traces.filter(t=>t.stage==='native_shift_prepare').length;
  if(receipt.status==='PASS_LOCAL_COMPONENT'&&process.env.MD_REQUIRE_NATIVE_PACKET==='1'&&!receipt.native_packet_batches){receipt.status='RED';receipt.error='MP-10: native stripe bytes did not bypass Node';process.exitCode=1}
  receipt.stage_breakdown=summarizeStages(receipt);
  if(shaped)try{receipt.netem_stats=await shaped.close();receipt.cleanup.push('owned proxy and namespace-local qdisc removed')}catch{receipt.cleanup.push('RED: owned netem cleanup failed');receipt.status='RED';process.exitCode=1}

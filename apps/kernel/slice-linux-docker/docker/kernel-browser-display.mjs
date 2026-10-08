@@ -11,10 +11,21 @@ import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
+import { cpuContention } from './kernel-browser-contention.mjs';
 
-// Base64 transport plus the reserved encryption envelope, per packet.
+// MP-08/MP-10: protocol 466 binary frame: JSON header without payload strings
+// plus raw payload bytes, then the relay's base64 ciphertext and envelope.
 const egressLimit = 1024 * 1024;
-const egressBytes = packet => Math.ceil((Buffer.byteLength(JSON.stringify(packet))+(packet.native_packet?.length??0)) * 4 / 3) + 1024;
+const egressBytes = packet => {
+  let raw = packet.native_packet?.length ?? 0;
+  const header = JSON.stringify(packet, (key, value) => {
+    if (key === 'data_base64') { raw += Math.ceil(value.length * 3 / 4); return undefined; }
+    return key === 'native_packet' ? undefined : value;
+  });
+  return Math.ceil((8 + Buffer.byteLength(header) + raw) * 4 / 3) + 1024;
+};
+const packetName = packet => process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT && /^[a-f0-9]{32}\.json$/.test(packet?.name) &&
+  Number.isSafeInteger(packet.length) && packet.length >= 1 && packet.length <= 1024 * 1024;
 export function safeChildPid(child) {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) throw new Error('MD-DISPLAY: unsafe child PID');
   return child.pid;
@@ -31,7 +42,9 @@ export class PortableEncoder {
   }
     async nativeEncode(raw,bitrate,reset,stripes){
       this.nativeRetire=raw.nativeRetire;
-      const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),regions:raw[displayMaskRegions]??[]});
+      // MP-08/MP-10: native-resolution motion; reduced only under measured contention.
+      const reduced=!stripes&&!raw[displayMaskRegions]?.length&&cpuContention.engaged();
+      const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[]});
       if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
       this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
       if(this.hardwareFallback&&typeof reply.hardware_diagnostic==='string'&&reply.hardware_diagnostic.length<=4096&&reply.hardware_diagnostic!==this.hardwareDiagnostic){this.hardwareDiagnostic=reply.hardware_diagnostic;this.timing?.hardware?.(reply.hardware_diagnostic);}
@@ -41,7 +54,7 @@ export class PortableEncoder {
         if(!process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT||!/^[a-f0-9]{32}\.json$/.test(reply.packet.name)||!Number.isSafeInteger(reply.packet.length)||reply.packet.length<1||reply.packet.length>1024*1024)throw Error('MP-11: native packet bounds');
         this.packets.add(reply.packet.name);
       }else if(reply.stripes.length)throw Error('MP-11: native packet missing');
-      if(!stripes&&reply.stripes.length){if(reply.stripes.length!==1||reply.stripes[0].row!==0||reply.stripes[0].y!==0||reply.stripes[0].height!==raw.height||reply.whole!==true)throw Error('MP-11: native whole frame');this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered};}
+      if(!stripes&&reply.stripes.length){if(reply.stripes.length!==1||reply.stripes[0].row!==0||reply.stripes[0].y!==0||reply.stripes[0].height!==raw.height||reply.whole!==true)throw Error('MP-11: native whole frame');this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
@@ -126,6 +139,8 @@ export class PortableEncoder {
       });
     } catch (error) { await this.close(); throw error; }
   }
+  // MP-08/MP-10/MP-11: native scroll residual packets share this owner set.
+  adoptPacket(packet){if(!packetName(packet))throw Error('MP-11: native packet bounds');this.packets.add(packet.name);}
   discard(encoded){
     const name=encoded?.packet?.name;
     if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
@@ -164,7 +179,7 @@ export function losslessRegion(frame,x,y,width,height) {
   if(![x,y,width,height].every(Number.isSafeInteger)||x<0||y<0||width<1||height<1||x+width>frame.width||y+height>frame.height)throw Error('MP-11: invalid lossless raster region');
   const pixels=Buffer.alloc(width*height*4);
   for(let row=0;row<height;row++)frame.pixels.copy(pixels,row*width*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+width)*4);
-  return {x,y,width,height,data_base64:encodePng(width,height,pixels)};
+  return {x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)};
 }
 
 export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
@@ -185,11 +200,49 @@ export class DisplayStream {
        this.compositorMasks===JSON.stringify(raw[displayMaskRegions]??[])&&nativeDamageTiles(raw,true,true)!==null)return true;
     return (Number.isSafeInteger(raw?.base_serial)?this.exact&&raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1)&&nativeDamageTiles(raw,true)!==null;
   }
+  discardSource(source){this.encoder.discard?.(source.encoded);if(source.native_packet)this.encoder.discard?.({packet:source.native_packet});}
+  // MP-08/MP-10: lossless scroll needs a complete exact unprotected canvas
+  // and residuals within the budget below; everything else stays video. A
+  // capture plan against the previous readback is used when that readback
+  // was delivered; otherwise the worker plans against its committed canvas.
+  shiftKind(sample) {
+    const raw=sample?.raw;
+    if(!this.shiftCandidate(sample))return null;
+    return sample.serial===this.compositorSerial+1&&raw.shift_adjacent?'adjacent':'overlay';
+  }
+  // The motion encoder skips candidates before their credit; a refused plan
+  // holds lossless frames until exactness returns (see shiftHold).
+  shiftCandidate(sample) {
+    const raw=sample?.raw;
+    if(!this.previous||this.repair||!this.exact||this.shiftHold||!raw?.nativeExact||raw[displayMaskRegions]?.length||this.compositorMasks!=='[]'||!(sample.serial>this.compositorSerial))return false;
+    // A protection refresh readback past an undelivered change gets a static
+    // plan against the committed canvas (bounded by the worker to a quarter frame).
+    return this.shiftFits(raw.shift_adjacent,raw)||(raw.identical===true&&sample.serial>this.compositorSerial+1);
+  }
+  // Lossless residuals keep the canvas exact, so a single large one is
+  // allowed (a quarter of the frame / a quarter second of link). Sustained
+  // residuals above 90% of the link or 2.5 frames of pixels per second
+  // (encode CPU), e.g. repeated wheel jumps or photos, use video.
+  shiftFits(plan,raw) {
+    const pixels=raw.width*raw.height;
+    if(!plan||!Number.isSafeInteger(plan.dirty_pixels)||plan.dirty_pixels<0||plan.dirty_pixels>pixels)return false;
+    // Wire bytes per residual pixel include WebP, frame header and the relay's base64.
+    const estimate=plan.dirty_pixels*(this.shiftBytesPerPixel??.3),link=this.bitrate/8,[bytes,area]=this.shiftRate();
+    return plan.dirty_pixels<=pixels/4&&estimate<=link*.25&&bytes+estimate<=link*.9&&area+plan.dirty_pixels<=pixels*2.5;
+  }
+  // Cheaper WebP effort while residual traffic stays under half the link.
+  shiftEffort(){return this.shiftRate()[0]>this.bitrate/8/2?50:0;}
+  // Lossless residual bytes and pixels over roughly the last second.
+  shiftRate(bytes=0,area=0){
+    const now=this.now(),decay=Math.exp(-Math.max(0,now-(this.shiftAt??now))/1000);this.shiftAt=now;
+    this.shiftBytes=(this.shiftBytes??0)*decay+bytes;this.shiftArea=(this.shiftArea??0)*decay+area;
+    return [this.shiftBytes,this.shiftArea];
+  }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
-  invalidate() { this.motionActive=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
+  invalidate() { this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     try{return await this.buildFrame(source,documentId,afterSequence,validate,currentBinding)}
-    catch(error){this.encoder.discard?.(source.encoded);throw error}
+    catch(error){this.discardSource(source);throw error}
   }
   async buildFrame(source, documentId, afterSequence, validate, currentBinding) {
     let at = timestamp();
@@ -208,7 +261,7 @@ export class DisplayStream {
       this.invalidate();
       // Selection can already have taken a delta from the producer. Resetting
       // only future work cannot make that packet independently decodable.
-      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) {this.encoder.discard?.(source.encoded);return null;}
+      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) {this.discardSource(source);return null;}
     }
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     // Taken packets have already advanced the persistent codec reference chain.
@@ -231,7 +284,8 @@ export class DisplayStream {
     // only an admitted base in credited tiles; never bootstrap from a patch.
     const safeFallback = source.force_lossless && bound && this.previous;
     let payload, repair = null, bootstrap = false;
-    if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles};
+    if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles,
+      ...(source.moves?{moves:source.moves}:{}),...(source.native_packet?{native_packet:source.native_packet}:{})};
     else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
       const exact = source.native_repair?null:full();
       if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
@@ -299,7 +353,7 @@ export class DisplayStream {
     while(this.now()<deadline){
       if(!currentBinding()){
         if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
-        this.encoder.discard?.(source.encoded);return null;
+        this.discardSource(source);return null;
       }
       const before=this.now(),slice=Math.min(deadline-before,8);await this.wait(slice);
       // Deterministic test clocks may not advance; real clocks always do.
@@ -308,17 +362,24 @@ export class DisplayStream {
     this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.encoder.discard?.(source.encoded);return null; }
+    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
     if(bootstrap){
       this.producer?.retireUnsent();this.refiner?.invalidate();
       this.encoder.retire?.();
     }
     this.encoder.handedOff?.(source.encoded);
+    if(source.native_packet){
+      this.encoder.handedOff?.({packet:source.native_packet});
+      const pixels=source.native_tiles.reduce((n,t)=>n+t.width*t.height,0);
+      this.shiftRate(bytes,pixels);
+      if(pixels>=4096)this.shiftBytesPerPixel=(this.shiftBytesPerPixel??.3)*.8+bytes/pixels*.2;
+    }
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It
     // certifies only its damaged pixels; idle native verification still repairs
     // the untouched raster before the whole frame becomes exact.
     this.exact = source.native_tiles ? wasExact : !['video','stripes'].includes(payload.kind) && !this.repair; this.sequence++;
+    if(this.exact&&!wasExact)this.shiftHold=false;
     if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
     return packet;
   }

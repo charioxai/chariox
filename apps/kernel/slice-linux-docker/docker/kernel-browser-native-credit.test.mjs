@@ -59,3 +59,13 @@ test('MP-11 a region fence emits nothing while preserving only exact-canvas book
  f.source.valid=()=>true;f.source.tab.document_id='next';assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
  f.source.tab.document_id='d';f.source.policy={};assert.equal(nativeRegionPending(f.stream,f.source,'d',f.policy),false);
 });
+// MP-08/MP-10/MP-11: a protection refresh readback proved identical to the
+// delivered frame keeps the exact canvas; other serials or masks do not.
+test('MP-08/MP-10/MP-11 identical refresh readbacks keep an exact canvas only when adjacent to the delivered frame',async()=>{
+  const {identicalToDelivered}=await import('./kernel-browser-native-credit.mjs');
+  const stream={compositorSerial:7};
+  assert.equal(identicalToDelivered(stream,{serial:8,raw:{identical:true}}),true);
+  assert.equal(identicalToDelivered(stream,{serial:9,raw:{identical:true}}),false,'a skipped readback breaks the proof');
+  assert.equal(identicalToDelivered(stream,{serial:8,raw:{identical:false}}),false);
+  assert.equal(identicalToDelivered({compositorSerial:null},{serial:1,raw:{identical:true}}),false);
+});

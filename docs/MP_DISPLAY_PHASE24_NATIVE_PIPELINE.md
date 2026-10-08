@@ -1,6 +1,6 @@
 # MP-08/MP-10/MP-11 native Linux display pipeline
 
-Build the Linux kernel with `--features native-display` and development libraries for X11, Xext, Xdamage, Xcomposite, x264, libavcodec/libavutil and static libyuv. The optional feature preserves builds without those libraries and non-Linux paths. `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. The Linux production kernel launches its own ELF with the internal worker entry; test harnesses supply the production worker ELF explicitly.
+Build the Linux kernel with `--features native-display` and development libraries for X11, Xext, Xdamage, Xcomposite, Xtst, x264, libavcodec/libavutil, static libyuv and static libwebp/libsharpyuv (protocol 466 lossless tiles). The optional feature preserves builds without those libraries and non-Linux paths. `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. The Linux production kernel launches its own ELF with the internal worker entry; test harnesses supply the production worker ELF explicitly.
 
 MP-08/MP-10: one native child owns XShm window readback, exact damage comparisons, immutable mapped leases, masking, libyuv conversion, H264 encode/decode guard, packet files and PNG repair. Node owns admitted control, CDP document/visibility/protection fences and client sequencing. The native worker sees geometry and masks, never protected values or provider state. Existing unshared/CDP and non-H264 fallback stays compatible.
 

@@ -12,6 +12,10 @@ pub(super) struct Slot {
     pub bounds: [i32; 4],
     pub tiles: Option<Vec<[i32; 4]>>,
     pub adjacent: Option<Vec<[i32; 4]>>,
+    /// MP-08/MP-10: proved vertical scroll plan against the previous readback.
+    pub shift: Option<Shift>,
+    /// The admitted serial that `tiles` were compared against at readback.
+    pub base: u64,
     file: File,
     path: PathBuf,
 }
@@ -49,6 +53,8 @@ impl Slot {
             bounds: [0; 4],
             tiles: None,
             adjacent: None,
+            shift: None,
+            base: 0,
             file,
             path,
         })
@@ -73,6 +79,93 @@ impl Drop for Slot {
         }
     }
 }
+/// MP-08/MP-10: destination rectangles [x,y,w,h]; moves copy from y-dy.
+#[derive(Clone, serde::Serialize)]
+pub(super) struct Shift {
+    pub dy: i32,
+    pub dirty_pixels: i32,
+    pub moves: Vec<[i32; 4]>,
+    pub dirty: Vec<[i32; 4]>,
+}
+impl Shift {
+    pub fn read(capture: *mut std::ffi::c_void) -> Option<Self> {
+        let mut out = [0i32; 4 + 128 * 4];
+        if unsafe { ffi::cx_capture_shift(capture, out.as_mut_ptr()) } != 1 {
+            return None;
+        }
+        Self::decode(&out)
+    }
+    /// The same proved decomposition against a retained exact raster.
+    pub fn plan(raw: &[u8], base: &[u8], w: i32, h: i32) -> Option<Self> {
+        let mut out = [0i32; 4 + 128 * 4];
+        if raw.len() != (w * h * 4) as usize
+            || base.len() != raw.len()
+            || unsafe { ffi::cx_shift_plan(raw.as_ptr(), base.as_ptr(), w, h, out.as_mut_ptr()) }
+                != 1
+        {
+            return None;
+        }
+        Self::decode(&out)
+    }
+    fn decode(out: &[i32; 4 + 128 * 4]) -> Option<Self> {
+        let (moves, dirty) = (out[1] as usize, out[2] as usize);
+        if moves > 64 || dirty > 64 {
+            return None;
+        }
+        let rects = |start: usize, count: usize| {
+            out[start..start + count * 4]
+                .chunks_exact(4)
+                .map(|r| [r[0], r[1], r[2], r[3]])
+                .collect::<Vec<_>>()
+        };
+        Some(Self {
+            dy: out[0],
+            dirty_pixels: out[3],
+            moves: rects(4, moves),
+            dirty: rects(4 + moves * 4, dirty),
+        })
+    }
+}
+/// MP-08/MP-10: one lossless WebP image of a BGRX raster region.
+pub(super) fn webp(
+    pixels: &[u8],
+    stride: usize,
+    rect: [i32; 4],
+    method: i32,
+    quality: i32,
+) -> Result<Vec<u8>, String> {
+    let [x, y, w, h] = rect;
+    let start = y as usize * stride + x as usize * 4;
+    if x < 0
+        || y < 0
+        || w < 1
+        || h < 1
+        || (x + w) as usize * 4 > stride
+        || start + (h as usize - 1) * stride + w as usize * 4 > pixels.len()
+    {
+        return Err("MP-11: lossless region bounds".into());
+    }
+    let (mut out, mut length) = (std::ptr::null_mut(), 0usize);
+    if unsafe {
+        ffi::cx_webp_lossless(
+            pixels[start..].as_ptr(),
+            stride as i32,
+            w,
+            h,
+            method,
+            quality,
+            &mut out,
+            &mut length,
+        )
+    } != 0
+    {
+        return Err("MP-10: lossless encode".into());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(out, length) }.to_vec();
+    unsafe { ffi::cx_webp_free(out) };
+    Ok(bytes)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Region {

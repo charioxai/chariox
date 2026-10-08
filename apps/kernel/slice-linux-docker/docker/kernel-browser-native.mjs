@@ -69,6 +69,8 @@ export class LinuxCapture {
     const received=performance.timeOrigin+performance.now();
     if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)this.timing(stage,header.captured_ms,header.captured_ms+cpu);}
     if(Number.isFinite(header.native_read_ms))this.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
+    // MP-08/MP-10: proved scroll plans offered by this readback (telemetry only).
+    if(header.shift_adjacent)this.timing('native_shift_adjacent',header.captured_ms,header.native_read_ms??header.captured_ms);
     for(const [name,start,end] of [['input_wake_to_capture',header.input_wake_ms,header.captured_ms],['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
      if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)this.timing(name,start,end);
     }
@@ -79,7 +81,7 @@ export class LinuxCapture {
      raw.nativeExact=values=>this.nativeWorker.request('exact',{...values,serial:raw.serial});
      raw.nativeRetire=encoder=>this.nativeWorker.retire(encoder);
      raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
-     raw.nativeCommit=encoder=>this.nativeWorker.commit(encoder,raw.serial);
+     raw.nativeCommit=(encoder,admit)=>this.nativeWorker.commit(encoder,raw.serial,admit);
     }
     if(this.valid()){raw.format='bgr0';this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
    });
@@ -136,6 +138,20 @@ export class LinuxCapture {
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
   }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
+ }
+ // MP-08/MP-10: notch wheel input on the owned private X display (native
+ // smooth scrolling). CSS coordinates; callers fence document and actor first.
+ wheel(x,y,dx,dy){
+  if(!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
+  if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
+  this.child.stdin.write(JSON.stringify({wheel:[px,py,dx,dy]})+'\n');return true;
+ }
+ // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
+ // them only while a viewer canvas is exact and unprotected.
+ plans(enabled){
+  enabled=Boolean(enabled);if(enabled===this.planning||!this.valid()||!this.child||this.child.stdin.destroyed)return;
+  this.planning=enabled;this.child.stdin.write(JSON.stringify({plans:enabled})+'\n');
  }
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
  wake(refresh=false){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify(refresh?{refresh:true}:{wake:true})+'\n')}

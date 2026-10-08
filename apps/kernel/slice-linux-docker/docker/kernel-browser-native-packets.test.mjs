@@ -16,8 +16,11 @@ test('MP-10 real native row bytes bypass Node and discard only unsent packets',a
   assert.ok(encoded.packet,'native bytes must be in a private packet, not the Node response');
   assert.equal(encoded.stripes.length,8);assert.ok(encoded.stripes.every(r=>!Object.hasOwn(r,'data_base64')));
   const bytes=await readFile(root+'/'+encoded.packet.name);assert.equal(bytes.length,encoded.packet.length);
-  const rows=JSON.parse(bytes);assert.ok(rows.every(r=>typeof r.data_base64==='string'));
-  assert.deepEqual(rows.map(({data_base64,...header})=>header),encoded.stripes);
+  // MP-08/MP-10: protocol 466 packet = u32 header length, JSON headers, raw rows.
+  const size=bytes.readUInt32BE(0),headers=JSON.parse(bytes.subarray(4,4+size));
+  assert.deepEqual(headers,encoded.stripes);assert.ok(headers.every(r=>Number.isSafeInteger(r.length)&&r.length>0));
+  assert.equal(4+size+headers.reduce((n,r)=>n+r.length,0),bytes.length,'raw segments cover the packet exactly');
+  assert.equal(bytes.readUInt32BE(4+size),1,'raw AnnexB row bytes, not base64 text');
   encoder.discard(encoded);
   const remaining=await readdir(root);assert.equal(remaining.length,1);assert.match(remaining[0],/^encoder-/);
   assert.deepEqual(await readdir(root+'/'+remaining[0]),['raster'],'only the bounded active request snapshot remains');

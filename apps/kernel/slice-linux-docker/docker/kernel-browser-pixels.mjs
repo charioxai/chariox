@@ -130,7 +130,7 @@ export function maskNativeRaster(raw, regions, previousRegions, previous) {
     if(masks.length>50000||masks.some(r=>![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<0||r.height<0))throw Error('MP-11: native mask geometry');
     Object.freeze(masks);
     let snapshot;
-    const result={...raw,[displayMaskRegions]:masks,damage:stable?raw.damage:[0,0,width,height],damage_tiles:stable?raw.damage_tiles:null,adjacent_damage_tiles:stable?raw.adjacent_damage_tiles:null,signature:`masked-${raw.serial}`,
+    const result={...raw,[displayMaskRegions]:masks,damage:stable?raw.damage:[0,0,width,height],damage_tiles:stable?raw.damage_tiles:null,adjacent_damage_tiles:stable?raw.adjacent_damage_tiles:null,shift_adjacent:null,signature:`masked-${raw.serial}`,
       retain:()=>raw.retain(),release:()=>raw.release()};
     delete result.shared;delete result.copyPixels;
     Object.defineProperties(result,{
@@ -167,7 +167,7 @@ export function maskNativeRaster(raw, regions, previousRegions, previous) {
   // Exact tiles/refinement compare admitted bytes, and stripes compare every
   // row before omitting it. Avoid hashing another16MiB on the input loop.
   const hint=Number.isSafeInteger(raw.serial)&&raw.serial>0?`masked-${raw.serial}`:crc32(frame.pixels).toString(16);
-  const result={...raw,...frame,[displayMaskRegions]:regions,damage,signature:hint,retain(){},release(){}};
+  const result={...raw,...frame,[displayMaskRegions]:regions,damage,shift_adjacent:null,signature:hint,retain(){},release(){}};
   delete result.shared;delete result.readRegion;delete result.copyPixels;
   return result;
 }

@@ -14,7 +14,8 @@ and reduced software motion scale are implemented; exact settled pixels stay
 native DPR. Current results remain RED and the flag stays off. See the source-bound
 Phase 10 matrix and integration limits in the performance doc.
 
-MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
+MP-08/MP-10/MP-11 phase 28 (since protocol 466 only the contention fallback
+below): unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
 Resizing precedes color conversion. Reduced video certifies no native pixels;
 lossless repair restores native resolution. Protected, striped and hardware
@@ -22,6 +23,39 @@ frames retain native geometry. Capture manually redirects the owned window on
 its private X server, avoiding composition onto an unused root, and falls back
 to automatic redirection when another capture owns the manual redirect.
 These changes do not establish performance or live acceptance.
+
+MP-08/MP-10 protocol 466 (relay unchanged): display frame events are binary.
+The encrypted plaintext is `CXD1`, a big-endian u32 header length, the JSON
+header `{"event":"kernel_browser_frame","subscription_id","frame"}`, then raw
+payload bytes. Each `data_base64` of the frame, its tiles and stripes becomes
+`data:[offset,length]`; segments are contiguous in header order and cover the
+payload exactly. JSON plaintexts never start with `CXD1`. Browser clients use
+`decryptRelayEvent` from `browser-relay-crypto`; the local kernel socket sends
+the same bytes as a binary WebSocket message. Native packet files are
+`u32 header length + JSON segment headers (with length) + raw segments`; the
+kernel binds the headers to the frame before projecting raw bytes.
+
+Tiles carry `format` `png` or lossless `webp`, up to 2560×256 pixels. Native
+exact repair merges each 128-row band into WebP strips (about half the bytes of
+tile PNG on text). A `tiles` frame may carry `moves`: `[x,y,w,h,dy]`
+destination rectangles copied from one snapshot of the previous canvas at
+`y-dy`, applied before tiles. The capture proves every moved and unchanged
+cell byte-for-byte against the previous readback or the admitted base; WebP
+tiles cover the rest. Only an exact, unprotected canvas whose base is the
+delivered frame may receive moves, so scrolling text stays lossless and exact.
+Larger residuals use native-resolution video. Reduced 720p/800p whole-frame
+software motion engages only while host CPU idle stays below 10% (held at
+least 10 s) and is reported as `motion_reduced_contention`.
+
+When a readback skips the delivered frame, the worker plans moves (or a
+static residual) against its committed exact canvas instead; a refused plan
+replies normally and holds lossless frames until exactness returns. Mouse
+wheel notches (multiples of 120) go through XTest on the kernel's private X
+server after the same document fence and actor ledger, so Chromium applies
+its native smooth scrolling (CDP wheel deltas are precise and unanimated);
+other deltas stay on CDP. Wheel dispatch does not wait for the renderer's
+frame-aligned ack. x264 runs on its own worker thread, and capture plans are
+requested only while a viewer canvas is exact and unprotected.
 
 The historical427/74 configuration, pipeline, client and Phase7 evidence are
 in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).

@@ -22,6 +22,9 @@ export class MotionEncoder {
    const timer=setTimeout(wake,ms);this.readyWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});
   });
  }
+ // MP-08/MP-10: encode a sample previously skipped as a lossless candidate.
+ // Nothing was encoded for it, so no reference chain is retired.
+ retry(sample){if(sample?.serial===this.lastSerial&&!this.pending&&!this.closed){this.lastSerial=sample.serial-1;this.offer(sample)}}
  offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
@@ -55,6 +58,7 @@ export class MotionEncoder {
    if(['vaapi','x264','openh264','vp8','vp9','webcodecs'].includes(this.encoder.backend))this.timing('motion_backend_'+this.encoder.backend,performance.timeOrigin+this.now());
    if([1,2,4].includes(this.encoder.workers))this.timing('motion_workers_'+this.encoder.workers,performance.timeOrigin+this.now());
    if(encoded.packet)this.timing('motion_packet_native',performance.timeOrigin+this.now());
+   if(encoded.reduced)this.timing('motion_reduced_contention',performance.timeOrigin+this.now());
    if(['libyuv','swscale'].includes(this.encoder.converter))this.timing('motion_converter_'+this.encoder.converter,performance.timeOrigin+this.now());
    if(this.closed||!this.valid()){this.encoder.discard?.(encoded);return;}
    if(encoded.stripes?.length===0)continue;

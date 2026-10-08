@@ -17,7 +17,7 @@ test('MP-11 manual capture and contention fallback preserve exact owned-window p
  const probe=fileURLToPath(new URL('../kernel/src/display_native/capture-redirect.test.c',import.meta.url));
  const paths=(key,flag)=>process.env[key].split(path.delimiter).flatMap(p=>[flag,p]);
  try{
-  const compile=spawnSync(process.env.CC||'cc',['-O2',...paths('CHARIOX_NATIVE_DISPLAY_INCLUDE','-I'),...paths('CHARIOX_NATIVE_DISPLAY_LIB','-L'),'-DCAPTURE_SOURCE="'+source+'"',probe,'-o',binary,'-lX11','-lXext','-lXdamage','-lXcomposite'],{encoding:'utf8'});
+  const compile=spawnSync(process.env.CC||'cc',['-O2',...paths('CHARIOX_NATIVE_DISPLAY_INCLUDE','-I'),...paths('CHARIOX_NATIVE_DISPLAY_LIB','-L'),'-DCAPTURE_SOURCE="'+source+'"',probe,'-o',binary,'-lX11','-lXext','-lXdamage','-lXcomposite','-lXtst'],{encoding:'utf8'});
   assert.equal(compile.status,0,compile.stderr||compile.error?.message);
   const environment=await display.start();
   const run=spawnSync(binary,[],{encoding:'utf8',env:{...process.env,...environment},timeout:10000});

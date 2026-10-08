@@ -261,4 +261,6 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 447;
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 466;

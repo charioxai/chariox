@@ -107,3 +107,28 @@ test('MP-08/MP-11: native navigation and editing keys carry their Chromium virtu
    assert.deepEqual(events.map(e=>e.windowsVirtualKeyCode),[code,code]);assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
  }
 });
+// MP-08/MP-10: a deferred wheel ack lets the next ordered input dispatch while
+// the renderer acknowledges the previous one; the document fence still runs first.
+test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch without the renderer ack',async()=>{
+  const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+  let release;const acked=new Promise(r=>release=r);
+  connection.send=async(method,params)=>{if(method==='Input.dispatchMouseEvent'){sent.push({method,params});await acked;return {}}return send(method,params)};
+  let dispatched=0;
+  const result=await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120},{asyncScroll:true,onDispatch:()=>dispatched++});
+  assert.ok(result.ack instanceof Promise,'lane work returns before the renderer ack');
+  assert.equal(dispatched,1);
+  const methods=sent.map(x=>x.method);assert.ok(methods.indexOf('Page.getFrameTree')<methods.indexOf('Input.dispatchMouseEvent'),'document fence precedes dispatch');
+  release();await result.ack;
+  assert.equal(await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120}),undefined,'synchronous callers still await the ack');
+});
+// MP-08/MP-10: wheel notches use the owned display after the same fences;
+// precise deltas and unavailable native input keep CDP or fail closed.
+test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{
+  const {browser,sent}=fixture();const wheels=[];let dispatched=0;
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>dispatched++});
+  assert.deepEqual(wheels,[[10,20,0,-2]]);assert.equal(dispatched,1);
+  assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>assert.fail('precise deltas stay on CDP')});
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
+  await assert.rejects(inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false}),/native wheel unavailable/);
+});

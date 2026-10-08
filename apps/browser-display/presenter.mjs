@@ -1,10 +1,9 @@
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
-import {TileCache} from './tile-cache.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
-export const minimumProtocolVersion = 447;
+export const minimumProtocolVersion = 466;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -25,9 +24,22 @@ export class IdleCredit {
     });
   }
 }
-function bytes(base64) {
-  if (typeof base64 !== 'string' || base64.length > 4 * 1024 * 1024) throw new Error('MD-DISPLAY: payload bound');
-  const text=atob(base64),result=new Uint8Array(text.length);for(let i=0;i<text.length;i++)result[i]=text.charCodeAt(i);return result;
+// MP-08/MP-10: protocol 466 raw payload views. Decoder workers take a
+// transferable copy so sibling segments of one event stay readable.
+function bytes(data) {
+  if (!(data instanceof Uint8Array) || data.byteLength < 1 || data.byteLength > 4 * 1024 * 1024) throw new Error('MD-DISPLAY: payload bound');
+  return data.slice();
+}
+export const frameBytes = frame => 1024 + (frame.data?.byteLength ?? 0) +
+  [...(frame.tiles ?? []), ...(frame.stripes ?? [])].reduce((n, segment) => n + (segment.data?.byteLength ?? 0), 0);
+const imageTypes = { png: 'image/png', webp: 'image/webp' };
+// MP-08/MP-10: lossless scroll moves copy integer rectangles of the previous
+// canvas (source y-dy). Every destination and source stays inside the frame.
+function validMoves(frame) {
+  if (frame.moves === undefined) return true;
+  return frame.kind === 'tiles' && Array.isArray(frame.moves) && frame.moves.length >= 1 && frame.moves.length <= 64 &&
+    frame.moves.every(m => Array.isArray(m) && m.length === 5 && m.every(Number.isSafeInteger) && m[0] >= 0 && m[1] >= 0 && m[2] >= 1 && m[3] >= 1 &&
+      m[0] + m[2] <= frame.width && m[1] + m[3] <= frame.height && m[1] - m[4] >= 0 && m[1] - m[4] + m[3] <= frame.height);
 }
 export async function supportedCodecs() {
   const codecs = ['png'];
@@ -38,7 +50,7 @@ export class BrowserDisplayPresenter {
   constructor(canvas, binding, onTiming = () => {}) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
-    this.onTiming = onTiming;this.tileCache=new TileCache();
+    this.onTiming = onTiming;
   }
   async present(frame) {
     if (this.closed) return false;
@@ -46,8 +58,8 @@ export class BrowserDisplayPresenter {
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= this.sequence) return false;
     if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !((frame.css_width===1280 && frame.css_height===800) || (frame.css_width===1920 && frame.css_height===1080 && frame.device_scale_factor===1)) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
     if (['tiles','stripes'].includes(frame.kind) && !independentStripeCover(frame) && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
+    if (!validMoves(frame)) throw new Error('MD-DISPLAY: move geometry');
     this.prediction?.restore();
-    if(frame.kind!=='tiles')this.tileCache.clear();
     this.busy = true;
     const at = performance.timeOrigin + performance.now();
     const patch = ['tiles','stripes'].includes(frame.kind);
@@ -63,15 +75,15 @@ export class BrowserDisplayPresenter {
         this.stripeDecoder??=new StripePresenter();
         stripes=await this.stripeDecoder.decode(frame,bytes);
       }else if (frame.kind === 'tiles') {
-        this.tileCache.begin();
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
         for (const tile of frame.tiles) {
-          if (![tile.x, tile.y, tile.width, tile.height].every(Number.isSafeInteger) || tile.x < 0 || tile.y < 0 || tile.width < 1 || tile.width > 128 || tile.height < 1 || tile.height > 128 || tile.x + tile.width > frame.width || tile.y + tile.height > frame.height) throw new Error('MD-DISPLAY: tile geometry');
-          const bitmap = await this.tileCache.get(tile.data_base64,tile.width,tile.height,()=>createImageBitmap(new Blob([bytes(tile.data_base64)], { type: 'image/png' }))); bitmaps.push(bitmap);
+          // MP-08/MP-10: lossless PNG tiles or WebP strips up to 2560x256 pixels.
+          if (![tile.x, tile.y, tile.width, tile.height].every(Number.isSafeInteger) || tile.x < 0 || tile.y < 0 || tile.width < 1 || tile.height < 1 || tile.width * tile.height > 2560 * 256 || tile.x + tile.width > frame.width || tile.y + tile.height > frame.height || !Object.hasOwn(imageTypes, tile.format)) throw new Error('MD-DISPLAY: tile geometry');
+          const bitmap = await createImageBitmap(new Blob([bytes(tile.data)], { type: imageTypes[tile.format] })); bitmaps.push(bitmap);
           if (bitmap.width !== tile.width || bitmap.height !== tile.height) throw new Error('MD-DISPLAY: tile dimensions');
         }
       } else if (frame.kind === 'png') {
-        const bitmap = await createImageBitmap(new Blob([bytes(frame.data_base64)], { type: 'image/png' })); bitmaps.push(bitmap);
+        const bitmap = await createImageBitmap(new Blob([bytes(frame.data)], { type: 'image/png' })); bitmaps.push(bitmap);
         if (bitmap.width !== frame.width || bitmap.height !== frame.height) throw new Error('MD-DISPLAY: image dimensions');
         context.drawImage(bitmap, 0, 0);
       } else if (frame.kind === 'video' && videoCodecs.includes(frame.codec) && typeof frame.key === 'boolean') {
@@ -86,10 +98,10 @@ export class BrowserDisplayPresenter {
         if (!frame.key && (this.videoSequence === null || this.sequence !== frame.sequence-1 || this.documentId !== frame.document_id)) throw Error('MD-DISPLAY: video base lost; subscribe afresh');
         let output, timer;
         try {
-          output = this.workerDecoder ? await this.workerDecoder.decode(frame,bytes(frame.data_base64)) : await new Promise((resolve,reject) => {
+          output = this.workerDecoder ? await this.workerDecoder.decode(frame,bytes(frame.data)) : await new Promise((resolve,reject) => {
             timer=setTimeout(()=>reject(Error('MD-DISPLAY: decode timeout')),5000);
             this.decoded={resolve,reject};
-            this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data_base64)}));
+            this.decoder.decode(new EncodedVideoChunk({type:frame.key?'key':'delta',timestamp:frame.sequence*33333,data:bytes(frame.data)}));
           });
           if (!((output.displayWidth === frame.width && output.displayHeight === frame.height) || (output.displayWidth === frame.css_width && output.displayHeight === frame.css_height) || (frame.css_width===1920 && frame.css_height===1080 && output.displayWidth===1280 && output.displayHeight===720))) throw Error('MD-DISPLAY: decoded geometry');
           videoFrame=output;output=null;this.videoSequence=frame.sequence;
@@ -110,6 +122,14 @@ export class BrowserDisplayPresenter {
       }else if (patch) {
         // All patches are decoded and validated before this synchronous commit.
         const front = this.canvas.getContext('2d');
+        if (frame.moves) {
+          // Moves read one snapshot of the previous canvas, never a partial result.
+          if (!this.scratch || this.scratch.width !== frame.width || this.scratch.height !== frame.height) this.scratch = new OffscreenCanvas(frame.width, frame.height);
+          const scratch = this.scratch.getContext('2d');
+          scratch.globalCompositeOperation = 'copy'; scratch.drawImage(this.canvas, 0, 0);
+          front.imageSmoothingEnabled = false;
+          for (const [x, y, w, h, dy] of frame.moves) front.drawImage(this.scratch, x, y - dy, w, h, x, y, w, h);
+        }
         for (let i = 0; i < bitmaps.length; i++) front.drawImage(bitmaps[i], frame.tiles[i].x, frame.tiles[i].y);
       } else {
         if(this.canvas.width !== frame.width)this.canvas.width=frame.width;
@@ -120,13 +140,13 @@ export class BrowserDisplayPresenter {
       this.sequence = frame.sequence; this.documentId = frame.document_id;
       this.onTiming('client_present', presented);
       return true;
-    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)if(!patch||!this.tileCache.owned.has(bitmap))bitmap.close();this.tileCache.end(); this.busy = false; }
+    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap.close(); this.busy = false; }
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.stripeDecoder?.close();this.prediction?.close();this.tileCache.close();if(this.back){this.back.width=1;this.back.height=1;this.back=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -148,7 +168,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const held=new Map();
   let queuedBytes = 0;
   const accept = frame => {
-    const size = JSON.stringify(frame).length;
+    const size = frameBytes(frame);
     if (frames.length >= 8 || queuedBytes + size > 1024 * 1024) throw Error('MD-DISPLAY: credited receive window exceeded');
     const presented = presentation.then(async () => {
       if (!await presenter.present(frame)) throw Error('MD-DISPLAY: rejected window frame');
@@ -165,14 +185,14 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
       try {
-        const frame=event.frame,size=JSON.stringify(frame).length;
+        const frame=event.frame,size=frameBytes(frame);
         if(!Number.isSafeInteger(frame.sequence)||frame.sequence<nextSequence||held.has(frame.sequence)||held.size+frames.length>=8||heldBytes+queuedBytes+size>1024*1024) throw Error('MD-DISPLAY: reordered receive window exceeded');
         held.set(frame.sequence,frame);heldBytes+=size;
         // Relay control/large-event lanes and concurrent decryption may finish
         // in different orders. Decode every dependency in source sequence.
         while(held.has(nextSequence)) {
           const ordered=held.get(nextSequence);held.delete(nextSequence++);
-          heldBytes-=JSON.stringify(ordered).length;accept(ordered);
+          heldBytes-=frameBytes(ordered);accept(ordered);
         }
       } catch (error) { failure = error; running = false; }
     } else { pending?.resolve(event.frame); pending = null; }

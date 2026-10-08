@@ -46,12 +46,41 @@ extern "C" {
         motion_height: *mut i32,
     ) -> i32;
 
+    pub(super) fn cx_shift_plan(
+        raw: *const u8,
+        base: *const u8,
+        width: i32,
+        height: i32,
+        out: *mut i32,
+    ) -> i32;
+    #[cfg(test)]
+    pub(super) fn WebPDecodeRGB(
+        data: *const u8,
+        size: usize,
+        width: *mut i32,
+        height: *mut i32,
+    ) -> *mut u8;
+
     pub(super) fn cx_capture_open(owner: libc::c_ulong, width: i32, height: i32) -> *mut c_void;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_adjacent_tiles(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
+    pub(super) fn cx_capture_shift(c: *mut c_void, out: *mut i32) -> i32;
+    pub(super) fn cx_capture_wheel(c: *mut c_void, x: i32, y: i32, dx: i32, dy: i32) -> i32;
+    pub(super) fn cx_capture_plans(c: *mut c_void, enabled: i32);
+    pub(super) fn cx_webp_lossless(
+        bgrx: *const u8,
+        stride: i32,
+        width: i32,
+        height: i32,
+        method: i32,
+        quality: i32,
+        out: *mut *mut u8,
+        length: *mut usize,
+    ) -> i32;
+    pub(super) fn cx_webp_free(bytes: *mut u8);
     pub(super) fn cx_capture_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;
@@ -61,6 +90,7 @@ extern "C" {
         height: i32,
         bitrate: i32,
         row_count: i32,
+        reduced: i32,
     ) -> *mut c_void;
     pub(super) fn cx_codec_repair_bounds(
         c: *mut c_void,
@@ -75,6 +105,7 @@ extern "C" {
     );
     pub(super) fn cx_codec_diagnostic(c: *mut c_void) -> *const std::ffi::c_char;
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
+    pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_codec_close(c: *mut c_void);
     pub(super) fn cx_codec_encode(
@@ -100,6 +131,8 @@ impl Drop for Capture {
     }
 }
 pub(super) struct Codec(pub *mut c_void);
+// MP-08/MP-10: a codec is used by one thread at a time under the sessions lock.
+unsafe impl Send for Codec {}
 impl Drop for Codec {
     fn drop(&mut self) {
         unsafe { cx_codec_close(self.0) }

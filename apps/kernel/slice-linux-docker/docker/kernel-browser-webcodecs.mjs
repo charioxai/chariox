@@ -58,6 +58,7 @@ export class BrowserEncoder {
  get workers(){return this.fallback.workers;}
  set timing(value){this.fallback.timing=value;}
  discard(encoded){this.fallback.discard?.(encoded)}
+ adoptPacket(packet){this.fallback.adoptPacket(packet)}
  handedOff(encoded){this.fallback.handedOff?.(encoded)}
  retire(){this.fallback.retire?.()}
  async encodeStripes(...args){return this.fallback.encodeStripes(...args)}

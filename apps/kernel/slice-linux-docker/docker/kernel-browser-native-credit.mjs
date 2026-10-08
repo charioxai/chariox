@@ -10,8 +10,13 @@ export function nativeRegionBaseCurrent(stream,source,document,policy){
  return Boolean(stream.exact&&stream.document_id===document&&stream.producer?.source===source&&
   source.attested&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
   sample?.document_id===document&&sample.tab_id===stream.tab_id&&sample.raw?.nativeExact&&
-  sample.raw.base_serial===stream.compositorSerial&&
+  (sample.raw.base_serial===stream.compositorSerial||identicalToDelivered(stream,sample))&&
   JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks);
+}
+// MP-08/MP-10/MP-11: the capture proved this readback byte-identical to the
+// previous one, which is the delivered frame when the serials are adjacent.
+export function identicalToDelivered(stream,sample){
+ return sample?.raw?.identical===true&&Number.isSafeInteger(stream.compositorSerial)&&sample.serial===stream.compositorSerial+1;
 }
 export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now=performance.now()){
  const producer=stream.producer,refiner=stream.refiner;
@@ -28,7 +33,7 @@ export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now
   // every empty pipelined slot. Ready exact patches and retired mask bindings
   // still take the full path; this shortcut can only return an empty credit.
   return sample.serial>stream.compositorSerial&&stream.compositorRegionRevision===source.regionRevision&&
-   now-Math.max(source.changedAt,changedAt)<quiet&&stream.canPatchNative?.(sample)===false;
+   now-Math.max(source.changedAt,changedAt)<quiet&&stream.canPatchNative?.(sample)===false&&!stream.shiftCandidate?.(sample);
  }
  if(sample.serial!==stream.compositorSerial)return false;
  if(now-Math.max(source.changedAt,changedAt)<quiet)return true;

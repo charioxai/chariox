@@ -1,7 +1,11 @@
 // MP-08/MP-10: optional native Linux display worker. Build dependencies are
 // explicit; ordinary kernel builds and non-Linux platforms keep their paths.
 fn main() {
-    for file in ["src/display_native/capture.c", "src/display_native/codec.c"] {
+    for file in [
+        "src/display_native/capture.c",
+        "src/display_native/codec.c",
+        "src/display_native/lossless.c",
+    ] {
         println!("cargo:rerun-if-changed={file}");
     }
     for key in [
@@ -16,7 +20,11 @@ fn main() {
         return;
     }
     let mut build = cc::Build::new();
-    build.files(["src/display_native/capture.c", "src/display_native/codec.c"]);
+    build.files([
+        "src/display_native/capture.c",
+        "src/display_native/codec.c",
+        "src/display_native/lossless.c",
+    ]);
     if let Some(paths) = std::env::var_os("CHARIOX_NATIVE_DISPLAY_INCLUDE") {
         for path in std::env::split_paths(&paths) {
             build.include(path);
@@ -33,6 +41,7 @@ fn main() {
         "Xext",
         "Xdamage",
         "Xcomposite",
+        "Xtst",
         "x264",
         "avcodec",
         "avutil",
@@ -40,4 +49,6 @@ fn main() {
         println!("cargo:rustc-link-lib={library}");
     }
     println!("cargo:rustc-link-lib=static=yuv");
+    println!("cargo:rustc-link-lib=static=webp");
+    println!("cargo:rustc-link-lib=static=sharpyuv");
 }

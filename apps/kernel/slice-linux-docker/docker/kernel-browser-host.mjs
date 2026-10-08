@@ -26,7 +26,7 @@ import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
 import {nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {MotionEncoder} from './kernel-browser-motion.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
-import {nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
+import {identicalToDelivered,nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
@@ -457,7 +457,7 @@ export class KernelBrowserHost {
       if(compositor&&sample&&stream.codec!=='png'){
         // Serials are source-local. Retiring a source also retires its exact
         // base, even when a newly navigated document starts at the same serial.
-        if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,shouldEncode:sample=>!stream.canPatchNative(sample),valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:this.timing});}
+        if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)this.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:this.timing});}
         // Admit recovery before selecting a native patch or taking an encoded
         // packet. A lost canvas base also reoffers any skipped patchable source.
         // Once retired, empty credits must let the pending recovery key finish.
@@ -471,9 +471,30 @@ export class KernelBrowserHost {
         const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
         stream.creditEpoch=epoch;
         stream.producer.feedback(Math.max(0,stream.sequence-command.after_sequence));
+        // MP-08/MP-10: an identical readback (protection refresh) of the
+        // delivered exact canvas with the same masks needs no frame.
+        if(stream.exact&&identicalToDelivered(stream,sample)&&JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks){
+          stream.compositorSerial=sample.serial;
+          return {generation:this.generation,frame_sent:false,display_frame:null};
+        }
         const patchable=stream.canPatchNative(sample);
-        const encoded=patchable ? null : stream.producer.take();
-        if(patchable){
+        const shift=patchable?null:stream.shiftKind(sample);
+        const encoded=patchable||shift ? null : stream.producer.take();
+        if(shift){
+          // MP-08/MP-10: lossless scroll frame: proved moves plus WebP residuals.
+          stream.producer.retireUnsent();
+          const reply=await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:[],patch:true,shift,effort:stream.shiftEffort(),...(shift==='overlay'?{base:stream.compositorSerial}:{})});
+          if(reply.shift_refused===true){
+            this.timing(`shift_refused_${shift} ${/^MP-1[01]: [a-z ]{1,40}$/.test(reply.reason)?reply.reason:''}`,timestamp());
+            // A refused plan holds lossless frames until exactness returns
+            // and re-offers the latest sample to the video encoder.
+            stream.shiftHold=true;stream.producer.retry(compositor.sample()??sample);
+            return {generation:this.generation,frame_sent:false,display_frame:null};
+          }
+          if(reply.native_packet)stream.encoder.adoptPacket(reply.native_packet);
+          if(!Array.isArray(reply.native_tiles)||!Array.isArray(reply.moves)||reply.moves.length>64||reply.native_tiles.length>64||!(reply.moves.length||reply.native_tiles.length)){stream.encoder.discard?.({packet:reply.native_packet});throw Error('MP-11: native shift reply');}
+          source={...sample,...reply,...(reply.moves.length?{}:{moves:undefined}),motion:false,generation:this.generation};
+        }else if(patchable){
           stream.producer.retireUnsent();
           const adjacent=sample.serial===stream.compositorSerial+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
           const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
@@ -500,7 +521,8 @@ export class KernelBrowserHost {
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
         return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
       },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
-      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession);}
+      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession,!source.moves);}
+      compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
@@ -578,7 +600,13 @@ export class KernelBrowserHost {
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
-        await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const owned=this.compositors.get(tab.tab_id)?.source;
+        const nativeWheel=owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>owned.wheel(x,y,dx,dy):null;
+        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: true, nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
+        // fenced, ledgered dispatch is ordered by CDP; the renderer's
+        // frame-aligned ack would otherwise serialize kernel input admission.
+        deferred?.ack?.catch(()=>{});
         if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
         this.timing('cdp_input', at);
       }
@@ -660,6 +688,9 @@ export class KernelBrowserHost {
       }
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
+      // MP-08/MP-10: opt-in diagnostics keep only fixed product error labels.
+      const label=/^(MD|MP)-[0-9A-Z-]+: [a-z ]{1,48}/.exec(String(error?.message))?.[0];
+      if(label)this.timing('host_error '+label,timestamp());
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id) await this.stop();

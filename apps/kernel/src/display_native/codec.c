@@ -38,7 +38,7 @@ struct Row {
     const uint8_t *recon_y,*recon_uv;
     int recon_y_stride,recon_uv_stride;
 };
-struct Codec { int width,height,bitrate,row_count,enc_width,enc_height; struct Row rows[8]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+struct Codec { int width,height,bitrate,row_count,reduced,enc_width,enc_height; struct Row rows[8]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
 /* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
 static _Thread_local struct Codec *diagnosing;
 static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
@@ -67,7 +67,7 @@ void cx_codec_close(struct Codec *c) {
     for (int r=0;r<8;r++) row_close(&c->rows[r]);
     av_buffer_unref(&c->device);free(c->masked);free(c->full);free(c);
 }
-struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count) {
+struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count,int reduced) {
     if (row_count!=1&&row_count!=8)return NULL;
     struct Codec *c=calloc(1,sizeof(*c));
     if (!c) return NULL;
@@ -84,13 +84,15 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count) {
         if(!c->device&&!c->diagnostic[0])diagnostic_append(c,"No accessible VAAPI render device /dev/dri/renderD128..143\n");
         if(!c->device)c->fallback=1;
     }
-    c->width=c->enc_width=width;c->height=c->enc_height=height;c->bitrate=bitrate;c->row_count=row_count;
+    c->width=c->enc_width=width;c->height=c->enc_height=height;c->bitrate=bitrate;c->row_count=row_count;c->reduced=reduced!=0;
     c->masked=malloc((size_t)width*height*4);
     if (!c->masked) { cx_codec_close(c);return NULL; }
     return c;
 }
 /* MP-08/MP-10: hardware owns the same masked input/output path. A failed
  * device/context is visible in diagnostics, never presented as acceleration. */
+/* MP-08/MP-10: telemetry for the contention fallback actually applied. */
+int cx_codec_reduced(struct Codec *c) {return c->row_count==1&&c->enc_width!=c->width;}
 int cx_codec_backend(struct Codec *c) {return c->hardware_requested?(c->device&&!c->fallback?1:2):0;}
 static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     if(!c->device||c->fallback)return -1;
@@ -110,12 +112,13 @@ static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     row->staging->format=AV_PIX_FMT_NV12;row->staging->width=c->width;row->staging->height=h;
     return av_frame_get_buffer(row->staging,32);
 }
-/* MP-08/MP-10/MP-11: reduce only unprotected whole-frame software motion
- * to a geometry the presenter already admits. Native exact repair restores
+/* MP-08/MP-10/MP-11: motion is native resolution. Only a session opened as
+ * the measured-contention fallback reduces unprotected whole-frame software
+ * motion to a geometry the presenter admits. Native exact repair restores
  * the original raster; scaled reconstruction certifies no native pixels. */
 static void motion_geometry(struct Codec *c,int protected) {
     c->enc_width=c->width;c->enc_height=c->height;
-    if(c->row_count!=1||protected||c->device)return;
+    if(c->row_count!=1||protected||c->device||!c->reduced)return;
     if(c->width==1920&&c->height==1080){c->enc_width=1280;c->enc_height=720;}
     else if(c->width==2560&&c->height==1600){c->enc_width=1280;c->enc_height=800;}
 }

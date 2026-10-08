@@ -398,3 +398,31 @@ test('MP-11 opaque bootstrap triggers only when the exact PNG exceeds bounded eg
   assert.equal(frame.kind,'png');assert.ok(Buffer.from(decodePng(frame.data_base64).pixels).equals(pixels),'exact PNG ships unchanged');assert.equal(stream.exact,true);
  }finally{await stream.close()}
 });
+// MP-08/MP-10: lossless scroll selection needs an exact unprotected canvas on
+// the compared base and residual bytes inside the budget; frames stay exact.
+test('MP-08/MP-10 lossless scroll frames keep exactness and own their native packet',async()=>{
+ const discarded=[],handed=[];
+ const encoder={close:async()=>{},discard:e=>discarded.push(e),handedOff:e=>handed.push(e)};
+ const stream=new DisplayStream({...binding,device_scale_factor:1,bitrate:8_000_000,codec:'avc1.420033'},{now:()=>0,wait:async()=>{},encoder});
+ const plan={dy:-20,dirty_pixels:1920*20,moves:[[0,0,1920,1060]],dirty:[[0,1060,1920,20]]};
+ const raw={nativeExact:async()=>{},width:1920,height:1080,serial:11,shift_adjacent:plan};
+ stream.sequence=7;stream.document_id='d';stream.previous={signature:'exact'};stream.exact=true;stream.compositorSerial=10;stream.compositorMasks='[]';
+ try{
+  assert.equal(stream.shiftKind({serial:11,raw}),'adjacent');
+  assert.equal(stream.shiftKind({serial:12,raw:{...raw,serial:12}}),'overlay','a dropped capture plans against the committed exact canvas');
+  assert.equal(stream.shiftKind({serial:11,raw:{...raw,[displayMaskRegions]:[{x:0,y:0,width:1,height:1}]}}),null,'protected rasters stay on the guarded codec path');
+  assert.equal(stream.shiftKind({serial:11,raw:{...raw,shift_adjacent:{...plan,dirty_pixels:1920*1000}}}),null,'a residual above a quarter second of link uses video');
+  stream.shiftRate(895_000);assert.equal(stream.shiftKind({serial:11,raw}),null,'sustained residual traffic near the link uses video');stream.shiftBytes=0;
+  stream.exact=false;assert.equal(stream.shiftKind({serial:11,raw}),null,'a lossy canvas cannot be a move source');stream.exact=true;
+  stream.shiftHold=true;assert.equal(stream.shiftKind({serial:11,raw}),null,'a refused plan holds lossless frames');stream.shiftHold=false;
+  assert.equal(stream.shiftKind({serial:10,raw:{...raw,serial:10}}),null,'the delivered serial needs no frame');
+  stream.shiftRate(0,1920*1080*2.5);assert.equal(stream.shiftKind({serial:11,raw}),null,'sustained residual pixels (encode CPU) use video');stream.shiftArea=0;
+  const packet={name:'b'.repeat(32)+'.json',length:6000};
+  const frame=await stream.frame({generation:1,width:1920,height:1080,native_exact:true,native_tiles:[{x:0,y:1060,width:1920,height:20,format:'webp'}],moves:[[0,0,1920,1060,-20]],native_packet:packet},'d',7);
+  assert.equal(frame.kind,'tiles');assert.deepEqual(frame.moves,[[0,0,1920,1060,-20]]);assert.equal(frame.native_packet,packet);
+  assert.equal(stream.exact,true,'moves from an exact canvas plus exact residuals remain exact');
+  assert.deepEqual(handed.at(-1),{packet});assert.ok(stream.shiftBytesPerPixel<.3&&stream.shiftBytesPerPixel>0,"wire bytes per residual pixel are learned");
+  assert.equal(await stream.frame({generation:1,width:1920,height:1080,native_exact:true,native_tiles:[],moves:[[0,0,1920,1060,-20]],native_packet:packet},'d',8,async()=>false),null);
+  assert.deepEqual(discarded.at(-1),{packet},'a refused frame retires its residual packet');
+ }finally{await stream.close()}
+});

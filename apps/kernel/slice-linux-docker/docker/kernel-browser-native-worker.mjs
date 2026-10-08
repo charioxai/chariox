@@ -18,7 +18,7 @@ export class NativeWorkerControl {
    const value=JSON.parse(bytes);
    if(value.error)throw Error('MP-11: native worker refused');
    if(Array.isArray(value.timings)&&value.timings.length<=64){
-    const stages=new Set(['native_codec','codec_packetize','native_exact_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
+    const stages=new Set(['native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
     const spans=value.timings.filter(s=>Array.isArray(s)&&s.length===3&&stages.has(s[0])&&Number.isFinite(s[1])&&Number.isFinite(s[2])&&s[2]>=s[1]);
     if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
    }
@@ -27,6 +27,7 @@ export class NativeWorkerControl {
  }
  retire(encoder){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({retire:encoder})+'\n');}
  delivered(encoder,revision){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({delivered:encoder,revision})+'\n');}
- commit(encoder,serial){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({commit:encoder,serial})+'\n');}
+ // MP-08/MP-10: lossless scroll commits skip capture admission (overlay only).
+ commit(encoder,serial,admit=true){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({commit:encoder,serial,...(admit?{}:{admit:false})})+'\n');}
  close(){if(this.closed)return;this.closed=true;for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}
 }

@@ -159,7 +159,12 @@ def main():
                     try:
                         info=os.fstat(directory)
                         if info.st_uid!=os.getuid() or info.st_mode & 0o077:raise ValueError('packet root owner')
-                        name=uuid.uuid4().hex+'.json';payload=json.dumps(rows,separators=(',',':')).encode()
+                        # MP-08/MP-10/MP-11: protocol 466 packet: u32 header length,
+                        # JSON segment headers with lengths, then raw segments.
+                        segments=[base64.b64decode(row['data_base64']) for row in rows]
+                        headers=[{**{k:v for k,v in row.items() if k!='data_base64'},'length':len(data)} for row,data in zip(rows,segments)]
+                        header=json.dumps(headers,separators=(',',':')).encode()
+                        name=uuid.uuid4().hex+'.json';payload=len(header).to_bytes(4,'big')+header+b''.join(segments)
                         if len(payload)>1024*1024:raise ValueError('packet bound')
                         file=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=directory)
                         try:
@@ -167,7 +172,7 @@ def main():
                         except Exception:
                             os.unlink(name,dir_fd=directory);raise
                         reply['packet']={'name':name,'length':len(payload)}
-                        reply['stripes']=[{k:v for k,v in row.items() if k!='data_base64'} for row in rows]
+                        reply['stripes']=headers
                     finally:os.close(directory)
                 if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':reply['timings']=[*stripes.timings,['codec_packetize',at,time.time_ns()/1000000]]
                 print(json.dumps(reply,separators=(',',':')),flush=True);continue

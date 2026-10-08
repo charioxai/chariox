@@ -134,6 +134,66 @@ impl DisplayPackets {
         &self.root
     }
 
+    /// MP-08/MP-10/MP-11: bind the packet's segment headers to the frame,
+    /// then project each raw segment. The descriptor never reaches a client.
+    fn bind(frame: &mut Value, bytes: &[u8]) -> Result<(), String> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let size = bytes
+            .get(..4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+            .filter(|size| *size <= 64 * 1024 && 4 + size <= bytes.len())
+            .ok_or("MP-11: native packet header")?;
+        let headers: Vec<Value> =
+            serde_json::from_slice(&bytes[4..4 + size]).map_err(|_| "MP-11: native packet JSON")?;
+        let mut raw = &bytes[4 + size..];
+        let mut segments = Vec::with_capacity(headers.len());
+        for header in &headers {
+            let length = header["length"]
+                .as_u64()
+                .filter(|n| *n > 0 && *n as usize <= raw.len())
+                .ok_or("MP-11: native segment length")? as usize;
+            segments.push(STANDARD.encode(&raw[..length]));
+            raw = &raw[length..];
+        }
+        if !raw.is_empty() {
+            return Err("MP-11: native packet trailing bytes".into());
+        }
+        let object = frame.as_object_mut().ok_or("MP-11: native frame")?;
+        object.remove("native_packet");
+        if object["kind"] == "video" {
+            // MP-08/MP-10/MP-11: one native whole-frame access unit.
+            let row = match headers.as_slice() {
+                [row] => row,
+                _ => return Err("MP-11: native video count".into()),
+            };
+            if row["row"] != 0 || row["y"] != 0 || row["height"] != object["height"]
+                || row["codec"] != "avc1.420033" || row["codec"] != object["codec"]
+                || !row["key"].is_boolean() || row["key"] != object["key"]
+            {
+                return Err("MP-11: native video binding".into());
+            }
+            object.insert("data_base64".into(), segments.pop().unwrap().into());
+            return Ok(());
+        }
+        let key = if object["kind"] == "tiles" { "tiles" } else { "stripes" };
+        let list = object
+            .get_mut(key)
+            .and_then(Value::as_array_mut)
+            .ok_or("MP-11: native segment headers")?;
+        if list.is_empty() || list.len() > 256 || list.len() != headers.len() || (key == "stripes" && list.len() > 8) {
+            return Err("MP-11: native segment count".into());
+        }
+        for ((record, header), data) in list.iter_mut().zip(&headers).zip(segments) {
+            if record != header {
+                return Err("MP-11: native segment binding".into());
+            }
+            let record = record.as_object_mut().ok_or("MP-11: native segment")?;
+            record.remove("length");
+            record.insert("data_base64".into(), data.into());
+        }
+        Ok(())
+    }
+
     pub(super) fn hydrate(&self, result: &mut Value) -> Result<(), String> {
         let Some(frame) = result.get_mut("display_frame") else {
             return Ok(());
@@ -154,7 +214,7 @@ impl DisplayPackets {
             || !name.bytes().take(32).all(|b| b.is_ascii_hexdigit())
             || length == 0
             || length > 1024 * 1024
-            || !matches!(frame["kind"].as_str(), Some("stripes" | "video"))
+            || !matches!(frame["kind"].as_str(), Some("stripes" | "video" | "tiles"))
         {
             return Err("MP-11: native packet bounds".into());
         }
@@ -199,59 +259,7 @@ impl DisplayPackets {
             if bytes.len() as u64 != length {
                 return Err("MP-11: native packet changed".into());
             }
-            let stripes: Value =
-                serde_json::from_slice(&bytes).map_err(|_| "MP-11: native stripe JSON")?;
-            let rows = stripes.as_array().ok_or("MP-11: native stripe array")?;
-            if frame["kind"] == "video" {
-                // MP-08/MP-10/MP-11: one native whole-frame access unit. This
-                // private descriptor is removed before every client projection.
-                if rows.len() != 1 {
-                    return Err("MP-11: native video count".into());
-                }
-                let row = &rows[0];
-                let data = row["data_base64"].as_str().ok_or("MP-11: native video bytes")?;
-                if row["row"] != 0 || row["y"] != 0 || row["height"] != frame["height"]
-                    || row["codec"] != "avc1.420033" || row["codec"] != frame["codec"]
-                    || !row["key"].is_boolean() || row["key"] != frame["key"]
-                    || data.is_empty() || data.len() > 1024 * 1024
-                    || !data.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
-                {
-                    return Err("MP-11: native video binding".into());
-                }
-                frame.as_object_mut().ok_or("MP-11: native video frame")?.remove("native_packet");
-                frame["data_base64"] = data.into();
-                return Ok(());
-            }
-            let headers = frame["stripes"]
-                .as_array()
-                .ok_or("MP-11: native stripe headers")?;
-            if rows.is_empty() || rows.len() > 8 || rows.len() != headers.len() {
-                return Err("MP-11: native stripe count".into());
-            }
-            for (row, header) in rows.iter().zip(headers) {
-                let mut record = row.clone();
-                let data = record
-                    .as_object_mut()
-                    .ok_or("MP-11: native stripe record")?
-                    .remove("data_base64")
-                    .ok_or("MP-11: native stripe bytes")?;
-                let data = data.as_str().ok_or("MP-11: native stripe encoding")?;
-                if record != *header
-                    || data.is_empty()
-                    || data.len() > 1024 * 1024
-                    || !data
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
-                {
-                    return Err("MP-11: native stripe binding".into());
-                }
-            }
-            frame
-                .as_object_mut()
-                .ok_or("MP-11: native frame")?
-                .remove("native_packet");
-            frame["stripes"] = stripes;
-            Ok(())
+            Self::bind(frame, &bytes)
         }
         #[cfg(not(unix))]
         Err("MP-11: native packet unsupported".into())
@@ -487,14 +495,23 @@ mod tests {
             "MP-11 partial native pool must be reclaimed"
         );
     }
+    fn encode(headers: &[Value], segments: &[&[u8]]) -> Vec<u8> {
+        let header = serde_json::to_vec(headers).unwrap();
+        let mut bytes = (header.len() as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(&header);
+        for segment in segments {
+            bytes.extend_from_slice(segment);
+        }
+        bytes
+    }
     fn packet(spool: &DisplayPackets) -> (PathBuf, Value) {
         let name = format!("{}.json", format!("{:032x}", rand::random::<u128>()));
-        let row = json!({"row":0,"sequence":1,"key":true,"data_base64":"AA=="});
-        let bytes = serde_json::to_vec(&json!([row])).unwrap();
+        let row = json!({"row":0,"sequence":1,"key":true,"length":1});
+        let bytes = encode(&[row.clone()], &[&[0]]);
         let path = spool.root.join(&name);
         std::fs::write(&path, &bytes).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let reply = json!({"display_frame":{"kind":"stripes","stripes":[{"row":0,"sequence":1,"key":true}],"native_packet":{"name":name,"length":bytes.len()}}});
+        let reply = json!({"display_frame":{"kind":"stripes","stripes":[row],"native_packet":{"name":name,"length":bytes.len()}}});
         (path, reply)
     }
     #[test]
@@ -511,12 +528,40 @@ mod tests {
         assert!(!path.exists());
     }
     #[test]
+    fn mp08_native_tile_packets_split_raw_segments_by_bound_lengths() {
+        for case in ["ok", "trailing", "short", "header"] {
+            let spool = DisplayPackets::create().unwrap();
+            let (path, mut reply) = packet(&spool);
+            let tiles = [json!({"x":0,"y":0,"width":4,"height":2,"format":"webp","length":3}),
+                json!({"x":4,"y":0,"width":4,"height":2,"format":"webp","length":2})];
+            let mut bytes = encode(&tiles, &[&[1, 2, 3], &[4, 5]]);
+            match case {
+                "trailing" => bytes.push(9),
+                "short" => { bytes.pop(); }
+                _ => {}
+            }
+            std::fs::write(&path, &bytes).unwrap();
+            let mut frame_tiles = tiles.to_vec();
+            if case == "header" { frame_tiles[1]["x"] = json!(8); }
+            let descriptor = json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
+            reply["display_frame"] = json!({"kind":"tiles","tiles":frame_tiles,"moves":[[0,2,8,6,2]],"native_packet":descriptor});
+            let result = spool.hydrate(&mut reply);
+            assert!(!path.exists(), "{case}");
+            assert_eq!(result.is_ok(), case == "ok", "{case}");
+            if case == "ok" {
+                assert_eq!(reply["display_frame"]["tiles"][0]["data_base64"], "AQID");
+                assert_eq!(reply["display_frame"]["tiles"][1]["data_base64"], "BAU=");
+                assert_eq!(reply["display_frame"]["moves"], json!([[0,2,8,6,2]]));
+            }
+        }
+    }
+    #[test]
     fn mp11_native_whole_video_packets_bind_geometry_codec_and_key_before_consumption() {
         for mismatch in [false,true] {
             let spool=DisplayPackets::create().unwrap();
             let (path,mut reply)=packet(&spool);
-            let row=json!({"row":0,"y":0,"height":800,"codec":"avc1.420033","key":true,"data_base64":"AA=="});
-            let bytes=serde_json::to_vec(&json!([row])).unwrap();std::fs::write(&path,&bytes).unwrap();
+            let row=json!({"row":0,"y":0,"height":800,"codec":"avc1.420033","key":true,"length":1});
+            let bytes=encode(&[row],&[&[0]]);std::fs::write(&path,&bytes).unwrap();
             let descriptor=json!({"name":path.file_name().unwrap().to_str().unwrap(),"length":bytes.len()});
             reply["display_frame"]=json!({"kind":"video","width":1280,"height":800,"codec":"avc1.420033","key":!mismatch,"native_packet":descriptor});
             let result=spool.hydrate(&mut reply);

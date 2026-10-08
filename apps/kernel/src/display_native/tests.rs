@@ -98,6 +98,7 @@ fn mp11_native_tile_only_plan_retains_exact_rgb_and_opaque_fallback_keeps_full_p
     for repair_only in [true, false] {
         let plan = ExactPlan {
             pixels: vec![29; 128 * 128 * 4],
+            tiles: Vec::new(),
             rectangles: vec![[4, 5, 8, 9]],
             w: 128,
             h: 128,
@@ -110,23 +111,20 @@ fn mp11_native_tile_only_plan_retains_exact_rgb_and_opaque_fallback_keeps_full_p
         assert_eq!(value.get("data_base64").is_none(), repair_only);
         assert_eq!(value.get("native_repair").is_some(), repair_only);
         let tile = &value["repair_tiles"][0];
+        assert_eq!(tile["format"], "webp");
         let data = STANDARD
             .decode(tile["data_base64"].as_str().unwrap())
             .unwrap();
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
-        decoder.set_transformations(png::Transformations::EXPAND);
-        let mut reader = decoder.read_info().unwrap();
-        let mut pixels = vec![0; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut pixels).unwrap();
-        assert_eq!((info.width, info.height), (4, 4));
-        assert_eq!(&pixels[..info.buffer_size()], &[29; 4 * 4 * 3]);
+        let (width, height, rgb) = webp_rgb(&data);
+        assert_eq!((width, height), (4, 4));
+        assert_eq!(rgb, vec![29; 4 * 4 * 3]);
         assert_eq!(value["native_revision"], 17);
     }
 }
 #[test]
 fn mp11_native_codec_masks_before_conversion_and_guards_motion_settle_and_idr() {
     for row_count in [1, 8] {
-        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, row_count) });
+        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, row_count, 0) });
         assert!(!codec.0.is_null());
         let regions = [Rect {
             left: 36,
@@ -171,7 +169,7 @@ fn mp11_native_codec_masks_before_conversion_and_guards_motion_settle_and_idr() 
 #[test]
 fn mp08_native_exact_repairs_colored_pixels_and_retains_only_certified_neutrals_or_overlays() {
     for rows in [1, 8] {
-        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, rows) });
+        let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, rows, 0) });
         assert!(!codec.0.is_null());
         let mut raw = vec![255; 128 * 128 * 4];
         let mut output = [RowResult::default(); 8];
@@ -330,7 +328,7 @@ fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
         noise ^= noise << 5;
         pixel.copy_from_slice(&[noise as u8, (noise >> 8) as u8, (noise >> 16) as u8, 255]);
     }
-    let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, 1) });
+    let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, 1, 0) });
     assert!(!codec.0.is_null());
     for _ in 0..3 {
         let mut rows = [RowResult::default(); 8];
@@ -408,10 +406,33 @@ fn sps_size(packet: &[u8]) -> (u32, u32) {
 }
 
 #[test]
-fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() {
+fn mp08_contention_fallback_motion_encodes_the_client_admitted_reduced_geometry() {
+    // MP-08/MP-10: native resolution unless the contention fallback is open.
+    for (w, h, native) in [(1920, 1080, (1920, 1088)), (2560, 1600, (2560, 1600))] {
+        let source = vec![255u8; w * h * 4];
+        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, 1, 0) });
+        let mut results = [RowResult::default(); 8];
+        let count = unsafe {
+            ffi::cx_codec_encode(
+                codec.0,
+                source.as_ptr(),
+                255,
+                std::ptr::null(),
+                0,
+                results.as_mut_ptr(),
+            )
+        };
+        assert_eq!(count, 1);
+        let packet = unsafe { std::slice::from_raw_parts(results[0].bytes, results[0].length) };
+        assert_eq!(
+            sps_size(packet),
+            native,
+            "default motion keeps native detail"
+        );
+    }
     let encode = |w: usize, h: usize, rows: i32, regions: &[Rect]| {
         let source = vec![255u8; w * h * 4];
-        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, rows) });
+        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, rows, 1) });
         let mut results = [RowResult::default(); 8];
         let count = unsafe {
             ffi::cx_codec_encode(
@@ -489,4 +510,153 @@ fn mp08_dense_unprotected_motion_encodes_the_client_admitted_reduced_geometry() 
         "protected motion stays native"
     );
     assert_eq!(encode(1920, 1080, 8, &[]).0 .0, 1920, "stripes stay native");
+}
+
+fn webp_rgb(data: &[u8]) -> (i32, i32, Vec<u8>) {
+    let (mut width, mut height) = (0, 0);
+    let pixels = unsafe { ffi::WebPDecodeRGB(data.as_ptr(), data.len(), &mut width, &mut height) };
+    assert!(!pixels.is_null());
+    let rgb = unsafe { std::slice::from_raw_parts(pixels, (width * height * 3) as usize) }.to_vec();
+    unsafe { ffi::cx_webp_free(pixels) };
+    (width, height, rgb)
+}
+#[test]
+fn mp08_lossless_webp_regions_decode_rgb_exact() {
+    let (w, h) = (300usize, 70usize);
+    let mut pixels = vec![0u8; w * h * 4];
+    for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
+        let (x, y) = (i % w, i / w);
+        p.copy_from_slice(&[(x * 7 + y) as u8, (y * 13) as u8, (x ^ y) as u8, 0x5a]);
+    }
+    let bytes = raster::webp(&pixels, w * 4, [17, 9, 251, 53], 1, 25).unwrap();
+    let (width, height, rgb) = webp_rgb(&bytes);
+    assert_eq!((width, height), (251, 53));
+    for y in 0..53 {
+        for x in 0..251 {
+            let p = &pixels[((y + 9) * w + x + 17) * 4..][..4];
+            assert_eq!(&rgb[(y * 251 + x) * 3..][..3], &[p[2], p[1], p[0]]);
+        }
+    }
+    assert!(raster::webp(&pixels, w * 4, [290, 0, 11, 1], 1, 25).is_err());
+    assert!(raster::webp(&pixels, w * 4, [0, 69, 1, 2], 1, 25).is_err());
+}
+#[test]
+fn mp08_scroll_plan_proves_moves_fixed_cells_and_exposed_rows() {
+    let (w, h, dy) = (1280i32, 800i32, -37i32);
+    let row = |y: i32| -> Vec<u8> {
+        (0..w)
+            .flat_map(|x| {
+                let v = ((x * 31 + y * 17) ^ y.wrapping_mul(y)) as u8;
+                [v, v.wrapping_add(y as u8), (x / 5 + y / 256 * 77) as u8, 0]
+            })
+            .collect()
+    };
+    let document = |offset: i32| -> Vec<u8> { (0..h).flat_map(|y| row(y + offset)).collect() };
+    let base = document(0);
+    let mut current = document(-dy);
+    // A fixed (unscrolled) element and one changed cell elsewhere.
+    for y in 10..42 {
+        let at = ((y * w + 1200) * 4) as usize;
+        current[at..at + 64 * 4].copy_from_slice(&base[at..at + 64 * 4]);
+    }
+    let changed = ((400 * w + 70) * 4) as usize;
+    current[changed] ^= 0xff;
+    let mut out = [0i32; 4 + 128 * 4];
+    assert_eq!(
+        unsafe { ffi::cx_shift_plan(current.as_ptr(), base.as_ptr(), w, h, out.as_mut_ptr()) },
+        1
+    );
+    assert_eq!(out[0], dy);
+    let (moves, dirty) = (out[1] as usize, out[2] as usize);
+    let rects = |start: usize, count: usize| {
+        out[start..start + count * 4]
+            .chunks_exact(4)
+            .map(|r| [r[0], r[1], r[2], r[3]])
+            .collect::<Vec<_>>()
+    };
+    let (moves, dirty) = (rects(4, moves), rects(4 + moves * 4, dirty));
+    // Reconstruct the viewer: unchanged base, then moves from one snapshot,
+    // then exact residuals from the current raster. Must equal `current`.
+    let mut viewer = base.clone();
+    for [x, y, rw, rh] in &moves {
+        for r in 0..*rh {
+            let (dst, src) = (((y + r) * w + x) * 4, ((y + r - dy) * w + x) * 4);
+            viewer[dst as usize..(dst + rw * 4) as usize]
+                .copy_from_slice(&base[src as usize..(src + rw * 4) as usize]);
+        }
+    }
+    let mut residual = 0;
+    for [x, y, rw, rh] in &dirty {
+        assert!(rw * rh <= 2560 * 256);
+        residual += rw * rh;
+        for r in 0..*rh {
+            let at = (((y + r) * w + x) * 4) as usize;
+            viewer[at..at + (*rw * 4) as usize]
+                .copy_from_slice(&current[at..at + (*rw * 4) as usize]);
+        }
+    }
+    assert!(
+        viewer == current,
+        "MP-08: scroll plan did not reconstruct the exact raster"
+    );
+    assert_eq!(residual, out[3]);
+    // Exposed rows plus the changed cell, not the whole frame.
+    assert!(residual < w * (-dy) + 64 * 64 * 2, "residual {residual}");
+    // Unrelated rasters produce no plan.
+    let noise: Vec<u8> = (0..w * h * 4)
+        .map(|i| (i.wrapping_mul(2654435761u32 as i32) >> 7) as u8)
+        .collect();
+    assert_eq!(
+        unsafe { ffi::cx_shift_plan(noise.as_ptr(), base.as_ptr(), w, h, out.as_mut_ptr()) },
+        0
+    );
+}
+#[test]
+fn mp08_committed_canvas_plan_reencodes_only_changed_cells_without_a_scroll() {
+    let (w, h) = (1280i32, 800i32);
+    // Pseudo-random (non-periodic) rows: no vertical offset can match.
+    let mut state = 0x2545F491u32;
+    let base: Vec<u8> = (0..w * h * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    let mut current = base.clone();
+    for y in 300..320 {
+        for x in 500..540 {
+            current[((y * w + x) * 4) as usize] ^= 0x5a;
+        }
+    }
+    let mut out = [0i32; 4 + 128 * 4];
+    assert_eq!(
+        unsafe { ffi::cx_shift_plan(current.as_ptr(), base.as_ptr(), w, h, out.as_mut_ptr()) },
+        1
+    );
+    assert_eq!((out[0], out[1]), (0, 0), "static plan: no offset, no moves");
+    let dirty: Vec<[i32; 4]> = out[4..4 + out[2] as usize * 4]
+        .chunks_exact(4)
+        .map(|r| [r[0], r[1], r[2], r[3]])
+        .collect();
+    let mut viewer = base.clone();
+    for [x, y, rw, rh] in &dirty {
+        for r in 0..*rh {
+            let at = (((y + r) * w + x) * 4) as usize;
+            viewer[at..at + (*rw * 4) as usize]
+                .copy_from_slice(&current[at..at + (*rw * 4) as usize]);
+        }
+    }
+    assert!(viewer == current);
+    assert!(
+        out[3] <= 2 * 64 * 20 + 600,
+        "only the two touched cell columns: {}",
+        out[3]
+    );
+    assert_eq!(
+        unsafe { ffi::cx_shift_plan(base.as_ptr(), base.as_ptr(), w, h, out.as_mut_ptr()) },
+        0,
+        "nothing to send"
+    );
 }

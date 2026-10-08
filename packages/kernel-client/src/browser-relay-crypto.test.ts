@@ -94,3 +94,30 @@ test('ciphertext modification and wrong recipient keys are rejected', async () =
   const other = await browser.createRelayKeypair();
   await assert.rejects(browser.decryptRelayPayload(other.privateKey,encrypted.payload));
 });
+
+test('MP-08/MP-10 protocol 466 display events expose raw contiguous payload views', () => {
+  const encode = (header: unknown, payload: number[]) => {
+    const json = new TextEncoder().encode(JSON.stringify(header))
+    const bytes = new Uint8Array(8 + json.length + payload.length)
+    bytes.set([0x43, 0x58, 0x44, 0x31])
+    new DataView(bytes.buffer).setUint32(4, json.length)
+    bytes.set(json, 8)
+    bytes.set(payload, 8 + json.length)
+    return bytes
+  }
+  const frame = (tiles: unknown[]) => ({ event: 'kernel_browser_frame', subscription_id: 's', frame: { kind: 'tiles', moves: [[0, 1, 4, 1, -1]], tiles } })
+  const event = browser.decodeDisplayEvent(encode(frame([{ format: 'webp', data: [0, 3] }, { format: 'png', data: [3, 1] }]), [1, 2, 3, 4]))
+  const tiles = (event?.frame as { tiles: { data: Uint8Array }[] }).tiles
+  assert.deepEqual([...tiles[0].data], [1, 2, 3])
+  assert.deepEqual([...tiles[1].data], [4])
+  assert.equal(browser.decodeDisplayEvent(new TextEncoder().encode('{"event":"terminal_output"}')), null)
+  for (const [tiles, payload] of [
+    [[{ data: [1, 2] }], [0, 1, 2]],
+    [[{ data: [0, 2] }], [0, 1, 2]],
+    [[{ data: [0, 4] }], [0, 1, 2]],
+    [[{ data: [0, 0] }], []],
+  ] as const) {
+    assert.throws(() => browser.decodeDisplayEvent(encode(frame([...tiles]), [...payload])), /display/)
+  }
+  assert.throws(() => browser.decodeDisplayEvent(encode({ event: 'other', frame: {} }, [])), /display event/)
+})

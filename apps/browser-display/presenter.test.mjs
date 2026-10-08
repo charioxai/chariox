@@ -80,7 +80,7 @@ test('MD-DISPLAY persistent decoder accepts key/delta and CSS motion pixels; rej
  };
  const binding={subscription_id:'s',generation:1,tab_id:'t'},canvas={width:1,height:1,getContext:()=>context};
  const presenter=new BrowserDisplayPresenter(canvas,binding);
- const frame={...binding,document_id:'d',kind:'video',codec:'vp09.00.10.08',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2,data_base64:'YWJj'};
+ const frame={...binding,document_id:'d',kind:'video',codec:'vp09.00.10.08',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2,data:new Uint8Array([97,98,99])};
  try{
    assert.equal(await presenter.present({...frame,key:true,sequence:1}),true);
    assert.equal(draws,1,'a validated full video frame commits atomically with one canvas draw');
@@ -117,7 +117,7 @@ for (const fresh of [true, false]) test(`MD-DISPLAY-04 credited video/tile/video
  const common={...stream.binding,document_id:'d',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2};
  try{
   stream.start();assert.equal(credits.length,3);const stopped=stream.stop();
-  const frames=[{...common,kind:'video',codec:'vp09.00.10.08',key:true,data_base64:'YWJj',sequence:1},{...common,kind:'tiles',base_sequence:1,tiles:[{x:0,y:0,width:8,height:8,data_base64:'YWJj'}],sequence:2},{...common,kind:'video',codec:'vp09.00.10.08',key:true,data_base64:'YWJj',sequence:3}];
+  const frames=[{...common,kind:'video',codec:'vp09.00.10.08',key:true,data:new Uint8Array([97,98,99]),sequence:1},{...common,kind:'tiles',base_sequence:1,tiles:[{x:0,y:0,width:8,height:8,format:'png',data:new Uint8Array([97,98,99])}],sequence:2},{...common,kind:'video',codec:'vp09.00.10.08',key:true,data:new Uint8Array([97,98,99]),sequence:3}];
   // Last video is already queued before the first decoder callback completes.
   for(const frame of frames)listener({event:'kernel_browser_frame',subscription_id:'s',frame});
   for(const resolve of credits)resolve({frame_sent:true});
@@ -134,7 +134,7 @@ test('MP-08/MP-10 1080p motion admits 720p video while rejecting arbitrary decod
  globalThis.EncodedVideoChunk=class{constructor(v){Object.assign(this,v)}};
  globalThis.VideoDecoder=class{constructor(c){this.c=c;this.state='configured'}configure(){}close(){}decode(){queueMicrotask(()=>this.c.output({displayWidth:size[0],displayHeight:size[1],close(){}}))}};
  const binding={subscription_id:'s',generation:1,tab_id:'t'},canvas={width:1920,height:1080,getContext:()=>({drawImage(){draws++}})};
- const presenter=new BrowserDisplayPresenter(canvas,binding),frame={...binding,document_id:'d',kind:'video',codec:'avc1.420033',width:1920,height:1080,css_width:1920,css_height:1080,device_scale_factor:1,data_base64:'YWJj',key:true};
+ const presenter=new BrowserDisplayPresenter(canvas,binding),frame={...binding,document_id:'d',kind:'video',codec:'avc1.420033',width:1920,height:1080,css_width:1920,css_height:1080,device_scale_factor:1,data:new Uint8Array([97,98,99]),key:true};
  try{assert.equal(await presenter.present({...frame,sequence:1}),true);assert.equal(draws,1);size=[960,540];await assert.rejects(presenter.present({...frame,sequence:2}),/decoded geometry/);assert.equal(draws,1);assert.equal(presenter.sequence,1)}
  finally{presenter.close();globalThis.VideoDecoder=oldDecoder;globalThis.EncodedVideoChunk=oldChunk}
 });
@@ -147,4 +147,28 @@ test('MP-08/MP-10 #893 default viewer offers DPR1 for a 1080p host',async()=>{
  }};
  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
  try{assert.equal(command.device_scale_factor,1)}finally{await stream.close()}
+});
+
+// MP-08/MP-10: protocol 466 lossless scroll: moves read one canvas snapshot,
+// then WebP/PNG residuals; invalid moves are refused before any draw.
+test('MP-08/MP-10 lossless scroll frame copies a snapshot then draws WebP residuals',async()=>{
+ const {BrowserDisplayPresenter}=await import('./presenter.mjs');
+ const prior={OffscreenCanvas:globalThis.OffscreenCanvas,createImageBitmap:globalThis.createImageBitmap};
+ const draws=[],types=[];
+ globalThis.OffscreenCanvas=class{constructor(w,h){this.width=w;this.height=h;this.name='scratch'}getContext(){return {drawImage:(...a)=>draws.push(['scratch',a[0].name??'bitmap',...a.slice(1)])}}};
+ globalThis.createImageBitmap=async blob=>{types.push(blob.type);return {width:1920,height:20,close(){}}};
+ const canvas={name:'canvas',width:1920,height:1080,getContext:()=>({drawImage:(...a)=>draws.push(['canvas',a[0].name??'bitmap',...a.slice(1)])})};
+ const binding={subscription_id:'s',generation:1,tab_id:'t'};
+ const presenter=new BrowserDisplayPresenter(canvas,binding);presenter.sequence=4;presenter.documentId='d';
+ const frame={...binding,document_id:'d',kind:'tiles',base_sequence:4,sequence:5,width:1920,height:1080,css_width:1920,css_height:1080,device_scale_factor:1,
+  moves:[[0,0,1920,1060,-20]],tiles:[{x:0,y:1060,width:1920,height:20,format:'webp',data:new Uint8Array([1])}]};
+ try{
+  await assert.rejects(presenter.present({...frame,moves:[[0,0,1920,1070,-20]]}),/move geometry/);
+  await assert.rejects(presenter.present({...frame,tiles:[{...frame.tiles[0],format:'gif'}]}),/tile geometry/);
+  assert.equal(draws.length,0);
+  assert.equal(await presenter.present(frame),true);
+  assert.deepEqual(types,['image/webp']);
+  assert.deepEqual(draws,[['scratch','canvas',0,0],['canvas','scratch',0,20,1920,1060,0,0,1920,1060],['canvas','bitmap',0,1060]]);
+  assert.equal(presenter.sequence,5);
+ }finally{presenter.close();Object.assign(globalThis,prior)}
 });

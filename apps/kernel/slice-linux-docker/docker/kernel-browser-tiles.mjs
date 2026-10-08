@@ -21,7 +21,7 @@ export function dirtyTiles(previous, current, region = null, all = false) {
     if (!changed) continue;
     const data = Buffer.alloc(w * h * 4);
     for (let row = 0; row < h; row++) pixels.copy(data, row * w * 4, ((y + row) * width + x) * 4, ((y + row) * width + x + w) * 4);
-    tiles.push({ x, y, width: w, height: h, data_base64: encodePng(w, h, data) });
+    tiles.push({ x, y, width: w, height: h, format: 'png', data_base64: encodePng(w, h, data) });
   }
   return tiles;
 }
@@ -54,7 +54,7 @@ export function nativeDamageTiles(raw, checkOnly = false, adjacent = false) {
       const src=region?(row*width+col)*4:((y+row)*raw.width+x+col)*4,dst=(row*width+col)*4,data=region??raw.pixels;
       pixels[dst]=data[src+2];pixels[dst+1]=data[src+1];pixels[dst+2]=data[src];pixels[dst+3]=255;
     }
-    tiles.push({x,y,width,height,data_base64:encodePng(width,height,pixels)});
+    tiles.push({x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)});
   }
   return tiles;
 }
