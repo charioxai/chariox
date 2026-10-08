@@ -97,6 +97,20 @@ test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()
   assert.equal(dispatches,2);assert.equal(guards,2,'MP-08: release remains paired with press');
 });
 
+test('MP-11: IME shares the text protection preflight before the final mirror guard',async()=>{
+ for(const protectedTarget of [false,true]) {
+  const {browser,sent}=fixture(protectedTarget);let guarded=false;
+  const pending=inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({
+   observedFrameInput:true,
+   guard:async()=>{assert(sent.some(x=>x.method==='Runtime.evaluate'));guarded=true;},
+   perform:send=>send('Input.imeSetComposition',{text:'文',selectionStart:1,selectionEnd:1}),
+  })});
+  if(protectedTarget){await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'});assert(!guarded);}
+  else {await pending;assert(guarded);}
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,protectedTarget?0:1);
+ }
+});
+
 
 test('MP-08/MP-11: native navigation and editing keys carry their Chromium virtual key codes',async()=>{
  const codes={Tab:9,Enter:13,Escape:27,Backspace:8,Delete:46,ArrowLeft:37,ArrowRight:39,ArrowUp:38,ArrowDown:40,Home:36,End:35};

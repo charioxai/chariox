@@ -214,7 +214,7 @@ function installMirrorObserver(initialStyles = {}) {
     if(x<0||y<0||x>=innerWidth||y>=innerHeight)throw new Error('mirror offscreen frame');
     return {x:Math.floor(x),y:Math.floor(y)};
   };
-  const coordinateTarget = (point,opaque=[],expected=[]) => {
+  const coordinateTarget = (point,opaque=[],expected=[],addressed=false) => {
     let owner=document,x=point.x,y=point.y,hit;
     for(let depth=0;depth<128;depth++) {
       hit=owner.elementFromPoint(x,y);
@@ -228,6 +228,14 @@ function installMirrorObserver(initialStyles = {}) {
     let node=hit;const opaqueIds=new Set(opaque);
     for(let ancestor=hit,depth=0;ancestor&&depth<128;depth++){if(opaqueIds.has(ids.get(ancestor))){node=ancestor;break;}ancestor=ancestor.parentElement??ancestor.getRootNode()?.host??ancestor.ownerDocument?.defaultView?.frameElement;}
     while(node&&!ids.has(node)){if(node.parentElement?.matches('button,input,textarea,select')){node=node.parentElement;break;}node=null;}
+    // MP-11: element clicks may hit a styled child of the addressed control.
+    // Check the actual dispatch point through frames/shadows, including the
+    // hit child's live protection, then bind it to the observed control.
+    if(addressed) {
+      const target=live.get(expected[0]?.id);
+      if(!target?.isConnected||hit!==target&&!target.contains(hit))throw new Error('mirror changed addressed click hit');
+      unprotected(hit);node=target;
+    }
     const key=ids.get(node);if(!key||!live.has(key)||maskedNodes.has(node)||node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]')||/password|one-time-code|cc-/i.test(node.autocomplete??''))throw new Error('mirror stale/protected coordinate target');
     // MP-11: a live hit must still be the target observed at this point, and
     // its full element/frame ancestry must retain the sampled geometry.

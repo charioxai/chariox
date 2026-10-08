@@ -46,7 +46,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     let mirrorGuard;
     const sendInput = async (method, params) => {
       await check();
-      if (method === "Input.insertText" || (method === "Input.dispatchKeyEvent" && params.text)) {
+      if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && params.text)) {
         await checkTextTarget();
         await check();
       }
