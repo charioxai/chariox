@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 pub(crate) const OPERATION_PREFIX: &str = "kernel-workflow-entry:";
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowDispatchIntent {
+    // Retain the session binding in durable dispatch Debug provenance.
+    #[allow(dead_code)]
     pub(crate) session_id: String,
     pub(crate) run_id: String,
     pub(crate) node_id: String,

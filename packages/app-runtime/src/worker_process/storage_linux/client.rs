@@ -48,9 +48,6 @@ enum Operation<'a> {
     },
 }
 
-/// Before its first install commits, an installation's committed generation is
-/// 0: there is no committed data to snapshot, and the helper refuses 0.
-
 /// The helper's authenticated per-UID socket, served by root.
 fn connect(uid: u32) -> Result<UnixStream> {
     let socket_root = files::search_root_directory(Path::new(SOCKET_ROOT))?;

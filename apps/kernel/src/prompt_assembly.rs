@@ -165,8 +165,11 @@ pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,
     MetaagentProviderTurn,
+    // Preserve the dedicated continuation modes in the shared assembly contract.
+    #[allow(dead_code)]
     WorkflowNodeTurn,
     UtilityTurn,
+    #[allow(dead_code)]
     McpSkillContinuationTurn,
 }
 
@@ -841,9 +844,6 @@ impl PromptAssemblyService {
         Self { registry }
     }
 
-    pub(crate) fn registry(&self) -> &PromptTemplateRegistry {
-        &self.registry
-    }
 
     pub(crate) fn assemble_provider_turn(
         &self,

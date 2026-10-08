@@ -84,8 +84,6 @@ pub(crate) enum LifecycleError {
     Notification,
     #[error("app_lifecycle_notification_not_dispatched")]
     NotificationNotDispatched,
-    #[error("app_lifecycle_worker_exit")]
-    WorkerExit,
     #[error("app_lifecycle_supervisor")]
     Supervisor,
 }

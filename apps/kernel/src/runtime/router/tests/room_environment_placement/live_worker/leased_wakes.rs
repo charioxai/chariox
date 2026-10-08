@@ -468,42 +468,35 @@ impl AgentWorker {
         let _ = timeout(Duration::from_secs(5), self.task).await;
     }
 
-    /// The worker's backing run for a home leased agent and its MCP bearer.
+    /// Wait for the exact home prompt's active receipt on the current lease.
+    /// An older Running projection on the same lease is not this turn.
     async fn run_for(
         &self,
         fixture: &LiveWorker,
         agent: &str,
+        home_prompt: &str,
     ) -> crate::provider::RuntimeProviderRun {
-        eventually_async(
-            "the current lease projects this worker's running turn",
-            || async {
-                let leased = binding(fixture, agent).await.leased_agent_id;
-                let worker_run = fixture
-                    .home
-                    .provider_run_projection
-                    .list_for_session(&fixture.rooms[0])
-                    .into_iter()
-                    .filter(|run| {
-                        run.agent_instance_id() == Some(agent)
-                            && run.state() == crate::provider::ProviderRunState::Running
-                    })
-                    .find_map(|run| {
-                        crate::provider::worker_provider_run_id_from_projected_leased_id(
-                            &leased,
-                            run.id(),
-                        )
-                    })?;
-                self.router
-                    .app
-                    .lock()
-                    .await
-                    .providers()
-                    .get_run(&worker_run)
-                    .ok()
-            },
-        )
-        .await
+        eventually_async("the current lease projects the exact worker prompt", || async {
+            let remote = binding(fixture, agent).await;
+            let receipt = worker_receipt(fixture, agent, home_prompt).await?;
+            if receipt.phase != crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
+                || receipt.execution_lease_id.as_deref() != Some(remote.execution_lease_id.as_str())
+            {
+                return None;
+            }
+            let projected = crate::provider::projected_leased_provider_run_id(
+                &remote.leased_agent_id,
+                &receipt.worker_provider_run_id,
+            );
+            fixture.home.provider_run_projection.list_for_session(&fixture.rooms[0])
+                .into_iter().find(|run| run.id() == projected
+                    && run.agent_instance_id() == Some(agent)
+                    && run.state() == crate::provider::ProviderRunState::Running)?;
+            self.router.app.lock().await.providers()
+                .get_run(&receipt.worker_provider_run_id).ok()
+        }).await
     }
+
 }
 
 async fn eventually_async<T, F: std::future::Future<Output = Option<T>>>(
@@ -764,7 +757,9 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let window_length = Duration::from_secs(8);
     let (owner, verified) =
         open_leased_sudo(&fixture, &room, &attachment, &agent, window_length).await;
-    let run = worker.run_for(&fixture, &agent).await;
+    let home_prompt = fixture.home.runtime_state.list_sudo_turns(&owner)
+        .pop().unwrap().prompt_id.unwrap();
+    let run = worker.run_for(&fixture, &agent, &home_prompt).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let worker_session = run.session_id().to_string();
     let attached = dispatch_json(
@@ -820,7 +815,9 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .router
         .dispatch_authenticated_runtime_tool_call(&token, "chariox_kernel_request", request.clone())
         .await;
-    let sibling_run = worker.run_for(&fixture, &sibling).await;
+    let sibling_prompt = store(&fixture).await.agent_tasks(Some(&room), Some(&sibling))
+        .unwrap().pop().unwrap().prompt_id;
+    let sibling_run = worker.run_for(&fixture, &sibling, &sibling_prompt).await;
     let sibling_token = sibling_run.runtime_mcp_auth_token().unwrap().to_string();
     let sibling_listed = lists(&sibling_token);
     let sibling_call = worker
@@ -986,7 +983,7 @@ async fn leased_room_tools_act_at_home_with_the_lease_origin() {
         .unwrap()
         .pop()
         .expect("the home admitted the leased turn's task");
-    let run = worker.run_for(&fixture, &leased).await;
+    let run = worker.run_for(&fixture, &leased, &task.prompt_id).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let inbox = worker
         .router
@@ -1080,9 +1077,9 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         .pop()
         .expect("live window");
     let task = window.task_id.clone().expect("window bound to owner work");
-    let first = worker.run_for(&fixture, &agent).await;
-    let token = first.runtime_mcp_auth_token().unwrap().to_string();
     let prompt = window.prompt_id.clone().unwrap();
+    let first = worker.run_for(&fixture, &agent, &prompt).await;
+    let token = first.runtime_mcp_auth_token().unwrap().to_string();
     let call = |name: &'static str, args: Value| {
         let worker = &worker;
         let token = token.clone();
@@ -1189,7 +1186,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    let next = worker.run_for(&fixture, &agent).await;
+    let next = worker.run_for(&fixture, &agent, accepted.prompt_id.as_deref().unwrap()).await;
     let next_token = next.runtime_mcp_auth_token().unwrap().to_string();
     let listed = worker
         .router

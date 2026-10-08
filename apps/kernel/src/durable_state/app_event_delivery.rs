@@ -57,9 +57,6 @@ impl AppEventCandidate {
     pub(crate) fn receipt(&self) -> &Receipt {
         &self.receipt
     }
-    pub(crate) fn session_id(&self) -> &str {
-        &self.configuration.target.session_id
-    }
 }
 
 pub(super) struct AppEventQueueRequest {

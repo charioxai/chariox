@@ -26,8 +26,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             source,
             occurrence: id,
             success,
-            now: _,
+            now,
         } => {
+            // Source completion does not advance the task's separate progress clock.
+            let _completion_observed_at_ms = now;
             if let Some(answer) = public_answer.as_mut() {
                 crate::secret_redaction::redact_json_secrets(answer);
                 if encode(answer)?.len() > 8_192 {

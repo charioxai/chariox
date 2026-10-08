@@ -164,9 +164,8 @@ async fn validate_live_relay_kernels(
 }
 
 fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
-    // Hosted inventory is already freshness-filtered by the relay. A second
-    // lookup inside the temporary peer probe would incorrectly reuse the
-    // daemon token for client metadata discovery.
+    // Hosted inventory is already filtered by heartbeat freshness. Avoid a
+    // redundant temporary peer admission for the same inventory refresh.
     is_known && !is_hosted
 }
 
