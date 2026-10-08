@@ -51,7 +51,7 @@ def input_action(action, processes=None):
         accessibility=load('native-accessibility')
         expected=accessibility.input_target(processes)
         guard=lambda: accessibility.input_target(processes,expected)
-    if processes is not None and (kind in ('hold','clipboard_write','keycode') or action.get('button')==2):
+    if processes is not None and (kind in ('hold','drag','clipboard_write','keycode') or action.get('button')==2):
         raise ValueError('native paste/repeat requires human or Vault input')
     if kind == 'text': keyboard.type_text(action['text'],before_press=guard); return
     if kind=='pointer_hold':

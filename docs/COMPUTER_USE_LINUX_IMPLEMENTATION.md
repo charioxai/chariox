@@ -10,7 +10,7 @@ content. The existing document-bound Browser path remains available.
 Agent native text and single chords require a complete, uniquely bound owned
 foreground accessibility frame and a public focused leaf. Each text keystroke
 rechecks that leaf and fences the X11 focus; web-document leaves require the
-Browser/Vault path. Agent native clipboard writes, middle-button paste and
+Browser/Vault path. Agent native clipboard writes, text drag/drop, middle-button paste and
 keyboard holds are refused because they cannot fence every text-producing
 repeat/paste. Human input retains its separate admitted path.
 

@@ -54,7 +54,7 @@ test('MP-11 finding 1 agents cannot lend native clipboard, repeats or middle-but
   let calls=0;
   const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
   for(const input of [{kind:'clipboard_write',text:'ordinary'}, {kind:'hold',key:'a',duration_ms:500},
-    {kind:'click',button:2,x:10,y:10}, {kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}]) {
+    {kind:'drag',x:10,y:10,to_x:20,to_y:20}, {kind:'click',button:2,x:10,y:10}, {kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}]) {
     await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{}));
   }
   assert.equal(calls,0);

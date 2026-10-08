@@ -113,7 +113,7 @@ export class NativeComputer {
       if(command._agent_input && input.kind==='keycode')throw new Error('MP-11: persistent physical keys require human input; agents use bounded key/hold');
       // MP-11: native repeats and clipboard/middle-button paste cannot fence
       // every text-producing event. Agents use focused text or a single chord.
-      if(command._agent_input && (['hold','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
+      if(command._agent_input && (['hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
       if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
       if(input.kind==='keycode') {
