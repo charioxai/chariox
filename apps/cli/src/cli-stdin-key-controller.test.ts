@@ -147,7 +147,6 @@ test("cli stdin key controller routes copy and ctrl-c shortcuts", () => {
     "parse:x:true",
     "session-browser:c",
     "focused:c",
-    "queued-prompt:c",
     "copy",
   ])
 
@@ -243,6 +242,17 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
     "prompt-turn:down",
     "waiting-room:down",
   ])
+})
+
+test("MP-08/MP-11 Meta+C copies a selection before queued-prompt cancel and cancels only without one", () => {
+  const copyHarness = createHarness({ parsedEvent: keyEvent("c", { meta: true }), queuedPromptHandled: true, copyHandled: true })
+  assert.equal(copyHarness.controller.handleData("x"), true)
+  assert.ok(copyHarness.calls().includes("copy"))
+  assert.ok(!copyHarness.calls().includes("queued-prompt:c"))
+
+  const cancelHarness = createHarness({ parsedEvent: keyEvent("c", { meta: true }), queuedPromptHandled: true, copyHandled: false })
+  assert.equal(cancelHarness.controller.handleData("x"), true)
+  assert.ok(cancelHarness.calls().includes("queued-prompt:c"))
 })
 
 test("MP-08/MP-11 Ctrl+Shift+C never stops the provider or exits when selection is empty", () => {

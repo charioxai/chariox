@@ -85,6 +85,10 @@ export function createCliStdinKeyController(
       if (deps.handleFocusedInteractionKey(event)) {
         return true
       }
+      // Meta+C shares Alt+C with queued-prompt cancel; a selection wins.
+      if (event.eventType !== "release" && copyKey && deps.copyPromptSelection()) {
+        return true
+      }
       const queuedPromptKeyEvent = queuedPromptKeyEventFromStdin(event)
       if (queuedPromptKeyEvent && deps.handleQueuedPromptKey(queuedPromptKeyEvent)) {
         return true
@@ -116,8 +120,8 @@ export function createCliStdinKeyController(
         }
         return true
       }
+      // Nothing selected: still never fall through to Ctrl+C stop/exit.
       if (event.eventType !== "release" && copyKey) {
-        deps.copyPromptSelection()
         return true
       }
       if (event.ctrl && event.name === "c") {
