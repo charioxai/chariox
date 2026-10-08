@@ -182,3 +182,24 @@ test('MP-08 limited vertical native motion keeps row reuse; malformed hints take
   assert.deepEqual(calls,[['rows',true],['whole',true],['whole',false],['whole',false],['whole',false]]);
  }finally{await motion.close();}
 });
+
+test('MP-08/MP-10/MP-11 rejected native codec carries indexed exact PNG through display credit',async()=>{
+ const {deflateSync,crc32}=await import('node:zlib');
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ const {decodePng}=await import('./kernel-browser-pixels.mjs');
+ const chunk=(type,data)=>{const body=Buffer.concat([Buffer.from(type),data]),out=Buffer.alloc(body.length+8);out.writeUInt32BE(data.length);body.copy(out,4);out.writeUInt32BE(crc32(body),out.length-4);return out};
+ const header=Buffer.alloc(13);header.writeUInt32BE(128);header.writeUInt32BE(128,4);header[8]=8;header[9]=3;
+ const indexed=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('PLTE',Buffer.from([0,0,0])),chunk('IDAT',deflateSync(Buffer.alloc(129*128))),chunk('IEND',Buffer.alloc(0))]).toString('base64');
+ assert.throws(()=>decodePng(indexed),/unsupported frame format/,'this is an actual indexed native PNG');
+ let offer;const source={subscribe:f=>(offer=f,()=>{}),sample:()=>null};
+ const encoder={nativeSession:'native',encode:async()=>({dropped:true}),close:async()=>{}};
+ const motion=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000});
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder,now:()=>0,wait:async()=>{}});
+ let exactCalls=0;
+ try{
+  offer({serial:1,data_base64:'signature',raw:{width:128,height:128,nativeEncode(){},nativeExact:async q=>{exactCalls++;assert.equal(q.patch,false);return {width:128,height:128,native_exact:true,data_base64:indexed,repair_tiles:[]}}}});
+  await motion.active;const exact=motion.take();
+  const frame=await stream.frame({...exact,generation:1},'d',0);
+  assert.equal(exactCalls,1);assert.equal(frame.kind,'png');assert.equal(frame.data_base64,indexed);assert.equal(stream.exact,true);assert.equal(exact.raw,undefined);
+ }finally{await motion.close();await stream.close()}
+});
