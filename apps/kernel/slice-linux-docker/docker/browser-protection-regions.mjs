@@ -303,7 +303,9 @@ export async function fenceBrowserCapture(browser, policy, capture, attempts = 3
     const before = await measurePresented(browser, policy);
     if (!before) break;
     const result = await capture(before);
-    const after = await measurePresented(browser, policy);
+    // One frame first: the re-measurement then sees compositor scrolls too.
+    let after = null;
+    try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy); } catch {}
     if (after && protectionDigest(after) === protectionDigest(before)) return result;
   }
   return capture(null);
