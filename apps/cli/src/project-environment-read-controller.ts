@@ -33,9 +33,10 @@ export function createProjectEnvironmentReadController(deps: {
       }
       deps.render()
     },
-    handleKey(event: { name: string; eventType?: string }) {
+    handleKey(event: { name: string; eventType?: string; ctrl?: boolean }) {
       if (!open) return false
       if (event.eventType === "release") return true
+      if (event.ctrl && (event.name === "c" || event.name === "e")) return false
       if (event.name === "escape") { controller.close(); return true }
       const amount = event.name === "down" ? 1 : event.name === "up" ? -1 : event.name === "pagedown" ? deps.pageSize() : event.name === "pageup" ? -deps.pageSize() : 0
       offset = Math.max(0, Math.min(Math.max(0, lines.length - deps.pageSize()), offset + amount))

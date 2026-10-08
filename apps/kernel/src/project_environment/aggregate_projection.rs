@@ -282,14 +282,37 @@ pub fn project_environment_snapshot(
     // Machine observations and target-owned absolute paths are not portable content identity.
     snapshot.content_digest = metadata_digest(&(
         &snapshot.lineage,
-        &snapshot.project_requirements,
+        snapshot.project_requirements.iter().map(requirement_specification).collect::<Vec<_>>(),
         snapshot
             .folders
             .iter()
-            .map(|f| (&f.folder_id, &f.requirements))
+            .map(|f| (&f.folder_id, f.requirements.iter().map(requirement_specification).collect::<Vec<_>>()))
             .collect::<Vec<_>>(),
-        &snapshot.proposals,
+        snapshot.proposals.iter().map(|proposal| (&proposal.proposal_id, requirement_specification(&proposal.requirement))).collect::<Vec<_>>(),
         &snapshot.evidence_digest,
     ));
     snapshot
+}
+
+// MP-08/MP-10: allowlist specification fields; keep legacy readiness in the response only.
+fn requirement_specification(requirement: &Requirement) -> serde_json::Value {
+    serde_json::json!({
+        "requirement_id": requirement.requirement_id,
+        "title": requirement.title,
+        "scope": requirement.scope,
+        "origins": requirement.origins,
+        "spec": requirement.spec,
+        "depends_on": requirement.depends_on,
+        "platform_variants": requirement.platform_variants,
+        "required": requirement.required,
+        "legacy_entry": requirement.legacy_entry.as_ref().map(|entry| serde_json::json!({
+            "name": entry.name,
+            "workspace_id": entry.workspace_id,
+            "kind": entry.kind,
+            "classification": entry.classification,
+            "excluded": entry.excluded,
+            "uses": entry.uses,
+            "locator": entry.locator,
+        })),
+    })
 }
