@@ -1,3 +1,6 @@
+#[path = "tests/account_copies.rs"]
+mod account_copies;
+
 use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;

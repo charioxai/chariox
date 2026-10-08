@@ -2171,6 +2171,10 @@ fn app_skill_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
+#[path = "remote_agent_binding_copy_tests.rs"]
+mod copy_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
 
