@@ -191,14 +191,27 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
         meta_specs
             .iter()
             .all(|spec| spec.name.starts_with("chariox.meta.")
+                || spec.name == "chariox_kernel_request"
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "metaagents should only see meta, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
+        "metaagents should only see the cached sudo interface, meta, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
     );
+
+    // Discovery lets the official harness cache the interface before sudo.
+    // A meta-agent's ordinary run still has no kernel-wide sudo authority.
+    assert!(router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"ListSessions": null}}),
+        )
+        .await
+        .is_err());
 
     let denied_direct_tool = router
         .runtime_state
