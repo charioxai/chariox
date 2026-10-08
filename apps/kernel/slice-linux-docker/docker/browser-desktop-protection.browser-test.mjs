@@ -143,3 +143,16 @@ test(`DPR ${dpr}: page zoom keeps placement exact (CSS to DIP to device pixels)`
   assert.equal(result.after[0], 0);
   assert.ok(result.after[1] > result.before[1] * 0.9);
 }));
+
+test(`DPR ${dpr}: emulated page density (host display mode) withholds the window`, () => withDesktop(async ({ browser, connection, sessionId, pid }) => {
+  // kernel-browser-geometry displayDeviceMetrics: CSS viewport kept, density and view scale doubled. The
+  // screen then shows the page magnified while AT-SPI reports the unscaled view: no provable mapping.
+  const { result: size } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: '[innerWidth, innerHeight]' }, sessionId);
+  await connection.send('Emulation.setDeviceMetricsOverride', { width: size.value[0], height: size.value[1], deviceScaleFactor: 2 * dpr, scale: 2 * dpr, mobile: false }, sessionId);
+  await delay(800);
+  const result = await fenceBrowserCapture(browser, policy, async protection => ({ protection, ...(await census(pid, protection)) }));
+  assert.equal(result.protection.pages[0].dpr, 2 * dpr);
+  assert.deepEqual(result.bound, [false]);
+  assert.equal(result.after[0], 0);
+  assert.equal(result.after[1], 0);
+}));

@@ -14,6 +14,7 @@ MAX_DEPTH = 24
 MAX_DOCUMENTS = 64
 PAD_DIP = 4      # Matches CDP image masking: borders, shadows, outward rounding.
 STATUS_DIP = 24  # Link-status bubble over the content bottom.
+MIN_SCALE, MAX_SCALE = .25, 4
 
 
 def _top_documents(app, pyatspi):
@@ -94,34 +95,53 @@ def _clip(rect, outer):
     return [left, top, right-left, bottom-top] if right > left and bottom > top else None
 
 
+def _screen_scale(window, client):
+    """Device pixels per screen DIP proven by the X11 client geometry, or None."""
+    if not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, (int, float)) for v in window) or window[2] <= 0:
+        return None
+    scale = client[2]/window[2]
+    if not MIN_SCALE <= scale <= MAX_SCALE:
+        return None
+    slack = 0 if scale == round(scale) else 1  # Fractional scales round DIP to pixels.
+    exact = all(abs(dip*scale-px) <= slack for dip, px in zip(window, client))
+    return scale if exact else None
+
+
 def window_masks(protection, client, frame, docs):
     """Masks for one browser X window, or None to withhold the whole window.
 
     client: X11 client rectangle; frame: window-manager frame rectangle;
-    docs: document_rects() of the window's application.
+    docs: document_rects() of the window's application. The AT-SPI document
+    rectangle proves where the page viewport is; the X11 geometry proves the
+    screen scale. A page whose density is emulated (devicePixelRatio not the
+    screen scale times its page zoom) has no provable mapping: withheld.
     """
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
         return None
-    pages = [page for page in protection['pages'] if page.get('window') == list(client)]
+    pages = [page for page in protection['pages'] if _screen_scale(page.get('window'), client)]
     inside = [doc for doc in docs if _inside(doc['rect'], client)]
     if not pages or len(pages) != len(inside):
         return None  # A page without proven pixels, or unmeasured web content.
+    scale = _screen_scale(pages[0]['window'], client)
+    if any(_screen_scale(page['window'], client) != scale for page in pages):
+        return None
     masks, used = [], set()
+    pad, status = math.ceil(PAD_DIP*scale), math.ceil(STATUS_DIP*scale)
     for doc in inside:
         x, y, width, height = doc['rect']
-        matches = [index for index, page in enumerate(pages)
-                   if _url(page.get('url')) == _url(doc['uri']) and
-                   isinstance(page.get('viewport'), list) and len(page['viewport']) == 2 and
-                   abs(page['viewport'][0]-width) <= 2 and abs(page['viewport'][1]-height) <= 2]
+        def fits(page):
+            viewport, dpr, zoom = page.get('viewport'), page.get('dpr'), page.get('zoom')
+            return (isinstance(viewport, list) and len(viewport) == 2 and
+                    abs(viewport[0]-width) <= 2 and abs(viewport[1]-height) <= 2 and
+                    isinstance(dpr, (int, float)) and isinstance(zoom, (int, float)) and abs(dpr-scale*zoom) <= .01*scale)
+        matches = [index for index, page in enumerate(pages) if _url(page.get('url')) == _url(doc['uri']) and fits(page)]
         if len(matches) != 1 or matches[0] in used:
             return None
         used.add(matches[0])
         page = pages[matches[0]]
-        scale = page.get('scale')
         regions = page.get('regions')
-        if not isinstance(scale, (int, float)) or scale <= 0 or not isinstance(regions, list):
+        if not isinstance(regions, list):
             return None
-        pad = math.ceil(PAD_DIP*scale)
         for region in regions:
             if not isinstance(region, list) or len(region) != 4 or not all(isinstance(v, int) for v in region):
                 return None
@@ -131,7 +151,6 @@ def window_masks(protection, client, frame, docs):
                 masks.append(placed)
         if page.get('chrome'):
             # Vault policy: titles, URL bar and status bubbles may echo values.
-            status = math.ceil(STATUS_DIP*scale)
             masks.append([frame[0], frame[1], frame[2], max(1, y-frame[1])])
             masks.append([x, y+height-status, width, status])
     return masks

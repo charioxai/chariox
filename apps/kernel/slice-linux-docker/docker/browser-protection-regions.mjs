@@ -210,7 +210,6 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
   if (top.frame.url !== 'about:blank' && !/^(https?:|file:|chrome-error:)/.test(top.frame.url)) throw new Error('MP-11: browser-internal page');
   const { cssVisualViewport: visual } = await connection.send('Page.getLayoutMetrics', {}, sessionId);
   if (visual?.scale !== 1 || !(visual?.zoom > 0)) throw new Error('MP-11: pinch-zoomed page'); // Visual offsets are not mapped.
-  const scale = dpr / visual.zoom; // Screen DIP to device pixels; page zoom excluded.
   const viewport = [0, 0, Math.round(innerWidth * dpr), Math.round(innerHeight * dpr)];
   const regions = [], withheld = [];
   const frameIds = new Set(); const visit = tree => { frameIds.add(tree.frame.id); (tree.childFrames ?? []).forEach(visit); }; visit(top);
@@ -243,7 +242,8 @@ export async function measurePageProtection(connection, sessionId, targetId, pol
     }
   } finally { await detach(); }
   // withheld: why whole frames were masked (fixed labels, never page data).
-  const page = { url: top.frame.url, document_id: top.frame.loaderId, dpr, scale, viewport: viewport.slice(2) };
+  // zoom: page zoom (CSS to DIP); devicePixelRatio is screen scale x zoom unless emulated.
+  const page = { url: top.frame.url, document_id: top.frame.loaderId, dpr, zoom: visual.zoom, viewport: viewport.slice(2) };
   if (regions.length > MAX_REGIONS) return { ...page, regions: [viewport], withheld: ['region_bound'] };
   return { ...page, regions: regions.map(outward), withheld };
 }
@@ -271,9 +271,8 @@ export async function measureBrowserProtection(browser, policy) {
     // A visible page that cannot be bound fails the whole measurement closed.
     const measured = await withSession(connection, page.targetId, sessionId => measurePageProtection(connection, sessionId, page.targetId, policy));
     if (measured === null) continue;
-    // Desktop pixels: the X11 client window must equal this exact rectangle.
-    const device = window.map(value => Math.round(value * measured.scale));
-    result.push({ target_id: page.targetId, window_id: windowId, window: device, chrome: Boolean(policy.values.length || policy.targets.length), ...measured });
+    // Screen DIP: the X11 client window must be this exact rectangle at one scale.
+    result.push({ target_id: page.targetId, window_id: windowId, window, chrome: Boolean(policy.values.length || policy.targets.length), ...measured });
   }
   return { pages: result };
 }
