@@ -59,19 +59,19 @@ test('MP-11: structured mirror skips native control shadow trees but checks open
   if(method==='DOM.querySelectorAll')return {nodeIds:[]};
   assert.equal(method,'DOM.getBoxModel');assert([22,30].includes(params.nodeId));return {model:{border:[0,0,10,0,10,10,0,10]}};
  }};
- const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,2);
+ const masks=await captureRegionMasks(connection,'session',{});assert.equal((await masks.afterCapture()).length,2);
 });
 
-test('MP-11: structured same-origin frames inspect nested protected fields; foreign/missing documents remain opaque',async()=>{
+test('MP-11: in-process frames of any origin are inspected; a frame without a document or session stays opaque',async()=>{
  for(const kind of ['same','foreign','missing']){
-  const boxed=[];const connection={async send(method,params){
-   if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main',securityOrigin:'http://fixture'},childFrames:[{frame:{id:'child',securityOrigin:kind==='foreign'?'http://foreign':'http://fixture'}}]}};
+  const boxed=[],reasons=[];const connection={async send(method,params){
    if(method==='DOM.getDocument')return {root:{nodeId:1,children:[{nodeId:2,localName:'iframe',frameId:'child',...(kind==='missing'?{}:{contentDocument:{nodeId:3,children:[{nodeId:4,localName:'input',attributes:['type','password']}]}})}]}};
    if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
    assert.equal(method,'DOM.getBoxModel');boxed.push(params.nodeId);return {model:{border:[1,2,10,2,10,20,1,20]}};
   }};
-  const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});await masks.afterCapture();
-  assert.deepEqual(boxed,kind==='same'?[4,4]:[2,2]);
+  const masks=await captureRegionMasks(connection,'session',{record:r=>reasons.push(r)});await masks.afterCapture();
+  assert.deepEqual(boxed,kind==='missing'?[2,2]:[4,4]);
+  assert.deepEqual(reasons,kind==='missing'?['frame_session_unavailable','frame_session_unavailable']:[]);
  }
 });
 
@@ -84,7 +84,7 @@ test('MP-11: same-origin iframe with explicit protection stays opaque',async()=>
    if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
    assert.equal(method,'DOM.getBoxModel');boxed.push(params.nodeId);return {model:{border:[1,2,10,2,10,20,1,20]}};
   }};
-  const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,1);assert.deepEqual(boxed,[2,2]);
+  const masks=await captureRegionMasks(connection,'session');assert.equal((await masks.afterCapture()).length,1);assert.deepEqual(boxed,[2,2]);
  }
 });
 
@@ -93,7 +93,7 @@ test('MP-11: nested protected input attributes are ASCII case insensitive',async
   if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'main',securityOrigin:'http://fixture'},childFrames:[{frame:{id:'child',securityOrigin:'http://fixture'}}]}};
   if(method==='DOM.getDocument')return {root:{nodeId:1,children:[{nodeId:2,localName:'iframe',frameId:'child',contentDocument:{nodeId:3,children:[{nodeId:4,localName:'input',attributes:['type','PASSWORD']},{nodeId:5,localName:'input',attributes:['autocomplete','CC-NUMBER']}]}}]}};
   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};assert.equal(method,'DOM.getBoxModel');boxed.push(params.nodeId);return {model:{border:[0,0,10,0,10,10,0,10]}};
- }};const masks=await captureRegionMasks(connection,'session',{mirrorStructured:true});assert.equal((await masks.afterCapture()).length,2);assert.deepEqual(new Set(boxed),new Set([4,5]));
+ }};const masks=await captureRegionMasks(connection,'session',{});assert.equal((await masks.afterCapture()).length,2);assert.deepEqual(new Set(boxed),new Set([4,5]));
 });
 
 // MP-08/MP-10/MP-11 phase 1.3: real-site admission (hidden tracking frames,
@@ -133,7 +133,7 @@ test("MP-11 oversized trees degrade to a whole-viewport mask instead of refusing
   assert.deepEqual(await protectedHostRegions(site(wide, {}), "s"), [{ x: 0, y: 0, width: 1280, height: 800 }]);
 });
 test("MP-08/MP-11 a native tracker retires only on events that can add protection", () => {
-  const tracked = new Set([7]), e = (method, params) => ({ sessionId: "s", method, params });
+  const tracked = { sessions: new Set(["s"]), nodes: new Set(["s 7"]) }, e = (method, params) => ({ sessionId: "s", method, params });
   for (const name of ["type", "autocomplete", "data-chariox-secret", "data-chariox-observation-protected", "data-observation-protected"])
     assert.equal(regionProtectionChanged(e("DOM.attributeModified", { name }), "s", tracked), true, name);
   for (const name of ["style", "class", "aria-hidden"]) assert.equal(regionProtectionChanged(e("DOM.attributeModified", { name }), "s", tracked), false, name);
@@ -158,4 +158,63 @@ test("MP-08/MP-11 native movement re-measures tracked nodes, masks moving frames
   assert.deepEqual(await guard.regions(raw(pipelined)), [{ x: 0, y: 0, width: 1280, height: 800 }], "a readback older than the new measurement");
   assert.deepEqual(await guard.regions(raw(now())), [{ x: 100, y: 40, width: 300, height: 200 }], "settled bounds restore masks");
   assert.equal(calls.filter(m => m === "DOM.getDocument").length, inspections, "movement never re-transfers the DOM");
+});
+
+// MP-11 (owner 2026-10-08): isolated frames are inspected through their flat
+// session; only protected regions are masked, in top-viewport coordinates.
+function isolated({ transformed = false, failing = false, children = [] } = {}) {
+  const calls = [];
+  const owner = transformed ? { width: 300, height: 200, border: [500, 350, 650, 350, 650, 450, 500, 450], content: [500, 350, 650, 350, 650, 450, 500, 450] }
+    : { width: 306, height: 206, border: [500, 50, 806, 50, 806, 256, 500, 256], content: [503, 53, 803, 53, 803, 253, 503, 253] };
+  return { calls, async send(method, params, session) {
+    calls.push([method, session, params?.nodeId]);
+    if (method === "DOM.getDocument") {
+      if (session === "c" && failing) throw new Error("Target closed");
+      return { root: session === "c" ? { nodeId: 1, localName: "html", children: [{ nodeId: 5, localName: "input", attributes: ["type", "password"] }] }
+        : { nodeId: 1, localName: "html", children: children.length ? children : [{ nodeId: 2, localName: "iframe", frameId: "F" }] } };
+    }
+    if (method === "DOM.querySelectorAll") return { nodeIds: [] };
+    assert.equal(method, "DOM.getBoxModel");
+    if (session === "c") return { model: { border: [20, 30, 80, 30, 80, 42, 20, 42] } };
+    if (params.nodeId === 2) return { model: owner };
+    return { model: { width: 1280, height: 800, border: [0, 0, 1280, 0, 1280, 800, 0, 800] } };
+  } };
+}
+test("MP-11 an isolated frame's protected field is masked at its owner offset; the rest of the frame stays visible", async () => {
+  const reasons = [], frames = id => id === "F" ? "c" : null;
+  assert.deepEqual(await protectedHostRegions(isolated(), "s", { frames, record: r => reasons.push(r) }), [{ x: 523, y: 83, width: 60, height: 12 }]);
+  assert.deepEqual(reasons, []);
+  // A transformed owner cannot map local boxes: its whole border box is masked.
+  assert.deepEqual(await protectedHostRegions(isolated({ transformed: true }), "s", { frames }), [{ x: 500, y: 350, width: 150, height: 100 }]);
+});
+test("MP-11 an isolated frame that cannot be inspected is masked whole and the reason is recorded", async () => {
+  for (const [options, reason] of [[{}, "frame_session_unavailable"], [{ frames: () => "c", failing: true }, "frame_uninspectable"]]) {
+    const reasons = [];
+    assert.deepEqual(await protectedHostRegions(isolated(options), "s", { ...options, record: r => reasons.push(r) }), [{ x: 500, y: 50, width: 306, height: 206 }]);
+    assert.deepEqual(reasons, [reason]);
+  }
+});
+test("MP-11 a protection marker on a frame's owner or ancestor still masks the whole frame", async () => {
+  for (const children of [[{ nodeId: 3, localName: "div", attributes: ["data-chariox-secret", ""], children: [{ nodeId: 2, localName: "iframe", frameId: "F" }] }],
+    [{ nodeId: 2, localName: "iframe", frameId: "F", attributes: ["data-observation-protected", ""] }]]) {
+    const connection = isolated({ children });
+    const regions = await protectedHostRegions(connection, "s", { frames: () => "c" });
+    assert(regions.some(r => r.x === 500 && r.y === 50 && r.width === 306 && r.height === 206), JSON.stringify(regions));
+    assert(!connection.calls.some(([, session]) => session === "c"), "a marked frame is never unmasked by inspection");
+  }
+});
+test("MP-11 the native tracker retires on isolated-frame DOM, navigation and attachment events", async () => {
+  const guard = new NativeRegionProtection(isolated(), "s", { frames: () => "c" });
+  await guard.refresh();
+  const tracker = guard.tracker(), e = (sessionId, method, params = {}) => ({ sessionId, method, params });
+  assert.deepEqual([...tracker.sessions], ["s", "c"]);
+  assert.equal(regionProtectionChanged(e("c", "DOM.childNodeInserted", { node: { nodeId: 9, localName: "input", attributes: ["type", "password"] } }), "s", tracker), true);
+  assert.equal(regionProtectionChanged(e("c", "DOM.childNodeRemoved", { nodeId: 5 }), "s", tracker), true);
+  assert.equal(regionProtectionChanged(e("s", "DOM.childNodeRemoved", { nodeId: 5 }), "s", tracker), false);
+  assert.equal(regionProtectionChanged(e("c", "Page.frameNavigated"), "s", tracker), true);
+  assert.equal(regionProtectionChanged(e("s", "Target.attachedToTarget", { targetInfo: { type: "iframe" } }), "s", tracker), true);
+  assert.equal(regionProtectionChanged(e("s", "Target.attachedToTarget", { targetInfo: { type: "worker" } }), "s", tracker), false);
+  assert.equal(regionProtectionChanged(e("x", "DOM.documentUpdated"), "s", tracker), false);
+  const now = performance.timeOrigin + performance.now();
+  assert.deepEqual(await guard.regions({ width: 1280, height: 800, captured_ms: now }), [{ x: 523, y: 83, width: 60, height: 12 }]);
 });

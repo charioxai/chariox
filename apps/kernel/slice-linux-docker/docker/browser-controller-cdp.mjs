@@ -1000,6 +1000,9 @@ export class BrowserCdpClient {
     }
   }
 
+  // MP-11: region protection inspects isolated frames through these sessions.
+  frameSession(frameId, connection) { return this.frameSessions.sessionFor(frameId, connection); }
+
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");

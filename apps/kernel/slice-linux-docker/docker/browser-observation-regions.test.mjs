@@ -42,8 +42,8 @@ test('MP-08/MP-10/MP-11 taskbar never renders document titles', async () => {
   assert.match(config, /^task_text = 0$/m);
   assert.match(config, /^tooltip = 0$/m);
 });
-test('MP-08/MP-10/MP-11 copied raw text and opaque canvas are also masked', async () => {
-  assert.deepEqual(await locateBrowserRegions([target], fixture(), ['synthetic-only']), [[10, 120, 100, 30], [200, 110, 200, 20], [0, 400, 300, 100], [0, 0, 800, 100], [0, 776, 800, 24]]);
+test('MP-08/MP-10/MP-11 copied raw text is masked; MP-11 (owner 2026-10-08) media is not masked whole', async () => {
+  assert.deepEqual(await locateBrowserRegions([target], fixture(), ['synthetic-only']), [[10, 120, 100, 30], [200, 110, 200, 20], [0, 0, 800, 100], [0, 776, 800, 24]]);
 });
 test('MP-08/MP-10/MP-11 replacement controller is seeded before observation with no human prompt', async () => {
   const browser = { protectedValues: new Set(), async snapshot() {
@@ -79,10 +79,66 @@ test('MP-08/MP-10/MP-11 removed field with no remaining echoes does not block ca
 });
 
 // MD-5: background user-domain content still has pixels in CDP captures.
-test('MD-5 content capture reuses Room field/echo/opaque masks without native chrome offsets', async () => {
+test('MD-5 content capture reuses Room field/echo masks without native chrome offsets', async () => {
   const browser = fixture({ hidden: true, windowHeight: 600 });
   const regions = await locateBrowserRegions([target], browser, ['synthetic-only'], { contentTarget: 'target' });
-  assert.deepEqual(regions, [[10, 20, 100, 30], [200, 10, 200, 20], [0, 300, 300, 100]]);
+  assert.deepEqual(regions, [[10, 20, 100, 30], [200, 10, 200, 20]]);
   assert(!browser.methods.includes('Browser.getWindowForTarget'));
   await assert.rejects(locateBrowserRegions([target], fixture({ windowHeight: 600 }), ['synthetic-only']), /unbound frame/);
+});
+
+// MP-11 (owner 2026-10-08): frames are scanned, not masked whole. Strings:
+// 0 '#text' 1 echo 2 'IFRAME' 3 'IMG' 4 'plain'.
+function framed({ transformed = false, hiddenOwner = false, unlinked = false } = {}) {
+  const methods = [];
+  const snapshots = {
+    // top: an in-process child document (doc 1) owned by node 1 (backend 11),
+    // an isolated owner node 2 (backend 12), a stray iframe 3 (backend 13), an image.
+    session: { strings: ['#text', 'synthetic-only', 'IFRAME', 'IMG', 'plain'], documents: [
+      { scrollOffsetX: 0, scrollOffsetY: 50, nodes: { nodeName: [0, 2, 2, 2, 3], nodeValue: [4], backendNodeId: [10, 11, 12, 13, 14], contentDocumentIndex: { index: [1], value: [1] } },
+        layout: { nodeIndex: [1, 2, 3, 4], bounds: [[100, 100, 310, 210], [500, 100, 306, 206], [900, 100, 50, 50], [0, 400, 300, 100]] } },
+      { scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeValue: [1], backendNodeId: [20] }, layout: { nodeIndex: [0], bounds: [[10, 20, 58, 16]] } }] },
+    child: { strings: ['#text', 'synthetic-only'], documents: [{ scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeValue: [1], backendNodeId: [30] }, layout: { nodeIndex: [0], bounds: [[5, 100, 120, 18]] } }] },
+  };
+  const box = ([x, y, w, h], inset = 0, scale = 1) => ({ width: w, height: h, border: [x, y, x + w * scale, y, x + w * scale, y + h * scale, x, y + h * scale],
+    content: [x + inset, y + inset, x + (w - inset) * scale, y + inset, x + (w - inset) * scale, y + (h - inset) * scale, x + inset, y + (h - inset) * scale] });
+  return { methods, async resolvePageTarget() { return { sessionId: 'session', connection: { async send(method, params, session) {
+    methods.push([method, session]);
+    if (method === 'Page.getFrameTree') return session === 'child' ? { frameTree: { frame: { id: 'F', parentId: unlinked ? 'elsewhere' : 'root', loaderId: 'L' } } } : { frameTree: { frame: { id: 'root', loaderId: 'document' } } };
+    if (method === 'Target.getTargets') return { targetInfos: [{ type: 'iframe', targetId: 'F' }] };
+    if (method === 'Target.attachToTarget') return { sessionId: 'child' };
+    if (method === 'Target.detachFromTarget') return {};
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+    if (method === 'Runtime.evaluate') return { result: { value: ['visible', 1, 800] } };
+    if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientHeight: 800, pageX: 0, pageY: 50 }, cssVisualViewport: { scale: 1 } };
+    if (method === 'DOM.getFrameOwner') return { backendNodeId: 12 };
+    if (method === 'DOM.getBoxModel' && params.backendNodeId === 11) return { model: box([100, 50, 310, 210], 5) };
+    if (method === 'DOM.getBoxModel' && params.backendNodeId === 12) {
+      if (hiddenOwner) throw new Error('Protocol error (DOM.getBoxModel): Could not compute box model.');
+      return { model: transformed ? box([500, 50, 306, 206], 3, 0.5) : box([500, 50, 306, 206], 3) };
+    }
+    if (method === 'DOMSnapshot.captureSnapshot') return snapshots[session];
+    throw new Error(method);
+  } } }; } };
+}
+const content = { contentTarget: 'target' }, echo = { kind: 'browser', target_id: 'target', document_id: 'document', echo_only: true };
+test('MP-11 echoes inside in-process and isolated frames are masked at their offsets; frames and images stay visible', async () => {
+  const browser = framed();
+  const regions = await locateBrowserRegions([echo], browser, ['synthetic-only'], content);
+  // child document echo at owner content (105,55); isolated echo at (503,53); stray iframe fails closed.
+  const sorted = list => list.map(r => r.join()).sort();
+  assert.deepEqual(sorted(regions), sorted([[900, 50, 50, 50], [115, 75, 58, 16], [508, 153, 120, 18]]));
+  assert(browser.methods.some(([method, session]) => method === 'DOMSnapshot.captureSnapshot' && session === 'child'), 'the isolated frame is scanned in its own session');
+  assert(!regions.some(r => r[0] === 0 && r[1] === 350), 'images are not masked whole');
+});
+test('MP-11 a transformed isolated owner masks its whole border box; a hidden owner renders nothing', async () => {
+  const transformed = await locateBrowserRegions([echo], framed({ transformed: true }), ['synthetic-only'], content);
+  assert(transformed.some(r => r.join() === [500, 50, 153, 103].join()), JSON.stringify(transformed));
+  assert(!transformed.some(r => r[0] === 508), JSON.stringify(transformed));
+  const hidden = await locateBrowserRegions([echo], framed({ hiddenOwner: true }), ['synthetic-only'], content);
+  assert(!hidden.some(r => r[0] >= 500 && r[0] < 900), JSON.stringify(hidden));
+});
+test('MP-11 an iframe whose document is not reachable is masked whole (fail closed)', async () => {
+  const regions = await locateBrowserRegions([echo], framed({ unlinked: true }), ['synthetic-only'], content);
+  assert(regions.some(r => r.join() === [500, 50, 306, 206].join()), JSON.stringify(regions));
 });
