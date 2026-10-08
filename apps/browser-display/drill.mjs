@@ -1,5 +1,6 @@
 // MD-DISPLAY-02/04: real kernel websocket + headed, sandboxed host browser.
 // No credentials/providers/Cloud. External public tools are supplied explicitly.
+import {profileOwnedCpu} from './drill-profile.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -42,7 +43,7 @@ const runUid=Number(process.env.MD_RUNTIME_UID || 65534),runGid=Number(process.e
 const chrome=process.env.MD_CHROME || '/usr/bin/google-chrome';
 const runtimePath=process.env.MD_RUNTIME_PATH || '/usr/bin:/bin';
 const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
-let kernel, display, viewer, browser, page, server, ready, shaped, shortTmp, kernelProfiler,dynamicFixtureServed=false;
+let kernel, display, viewer, browser, page, server, ready, shaped, shortTmp, kernelProfiler,stopCpuProfile,dynamicFixtureServed=false;
 const workload=process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
 receipt.requested_hardware=process.env.MD_SOFTWARE==='0';receipt.memory_floor_gib=memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB);
@@ -338,7 +339,11 @@ try {
  if(probeLeft===null)throw Error('MD-DISPLAY: cannot bind fixture probe to captured viewport');
  receipt.probe_pixel_left=probeLeft;
  await page.evaluate(left=>{window.mdProbeLeft=left},probeLeft);
- if(workload!=='docs')receipt.motion=await measureWorkload({page,workload,pair,pause,resource,durationMs:Number(process.env.MD_MOTION_MS||10000)});
+ if(workload!=='docs'){
+  stopCpuProfile=await profileOwnedCpu(await cpu.sample(),output);
+  receipt.motion=await measureWorkload({page,workload,pair,pause,resource,durationMs:Number(process.env.MD_MOTION_MS||10000)});
+  await stopCpuProfile();stopCpuProfile=null;
+ }
  const inputOffset=receipt.motion?.typing?.samples?.length??0;
  const probes=[];const clickCpu=(await resource()).cpu;
  if(process.env.MD_WINDOW==='1')await page.evaluate(()=>mdStream.start());
@@ -469,6 +474,7 @@ try {
  if(browser)try{const page=browser.contexts()[0].pages().at(-1);receipt.failure_client=await page.evaluate(()=>({frames:window.mdFrames,presentations:window.mdPresentations,stream_running:window.mdStream?.running,stream_error:window.mdStream?.error?.message,sequence:window.mdStream?.presenter?.sequence}));}catch{}
 }
 finally {
+ await stopCpuProfile?.().catch(e=>errors.push(e));
  await collectRelayDiagnostics(page,receipt);
  await stopGroup(kernelProfiler);
  receipt.cpu_samples=cpu.samples;receipt.cpu_accounting='Linux CLK_TCK; separate source Chromium, capture/encode/kernel/relay pipeline, viewer browser and harness. Exited processes retain sampled high-water ticks; sub100ms processes can be missed. WebCodecs inside source Chromium cannot be partitioned (force software portable encoder for CPU comparison).';await cpu.close();
