@@ -908,3 +908,60 @@ async fn compiler_does_not_lock_app() {
     let _ = pending.await.unwrap();
     assert!(available, "MP-11 F7: compiler holds the global app lock");
 }
+
+// MP-11 F5: a command admitted under a provider epoch must retain it in the lane.
+#[test]
+fn security_f5_workflow_lane_rechecks_queued_provider_epoch() {
+    run_large_stack_async_test("security-f5-workflow-epoch", queued_workflow_epoch);
+}
+
+async fn queued_workflow_epoch() {
+    let env = TestMetaRuntimeEnv::new("security-f5-workflow-epoch");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut daemon = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())).unwrap();
+    let run = launch_test_provider(&mut daemon, session.id(), actor.id(), "dev-stub", "dev-stub", "room-model");
+    let app = Arc::new(Mutex::new(daemon));
+    let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+    let mut state = router.runtime_state.clone();
+    let probe = Arc::new(tokio::sync::Notify::new());
+    state.observe_app_lock_wait_for_test(probe.clone());
+    let lane = crate::runtime::workflow_actor::WorkflowRuntime::new(state.clone(),
+        router.session_projection.clone(), router.agent_runtime_projection.clone());
+    let mut guard = app.lock().await;
+    let request = LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
+        session_id: session.id().into(), node_path: "node".into(), source: "workflow.define({alias:'lane-blocker'});".into(),
+        language: None, provider_rebindings: vec![], agent_rebindings: vec![],
+    });
+    let first = tokio::spawn({ let lane = lane.clone(); async move {
+        let command = crate::runtime::command::KernelCommand::from_local_request("f5-blocker", None, None, &request);
+        lane.dispatch_workflow_command(command, request).await
+    }});
+    tokio::time::timeout(Duration::from_secs(5), probe.notified()).await.unwrap();
+    state.authorize_room_provider_epoch(Some(actor.id()), Some(run.id())).unwrap();
+    let request = LocalDaemonRequest::CreateWorkflow(crate::local::CreateWorkflowRequest {
+        session_id: session.id().into(), alias: Some("stale-mutation".into()),
+    });
+    let mut command = crate::runtime::command::KernelCommand::from_local_request("f5-stale", None, None, &request);
+    command.caller.metaagent_id = Some(actor.id().into());
+    command.provider_run_id = Some(run.id().into());
+    let second = tokio::spawn({ let lane = lane.clone(); async move {
+        lane.dispatch_workflow_command(command, request).await
+    }});
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while lane.queue_snapshots().await.iter().all(|queue| queue.queued_commands == 0) {
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    guard.providers_mut().terminate_run_provider_only(session.id(), run.id()).unwrap();
+    launch_test_provider(&mut guard, session.id(), actor.id(), "dev-stub", "dev-stub", "replacement");
+    drop(guard);
+    let _ = first.await.unwrap();
+    let response = second.await.unwrap();
+    assert!(response.is_err(), "MP-11 F5: stale queued workflow mutation succeeded: {response:?}");
+    assert!(app.lock().await.sessions().resolve_workflow_ref(session.id(), "stale-mutation").is_err());
+}
