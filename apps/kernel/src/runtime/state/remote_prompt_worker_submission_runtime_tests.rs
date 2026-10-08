@@ -1112,3 +1112,86 @@ async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_withou
         assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn review_ack_cold_claude_home_dispatch_uses_the_confirmed_official_login_copy() {
+    crate::test_support::isolated_env_test!();
+    use crate::account_profile::*;
+    use base64::Engine;
+    let _env = crate::env_lock::lock();
+    for workflow in [false, true] {
+        let mut fixture =
+            WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
+        if !workflow {
+            fixture.dispatch.workflow_context = None;
+        }
+        let home = fixture.runtime.owned.config_projection.snapshot();
+        let agent = fixture
+            .runtime
+            .owned
+            .agent_store
+            .get_agent(&fixture.dispatch.agent_id)
+            .unwrap();
+        let binding = agent.remote_execution().unwrap();
+        assert!(
+            binding.active_worker_provider_run_id.is_none(),
+            "exercise a cold first prompt"
+        );
+        let source = fixture.runtime.owned.provider_account_profiles.clone();
+        let profile = source
+            .get(
+                agent.owner_user_id(),
+                "claude",
+                agent.provider_account_profile(),
+            )
+            .unwrap();
+        let materialization = ProviderAccountMaterialization {
+            copy_source: Some(ProviderAccountCopySource { machine_id: home.host_machine_id.clone(), kernel_id: home.daemon_id.clone() }),
+            profile: ProviderAccountReplicaMetadata { owner_user_id: profile.owner_user_id.clone(), provider: profile.provider.clone(),
+                profile_id: profile.profile_id.clone(), label: profile.label.clone(), origin: profile.origin, is_default: false },
+            files: vec![ProviderAccountMaterializationFile { relative_path: ".credentials.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(br#"{"claudeAiOauth":{"accessToken":"synthetic-official-login","refreshToken":"synthetic-refresh"}}"#) }],
+            generated_at_ms: crate::session::unix_epoch_ms(),
+        };
+        let receiving =
+            ProviderAccountProfileRegistry::open(fixture.root.join("receiver/profiles.json"))
+                .unwrap()
+                .with_machine_identity(&binding.worker_machine_id, &binding.worker_kernel_id);
+        let installed = receiving
+            .materialize_replica(agent.owner_user_id(), &materialization)
+            .unwrap();
+        receiving
+            .record_received_account_copy(
+                agent.owner_user_id(),
+                &materialization,
+                &installed.profile_id,
+                ProviderAccountMaterializationTargetKind::Worker,
+            )
+            .unwrap();
+        let received = crate::test_support::authenticate_provider_account(
+            &receiving,
+            agent.owner_user_id(),
+            "claude",
+            &installed.profile_id,
+        )
+        .unwrap();
+        source
+            .record_confirmed_account_copy(
+                agent.owner_user_id(),
+                &ProviderAccountCopyExpectation::from_materialization(&materialization).unwrap(),
+                ProviderAccountMaterializationTargetKind::Worker,
+                &binding.worker_machine_id,
+                &binding.worker_kernel_id,
+                &received.profile_id,
+                received
+                    .materializations
+                    .into_iter()
+                    .find(|status| status.copy.is_some())
+                    .unwrap(),
+            )
+            .unwrap();
+        let error = fixture.submit().await.expect_err("fixture has no relay");
+        assert!(error.to_string().contains("relay_url is not configured"),
+            "confirmed receiving official login must reach transport without a Vault setup token: {error}");
+    }
+}
