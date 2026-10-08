@@ -274,6 +274,40 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    /// Home-confirmed provenance selects the receiving profile; the worker owns live auth.
+    pub(crate) fn confirmed_remote_copy<'a>(
+        &self,
+        profile: &'a ProviderAccountProfile,
+        kind: ProviderAccountMaterializationTargetKind,
+        machine: &str,
+        kernel: &str,
+    ) -> Option<&'a ProviderAccountCopyMetadata> {
+        let identity = self.copy_identity.as_ref()?;
+        profile
+            .materializations
+            .iter()
+            .filter(|status| {
+                status.target_kind == kind
+                    && status.target_ref == kernel
+                    && matches!(
+                        status.state,
+                        ProviderAccountMaterializationState::Materialized
+                            | ProviderAccountMaterializationState::Stale
+                    )
+            })
+            .filter_map(|status| status.copy.as_ref())
+            .find(|copy| {
+                copy.source_machine_id == identity.machine_id
+                    && copy.source_kernel_id == identity.kernel_id
+                    && copy.source_account_id == profile.profile_id
+                    && copy.target_machine_id == machine
+                    && copy.target_kernel_id == kernel
+                    && !copy.target_account_id.trim().is_empty()
+                    && !copy.renewable_services.is_empty()
+                    && copy.auth_state != ProviderAccountCopyAuthState::Removed
+            })
+    }
+
     pub(crate) fn apply_remote_account_copy_observation(
         &self,
         owner: &str,

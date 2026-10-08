@@ -223,7 +223,7 @@ impl KernelRuntimeState {
         let (response, remote_execution) =
             super::remote_native_provider_launch::launch_with_one_binding_refresh(
                 remote_execution,
-                move || {
+                move |force_setup_token| {
                     let state = credential_state.clone();
                     let session_id = credential_session_id.clone();
                     let agent_id = credential_agent_id.clone();
@@ -233,6 +233,7 @@ impl KernelRuntimeState {
                                 &session_id,
                                 &agent_id,
                                 "launch remote native provider run",
+                                force_setup_token,
                             )
                             .await
                     }

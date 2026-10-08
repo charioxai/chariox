@@ -1081,6 +1081,7 @@ mod tests {
             session.id(),
             workflow_agent.id(),
             "test remote Claude launch",
+            false,
         ));
         tokio::select! {
             result = &mut remote_credential => panic!("remote credential resolved before unlock: {result:?}"),

@@ -114,6 +114,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         "relaunch remote provider run",
+                        true,
                     )
                     .await?;
             }
@@ -577,6 +578,7 @@ async fn remote_prompt_provider_launch_credential_if_needed(
             &dispatch.session_id,
             &dispatch.agent_id,
             "launch remote provider run",
+            false,
         )
         .await
 }
