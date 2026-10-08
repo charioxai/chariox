@@ -88,3 +88,20 @@ through the authorized hosted relay and normal managed STOP/start path; an
 ordinary restart does not establish that placement gate. Missing accounts,
 relay access or a managed machine must identify the exact owner action needed.
 Do not claim an MP item closed from these focused runs alone.
+
+## MP-08 / MP-09 / MP-10 / MP-11: cancellation and confirmation races
+
+1. Ask a real provider to launch a child workflow that runs the repository's
+   actual tests, then waits on a recurring timer. Have the creating task request
+   an owner decision with `chariox.events.blocked`. Once the child is Waiting,
+   choose **Cancel** in the TUI's owner interaction. Verify the returned run is
+   Stopped, the child's owned resources settle, the parent's `workflow_run`
+   obligation closes, and its completion source is released. A cancelled task
+   with an open `cancel_requested` workflow obligation is a failure.
+2. In the isolated scheduler-fault setup above, request one one-shot timer with
+   `delay_ms=1000`. Remove the stall file after that provider-created timer is
+   due, before its five-second confirmation wait expires. The scheduler verifies
+   and fires it in the same tick. Verify the actual timer reply still reports
+   `scheduler_confirmed: true` with the fired wake's exact `verified_at_ms`, then
+   acknowledge its one event. Repeat on the base and retain the false-confirmation
+   reply as RED evidence; firing alone does not prove the caller saw confirmation.

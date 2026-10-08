@@ -2,16 +2,112 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+// MP-08 / MP-09 / MP-10 / MP-11 R2: the scheduler can verify and fire
+// a one-shot in one tick before its caller observes the arm receipt.
+#[tokio::test]
+async fn a03_verification_survives_one_shot_firing_before_observation() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, Operation, Outcome};
+    let fixture = interrupt_fixture();
+    let store = &fixture.runtime.owned.durable_state_store;
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    for (id, due) in [
+        ("already-fired", now + 1_000),
+        ("still-armed", now + 60_000),
+    ] {
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":id, "task_id":task.task_id, "room_id":task.room_id, "agent_id":task.agent_id,
+            "registration_id":format!("completion-{id}"), "kind":"timer", "label":id,
+            "state":"", "created_at_ms":now, "verified_at_ms":null,
+            "next_due_ms":due, "interval_ms":null, "command":[], "match_text":null,
+            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
+            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
+            "last_delivery":null, "last_delivered_at_ms":null,
+            "last_acknowledged_at_ms":null, "alerted_sequence":null
+        }))
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: prompt.id().into(),
+                wake,
+            })
+            .unwrap();
+    }
+    store
+        .agent_lifecycle(Operation::VerifyWakes { now: now + 1_000 })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+        .unwrap();
+    let fired = store
+        .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|w| w.id == "already-fired")
+        .unwrap();
+    assert_eq!(fired.state, "fired");
+    assert_eq!(fired.verified_at_ms, Some(now + 1_000));
+    assert_eq!(
+        fixture.runtime.await_wake_verification("still-armed").await,
+        Some(now + 1_000)
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .await_wake_verification("already-fired")
+            .await,
+        Some(now + 1_000),
+        "scheduler confirmation must survive firing before the caller observes it"
+    );
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 G14: native turn settlement is not
 // workflow completion while its kernel task still owns a supervised wait.
 #[tokio::test]
 async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_task() {
+    workflow_wait_cancellation(false).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1: cancelling the creator owns the
+// canonical workflow_run and must release its waiting child's resources.
+#[tokio::test]
+async fn a03_creator_task_cancels_canonical_waiting_workflow_run() {
+    workflow_wait_cancellation(true).await;
+}
+
+async fn workflow_wait_cancellation(cancel_creator: bool) {
     use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
-    let fixture = interrupt_fixture_with_config(
+    let fixture = interrupt_fixture_with_creator(
         crate::test_support::TestWorktree::new("a03-workflow-wait"),
         config,
+        cancel_creator,
     );
     let owned = &fixture.runtime.owned;
     let session = owned
@@ -235,20 +331,86 @@ async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_tas
             resource: Some(run.id().into()),
         })
         .unwrap();
-    let (cancelled, _) = fixture
-        .runtime
-        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
-            session_id: fixture.session_id.clone(),
-            workflow_run_ref: run.id().into(),
-        })
-        .await;
-    let LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } = cancelled.unwrap() else {
-        panic!("cancel response")
-    };
-    assert_eq!(workflow_run.id(), run.id());
+    if cancel_creator {
+        // Observe the cancelled parent's completion source independently.
+        use crate::durable_state::agent_lifecycle::Registration;
+        let Outcome::Task(observer) = owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: task.room_id.clone(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: "completion-observer".into(),
+                run: None,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("observer task");
+        };
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Subscribe {
+                task: observer.task_id.clone(),
+                prompt: observer.prompt_id.clone(),
+                registration: Registration {
+                    id: "parent-completion".into(),
+                    task_id: observer.task_id,
+                    source_id: "g14-supervisor".into(),
+                    obligation_id: None,
+                    source_cursor: 0,
+                    live: true,
+                },
+            })
+            .unwrap();
+        let parent = owned
+            .durable_state_store
+            .agent_tasks(Some(&task.room_id), Some(&fixture.unrelated_agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == "g14-supervisor")
+            .unwrap();
+        assert_eq!(run.created_by_agent_id(), Some(parent.agent_id.as_str()));
+        let Outcome::Task(cancelled) = owned
+            .durable_state_store
+            .agent_lifecycle(Operation::CancelTask {
+                task: parent.task_id.clone(),
+                owner: session.owner_user_id().into(),
+                revision: parent.revision,
+            })
+            .unwrap()
+        else {
+            panic!("cancel task");
+        };
+        fixture
+            .runtime
+            .cancel_agent_task_resources(&cancelled)
+            .await
+            .unwrap();
+    } else {
+        let (cancelled, _) = fixture
+            .runtime
+            .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+                session_id: fixture.session_id.clone(),
+                workflow_run_ref: run.id().into(),
+            })
+            .await;
+        let LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } = cancelled.unwrap()
+        else {
+            panic!("cancel response");
+        };
+        assert_eq!(workflow_run.id(), run.id());
+    }
+    // Terminal runs leave the live cache; their durable record is authoritative.
     assert_eq!(
-        workflow_run.status(),
-        crate::session::WorkflowRunStatus::Stopped
+        owned
+            .durable_state_store
+            .resolve_workflow_run(session.host_daemon_id(), &fixture.session_id, run.id())
+            .unwrap()
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Stopped,
+        "creator cancellation must reach the waiting child workflow"
     );
     assert_eq!(
         owned
@@ -281,6 +443,24 @@ async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_tas
         parent.obligations[0].status, "open",
         "cancelled workflow must settle its real workflow_run obligation"
     );
+    assert!(
+        !owned.agent_task_resources_unsettled(&parent).unwrap(),
+        "the parent completion source must no longer be held by child resources"
+    );
+    if cancel_creator {
+        // The first sweep settles the workflow obligation; the next observes
+        // the parent with no owned resources and releases its completion source.
+        fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+        assert!(
+            owned
+                .durable_state_store
+                .agent_inbox(&task.room_id, &fixture.second_target_agent_id, 0)
+                .unwrap()
+                .iter()
+                .any(|e| e.source_id == "g14-supervisor" && e.kind == "source_lost"),
+            "creator cancellation must release its own completion source after child settlement"
+        );
+    }
     assert!(owned
         .durable_state_store
         .agent_inbox(&task.room_id, &fixture.unrelated_agent_id, 0)
@@ -826,6 +1006,14 @@ fn interrupt_fixture_with_config(
     worktree: crate::test_support::TestWorktree,
     config: crate::config::DaemonConfig,
 ) -> InterruptFixture {
+    interrupt_fixture_with_creator(worktree, config, false)
+}
+
+fn interrupt_fixture_with_creator(
+    worktree: crate::test_support::TestWorktree,
+    config: crate::config::DaemonConfig,
+    agent_created: bool,
+) -> InterruptFixture {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -865,15 +1053,34 @@ fn interrupt_fixture_with_config(
             Some("entry".to_string()),
         )
         .expect("workflow endpoint should be created");
-    let workflow_run = app
-        .sessions_mut()
-        .invoke_workflow_endpoint(
-            session.id(),
-            workflow.id(),
-            endpoint.id(),
-            Some("interrupt exactly once".to_string()),
-        )
-        .expect("workflow run should be created");
+    let workflow_run = if agent_created {
+        let queued = app
+            .sessions_mut()
+            .enqueue_workflow_prompt_by_agent(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("interrupt exactly once".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                Some(unrelated_agent.id()),
+            )
+            .unwrap();
+        app.sessions_mut()
+            .invoke_queued_workflow_endpoint(session.id(), &queued)
+            .unwrap()
+    } else {
+        app.sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("interrupt exactly once".into()),
+            )
+            .expect("workflow run should be created")
+    };
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
     app.sessions_mut()
         .prepare_workflow_turn(
@@ -1411,4 +1618,74 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
     assert_eq!(remaining.id(), active.id());
     assert_eq!(remaining.status(), crate::session::PromptStatus::Cancelling);
     result.unwrap();
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1: canonical spelling retains the creator fence.
+#[tokio::test]
+async fn a03_creator_task_rejects_foreign_canonical_workflow_cancellation() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a03-foreign-workflow-cancel"),
+        config,
+        true,
+    );
+    let store = &fixture.runtime.owned.durable_state_store;
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.second_target_agent_id.clone(),
+            prompt: "foreign-creator".into(),
+            run: None,
+            id: "foreign-workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some(fixture.workflow_run_id.clone()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    let Outcome::Task(cancelled) = store
+        .agent_lifecycle(Operation::CancelTask {
+            task: task.task_id,
+            owner: session.owner_user_id().into(),
+            revision: task.revision,
+        })
+        .unwrap()
+    else {
+        panic!("cancel task");
+    };
+    let error = fixture
+        .runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("workflow cancellation creator binding changed"));
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+    assert!(fixture
+        .runtime
+        .owned
+        .agent_task_resources_unsettled(&cancelled)
+        .unwrap());
 }

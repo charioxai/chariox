@@ -49,6 +49,25 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
+    /// The arm receipt belongs to the exact wake, including after it fires.
+    pub(crate) fn agent_wake_verification(&self, id: &str) -> Result<Option<u64>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.verification")?;
+        let payload: Option<String> = db
+            .query_row("SELECT payload FROM agent_wakes WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(sql)?;
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        let wake: AgentWake = decode(&payload)?;
+        if wake.id != id {
+            return Err(error("wake identity corrupt; quarantine required"));
+        }
+        Ok(wake.verified_at_ms)
+    }
+
     pub(crate) fn agent_armed_timers(&self) -> Result<Vec<AgentWake>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.timers")?;
         let mut q = db.prepare("SELECT payload FROM agent_wakes WHERE json_extract(payload,'$.state')='scheduled' AND json_extract(payload,'$.kind')='timer'").map_err(sql)?;

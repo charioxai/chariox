@@ -274,11 +274,8 @@ impl KernelRuntimeState {
             let verified = self
                 .owned
                 .durable_state_store
-                .agent_armed_timers()
-                .ok()?
-                .into_iter()
-                .find(|w| w.id == id)
-                .and_then(|w| w.verified_at_ms);
+                .agent_wake_verification(id)
+                .ok()?;
             if verified.is_some() {
                 return verified;
             }

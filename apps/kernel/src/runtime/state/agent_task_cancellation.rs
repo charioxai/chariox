@@ -188,7 +188,7 @@ impl KernelRuntimeState {
                             )?;
                         }
                     }
-                    "workflow" => {
+                    "workflow" | "workflow_run" => {
                         if let Some(run) =
                             session.workflow_runs().iter().find(|r| r.id() == resource)
                         {
