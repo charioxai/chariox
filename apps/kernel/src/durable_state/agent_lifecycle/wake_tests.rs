@@ -999,10 +999,14 @@ fn security_f1_full_recipient_does_not_stop_peer_timers() {
         .agent_wakes(Some("other-room"), Some("peer"))
         .unwrap();
     assert_eq!(peer[0].state, "fired");
-    assert_eq!(
-        f.wake("healthy").state,
-        "scheduled",
-        "full recipient's occurrence stays retryable"
+    // #914 may bypass the message cap for derived events. Until its shared
+    // policy lands, #925 retains the blocked occurrence for retry. Both paths
+    // must keep the occurrence, never silently lose it or stop peer timers.
+    let own = f.wake("healthy");
+    assert!(
+        (own.state == "scheduled" && own.fire_count == 0 && own.next_due_ms == Some(1000))
+            || (own.state == "fired" && own.fire_count == 1 && own.last_sequence.is_some()),
+        "full recipient must retain a retryable or committed occurrence: {own:?}"
     );
     let oldest = f.inbox()[0].sequence;
     f.apply(Operation::Ack {
@@ -1014,6 +1018,11 @@ fn security_f1_full_recipient_does_not_stop_peer_timers() {
     });
     f.apply(Operation::FireWakes { now: 1002 });
     assert_eq!(f.wake("healthy").state, "fired");
+    assert_eq!(
+        f.wake("healthy").fire_count,
+        1,
+        "retry cannot duplicate the occurrence"
+    );
 }
 
 // MP-09/MP-11 F12: acknowledgement alone is not useful progress.
