@@ -87,8 +87,9 @@ jobs:
         with:
           toolchain: 1.88.0
 
-      - name: Install observation mask test dependency
-        run: sudo apt-get update && sudo apt-get install -y python3-pil
+      - name: Install Python test dependencies
+        # python3-pil: observation masks. python3-av/ffmpeg: browser display codec tests.
+        run: sudo apt-get update && sudo apt-get install -y python3-pil python3-av ffmpeg
 
       - name: Test Python scripts
         # Every tracked Python test runs as its own script with the runner's
