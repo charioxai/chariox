@@ -30,38 +30,34 @@ impl WorkflowRegistry {
         node_path: &str,
         limits: &WorkflowCodeLimitsConfig,
     ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        self.add_authorized(name, scope, source, node_path, limits, &|| Ok(()))
+    }
+
+    pub(crate) fn add_authorized(
+        &self,
+        name: &str,
+        scope: WorkflowRegistrySourceScope,
+        source: WorkflowRegistrySourceInput,
+        node_path: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        authorize: &(dyn Fn() -> Result<(), crate::DaemonError> + Send + Sync),
+    ) -> Result<WorkflowRegistryEntryMetadata, crate::DaemonError> {
+        authorize()?;
         validate_registry_name(name, "workflow registry entry name")?;
         let root = self.write_root(scope.clone())?;
-        let entry_dir = root.join(name);
-        if entry_dir.exists() || root.join(format!("{name}.js")).exists() {
-            return Err(crate::DaemonError::LocalTransport {
-                operation: "workflow_registry.add",
-                message: format!("workflow registry entry `{name}` already exists"),
-            });
-        }
-        let temp_dir = root.join(format!(
-            ".{name}.tmp-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        ));
-        if temp_dir.exists() {
-            fs::remove_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
-        }
-        fs::create_dir_all(&temp_dir).map_err(io_error("workflow_registry.add"))?;
-        let result = self.write_entry_to_dir(name, scope, &temp_dir, source, node_path, limits);
-        match result {
-            Ok(metadata) => {
-                if let Some(parent) = entry_dir.parent() {
-                    fs::create_dir_all(parent).map_err(io_error("workflow_registry.add"))?;
-                }
-                fs::rename(&temp_dir, &entry_dir).map_err(io_error("workflow_registry.add"))?;
-                Ok(metadata)
-            }
-            Err(error) => {
-                fs::remove_dir_all(&temp_dir).ok();
-                Err(error)
-            }
-        }
+        let publication =
+            super::workflow_registry_publication::WorkflowRegistryPublication::begin(&root, name)?;
+        let metadata = self.write_entry_to_dir(
+            name,
+            scope,
+            publication.staging_dir(),
+            source,
+            node_path,
+            limits,
+        )?;
+        authorize()?;
+        publication.publish()?;
+        Ok(metadata)
     }
 
     pub fn add_from_export(
@@ -281,6 +277,13 @@ impl WorkflowRegistry {
         let mut entries = Vec::new();
         for entry in fs::read_dir(root).map_err(io_error("workflow_registry.list"))? {
             let path = entry.map_err(io_error("workflow_registry.list"))?.path();
+            // MP-11 R1: lock files and unpublished jobs are not registry entries.
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            {
+                continue;
+            }
             if path.is_dir() {
                 let manifest_path = path.join("manifest.json");
                 if manifest_path.exists() {

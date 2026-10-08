@@ -334,23 +334,15 @@ fn compiles_typescript_builder_source() {
         eprintln!("skipping workflow-code TS compiler test because node is not available");
         return;
     };
-    if !Command::new(&node)
-        .arg("--no-warnings")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
-        .status()
-        .is_ok_and(|status| status.success())
-    {
-        eprintln!("skipping workflow-code TS compiler test because Node.js cannot strip TypeScript");
-        return;
-    }
 
+    // MP-08/MP-11: no skip for Node builds without native type stripping; an
+    // enum also requires transform mode, as official Node's transform.
     let source = r#"
 type ProviderName = "dev-stub";
 interface FinalAnswer {
   answer: string;
 }
+enum Concurrency { One = 1, Two }
 const provider: ProviderName = "dev-stub";
 const finalSchema = workflow.schema({
   handle: "final",
@@ -361,7 +353,7 @@ properties: { answer: { type: "string" } },
 additionalProperties: false
   }
 })
-workflow.define({ alias: "compiled_ts", maxConcurrent: 2, runOutputSchema: finalSchema })
+workflow.define({ alias: "compiled_ts", maxConcurrent: Concurrency.Two, runOutputSchema: finalSchema })
 const worker = workflow.node({
   handle: "worker",
   agent: workflow.newAgent({ alias: "ts-worker", provider, model: "default" }),
@@ -385,6 +377,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         result.definition.workflow.alias.as_deref(),
         Some("compiled_ts")
     );
+    assert_eq!(result.definition.workflow.max_concurrent, Some(2));
     assert_eq!(
         result.definition.workflow.run_output_schema.as_deref(),
         Some("final")
@@ -398,6 +391,15 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
             effort: None,
             account_profile: None,
         })
+    );
+}
+
+#[test]
+fn typescript_stripper_is_pinned_to_official_node_amaro() {
+    // amaro 1.1.5 dist/index.js, as embedded by official Node.js 22.22.1.
+    assert_eq!(
+        sha256_hex(TYPESCRIPT_STRIPPER.as_bytes()),
+        "5e05805ae1fa4461b5346c3aa7d8b4690b085e139ffc9fb3c97ae2e1b2219581"
     );
 }
 

@@ -63,14 +63,21 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
-        self.authorize_current_forwarded_binding()?;
-        if let Some((actor, run)) = self.room_provider_origin.as_ref() {
-            self.authorize_room_provider_epoch(Some(actor), Some(run))?;
-        }
+        self.authorize_current_external_response()?;
         if let Some((actor, request)) = self.room_request_origin.as_ref() {
             self.authorize_room_agent_request(actor, request)?;
             self.owned
                 .ensure_workflow_request_controlled_by_metaagent(request, actor)?;
+        }
+        Ok(())
+    }
+
+    /// MP-11 F5: retain epoch, peer and grant checks on delivery. A successful
+    /// mutation may have renamed or deleted its original object reference.
+    pub(crate) fn authorize_current_external_response(&self) -> Result<(), DaemonError> {
+        self.authorize_current_forwarded_binding()?;
+        if let Some((actor, run)) = self.room_provider_origin.as_ref() {
+            self.authorize_room_provider_epoch(Some(actor), Some(run))?;
         }
         self.authorize_prompt_command(
             self.external_command_authority

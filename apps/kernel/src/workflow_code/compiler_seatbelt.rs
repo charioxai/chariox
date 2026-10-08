@@ -1,4 +1,5 @@
 //! macOS compiler boundary. No home, workspace, network, fork or host IPC access.
+use super::macho;
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::{fs::DirBuilderExt, process::CommandExt};
@@ -41,6 +42,7 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
     let mut files = BTreeSet::new();
     let mut pending = vec![node.to_path_buf()];
     let mut inspected = BTreeSet::new();
+    let cpu_type = node_cpu_type(node)?;
     while let Some(path) = pending.pop() {
         files.insert(path.clone());
         if path.starts_with("/usr/lib") || path.starts_with("/System/Library") {
@@ -65,7 +67,7 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
                 "compiler runtime dependency limit exceeded",
             ));
         }
-        let (libraries, rpaths) = load_commands(&canonical)?;
+        let (libraries, rpaths) = load_commands(&canonical, cpu_type)?;
         for dependency in libraries {
             let dependency = if let Some(relative) = dependency.strip_prefix("@rpath/") {
                 rpaths.iter().filter_map(|rpath| resolve_library_path(rpath, &path, node).ok())
@@ -83,29 +85,19 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
     Ok(files)
 }
 
-const LC_REQ_DYLD: u32 = 0x8000_0000;
-const LC_RPATH: u32 = 0x1c | LC_REQ_DYLD;
-// LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LAZY_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB.
-const LC_LOAD_DYLIBS: [u32; 5] = [
-    0xc,
-    0x18 | LC_REQ_DYLD,
-    0x1f | LC_REQ_DYLD,
-    0x20,
-    0x23 | LC_REQ_DYLD,
-];
-
-fn word(bytes: &[u8], at: usize, big_endian: bool) -> Option<u32> {
-    let bytes = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
-    Some(if big_endian {
-        u32::from_be_bytes(bytes)
-    } else {
-        u32::from_le_bytes(bytes)
-    })
+fn node_cpu_type(node: &Path) -> Result<u32, crate::DaemonError> {
+    let mut header = [0; 8];
+    fs::File::open(node)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(io_error("workflow_code.compile"))?;
+    macho::runtime_cpu_type(&header, kernel_cpu_type()?).map_err(isolation_error)
 }
 
-/// Linked library and search-path names of every architecture slice, read from
-/// the Mach-O load commands so compilation needs no developer tools.
-fn load_commands(path: &Path) -> Result<(Vec<String>, Vec<String>), crate::DaemonError> {
+/// Read only the Node architecture's linked libraries and search paths.
+fn load_commands(
+    path: &Path,
+    cpu_type: u32,
+) -> Result<(Vec<String>, Vec<String>), crate::DaemonError> {
     let invalid = || isolation_error("compiler runtime is not a supported Mach-O binary");
     let mut file = fs::File::open(path).map_err(io_error("workflow_code.compile"))?;
     let mut read = |offset: u64, length: usize| {
@@ -116,68 +108,28 @@ fn load_commands(path: &Path) -> Result<(Vec<String>, Vec<String>), crate::Daemo
             .map_err(|_| invalid())
     };
     let header = read(0, 8)?;
-    let slices = match word(&header, 0, true) {
-        // Universal binaries: FAT_MAGIC and FAT_MAGIC_64 headers are big-endian.
-        Some(magic @ (0xcafe_babe | 0xcafe_babf)) => {
-            let count = word(&header, 4, true).ok_or_else(invalid)? as usize;
-            let size = if magic == 0xcafe_babf { 32 } else { 20 };
-            if count == 0 || count > 16 {
-                return Err(invalid());
-            }
-            let table = read(8, count * size)?;
-            table
-                .chunks(size)
-                .map(|entry| match size {
-                    32 => Some(
-                        u64::from(word(entry, 8, true)?) << 32 | u64::from(word(entry, 12, true)?),
-                    ),
-                    _ => word(entry, 8, true).map(u64::from),
-                })
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(invalid)?
-        }
-        _ => vec![0],
-    };
+    let table_size = macho::fat_table_size(&header).map_err(isolation_error)?;
+    let table = read(8, table_size)?;
+    let slices = macho::slice_offsets(&header, &table, cpu_type).map_err(isolation_error)?;
     let (mut libraries, mut rpaths) = (Vec::new(), Vec::new());
     for offset in slices {
         let header = read(offset, 32)?;
-        // MH_MAGIC_64; arm64 and x86_64 runtimes are little-endian.
-        if word(&header, 0, false) != Some(0xfeed_facf) {
-            return Err(invalid());
-        }
-        let count = word(&header, 16, false).ok_or_else(invalid)?;
-        let size = word(&header, 20, false).ok_or_else(invalid)? as usize;
-        if size > 1024 * 1024 {
-            return Err(invalid());
-        }
-        let commands = read(offset + 32, size)?;
-        let mut at = 0;
-        for _ in 0..count {
-            let command = word(&commands, at, false).ok_or_else(invalid)?;
-            let length = word(&commands, at + 4, false).ok_or_else(invalid)? as usize;
-            let body = commands
-                .get(at..at + length)
-                .filter(|_| length >= 8)
-                .ok_or_else(invalid)?;
-            let names = if LC_LOAD_DYLIBS.contains(&command) {
-                &mut libraries
-            } else if command == LC_RPATH {
-                &mut rpaths
-            } else {
-                at += length;
-                continue;
-            };
-            // Both commands store their name as an lc_str offset after the header.
-            let name = word(body, 8, false)
-                .and_then(|start| body.get(start as usize..))
-                .and_then(|name| name.split(|byte| *byte == 0).next())
-                .and_then(|name| std::str::from_utf8(name).ok())
-                .ok_or_else(invalid)?;
-            names.push(name.to_string());
-            at += length;
-        }
+        let size = macho::command_size(&header).map_err(isolation_error)?;
+        let commands = read(offset.checked_add(32).ok_or_else(invalid)?, size)?;
+        let (slice_libraries, slice_rpaths) =
+            macho::load_commands(&header, &commands).map_err(isolation_error)?;
+        libraries.extend(slice_libraries);
+        rpaths.extend(slice_rpaths);
     }
     Ok((libraries, rpaths))
+}
+
+fn kernel_cpu_type() -> Result<u32, crate::DaemonError> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok(0x0100_000c),
+        "x86_64" => Ok(0x0100_0007),
+        _ => Err(isolation_error("unsupported compiler runtime architecture")),
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -341,57 +293,6 @@ mod tests {
 
     #[test]
     fn macos_runtime_libraries_are_read_from_mach_o_load_commands() {
-        fn command(kind: u32, name: &str) -> Vec<u8> {
-            let offset = if kind == LC_RPATH { 12 } else { 24 };
-            let mut bytes = [kind, 0, offset].map(u32::to_le_bytes).concat();
-            bytes.resize(offset as usize, 0);
-            bytes.extend(name.as_bytes());
-            bytes.resize((bytes.len() + 8) & !7, 0);
-            let length = bytes.len() as u32;
-            bytes[4..8].copy_from_slice(&length.to_le_bytes());
-            bytes
-        }
-        let commands = [
-            command(0xd, "@rpath/libself.dylib"),
-            command(0xc, "/usr/lib/libSystem.B.dylib"),
-            command(0x18 | LC_REQ_DYLD, "@loader_path/libweak.dylib"),
-            command(LC_RPATH, "@loader_path/../lib"),
-        ]
-        .concat();
-        let mut thin = [
-            0xfeed_facf,
-            0x0100_000c,
-            0,
-            6,
-            4,
-            commands.len() as u32,
-            0,
-            0,
-        ]
-        .map(u32::to_le_bytes)
-        .concat();
-        thin.extend(&commands);
-        let mut fat = [0xcafe_babe, 1, 0x0100_000c, 0, 4096, thin.len() as u32, 12]
-            .map(u32::to_be_bytes)
-            .concat();
-        fat.resize(4096, 0);
-        fat.extend(&thin);
-
-        let directory = Scratch::new().unwrap();
-        for (name, bytes) in [("thin", &thin), ("fat", &fat)] {
-            let path = directory.0.join(name);
-            fs::write(&path, bytes).unwrap();
-            let (libraries, rpaths) = load_commands(&path).unwrap();
-            assert_eq!(
-                libraries,
-                ["/usr/lib/libSystem.B.dylib", "@loader_path/libweak.dylib"]
-            );
-            assert_eq!(rpaths, ["@loader_path/../lib"]);
-        }
-        let truncated = directory.0.join("truncated");
-        fs::write(&truncated, &thin[..thin.len() - 8]).unwrap();
-        assert!(load_commands(&truncated).is_err());
-
         let node = fs::canonicalize(discover_workflow_code_node_path().unwrap()).unwrap();
         let files = runtime_files(&node).unwrap();
         assert!(files.contains(Path::new("/usr/lib/libSystem.B.dylib")));
