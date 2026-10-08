@@ -1,6 +1,14 @@
 # MP-08 / MP-10 / MP-11 — A09 real live drills (rounds 4–7)
 
-MP-08 / MP-10 / MP-11: real OpenCode, Codex, Claude `-p` and Claude
+MP-08 / MP-10 / MP-11: the round 8 review removes the stale #917 merge
+`4be64ca26` and its `0bbacdd0fa` ancestor from #912. History search does not
+depend on that enrollment snapshot. Claude setup-token enrollment and alias
+validation belong to the separate current #917 (`81d7ecf13`), integrated for
+those drills. The round 7 receipts below retain their original source identities
+and do not establish acceptance of the clean review head. The hosted stability
+cell is **NOT-RUN (#927 on main)** for this round; its earlier RED is retained.
+
+MP-08 / MP-10 / MP-11: round 7 real OpenCode, Codex, Claude `-p` and Claude
 headless recall cells PASS. Hosted web at DPR 1/2 and remote TUI recall also
 PASS over shaped WSS. Hosted multi-hour stability is **RED**; the leased-worker
 hosted cell fails before spawn at metadata discovery. Overall A09 acceptance
