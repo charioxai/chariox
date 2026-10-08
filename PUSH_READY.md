@@ -1,4 +1,33 @@
-# Managed login copies: MP-11 security follow-up
+# Managed login copies: P2 follow-up
+
+2026-10-08. Branch `cred/managed-login-copies`; reviewed published head PR #913 `d05118c56`. New commits are local only; no push or GitHub CI.
+
+| Review finding | Fix commit | Regression and resulting behavior |
+| --- | --- | --- |
+| P2 receiving account ID when reusing a copy | `ae3c2cb3c` | A managed-context default remap launches a leased agent with its registered receiving ID. Existing-copy profile updates send that ID and validate the worker acknowledgement against it; the home agent retains its selected source ID. |
+| P2 validate receipt before caching installation | `4d75b0e3b` | Placement or generation rejection leaves Error/uninstalled status. A retry must obtain and validate another receipt before updating the worker profile; a valid retry succeeds. |
+
+`c9074f8bc` adds four fail-first regressions. All four failed against `d05118c56`: an unregistered source ID at leased-agent creation, the source ID sent during a profile update, and installation-cache bypasses after placement and generation rejection. All four pass with these fixes. Tests exercise production receiving-registry import, lease creation, profile environment resolution and public profile-update requests/acknowledgements. They use synthetic credentials, with no provider logout or login enrollment.
+
+## Validation for this round
+
+The four explicit regressions and all 15 focused suites pass: 393 passing test executions across overlapping filters, plus the real-login drill. Coverage includes remote binding (15), profile/configuration state (57), and the previous security round's 13 suites (317): copy notices, managed-context imports, Claude portability and transcript guards, lease accounts, package transfer, publication, peer transport, protocol hashes and synthetic queued-work recovery.
+
+Kernel test build passes. Kernel clippy --all-targets passes with existing warnings. Workspace fmt and diff checks pass. Local protocol remains 455 and relay peer 74: no serialized shape changed.
+
+**Real linked Codex import/local-removal/replay drill: PASS.** The rebuilt kernel test executable exercised the production account services and encrypted peer dispatcher through a real websocket relay. The receiving official CLI confirmed the copied login. Kernel-managed local receiving-profile deletion removed the copy, and both initial-frame replay and preserved-login-frame replay after receiving-kernel restart were rejected without restoring credentials. The receiving environment was a pinned, home-managed kernel on this host, not a Docker container. No official logout, revocation or re-login ran.
+
+Credential-free evidence is outside Git at `/Users/miguel/.codex/evidence/credcopies-review-p2/`: fail-first and green regression logs, focused suite logs, build/clippy/fmt logs, `validation-manifest.json`, and `live-codex-local-removal-replay.json`.
+
+Cleanup is completed before handoff: receiving copy removed through the kernel, owned test/relay processes ended, and this round's compiler output removed. Retained runtime identities, source linked profiles, replay journals, key stores and shared reviewer state are protected.
+
+## Remaining acceptance
+
+`BLOCKED(Miguel: disposable login)`: official logout/revocation, new official login and subsequent queued-work resumption acceptance. Never run those steps on the shared host/worker/builder logins or their receiving copies. Claude live acceptance remains `BLOCKED(owner)` without a linked account. Cloud G9 Provider Accounts copy inventory, warning and receiving-machine official-login action remain a follow-up.
+
+The earlier MP-11 findings and evidence below remain recorded for continuity.
+
+## Earlier MP-11 security round
 
 Branch: `cred/managed-login-copies`. Published baseline: PR #913 `791c01ebde`. Local-only commits; no push or GitHub CI.
 
@@ -13,11 +42,11 @@ Branch: `cred/managed-login-copies`. Published baseline: PR #913 `791c01ebde`. L
 
 `6447e7e32` records seven fail-first regressions covering F2–F7. `240c78da7` closes the F6 existing-profile return. The final validation commit adds the safe real-path drill, formats touched Rust files and records this handoff.
 
-## F1 evidence-backed disposition
+### F1 evidence-backed disposition
 
 The read-only `SECREV_E_913.md` explicitly withdraws prior F1 as a security finding in “MP-11 owner documentation question — prior F1 withdrawn as a security finding.” Its frozen owner-policy and AGENTS.md analysis authorizes managed Claude official-login copies. Reinstating the old blanket refusal would contradict that policy. `docs/ARCHITECTURE.md` Docker-lab wording remains an owner documentation follow-up; the separate Vault setup-token path remains supported.
 
-## Validation
+### Earlier validation
 
 All 13 focused suites pass (317 passing test executions across overlapping filters). Coverage: F2–F7 security regressions (8), copy notices (8), managed-context installer (7), two Claude portability checks (1 each), lease accounts (9), native Claude transcript (41), package receiver (16), outbound context service (21), protocol shapes/hashes (184), publication accounts (7), peer transport (10), and synthetic OAuth/queued-work recovery (4). The ignored real-login test is run explicitly below.
 
@@ -35,7 +64,7 @@ F4 validates the authenticated source kernel and requires a nonempty source mach
 
 Local protocol remains 455; relay peer remains 74. These changes introduce no serialized CLI/app/relay shapes. The generation journal is private local scalar metadata.
 
-## Remaining blocked acceptance
+### Remaining blocked acceptance
 
 `BLOCKED(Miguel: disposable login)`: official logout/revocation, new official login and subsequent queued-work resumption acceptance. Never perform these on the shared host/worker/builder logins or any receiving copy of those logins. The security Medium drill uses only import, kernel-managed local receiving-profile deletion and replay. Claude live acceptance remains `BLOCKED(owner)` without a linked Claude account.
 
