@@ -522,6 +522,7 @@ export class LocalIpcClient {
     let timeout: ReturnType<typeof setTimeout> | undefined
     await Promise.race([
       Promise.all([
+        this.relayIssuer?.close(),
         this.closeWebSocket("control"),
         this.closeWebSocket("event"),
       ]).then(() => undefined),

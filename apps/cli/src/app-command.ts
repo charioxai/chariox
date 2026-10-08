@@ -27,7 +27,7 @@ type AppCommandDeps = {
 }
 
 const connectionFlags = new Set([
-  "--socket", "--kernel-url", "--relay-url", "--relay-token",
+  "--socket", "--kernel-url", "--relay-url", "--relay-token", "--relay-token-issuer",
   "--target-daemon-id", "--target-daemon-alias", "--terminal-pairing-link", "--pairing-link",
 ])
 
@@ -50,18 +50,22 @@ export async function runAppCommand(
       args.push(arg)
       continue
     }
-    const value = argv[++index]
-    if (!value || value.startsWith("--")) throw new Error(`missing value for ${arg}`)
     const canonicalFlag = arg === "--pairing-link" ? "--terminal-pairing-link" : arg
     if (seen.has(canonicalFlag)) throw new Error(`duplicate connection option ${arg}`)
     seen.add(canonicalFlag)
-    connectionArgs.push(arg, value)
+    connectionArgs.push(arg)
+    const valueCount = arg === "--relay-token-issuer" ? 2 : 1
+    for (let valueIndex = 0; valueIndex < valueCount; valueIndex++) {
+      const value = argv[++index]
+      if (!value || value.startsWith("--")) throw new Error(`missing value for ${arg}`)
+      connectionArgs.push(value)
+    }
   }
   if (seen.has("--terminal-pairing-link") && seen.size > 1) {
     throw new Error("a terminal pairing link cannot be combined with other connection options")
   }
   const options = parseArgs(connectionArgs)
-  if (!options.relayUrl && (options.relayToken || options.targetDaemonId || options.targetDaemonAlias)) {
+  if (!options.relayUrl && (options.relayToken || options.relayTokenIssuer || options.targetDaemonId || options.targetDaemonAlias)) {
     throw new Error("relay credentials and targets require --relay-url")
   }
   if (options.socketPath && options.kernelUrl) {
