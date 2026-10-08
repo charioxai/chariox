@@ -57,7 +57,8 @@ impl CommandRouter {
                 }
             }
         }
-        Ok(())
+        self.runtime_state
+            .authorize_prompt_attachment_role(command, request)
     }
 
     pub(crate) fn kernel_local_socket_path(&self) -> std::path::PathBuf {

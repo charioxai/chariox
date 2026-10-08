@@ -220,9 +220,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::RestoreProject(request) => {
                 Box::pin(async move { self.store.restore_project(request, caller_user_id).await })
             }
-            LocalDaemonRequest::AttachToSession(request) => {
-                Box::pin(async move { self.store.attach_to_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::AttachToSession(request) => Box::pin(async move {
+                self.store
+                    .attach_to_session(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::DetachFromSession(request) => {
                 Box::pin(async move { self.store.detach_from_session(request).await })
             }
