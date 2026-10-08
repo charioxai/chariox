@@ -230,15 +230,18 @@ export async function measureBrowserProtection(browser, policy) {
 
 export const protectionDigest = measurement => createHash('sha256').update(JSON.stringify(measurement)).digest('hex');
 
-// The compositor may still show the layout preceding a measurement. Two
-// animation frames after measuring, pixels derive from that layout or later.
-async function presented(browser, pages) {
+// The compositor may still show the layout preceding a measurement: after
+// two animation frames, pixels derive from that layout or later. One frame
+// suffices before re-measuring: it applies pending compositor scroll offsets.
+export async function awaitPresented(browser, pages, frames = 2) {
+  const nested = 'requestAnimationFrame(() => resolve(true))';
+  const callback = frames === 2 ? `requestAnimationFrame(() => ${nested})` : nested;
   await Promise.all(pages.map(async page => {
     const { connection, sessionId } = await browser.resolvePageTarget(page.target_id);
     const top = await frameTree(connection, sessionId);
     const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frame.id, worldName: 'chariox-protection-regions' }, sessionId);
     const { result } = await connection.send('Runtime.evaluate', { contextId: executionContextId, awaitPromise: true, returnByValue: true,
-      expression: `new Promise(resolve => { setTimeout(() => resolve(false), ${FRAME_TIMEOUT_MS}); requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))); })` }, sessionId);
+      expression: `new Promise(resolve => { setTimeout(() => resolve(false), ${FRAME_TIMEOUT_MS}); ${callback}; })` }, sessionId);
     if (result?.value !== true) throw new Error('MP-11: page did not present a frame');
   }));
 }
@@ -248,7 +251,7 @@ async function presented(browser, pages) {
 export async function measurePresented(browser, policy) {
   try {
     const measurement = await measureBrowserProtection(browser, policy);
-    await presented(browser, measurement.pages);
+    await awaitPresented(browser, measurement.pages);
     return measurement;
   } catch { return null; }
 }
@@ -263,4 +266,28 @@ export async function fenceBrowserCapture(browser, policy, capture) {
   const after = await measurePresented(browser, policy);
   if (after && protectionDigest(after) === protectionDigest(before)) return result;
   return capture(null);
+}
+
+// Streams: a frame captured with protection serial S is released only when a
+// measurement that began after its capture still equals S. New protection is
+// adopted only after two equal measurements separated by a presented frame
+// (measure() awaits one first); meanwhile serial 0 withholds every browser pixel.
+export class ProtectionGate {
+  constructor(measure) { this.measure = measure; this.serial = 0; this.current = null; this.candidate = null; }
+  get protection() { return this.current?.measurement ?? null; }
+  get protectionSerial() { return this.current?.serial ?? 0; }
+  async step(now = Date.now) {
+    const started = now();
+    const measurement = await this.measure().catch(() => null);
+    const digest = measurement ? protectionDigest(measurement) : null;
+    const verified = digest && digest === this.current?.digest ? this.current.serial : null;
+    let changed = false;
+    if (digest !== (this.current?.digest ?? null)) {
+      const stable = digest !== null && digest === this.candidate;
+      changed = stable || this.current !== null;
+      this.current = stable ? { serial: ++this.serial, digest, measurement } : null;
+      this.candidate = digest;
+    }
+    return { started, verified, changed };
+  }
 }
