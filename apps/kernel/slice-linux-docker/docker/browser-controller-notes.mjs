@@ -22,7 +22,7 @@ function installNoteObserver() {
   // Isolated-world DOM methods cannot be replaced by page scripts.
   const protectedElement = element => {
     for (let current=element;current;current=current.getRootNode?.()?.host) {
-      if (current.closest('script,style,noscript,input,textarea,[data-chariox-secret],[data-chariox-observation-protected]')) return true;
+      if (current.closest('script,style,noscript,input,textarea,[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
     }
     return false;
   };
