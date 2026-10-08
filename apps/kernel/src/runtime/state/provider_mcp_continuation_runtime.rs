@@ -18,10 +18,10 @@ impl KernelRuntimeState {
         self.runtime_catalog_signature(token)
     }
 
-    /// What catalog-change detection compares. MP-08/MP-10/MP-11 A04: a sudo
-    /// window lists its tool only while live and reloads the provider itself
-    /// before its first turn. Counting it would let a later unrelated change
-    /// arm a continuation that replays whichever ordinary prompt is active.
+    /// What catalog-change detection compares. MP-08/MP-10/MP-11 A04/A06: a
+    /// sudo window lists its tools only while live and reloads the provider
+    /// itself before its first turn. Counting them would let a later unrelated
+    /// change arm a continuation that replays whichever ordinary prompt is active.
     pub(crate) fn runtime_catalog_signature(
         &self,
         token: &str,
@@ -29,7 +29,7 @@ impl KernelRuntimeState {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_auth_token(token)
             .into_iter()
-            .filter(|tool| tool.name != sudo::SUDO_TOOL)
+            .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
