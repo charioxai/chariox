@@ -140,7 +140,7 @@ impl KernelRuntimeState {
     ) -> KernelBrowserAdmission {
         let task_authority = self.owned.clone();
         let binding = handoff.clone();
-        let source_fence = source_admission.clone();
+        let source_fence = source_admission;
         let browser_host = self.owned.kernel_browser_host.clone();
         admission.with_authority(move || {
             crate::session::unix_epoch_ms() < binding.expires_at_ms
