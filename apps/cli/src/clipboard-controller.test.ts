@@ -18,7 +18,7 @@ test("clipboard controller copies prompt selections with feedback", async () => 
   await flushMicrotasks()
 
   assert.deepEqual(harness.copiedText(), ["selection"])
-  assert.deepEqual(harness.footerMessages(), [{ message: "selection copied to clipboard", tone: "info" }])
+  assert.deepEqual(harness.footerMessages(), [{ message: "copied to local clipboard", tone: "info" }])
 })
 
 test("clipboard controller ignores empty prompt selections", () => {
@@ -32,7 +32,7 @@ test("clipboard controller ignores empty prompt selections", () => {
   assert.deepEqual(harness.copiedText(), [])
 })
 
-test("clipboard controller clears terminal selection after copying", async () => {
+test("clipboard controller retains terminal selection after copying", async () => {
   const harness = createHarness({ rendererSelection: "terminal text" })
   const controller = createClipboardController(harness.deps)
 
@@ -40,7 +40,7 @@ test("clipboard controller clears terminal selection after copying", async () =>
   await flushMicrotasks()
 
   assert.deepEqual(harness.copiedText(), ["terminal text"])
-  assert.equal(harness.clearCount(), 1)
+  assert.equal(harness.clearCount(), 0)
 })
 
 test("clipboard controller reports copy failures", async () => {
@@ -55,7 +55,7 @@ test("clipboard controller reports copy failures", async () => {
   controller.copySelection()
   await flushMicrotasks()
 
-  assert.deepEqual(harness.footerMessages(), [{ message: "failed to copy selection", tone: "error" }])
+  assert.deepEqual(harness.footerMessages(), [{ message: "clipboard unavailable; use native selection and your terminal's Copy command", tone: "error" }])
   assert.deepEqual(harness.warnings(), [{ message: "selection copy failed", error: "copy failed" }])
 })
 
@@ -95,6 +95,7 @@ function createHarness(options: {
     formatError: (error) => error instanceof Error ? error.message : String(error),
     copyText: options.copyText ?? (async (text) => {
       copiedText.push(text)
+      return "copied"
     }),
   }
   return {

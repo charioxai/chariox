@@ -65,6 +65,18 @@ test("primary transcript render controller reconciles by rebuilding on workflow 
   assert.deepEqual(harness.scrollbox?.childIds(), ["workflow"])
 })
 
+test("MP-08/MP-11 refresh retains selected waiting-room text until the next input clears it", () => {
+  const selected = child("selected-menu")
+  const harness = renderHarness({ scrollbox: scrollbox([selected]), emptyRenderable: selected, preserveSelection: true })
+  harness.controller.rebuildTranscript()
+  assert.equal(selected.destroyed, false)
+  assert.deepEqual(harness.scrollbox?.childIds(), ["selected-menu"])
+  harness.preserveSelection = false
+  harness.controller.rebuildTranscript()
+  assert.equal(selected.destroyed, true)
+  assert.deepEqual(harness.scrollbox?.childIds(), ["empty-1"])
+})
+
 function renderHarness(options: {
   scrollbox?: FakeScrollbox
   emptyRenderable?: FakeChild
@@ -73,9 +85,11 @@ function renderHarness(options: {
   workflowScreenActive?: boolean
   showWorkflowOutline?: boolean
   workflowRenderable?: FakeChild
+  preserveSelection?: boolean
 } = {}) {
   const harness = {
     scrollbox: options.scrollbox,
+    preserveSelection: options.preserveSelection ?? false,
     emptyRenderable: options.emptyRenderable,
     renderables: options.renderables ?? new Map<number, FakeTranscriptRenderable>(),
     visibleEntries: options.visibleEntries ?? [],
@@ -91,6 +105,7 @@ function renderHarness(options: {
   }
   harness.controller = createPrimaryTranscriptRenderController({
     getScrollbox: () => harness.scrollbox,
+    preserveTextSelection: () => harness.preserveSelection,
     getEmptyRenderable: () => harness.emptyRenderable,
     setEmptyRenderable: (renderable) => {
       harness.emptyRenderable = renderable

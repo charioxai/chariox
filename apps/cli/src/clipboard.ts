@@ -1,21 +1,41 @@
 import { spawn } from "node:child_process"
 import process from "node:process"
+import { isSshTerminal, requestTerminalCopy } from "./terminal-copy.js"
 
 type ClipboardRenderer = {
   copyToClipboardOSC52(text: string): boolean
 }
 
-export async function copyTextToClipboard(text: string, renderer: ClipboardRenderer) {
-  const copiedViaOsc52 = renderer.copyToClipboardOSC52(text)
+export type ClipboardCopyResult = "copied" | "requested" | "unavailable"
 
-  try {
-    await copyTextNatively(text)
-  } catch (error) {
-    if (copiedViaOsc52) {
-      return
-    }
-    throw error
+export function clipboardCopyMessage(result: ClipboardCopyResult): string {
+  if (result === "copied") return "copied to local clipboard"
+  if (result === "requested") return "clipboard request sent (OSC 52, unconfirmed); if empty, use native selection and Copy"
+  return "clipboard unavailable; use native selection and your terminal's Copy command"
+}
+
+export async function copyTextToClipboard(
+  text: string,
+  renderer: ClipboardRenderer,
+  options: {
+    remote?: boolean
+    nativeCopy?: (text: string) => Promise<void>
+    terminalCopy?: (text: string) => boolean
+  } = {},
+): Promise<ClipboardCopyResult> {
+  // A clipboard helper on the SSH host cannot confirm the user's clipboard.
+  if (!(options.remote ?? isSshTerminal())) {
+    try {
+      await (options.nativeCopy ?? copyTextNatively)(text)
+      return "copied"
+    } catch { /* Try the terminal transport, retaining an honest fallback. */ }
   }
+  try {
+    if (renderer.copyToClipboardOSC52(text) || (options.terminalCopy ?? requestTerminalCopy)(text)) {
+      return "requested"
+    }
+  } catch { /* Terminal failure must not be reported as a successful copy. */ }
+  return "unavailable"
 }
 
 async function copyTextNatively(text: string) {
@@ -27,6 +47,10 @@ async function copyTextNatively(text: string) {
   if (process.platform === "win32") {
     await runClipboardCommand("clip.exe", [], text)
     return
+  }
+
+  if (!process.env.WAYLAND_DISPLAY && !process.env.DISPLAY) {
+    throw new Error("No local desktop clipboard")
   }
 
   const commands: Array<[string, string[]]> = process.env.WAYLAND_DISPLAY
@@ -60,8 +84,14 @@ function runClipboardCommand(command: string, args: string[], text: string) {
       stdio: ["pipe", "ignore", "ignore"],
     })
 
-    child.once("error", reject)
+    const timer = setTimeout(() => {
+      // This exact child belongs to this invocation; never signal a system PID.
+      if (Number.isInteger(child.pid) && child.pid! > 1) child.kill("SIGKILL")
+      reject(new Error("clipboard helper timed out"))
+    }, 2_000)
+    child.once("error", (error) => { clearTimeout(timer); reject(error) })
     child.once("close", (code) => {
+      clearTimeout(timer)
       if (code === 0) {
         resolve()
         return

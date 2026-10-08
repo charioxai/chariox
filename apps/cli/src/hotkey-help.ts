@@ -15,6 +15,8 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
   { keys: HOTKEY_TOGGLE_LABEL, description: "Show or hide this hotkey list." },
   { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
   { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
+  { keys: "Ctrl+Shift+C / Meta+C", description: "Copy the selected text; OSC 52 delivery is unconfirmed over SSH." },
+  { keys: "Native selection", description: "Hold Shift while dragging (terminal dependent), then use terminal Copy. Set CHARIOX_TUI_MOUSE=off to disable mouse capture." },
 ]
 
 const SESSION_HOTKEYS: HotkeyItem[] = [

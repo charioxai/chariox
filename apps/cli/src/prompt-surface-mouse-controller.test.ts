@@ -15,14 +15,14 @@ test("prompt surface mouse controller ignores non-primary buttons", () => {
   assert.deepEqual(harness.calls(), [])
 })
 
-test("prompt surface mouse controller schedules copy before focus retention", () => {
+test("prompt surface mouse controller copies on release without stealing selection focus", () => {
   const harness = createHarness()
 
   harness.controller.handleMouseUp({ button: "primary" })
 
   assert.deepEqual(harness.calls(), ["timer:0"])
   harness.fire()
-  assert.deepEqual(harness.calls(), ["timer:0", "copy", "focus"])
+  assert.deepEqual(harness.calls(), ["timer:0", "copy"])
 })
 
 function createHarness() {
@@ -38,6 +38,7 @@ function createHarness() {
     isPrimaryButton: (event) => event.button === "primary",
     copySelection: () => {
       calls.push("copy")
+      return true
     },
     retainPromptFocus: () => {
       calls.push("focus")

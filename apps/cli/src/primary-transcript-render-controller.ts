@@ -30,6 +30,7 @@ export type PrimaryTranscriptRenderControllerDeps<
   TEntryRenderable extends PrimaryTranscriptEntryRenderable<TChild>,
 > = {
   getScrollbox: () => TScrollbox | undefined
+  preserveTextSelection?: () => boolean
   getEmptyRenderable: () => TChild | undefined
   setEmptyRenderable: (renderable: TChild | undefined) => void
   renderables: Map<number, TEntryRenderable>
@@ -83,6 +84,7 @@ export function createPrimaryTranscriptRenderController<
   }
 
   const rebuildTranscript = () => {
+    if (deps.preserveTextSelection?.()) return
     deps.logViewDebug("rebuild transcript:start", {
       visible_entries: deps.visibleEntries().length,
     })

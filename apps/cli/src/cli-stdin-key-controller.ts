@@ -33,6 +33,7 @@ export type CliStdinKeyControllerDeps = {
   handleWorkflowDetailPaneKey: (event: CliStdinKeyEvent) => boolean
   cycleAgentFocus: () => void
   copyPromptSelection: () => boolean
+  clearTextSelection?: () => void
   hasActiveTurnWork: () => boolean
   requestPromptStop: () => void
   removePromptAttachmentsForEdit: (edit: "backspace" | "delete") => boolean
@@ -56,6 +57,8 @@ export function createCliStdinKeyController(
       if (!event) {
         return false
       }
+      const copyKey = event.name === "c" && (event.meta || (event.ctrl && event.shift))
+      if (event.eventType !== "release" && !copyKey) deps.clearTextSelection?.()
       // OpenTUI's global key handler owns this dialog. Do not also dispatch
       // its terminal bytes into focused-agent or workflow shortcuts.
       if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true
@@ -113,7 +116,8 @@ export function createCliStdinKeyController(
         }
         return true
       }
-      if (event.eventType !== "release" && event.meta && event.name === "c" && deps.copyPromptSelection()) {
+      if (event.eventType !== "release" && copyKey) {
+        deps.copyPromptSelection()
         return true
       }
       if (event.ctrl && event.name === "c") {

@@ -134,6 +134,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     }
   }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
+    preserveTextSelection: () => !deps.isAttached() && Boolean(deps.renderer.hasSelection),
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEmptyRenderable: deps.primaryTranscriptRuntimeStore.getEmptyRenderable,
     setEmptyRenderable: deps.primaryTranscriptRuntimeStore.setEmptyRenderable,

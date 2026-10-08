@@ -1,3 +1,4 @@
+import { providerLoginUrl, providerLoginUrls } from "./provider-login-link.js"
 import type {
   ProviderAuthStatus,
   ProviderAccountProfile,
@@ -20,6 +21,7 @@ export type ProviderCommandHandlerDeps = {
   currentProviderId: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  showProviderLoginLink?: (url: string, userCode?: string | null) => Promise<boolean | void>
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (
@@ -112,6 +114,7 @@ export async function handleProviderSlashCommand(
     const message = formatProviderLoginNotice(login, "setup token authorization started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
     deps.appendNotice(message)
     deps.flashFooter(message, "info")
+    await presentLoginLink(deps, login)
     return
   }
   if (action === "login-status") {
@@ -238,6 +241,7 @@ async function startProviderLogin(
   const message = formatProviderLoginNotice(login, "login started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
+  await presentLoginLink(deps, login)
 }
 
 async function showProviderLoginStatus(
@@ -250,7 +254,11 @@ async function showProviderLoginStatus(
   }
   const login = await deps.getProviderLoginStatus(loginId)
   const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
-  if (output) deps.appendNotice(output)
+  const urls = providerLoginUrls(output)
+  let summary = output
+  for (const url of urls) summary = summary.replaceAll(url, "[authorization link below]")
+  if (summary) deps.appendNotice(summary)
+  for (const url of urls) await presentUrl(deps, url)
   const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
   deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login ${login.state}`, login.state === "failed" ? "error" : "info")
 }
@@ -321,12 +329,14 @@ async function reauthProvider(
     const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth", await providerAccountPublicLabel(deps, logout.workflow.provider, logout.workflow.account_profile))
     deps.appendNotice(message)
     deps.flashFooter(message, "info")
+    await presentLoginLink(deps, logout.workflow)
     return
   }
   const login = await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "reauth started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
+  await presentLoginLink(deps, login)
 }
 
 async function handleProviderAccountsCommand(
@@ -374,6 +384,7 @@ async function handleProviderAccountsCommand(
       )
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
+      await presentLoginLink(deps, login)
       return
     }
   } else if (action === "import-native" && !profile && deps.importNativeProviderAccountProfile) {
@@ -485,8 +496,20 @@ function formatProviderLoginNotice(
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,
-    login.verification_url ?? login.auth_url ?? null,
+    login.verification_url ?? login.auth_url ? "authorization link below" : null,
   ].filter(Boolean).join(" • ")
+}
+
+async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart): Promise<void> {
+  const url = login.verification_url ?? login.auth_url
+  if (!url || !providerLoginUrl(url)) return
+  // Keep the full link on its own logical line even in text-only projections.
+  await presentUrl(deps, url, login.user_code)
+}
+
+async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, userCode?: string | null): Promise<void> {
+  const displayed = deps.showProviderLoginLink ? await deps.showProviderLoginLink(url, userCode) : false
+  if (displayed === false) deps.appendNotice(`\n${url}\n`)
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {

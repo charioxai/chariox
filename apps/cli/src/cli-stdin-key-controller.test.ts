@@ -245,6 +245,16 @@ test("cli stdin key controller falls through to prompt-turn and waiting-room han
   ])
 })
 
+test("MP-08/MP-11 Ctrl+Shift+C never stops the provider or exits when selection is empty", () => {
+  for (const copyHandled of [true, false]) {
+    const harness = createHarness({ parsedEvent: keyEvent("c", { ctrl: true, shift: true }), activeTurnWork: true, copyHandled })
+    assert.equal(harness.controller.handleData("x"), true)
+    assert.ok(harness.calls().includes("copy"))
+    assert.ok(!harness.calls().includes("stop"))
+    assert.ok(!harness.calls().includes("exit"))
+  }
+})
+
 function createHarness(options: {
   parsedEvent?: CliStdinKeyEvent | null
   dialogOpen?: boolean

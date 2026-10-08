@@ -1,9 +1,10 @@
-import { copyTextToClipboard } from "./clipboard.js"
+import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 
 type ClipboardRenderer = Parameters<typeof copyTextToClipboard>[1]
 
 type SelectionSource = {
   getSelectedText: () => string | null | undefined
+  isDragging?: boolean
 }
 
 export type ClipboardControllerRenderer = ClipboardRenderer & {
@@ -34,14 +35,14 @@ export function createClipboardController(deps: ClipboardControllerDeps) {
       return false
     }
     void copyText(text, deps.renderer)
-      .then(() => {
-        deps.flashFooter("selection copied to clipboard", "info")
+      .then((result) => {
+        deps.flashFooter(clipboardCopyMessage(result), result === "unavailable" ? "error" : "info")
       })
       .catch((error) => {
         deps.logWarning?.("selection copy failed", {
           error: formatError(error),
         })
-        deps.flashFooter("failed to copy selection", "error")
+        deps.flashFooter(clipboardCopyMessage("unavailable"), "error")
       })
     return true
   }
@@ -58,9 +59,10 @@ export function createClipboardController(deps: ClipboardControllerDeps) {
   }
 
   const copySelection = () => {
-    const text = deps.renderer.getSelection()?.getSelectedText()
-    deps.renderer.clearSelection()
-    copyTextWithFeedback(text)
+    const selection = deps.renderer.getSelection()
+    if (selection?.isDragging) return false
+    // Keep the highlight and native-copy fallback until the next selection/edit.
+    return copyTextWithFeedback(selection?.getSelectedText())
   }
 
   return {

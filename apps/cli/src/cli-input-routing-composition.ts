@@ -207,6 +207,7 @@ export type CliInputRoutingCompositionDeps = {
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
   copyPromptSelection: AnyFn
+  clearTextSelection?: () => void
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -696,6 +697,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
+    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()

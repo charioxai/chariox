@@ -207,6 +207,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     scheduleTimer: deps.scheduleTimer,
     isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
     copySelection,
+    hasSelection: () => Boolean(deps.renderer.hasSelection),
     retainPromptFocus: deps.retainPromptFocus,
   })
 
@@ -216,7 +217,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: clipboardController.copyPromptSelection,
+    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,

@@ -2,7 +2,8 @@ export type PromptSurfaceMouseControllerDeps<TimerHandle, MouseEvent> = {
   delayMs: number
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   isPrimaryButton: (event: MouseEvent) => boolean
-  copySelection: () => void
+  copySelection: () => boolean
+  hasSelection?: () => boolean
   retainPromptFocus: () => void
 }
 
@@ -19,8 +20,7 @@ export function createPromptSurfaceMouseController<TimerHandle, MouseEvent>(
         return
       }
       deps.scheduleTimer(() => {
-        deps.copySelection()
-        deps.retainPromptFocus()
+        if (!deps.copySelection() && !deps.hasSelection?.()) deps.retainPromptFocus()
       }, deps.delayMs)
     },
   }
