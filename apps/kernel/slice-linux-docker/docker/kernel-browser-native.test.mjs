@@ -143,3 +143,10 @@ for(const scale of [1,2])test(`MP-10 native window fits negotiated DPR${scale} b
  assert.deepEqual(calls[1],{method:'Browser.setWindowBounds',params:{windowId:7,bounds:{width:geometry.width*scale,height:geometry.height*scale+87}}});
  assert.equal(source.attested,false,'bounds do not admit a surface');assert.equal(source.latest,null);
 });
+
+// MP-08/MP-10/MP-11: renderer image scale must match the physical DPR1 host
+// window; deviceScaleFactor alone produces a different native DPR2 surface.
+for(const scale of [1,2])test(`MP-10 negotiated DPR${scale} also selects native view image scale`,async()=>{
+ const geometry=await import('./kernel-browser-geometry.mjs');
+ assert.deepEqual(geometry.displayDeviceMetrics(1280,800,scale),{width:1280,height:800,deviceScaleFactor:scale,scale,mobile:false});
+});

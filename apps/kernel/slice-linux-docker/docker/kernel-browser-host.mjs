@@ -1,5 +1,5 @@
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -553,7 +553,7 @@ export class KernelBrowserHost {
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      await connection.send("Emulation.setDeviceMetricsOverride", { width: geometry.width, height: geometry.height, deviceScaleFactor: command.device_scale_factor, mobile: false }, sessionId);
+      await connection.send("Emulation.setDeviceMetricsOverride", displayDeviceMetrics(geometry.width,geometry.height,command.device_scale_factor), sessionId);
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';

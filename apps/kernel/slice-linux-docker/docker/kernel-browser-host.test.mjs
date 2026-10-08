@@ -794,3 +794,12 @@ test('MP-08/MP-10/MP-11 viewer wheel on the CDP capture fallback uses awaited in
  assert.equal(result.ok,true);assert(chromium.child);assert.equal(host.generation,opened.generation);
  assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent').length,1);
 }));
+
+// MP-08/MP-10/MP-11: native bounds and the compositor image share one DPR.
+for(const dpr of [1,2])test(`MP-10 display negotiates native view image scale at DPR${dpr}`,()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});
+ await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr});
+ assert.deepEqual(sent.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr,mobile:false});
+ }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));

@@ -6,7 +6,8 @@ import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-r
 import { encodePng } from './kernel-browser-pixels.mjs';
 function fixture() {
   const tab={tab_id:'t',target_id:'target',document_id:'d'},state={document:'d',snapshot:{root:'n1',nodes:[{id:'n1',parent:null,children:['n2'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:40}},{id:'n2',parent:'n1',children:[],kind:'text',text:'fixture'}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null,selection:null}};
-  const connection={async send(method,params){
+  const calls=[],connection={async send(method,params){
+    calls.push({method,params});
     if(method==='Target.createTarget')return {targetId:'css-initial'};
     if(method==='Target.closeTarget')return {success:true};
     if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:state.document}}};
@@ -18,7 +19,7 @@ function fixture() {
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
-  return {host,state,service:new MirrorService(host)};
+  return {host,state,calls,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
 test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
@@ -239,4 +240,10 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  service.evaluate=async()=> 'unknown';
  const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+// MP-08/MP-10/MP-11: both transports must size the actual compositor view.
+for(const dpr of [1,2])test(`MP-10 mirror negotiates native view image scale at DPR${dpr}`,async()=>{
+ const {service,calls}=fixture();await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
+ assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr,mobile:false});
 });
