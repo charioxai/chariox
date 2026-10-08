@@ -24,7 +24,7 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn spawn_project_queued_prompt_after_profile_transition(
+    pub(super) fn spawn_idle_local_prompt_queue_promotion(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -35,6 +35,11 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .peek_next_queued_prompt(&session, agent_id)
             .is_some()
+            && self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .is_none()
         {
             let state = self.clone();
             let session_id = session_id.to_string();
@@ -93,14 +98,12 @@ impl KernelRuntimeState {
         agent_id: &str,
     ) -> Option<crate::session::PromptQueueItem> {
         let session = self.owned.session_store.get_session(session_id).ok()?;
-        if self
+        // Settlement, profile completion and ordinary backlog retries share
+        // this guard. Failed/cancelled preparation drops it without losing work.
+        let _promotion = self
             .owned
             .prompt_state_owner
-            .peek_next_queued_prompt(&session, agent_id)
-            .is_none()
-        {
-            return None;
-        }
+            .try_claim_idle_queue_promotion(&session, agent_id)?;
         let result = self
             .with_project_prompt_environment(session_id, agent_id, |app| {
                 // The existing queue boundary resolves/compares revisions before activation,

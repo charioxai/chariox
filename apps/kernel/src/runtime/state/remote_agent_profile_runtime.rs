@@ -76,8 +76,7 @@ impl KernelRuntimeState {
             .owned
             .finish_remote_profile_transition(session_id, agent_id, claim)?
         {
-            self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                .await?;
+            self.finish_owned_prompt_submission(&mut submission).await?;
             self.spawn_remote_prompt_projection_drain_if_needed(&submission);
             if let Some(dispatch) = submission.remote_dispatch.take() {
                 self.spawn_remote_prompt_dispatch(dispatch);

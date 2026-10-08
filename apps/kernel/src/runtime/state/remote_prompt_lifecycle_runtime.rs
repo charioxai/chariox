@@ -375,10 +375,7 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        if let Err(error) = self
-            .finish_owned_prompt_submission_workflow_start(&mut submission)
-            .await
-        {
+        if let Err(error) = self.finish_owned_prompt_submission(&mut submission).await {
             // The prompt is already active; settle it as a failed dispatch so
             // the agent is not left holding a prompt the worker never got.
             let Some(dispatch) = submission.remote_dispatch.take() else {

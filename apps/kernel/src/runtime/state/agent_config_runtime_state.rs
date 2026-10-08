@@ -1082,7 +1082,7 @@ impl KernelRuntimeState {
             // The profile is committed (or rejected) before admission resumes.
             // Reuse the normal Project/provider activation and queue dispatch path.
             drop(profile_transition);
-            self.spawn_project_queued_prompt_after_profile_transition(session_id, agent_id)?;
+            self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id)?;
         }
         result
     }

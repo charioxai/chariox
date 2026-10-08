@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
 mod profile_transition;
+mod queue_promotion;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
@@ -97,6 +98,7 @@ impl Drop for PromptDeliverySettlementClaim {
 struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
+    queue_promotions: BTreeSet<PromptStateKey>,
     next_pending_prompt_number: u64,
 }
 
