@@ -157,16 +157,34 @@ try {
     return Array.from({length:16},(_,i)=>line.getCell(x+i).getBgColor())
   }, selection)
   const before = await colors()
+  let retained
+  if (options['no-mouse']) {
+    const coords = await page.evaluate(({x,y}) => {
+      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+      return { x: rect.x, y: rect.y, cw: rect.width/term.cols, ch: rect.height/term.rows, col: x, row: y }
+    }, selection)
+    await page.mouse.move(coords.x+coords.cw*(coords.col+0.2), coords.y+coords.ch*(coords.row+0.5))
+    await page.mouse.down()
+    await page.mouse.move(coords.x+coords.cw*(coords.col+17.2), coords.y+coords.ch*(coords.row+0.5), { steps: 20 })
+    await capture('02-dragging')
+    await page.mouse.up()
+    await sleep(500)
+    retained = await page.evaluate(() => term.getSelection() === 'Provider Accounts')
+  } else {
   await press(`\x1b[<0;${selection.x+1};${selection.y+1}M`)
   await press(`\x1b[<32;${selection.x+16};${selection.y+1}M`)
+  }
   const during = await colors()
-  await capture('02-dragging')
+  if (!options['no-mouse']) await capture('02-dragging')
   const copyMark = output.length
-  await press(`\x1b[<0;${selection.x+16};${selection.y+1}m`)
+  if (!options['no-mouse']) await press(`\x1b[<0;${selection.x+16};${selection.y+1}m`)
   await sleep(500)
   const after = await colors()
   await capture('03-released')
-  const retained = JSON.stringify(before) !== JSON.stringify(during) && JSON.stringify(during) === JSON.stringify(after)
+  if (!options['no-mouse']) retained = JSON.stringify(before) !== JSON.stringify(during) && JSON.stringify(during) === JSON.stringify(after)
+  const copyCount = await page.evaluate(() => copies.length)
+  if (!options['no-mouse']) await press('\x1b[99;6u') // real Ctrl+Shift+C (CSI u)
+  const keyboardCopy = options['no-mouse'] ? null : await page.evaluate(count => copies.length > count, copyCount)
   // Stage a command through real key input. Never start a real login process.
   await command('/provider login-status fixture')
   await waitFor(() => requests.includes('GetProviderLoginStatus'))
@@ -213,11 +231,12 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? createHash('sha256').update(await readFile(options['kernel-binary'])).digest('hex') : null, source: options.source, dpr: Number(options.dpr ?? 1), retained, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? createHash('sha256').update(await readFile(options['kernel-binary'])).digest('hex') : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   if (options['expect-red']) assert.ok(!retained || !fullLink || !exactCopy || !honest || !deviceLink, 'baseline must fail')
   else assert.ok(retained && fullLink && exactCopy && nativeSelection && hyperlinkActivated && honest && deviceLink, 'selection/link regression')
+  if (!options['expect-red'] && !options['no-mouse']) assert.ok(keyboardCopy, 'Ctrl+Shift+C must copy the retained selection')
   if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
   }
 } finally {
