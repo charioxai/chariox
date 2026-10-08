@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 // MP-08/MP-11: real built TUI + PTY + xterm terminal. Login payloads ONLY are
 // fixtures: never run real provider login/logout or touch a shared account.
+// --attached yes drives a real provider session on an existing kernel
+// (--fleet-home/--fleet-kernel-url/--account-profile/--model) instead.
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -58,6 +60,23 @@ let kernelUrl
 let KernelClient
 const upstreamClients = new Set()
 let result
+const sessionAlias = `tuifix-drill-${process.pid}`
+let sessionDeleted = !options.attached
+const deleteSession = async () => {
+  const client = new KernelClient(options['fleet-kernel-url'], {})
+  try { await client.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }); sessionDeleted = true }
+  finally { await client.close() }
+}
+// Kernel-side status of the drill's queued prompt (authoritative "not cancelled").
+const queuedPromptStatus = async prompt => {
+  const client = new KernelClient(options['fleet-kernel-url'], {})
+  try {
+    const resolved = JSON.stringify(await client.send({ ResolveSession: { session_ref: sessionAlias, workspace_id: null } }))
+    const sessionId = resolved.match(/"session_id":"([^"]+)"/)?.[1]
+    const state = JSON.stringify(await client.send({ GetSessionState: { session_id: sessionId } }))
+    return state.match(new RegExp(`"prompt":"${prompt}[^"]*"[^}]*"status":"([A-Za-z]+)"`))?.[1] ?? 'absent'
+  } finally { await client.close() }
+}
 const stop = async child => {
   if (!child) return
   if (child.exitCode === null) {
@@ -94,6 +113,11 @@ try {
       try { return Object.keys(await probe.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
     })
     await probe.close()
+  }
+  if (options.attached) {
+    // Normal product client authorization from the account-holding kernel home.
+    process.env.CHARIOX_HOME = path.resolve(options['fleet-home'])
+    KernelClient = (await import(path.join(path.dirname(cli), 'ipc.js'))).LocalIpcClient
   }
   fixture.on('connection', (socket) => {
     const upstream = kernelUrl ? new KernelClient(kernelUrl, {}) : null
@@ -154,20 +178,147 @@ try {
       message(_socket, data) { tui?.terminal.write(String(data)) },
     },
   })
-  tui = Bun.spawn(['bun', cli, '--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`], {
-    cwd: process.cwd(), env: { ...runtimeEnv, TERM: 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2', ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}) },
+  const tuiArgs = options.attached
+    ? ['--kernel-url', options['fleet-kernel-url'], '--create-session', '--alias', sessionAlias, '--workspace', process.cwd(), '--worktree', process.cwd(),
+      '--provider', options.provider ?? 'codex', '--account-profile', options['account-profile'], '--model', options.model]
+    : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
+  tui = Bun.spawn(['bun', cli, ...tuiArgs], {
+    cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
+      ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
+      ...(options.attached ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
     terminal: { cols: 100, rows: 35, data(_terminal, chunk) { const data = new TextDecoder().decode(chunk); output += data; for (const c of clients) c.send(data) } },
   })
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], executablePath: options.chromium })
   page = await browser.newPage({ viewport: { width: 1050, height: 740 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
-  await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
   const capture = async name => {
     await sleep(250)
     await page.screenshot({ path: path.join(evidence, `${name}.png`) })
     await writeFile(path.join(evidence, `${name}.txt`), await page.evaluate(() => terminalScreen()))
   }
   const press = async sequence => { tui.terminal.write(sequence); await sleep(180) }
+  const typeText = async text => { for (const c of text) { tui.terminal.write(c); await sleep(15) } }
+  const rowOf = needle => page.evaluate(n => {
+    const rows = terminalScreen().split('\n'); const y = rows.findIndex(row => row.includes(n))
+    return y < 0 ? null : { x: rows[y].indexOf(n), y }
+  }, needle)
+  const cellColors = ({ x, y }, width) => page.evaluate(({ x, y, width }) => {
+    const line = term.buffer.active.getLine(term.buffer.active.viewportY+y)
+    return Array.from({ length: width }, (_, i) => line.getCell(x+i).getBgColor())
+  }, { x, y, width })
+  const copiedTexts = async () => (await page.evaluate(() => copies)).map(payload => Buffer.from(payload, 'base64').toString())
+  // Real SGR drag across `width` cells of a visible row, then release.
+  const dragSelect = async (at, width) => {
+    await press(`\x1b[<0;${at.x+1};${at.y+1}M`)
+    await press(`\x1b[<32;${at.x+width};${at.y+1}M`)
+    await press(`\x1b[<0;${at.x+width};${at.y+1}m`)
+    await sleep(400)
+  }
+  const settledRowOf = async needle => {
+    // Wait for two identical screens so a collapsing entry cannot shift the drag.
+    let previous = ''
+    await waitFor(async () => { const now = await page.evaluate(() => terminalScreen()); const same = now === previous; previous = now; await sleep(400); return same }, 30_000)
+    return rowOf(needle)
+  }
+  const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
+  if (options.attached) {
+    // MP-08/MP-11 attached transcript: real provider turns, then the user's
+    // select/click-then-type, Meta+C with a queued prompt, and deletion elsewhere.
+    const marker = 'TUIFIX MARKER SEVEN'
+    await waitFor(async () => (await page.evaluate(() => terminalScreen().trim().length)) > 0, 60_000)
+    await sleep(8000)
+    await capture('a01-attached')
+    await typeText('Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
+    await press('\r')
+    await waitFor(async () => (await rowOf(marker)) !== null, 240_000)
+    await sleep(4000)
+    await capture('a02-response')
+    const selected = text => text.startsWith('TUIFIX MARKER')
+    let at = await rowOf(marker)
+    const before = await cellColors(at, 13)
+    let copyCount = (await copiedTexts()).length
+    await dragSelect(at, 14)
+    const highlighted = JSON.stringify(await cellColors(at, 13)) !== JSON.stringify(before)
+      && (await copiedTexts()).slice(copyCount).some(selected)
+    await capture('a03-selected')
+    // An idle attached session must keep the selection across the ~10s
+    // waiting-room inventory refresh, and the copy key must still copy it.
+    await sleep(12_000)
+    copyCount = (await copiedTexts()).length
+    await press('\x1b[99;6u')
+    await sleep(500)
+    const heldAfterRefresh = JSON.stringify(await cellColors(at, 13)) !== JSON.stringify(before)
+      && (await copiedTexts()).slice(copyCount).some(selected)
+    await capture('a03b-held-after-refresh')
+    await typeText('zq'); await sleep(500)
+    const typedAfterDrag = await promptShows('zq')
+    const clearedByTyping = JSON.stringify(await cellColors(at, 13)) === JSON.stringify(before)
+    await capture('a04-typed-after-drag')
+    await press('\x15')
+    // Zero-length click on transcript text, then type.
+    await press(`\x1b[<0;${at.x+3};${at.y+1}M`); await press(`\x1b[<0;${at.x+3};${at.y+1}m`); await sleep(400)
+    await typeText('zr'); await sleep(500)
+    const typedAfterClick = await promptShows('zr')
+    await capture('a05-typed-after-click')
+    await press('\x15')
+    // A user whose keys were lost clicks the prompt before continuing.
+    const promptRow = await rowOf('Write your next prompt here')
+    if (promptRow) { await press(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}M`); await press(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}m`); await sleep(300) }
+    let selectedWithQueue = false, queuedAtMeta = false, metaCopies = [], metaCopy = false, queueStripAfterMeta = false
+    let kernelQueuedAfterMeta = 'not-reached', queuedSurvived = false, waitingRoomAfterDelete = false, flowError = null
+    try {
+    // A running tool turn plus a queued prompt; Meta+C on a selection must
+    // copy, not cancel. The selection is made while the transcript is quiet.
+    await typeText('Run the shell command `sleep 40` in the workspace, then reply with only the word: slept.')
+    await press('\r')
+    await waitFor(async () => (await rowOf('sleep 40')) !== null && (await page.evaluate(() => /\bTHINK|WORKING|RUNNING/.test(terminalScreen()))), 120_000)
+    await sleep(6000)
+    await typeText('Reply with exactly one line: the words queued ok marker, written in uppercase.')
+    await press('\r'); await sleep(2500)
+    await capture('a06-queued')
+    // Running-tool entries can shift rows; confirm the selection by its
+    // release copy and retry a drag that missed.
+    for (let attempt = 0; attempt < 4 && !selectedWithQueue; attempt++) {
+      at = await settledRowOf(marker)
+      copyCount = (await copiedTexts()).length
+      await dragSelect(at, 14)
+      selectedWithQueue = (await copiedTexts()).slice(copyCount).some(selected)
+    }
+    queuedAtMeta = !(await rowOf('QUEUED OK MARKER')) && await page.evaluate(() => terminalScreen().includes('QUEUE • 1 prompt'))
+    const copiesBeforeMeta = (await copiedTexts()).length
+    if (options['meta-key'] !== 'none') await press('\x1bc')
+    await sleep(600)
+    metaCopies = (await copiedTexts()).slice(copiesBeforeMeta)
+    metaCopy = metaCopies.some(selected)
+    queueStripAfterMeta = await page.evaluate(() => terminalScreen().includes('QUEUE • 1 prompt'))
+    kernelQueuedAfterMeta = await queuedPromptStatus('Reply with exactly one line: the words queued ok marker')
+    await capture('a07-meta-c')
+    queuedSurvived = true
+    try { await waitFor(async () => (await rowOf('QUEUED OK MARKER')) !== null, 300_000) } catch { queuedSurvived = false }
+    await sleep(4000)
+    await capture('a08-queued-result')
+    // Delete the session elsewhere while transcript text is selected.
+    at = (await settledRowOf(marker)) ?? (await rowOf('QUEUED OK MARKER'))
+    await dragSelect(at, 14)
+    await capture('a09-selected-before-delete')
+    await deleteSession()
+    waitingRoomAfterDelete = true
+    // The waiting-room menu itself (transcript content), not just the footer chrome.
+    try { await waitFor(() => page.evaluate(() => /┃\s+(Join Existing Session|Projects|Provider Accounts|Machines|Theme)\b/.test(terminalScreen())), 20_000) } catch { waitingRoomAfterDelete = false }
+    await capture('a10-after-delete')
+    } catch (error) { flowError = error?.message ?? String(error) }
+    result = { items: ['MP-08','MP-11'], mode: 'attached', cli, cliSha256: await hashClient(path.dirname(cli)), source: options.source, dpr: Number(options.dpr ?? 1),
+      kernelUrl: options['fleet-kernel-url'], provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
+      highlighted, heldAfterRefresh, typedAfterDrag, clearedByTyping, typedAfterClick, selectedWithQueue, queuedAtMeta, metaCopy, metaCopies, queueStripAfterMeta, kernelQueuedAfterMeta, queuedSurvived, waitingRoomAfterDelete, flowError,
+      acceptance: 'real provider turns on the shared fleet kernel; macOS Terminal.app behavior requires the coordinator desktop check' }
+    await writeFile(path.join(evidence, 'terminal.pty'), output)
+    console.log(JSON.stringify(result))
+    if (!options['expect-red']) assert.ok(selectedWithQueue && queuedAtMeta, 'Meta+C precondition: a selection while a prompt is queued')
+    const green = !flowError && highlighted && heldAfterRefresh && typedAfterDrag && clearedByTyping && typedAfterClick && metaCopy && queueStripAfterMeta && kernelQueuedAfterMeta === 'Queued' && waitingRoomAfterDelete
+    if (options['expect-red']) assert.ok(!green, 'baseline must fail')
+    else assert.ok(green, 'attached selection/focus regression')
+  } else {
+  await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
   const command = async text => {
     // The ordinary waiting-room account control stages and focuses a command.
     if (options['no-mouse']) { await press('\x1b[A'); await press('\x1b[A') }
@@ -258,12 +409,28 @@ try {
   await capture('05-copy-link')
   const fullLink = output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)
   const exactCopy = (await page.evaluate(() => copies)).some(payload => Buffer.from(payload,'base64').toString() === url)
-  const honest = !output.slice(copyMark).includes('selection copied to clipboard') && output.slice(linkMark).includes('unconfirmed')
+  // A terminal OpenTUI reports without OSC 52: honest guidance, no raw request.
+  const osc52Declined = options['expect-osc52'] === 'declined'
+  const honest = !output.slice(copyMark).includes('selection copied to clipboard') && (osc52Declined
+    ? output.slice(linkMark).includes('clipboard unavailable') && !output.includes('\x1b]52;')
+    : output.slice(linkMark).includes('unconfirmed'))
   let deviceLink = false
+  let transcriptLink = false
+  let linkViewOnce = false
   if (fullLink) {
   await press(options['return-key'] === 'ctrl-c' ? '\x03' : '\r')
   // The same prompt regains focus after the handoff, with mouse mode restored.
   await sleep(600)
+  await capture('05b-returned')
+  transcriptLink = await page.evaluate(() => terminalScreen().includes('https://claude.ai/oauth/authorize?client_id=fixture'))
+  // A second status check of the same waiting login must not hand off again.
+  const statusMark = output.length
+  await press('\x15'); await typeText('/provider login-status fixture'); await press('\r')
+  await waitFor(() => requests.filter(request => request === 'GetProviderLoginStatus').length >= 2)
+  await sleep(800)
+  await capture('05c-status-again')
+  linkViewOnce = !output.slice(statusMark).includes('Provider authorization link')
+  if (!linkViewOnce) { await press('\r'); await sleep(600) }
   await press('\x15')
   for (const c of '/provider login codex') { tui.terminal.write(c); await sleep(15) }
   await press('\r')
@@ -272,17 +439,20 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
-  if (options['expect-red']) assert.ok(!retained || !fullLink || !exactCopy || !honest || !deviceLink, 'baseline must fail')
-  else assert.ok(retained && fullLink && exactCopy && nativeSelection && hyperlinkActivated && honest && deviceLink, 'selection/link regression')
-  if (!options['expect-red'] && !options['no-mouse']) assert.ok(keyboardCopy, 'Ctrl+Shift+C must copy the retained selection')
+  const copied = osc52Declined ? !exactCopy : exactCopy
+  if (options['expect-red']) assert.ok(!retained || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
+  else assert.ok(retained && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
+  if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'Ctrl+Shift+C must copy the retained selection only through OSC 52 support')
   if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
+  }
   }
 } finally {
   await browser?.close()
   await stop(tui)
+  if (!sessionDeleted) await deleteSession().catch(error => console.error(`session cleanup failed: ${error?.message}`))
   for (const socket of fixture.clients) socket.terminate()
   await new Promise(resolve => fixture.close(resolve))
   await Promise.allSettled([...upstreamClients].map(client => client.close()))
