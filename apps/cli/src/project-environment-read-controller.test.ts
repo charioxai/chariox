@@ -68,3 +68,12 @@ test("P02b Ctrl+A is not proposal acceptance", async () => {
   await new Promise(resolve=>setTimeout(resolve,0))
   assert.equal(requests.length,1,"modified keys must not save a review")
 })
+
+// MP-08 / MP-10 / MP-11: a review key must show the selected constraint and provenance first.
+test("P02b selected proposal shows its constraint and origin in the visible review header", async () => {
+ const environment:any={schema_version:1,local_project_id:"project",revision:0,content_digest:"base",lineage:{environment_id:"env",project_id:"lineage"},folders:[],project_requirements:[],proposals:[{proposal_id:"proposal",requirement:{requirement_id:"react",title:"React",scope:{kind:"project"},origins:[{kind:"detected_metadata",source:"package.json",reference:"react dependency"}],spec:{kind:"software",identity:"react",version_constraint:"19.0.0",detect_only:true}}}],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"],supported_schema:1}}
+ const controller=createProjectEnvironmentReadController({send:async()=>({ProjectEnvironment:{environment}}),render(){},pageSize:()=>6})
+ await controller.open("project")
+ assert(controller.visibleLines().some(line=>line==="Version constraint: 19.0.0"))
+ assert(controller.visibleLines().some(line=>line.includes("package.json")))
+})

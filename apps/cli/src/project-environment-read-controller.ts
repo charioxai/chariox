@@ -1,5 +1,5 @@
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
-import { getProjectEnvironmentRequest, projectEnvironmentLines, environmentRevisionDraft, saveEnvironmentRevisionRequest, type ProjectEnvironment } from "@chariox/kernel-client"
+import { getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, type ProjectEnvironment } from "@chariox/kernel-client"
 
 export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
@@ -95,7 +95,8 @@ export function createProjectEnvironmentReadController(deps: {
     },
   }
   function viewLines(environment: ProjectEnvironment): string[] {
-    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${proposalIndex + 1}/${environment.proposals.length} · ${environment.proposals[proposalIndex]!.requirement.title}`] : ["No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), ...projectEnvironmentLines(environment)]
+    const selected = environment.proposals[proposalIndex]
+    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${proposalIndex + 1}/${environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : ["No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), ...projectEnvironmentLines(environment)]
   }
   return controller
 }
