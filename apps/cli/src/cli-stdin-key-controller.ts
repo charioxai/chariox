@@ -59,7 +59,9 @@ export function createCliStdinKeyController(
       if (!event?.name) {
         return false
       }
-      const copyKey = event.name === "c" && (event.meta || (event.ctrl && event.shift))
+      // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
+      // without extended keyboard support (where it is indistinguishable from Ctrl+C).
+      const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))
       if (event.eventType !== "release" && !copyKey) deps.clearTextSelection?.()
       // OpenTUI's global key handler owns this dialog. Do not also dispatch
       // its terminal bytes into focused-agent or workflow shortcuts.

@@ -207,6 +207,7 @@ try {
     return Array.from({ length: width }, (_, i) => line.getCell(x+i).getBgColor())
   }, { x, y, width })
   const copiedTexts = async () => (await page.evaluate(() => copies)).map(payload => Buffer.from(payload, 'base64').toString())
+  const copySequence = options['copy-key'] === 'kitty' ? '\x1b[99;6u' : '\x1b[17~'
   // Real SGR drag across `width` cells of a visible row, then release.
   const dragSelect = async (at, width) => {
     await press(`\x1b[<0;${at.x+1};${at.y+1}M`)
@@ -234,6 +235,38 @@ try {
     await waitFor(async () => (await rowOf(marker)) !== null, 240_000)
     await sleep(4000)
     await capture('a02-response')
+    if (options['selection-review']) {
+      // MP-08 / MP-10: real provider response, fast terminal drag, legacy copy
+      // input, and typing after release. No fixture provider/login traffic.
+      const at = await settledRowOf(marker)
+      const before = await cellColors(at, 13)
+      const copyCount = (await copiedTexts()).length
+      await dragSelect(at, 14)
+      const highlighted = JSON.stringify(await cellColors(at, 13)) !== JSON.stringify(before)
+        && (await copiedTexts()).slice(copyCount).some(text => text.startsWith('TUIFIX MARKER'))
+      await capture('a03-batched-selection')
+      await sleep(12_000)
+      const copiesBeforeKey = (await copiedTexts()).length
+      await press(copySequence)
+      const keyboardCopy = (await copiedTexts()).slice(copiesBeforeKey).some(text => text.startsWith('TUIFIX MARKER'))
+      await capture('a04-legacy-copy')
+      await typeText('zq'); await sleep(500)
+      const typedAfterDrag = await promptShows('zq')
+      const clearedByTyping = JSON.stringify(await cellColors(at, 13)) === JSON.stringify(before)
+      await press('\x15'); await press(copySequence)
+      const emptyCopyKeptAlive = tui.exitCode === null
+      await capture('a05-typed-and-empty-copy')
+      result = { items: ['MP-08', 'MP-10'], mode: 'selection-review', source: options.source,
+        cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
+        provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
+        dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), copyKey: options['copy-key'] ?? 'f6',
+        highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive,
+        acceptance: 'real provider and built TUI via PTY; desktop Terminal.app and hosted transport need separate observations' }
+      const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
+      console.log(JSON.stringify(result))
+      if (options['expect-red']) assert.ok(!green, 'baseline must fail selection/copy review')
+      else assert.ok(green, 'real-provider batched selection and legacy copy')
+    } else {
     const selected = text => text.startsWith('TUIFIX MARKER')
     let at = await rowOf(marker)
     const before = await cellColors(at, 13)
@@ -246,7 +279,7 @@ try {
     // waiting-room inventory refresh, and the copy key must still copy it.
     await sleep(12_000)
     copyCount = (await copiedTexts()).length
-    await press('\x1b[99;6u')
+    await press(copySequence)
     await sleep(500)
     const heldAfterRefresh = JSON.stringify(await cellColors(at, 13)) !== JSON.stringify(before)
       && (await copiedTexts()).slice(copyCount).some(selected)
@@ -318,6 +351,7 @@ try {
     const green = !flowError && highlighted && heldAfterRefresh && typedAfterDrag && clearedByTyping && typedAfterClick && metaCopy && queueStripAfterMeta && kernelQueuedAfterMeta === 'Queued' && waitingRoomAfterDelete
     if (options['expect-red']) assert.ok(!green, 'baseline must fail')
     else assert.ok(green, 'attached selection/focus regression')
+    }
   } else {
   await waitFor(() => page.evaluate(() => terminalScreen().includes('Provider Accounts')))
   const command = async text => {
@@ -377,8 +411,8 @@ try {
   await capture('03-released')
   if (!options['no-mouse']) retained = JSON.stringify(before) !== JSON.stringify(during) && JSON.stringify(during) === JSON.stringify(after)
   const copyCount = await page.evaluate(() => copies.length)
-  if (!options['no-mouse'] && !options['expect-red']) await press('\x1b[99;6u') // real Ctrl+Shift+C (CSI u)
-  const keyboardCopy = options['no-mouse'] || options['expect-red'] ? null : await page.evaluate(count => copies.length > count, copyCount)
+  if (!options['no-mouse']) await press(copySequence)
+  const keyboardCopy = options['no-mouse'] ? null : await page.evaluate(count => copies.length > count, copyCount)
   // Stage a command through real key input. Never start a real login process.
   await command('/provider login-status fixture')
   await waitFor(() => requests.includes('GetProviderLoginStatus'))
@@ -445,9 +479,9 @@ try {
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   const copied = osc52Declined ? !exactCopy : exactCopy
-  if (options['expect-red']) assert.ok(!retained || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
+  if (options['expect-red']) assert.ok(!retained || !keyboardCopy || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
   else assert.ok(retained && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
-  if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'Ctrl+Shift+C must copy the retained selection only through OSC 52 support')
+  if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'F6 must copy the retained selection only through OSC 52 support')
   if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
   }
   }

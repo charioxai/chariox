@@ -25,3 +25,11 @@ test("MP-08 / MP-10 batched SGR mouse reports preserve the drag and deferred reb
     }
   }
 })
+
+test("MP-08 / MP-10 F6 is distinct from Ctrl+C with the legacy keyboard protocol", () => {
+  assert.equal(parseKeypress(Buffer.from("\x1b[17~"), { useKittyKeyboard: false })?.name, "f6")
+  const interrupt = parseKeypress(Buffer.from("\x03"), { useKittyKeyboard: false })
+  assert.equal(interrupt?.name, "c")
+  assert.equal(interrupt?.ctrl, true)
+  assert.equal(interrupt?.shift, false)
+})

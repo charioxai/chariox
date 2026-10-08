@@ -278,6 +278,20 @@ test("MP-08/MP-11 Ctrl+Shift+C never stops the provider or exits when selection 
   }
 })
 
+test("MP-08 / MP-10 F6 copies without kitty keyboard support and never stops or exits", () => {
+  for (const copyHandled of [true, false]) {
+    for (const activeTurnWork of [true, false]) {
+      let clears = 0
+      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, clearTextSelection: () => { clears++ } })
+      assert.equal(harness.controller.handleData("\x1b[17~"), true)
+      assert.ok(harness.calls().includes("copy"))
+      assert.ok(!harness.calls().includes("stop"))
+      assert.ok(!harness.calls().includes("exit"))
+      assert.equal(clears, 0)
+    }
+  }
+})
+
 function createHarness(options: {
   parsedEvent?: CliStdinKeyEvent | null
   clearTextSelection?: () => void
