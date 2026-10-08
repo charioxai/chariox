@@ -843,7 +843,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
-    sleep, formatError, supportsKernelEventStream, closingStateController,
+    sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
     providerRunState, createdSessionState, waitingRoomState, preferencesState,
     connectedClientCount, persistablePromptDraft, syncPromptTextSnapshot, flushPendingPromptDraftPersist,

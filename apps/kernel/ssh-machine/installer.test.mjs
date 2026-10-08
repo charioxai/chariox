@@ -220,3 +220,18 @@ test("MP-11 a missing unit without proven removal intent cannot be adopted", asy
   await assert.rejects(runMachine({ ...h.request, action: "inspect" }, h.options), { code: "ENOENT" })
   assert.ok((await readFile(join(h.root, "install.json"))).length)
 })
+
+test("MP-07 / MP-11 occupied install lock reports its path and guarded recovery without changing ownership", async t => {
+  const h = await harness(t)
+  const lock = join(h.home, ".local/share/chariox/ssh-machines/.byom-test.lock")
+  await mkdir(lock, {recursive: true, mode: 0o700})
+  await assert.rejects(runMachine(h.request, h.options), error => {
+    assert.match(error.message, /another install operation owns this install ID/)
+    assert.ok(error.message.includes(lock), "diagnostic identifies the exact lock")
+    assert.match(error.message, /no installer.*running/i)
+    assert.match(error.message, /empty lock directory.*retry/i)
+    return true
+  })
+  assert.deepEqual(await readdir(lock), [])
+  assert.deepEqual(h.calls, [])
+})

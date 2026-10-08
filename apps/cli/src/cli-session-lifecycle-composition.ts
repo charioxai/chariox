@@ -46,6 +46,7 @@ export type CliSessionLifecycleCompositionDeps = {
   sleep: AnyFn
   formatError: AnyFn
   supportsKernelEventStream: boolean
+  kernelConnected: AnyFn
   closingStateController: {
     isClosing: AnyFn
     setClosing: AnyFn
@@ -143,6 +144,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
 
   const kernelEventSubscriptionController = createKernelEventSubscriptionController({
     supportsKernelEventStream: () => deps.supportsKernelEventStream,
+    isKernelConnected: deps.kernelConnected,
     getAttachment: deps.attachmentState,
     getSessionId: () => deps.sessionState().id,
     subscribeToWaitingRoomInventory: () => deps.client.subscribeToWaitingRoomInventory(),

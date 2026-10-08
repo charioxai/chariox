@@ -12,6 +12,7 @@ type KernelEventSubscriptionState = {
 
 type KernelEventSubscriptionControllerOptions = {
   supportsKernelEventStream: () => boolean
+  isKernelConnected: () => boolean
   getAttachment: () => KernelEventSubscriptionAttachment | null
   getSessionId: () => string
   subscribeToWaitingRoomInventory: () => Promise<void>
@@ -48,7 +49,7 @@ export function createKernelEventSubscriptionController(
 
   return {
     async sync() {
-      if (!options.supportsKernelEventStream()) {
+      if (!options.supportsKernelEventStream() || !options.isKernelConnected()) {
         return
       }
 

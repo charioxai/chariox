@@ -17,6 +17,9 @@ export function validateRequest(r) {
   if (!Number.isInteger(r.port) || r.port < 1024 || r.port > 65534 || [43118, 43119, 43120].includes(r.port)) fail("choose a distinct unprivileged loopback port, other than the ordinary 43118 default")
   if (!/^sha256:[a-f0-9]{64}$/.test(r.releaseDigest ?? "")) fail("a pinned signed release digest is required")
 }
+function installLockDiagnostic(lock) {
+  return `another install operation owns this install ID: ${lock}; wait for it to finish. If interrupted, first confirm no installer for this install ID is running, then remove only this empty lock directory and retry the same Setup or SSH command.`
+}
 async function metadata(path) {
   return lstat(path).catch(e => e.code === "ENOENT" ? null : Promise.reject(e))
 }
@@ -118,7 +121,7 @@ async function pendingRemoval(root, marker, serviceManager) {
 // MP-08 / MP-11: absence is a read-only target fact, never inferred from an SSH failure.
 async function inspectMachine(r, home, stage, serviceManager) {
   const parent = await existingTree(home, ".local/share/chariox/ssh-machines")
-  if (parent && await metadata(join(parent, `.${r.installId}.lock`))) fail("another install operation owns this install ID")
+  if (parent && await metadata(join(parent, `.${r.installId}.lock`))) fail(installLockDiagnostic(join(parent, `.${r.installId}.lock`)))
   const unitDir = await existingTree(home, ".config/systemd/user")
   const root = parent ? join(parent, r.installId) : null
   const service = `chariox-ssh-${r.installId}.service`, unit = unitDir ? join(unitDir, service) : null
@@ -162,7 +165,10 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     if (binding.format !== FORMAT || binding.installId !== r.installId || binding.port !== r.port || binding.service !== service) fail("kernel state belongs to another installation")
   }
   const lock = join(installParent, `.${r.installId}.lock`)
-  await mkdir(lock, { mode: 0o700 }).catch(() => fail("another install operation owns this install ID; settle it before retrying"))
+  await mkdir(lock, { mode: 0o700 }).catch(error => {
+    if (error.code !== "EEXIST") throw error
+    fail(installLockDiagnostic(lock))
+  })
   let scratch
   try {
     const info = await serviceManager(["show", service, "--property=LoadState", "--property=FragmentPath", "--property=DropInPaths"], true)
