@@ -81,6 +81,9 @@ class DocumentRects(unittest.TestCase):
         web = Node('document web', [Node('panel', [Node('internal frame', [frame_document])])], (44, 173, 892, 553), 'https://example.test/a')
         app = Collected('application', [Node('frame', [Node('panel', [web, Node('document web', rect=(159, 71, 0, 0))])])])
         self.assertEqual(protection.document_rects(app, self.atspi), [{'uri': 'https://example.test/a', 'rect': [44, 173, 892, 553]}])
+        broken = Collected('application', [Node('frame', [web])])
+        broken.queryCollection = lambda: (_ for _ in ()).throw(TypeError('incompatible collection binding'))
+        self.assertEqual(protection.document_rects(broken, self.atspi), [{'uri': 'https://example.test/a', 'rect': [44, 173, 892, 553]}])
         many = Collected('application', [Node('document web', rect=(0, 0, 1, 1)) for _ in range(protection.MAX_DOCUMENTS+1)])
         with self.assertRaises(ValueError):
             protection.document_rects(many, self.atspi)
