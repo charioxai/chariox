@@ -833,6 +833,10 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
             run: Some("child-run".into()),
             now: 2,
         });
+        f.apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: prompt.into(),
+        });
     }
     assert_eq!(
         f.task().obligations[0].completion_task_id.as_deref(),
@@ -1595,7 +1599,7 @@ fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
             resource: Some("child".into()),
         });
     }
-    for prompt in ["child-task-1", "child-task-2"] {
+    for (parent, prompt) in [("parent", "child-task-1"), ("parent2", "child-task-2")] {
         f.apply(Operation::Begin {
             owner: "owner".into(),
             room: "room".into(),
@@ -1603,6 +1607,10 @@ fn a02_review_two_parents_delegating_to_one_child_bind_distinct_child_tasks() {
             prompt: prompt.into(),
             run: Some("child-run".into()),
             now: 2,
+        });
+        f.apply(Operation::BindDelegate {
+            parent_task: format!("{parent}-turn"),
+            child_task: prompt.into(),
         });
     }
     let bound = |agent: &str| {
@@ -1646,7 +1654,7 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
             resource: Some("child".into()),
         });
     }
-    for prompt in ["first-child", "second-child"] {
+    for (parent, prompt) in [("newer", "first-child"), ("older", "second-child")] {
         // Repeat Begin just as admission and dispatch do: never consume two parents.
         for _ in 0..2 {
             f.apply(Operation::Begin {
@@ -1656,6 +1664,10 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
                 prompt: prompt.into(),
                 run: Some("child-run".into()),
                 now: 3,
+            });
+            f.apply(Operation::BindDelegate {
+                parent_task: format!("{parent}-turn"),
+                child_task: prompt.into(),
             });
         }
     }
@@ -1935,12 +1947,15 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         now: attempted_at,
         work: None,
     });
-    f.apply(Operation::BindAttempt {
+    f.apply(Operation::BindSubmission {
         room: "room".into(),
         agent: "child".into(),
         sequence: e.sequence,
+        prompt: "steer".into(),
+        target: Some("ending-turn".into()),
         run: "run".into(),
         submit_epoch: 7,
+        now: attempted_at,
     });
     if timed_out {
         f.apply(Operation::Sweep {
@@ -2363,5 +2378,386 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
                 .state,
             ExecutionState::Blocked
         );
+    }
+}
+
+// MP-08/MP-10/MP-11 security F1: admission pressure is recipient-local.
+fn security_fill_inbox(f: &Fixture, agent: &str, state: &str) {
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..1024 {
+        let mut e = occurrence(
+            "room",
+            agent,
+            "sender",
+            &format!("fill-{n}"),
+            "message",
+            serde_json::json!({}),
+        );
+        tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')", params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).unwrap();
+        e.sequence = tx.last_insert_rowid() as u64;
+        e.state = state.into();
+        tx.execute(
+            "UPDATE agent_inbox SET payload=?2 WHERE sequence=?1",
+            params![sql_integer(e.sequence).unwrap(), encode(&e).unwrap()],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+#[test]
+fn a02_security_f1_full_recipient_cannot_abort_source_outcome() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "healthy".into(),
+        prompt: "healthy-task".into(),
+        run: None,
+        now: 1,
+    });
+    f.apply(Operation::Subscribe {
+        task: "healthy-task".into(),
+        prompt: "healthy-task".into(),
+        registration: Registration {
+            id: "healthy-reg".into(),
+            task_id: "healthy-task".into(),
+            source_id: "child".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    security_fill_inbox(&f, "parent", "pending");
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "completion".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    assert_eq!(f.store.agent_inbox("room", "healthy", 0).unwrap().len(), 1);
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", 1024)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "source_completed"));
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+}
+#[test]
+fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    security_fill_inbox(&f, "parent", "pending");
+    f.apply(Operation::Sweep {
+        now: LONG_WAIT_MS + 1,
+        busy_recipients: Vec::new(),
+    });
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", 1024)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "deadline_reached"));
+}
+#[test]
+fn a02_security_f1_accepted_history_does_not_exhaust_admission() {
+    let f = Fixture::new();
+    security_fill_inbox(&f, "parent", "accepted");
+    f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "sender",
+        "fresh",
+        "message",
+        serde_json::json!({}),
+    )));
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM agent_inbox WHERE json_extract(payload,'$.state')='accepted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(count <= 256, "accepted history retained {count} rows");
+}
+#[test]
+fn a02_security_f1_done_task_closes_registrations() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Subscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: Registration {
+            id: "passive".into(),
+            task_id: "p".into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Done);
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+}
+#[test]
+fn a02_security_f2_reused_child_id_cannot_recover_old_answer() {
+    let f = Fixture::new();
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "deleted-child-result".into(),
+        success: true,
+        public_answer: Some(serde_json::json!("old answer")),
+        now: 1,
+    });
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    assert_eq!(f.task().obligations[0].status, "open");
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}
+#[test]
+fn a02_security_f4_unattributed_child_task_cannot_bind_delegation() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "peer-request".into(),
+        run: Some("child-run".into()),
+        now: 2,
+    });
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "peer-request".into(),
+        occurrence: "peer-answer".into(),
+        success: true,
+        public_answer: Some(serde_json::json!("peer-controlled")),
+        now: 3,
+    });
+    assert_eq!(f.task().obligations[0].status, "open");
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}
+
+// MP-08/MP-10/MP-11 F4: exact accepted task recovery covers a fast child.
+#[test]
+fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    for prompt in ["peer-first", "parent-request"] {
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: prompt.into(),
+            run: None,
+            now: 2,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: prompt.into(),
+            occurrence: format!("{prompt}-result"),
+            success: true,
+            public_answer: Some(serde_json::json!(prompt)),
+            now: 3,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: "child".into(),
+            occurrence: format!("{prompt}-agent-result"),
+            success: true,
+            public_answer: Some(serde_json::json!(prompt)),
+            now: 3,
+        });
+    }
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::BindDelegate {
+        parent_task: "p".into(),
+        child_task: "parent-request".into(),
+    });
+    assert_eq!(
+        f.task().obligations[0].completion_task_id.as_deref(),
+        Some("parent-request")
+    );
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].payload["public_answer"], "parent-request");
+}
+#[test]
+fn a02_security_f4_accepted_parent_message_binds_exact_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    let Outcome::Event(e) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: occurrence(
+            "room",
+            "child",
+            "parent",
+            "work-message",
+            "message",
+            serde_json::json!({"message":"do the delegated work"}),
+        ),
+    }) else {
+        panic!()
+    };
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        prompt: "child-message-task".into(),
+        target: None,
+        run: None,
+        now: 2,
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "child-message-task".into(),
+        run: None,
+        now: 2,
+    });
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: e.sequence,
+        state: "accepted".into(),
+        now: 3,
+    });
+    assert_eq!(
+        f.task().obligations[0].completion_task_id.as_deref(),
+        Some("child-message-task")
+    );
+}
+
+// MP-08/MP-10/MP-11 F4: cancellation after admission cannot reject an accepted prompt.
+#[test]
+fn a02_security_f4_cancelled_parent_does_not_bind_or_reject_accepted_child() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "child-task".into(),
+        run: None,
+        now: 2,
+    });
+    f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+    });
+    f.apply(Operation::BindDelegate {
+        parent_task: "p".into(),
+        child_task: "child-task".into(),
+    });
+    assert_eq!(f.task().state, ExecutionState::Cancelled);
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+}
+
+#[test]
+fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
+    for early in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some("workflow-ref".into()),
+            now: 1,
+        });
+        let completed = || Operation::SourceOutcome {
+            public_answer: None,
+            room: "room".into(),
+            source: "completed-run".into(),
+            occurrence: "terminal-run".into(),
+            success: true,
+            now: 2,
+        };
+        if early {
+            f.apply(completed());
+        }
+        f.apply(Operation::DispatchReceipt {
+            id: "workflow-obligation".into(),
+            accepted: true,
+            resource: Some("completed-run".into()),
+        });
+        let regs = f.store.agent_registrations("p").unwrap();
+        assert_eq!(
+            regs.len(),
+            1,
+            "MP-08 / MP-10 / MP-11 G11: actual workflow_run kind needs completion registration"
+        );
+        assert_eq!(regs[0].source_id, "completed-run");
+        if !early {
+            f.apply(completed());
+        }
+        assert_eq!(f.task().obligations[0].status, "settling");
+        let event = f
+            .store
+            .agent_inbox("room", "parent", 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: event.sequence,
+            handled: true,
+            now: 3,
+        });
+        f.settle("p", true);
+        assert_eq!(f.task().state, ExecutionState::Done);
+        assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
     }
 }

@@ -346,12 +346,17 @@ function createBuilder() {
 
 try {
   let source = String(input.source || "")
+  const stripper = input.typescript_stripper
+  delete input.typescript_stripper
   if (input.language === "typescript") {
-    const mod = await import("node:module")
-    if (typeof mod.stripTypeScriptTypes !== "function") {
-      throw new Error("TypeScript workflow-code requires Node.js with node:module stripTypeScriptTypes support")
-    }
-    source = mod.stripTypeScriptTypes(source, { mode: "transform" })
+    // Same stripper and options as official Node's
+    // stripTypeScriptTypes(source, {mode: "transform"}), independent of
+    // whether this Node build ships it. Only the source text crosses in.
+    const amaro = {exports: {}}
+    const builtins = {util: await import("node:util"), "node:buffer": await import("node:buffer")}
+    vm.compileFunction(String(stripper), ["module", "exports", "require"], {filename: "amaro.js"})(
+      amaro, amaro.exports, name => builtins[name])
+    source = amaro.exports.transformSync(source, {mode: "transform", sourceMap: false, filename: ""}).code
   }
   // MP-08/MP-11: create all objects/functions in the evaluated realm. The
   // boundary consists solely of JSON strings; never inject a host callback.

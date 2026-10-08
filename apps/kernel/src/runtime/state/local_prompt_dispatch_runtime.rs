@@ -136,6 +136,7 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 pub(in crate::runtime::state) mod tests {
+    mod inbox_recovery;
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -3475,6 +3476,7 @@ impl KernelRuntimeState {
                     None,
                 );
             }
+            self.record_agent_event_dispatch_result(dispatch, &result)?;
             result
         }
     }
@@ -3644,6 +3646,7 @@ impl KernelRuntimeState {
             if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
                 return Ok(false);
             }
+            owned.bind_agent_event_submission(dispatch)?;
             let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -3769,6 +3772,7 @@ impl KernelRuntimeState {
                 )?;
                 owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
+            owned.bind_agent_event_submission(dispatch)?;
             return Ok(true);
         }
         if uses_claude_native_bridge {
@@ -3812,6 +3816,7 @@ impl KernelRuntimeState {
                                 message: "prompt changed before native dispatch".into(),
                             });
                         }
+                        owned.bind_agent_event_submission(dispatch)?;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
@@ -3891,6 +3896,7 @@ impl KernelRuntimeState {
                     message: "prompt changed before PTY dispatch".into(),
                 });
             }
+            owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
             writer.write_input(&provider_pty_input)
         });
         match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {

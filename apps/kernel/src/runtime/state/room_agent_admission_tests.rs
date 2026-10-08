@@ -65,7 +65,7 @@ fn room_admission_saved_artifact_run_preserves_peer_metadata() {
                         ("peer", Some(peer.id())), ("unknown", None)] {
                         registry.save(name, WorkflowCodeLanguage::JavaScript, "review source",
                             serde_json::from_value(serde_json::json!({"workflow":{},
-                                "nodes":[{"handle":"review", "agent":{"kind":"existing", "agent_ref":peer.id()}}],
+                                "nodes":[{"handle":"review", "agent":{"kind":"existing", "agent_ref":actor.id()}}],
                                 "endpoints":[{"handle":"entry","entry_node":"review"}]})).unwrap(),
                             WorkflowCodeValidationReport {ok: true, diagnostics: vec![]},
                             WorkflowCodeArtifactActor::new(actor.owner_user_id(), creator.map(str::to_owned)),

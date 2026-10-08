@@ -711,7 +711,7 @@ impl DaemonApp {
                             notice,
                         );
                     }
-                    if receipt.steered {
+                    if receipt.steered || receipt.stale {
                         continue;
                     }
                 }

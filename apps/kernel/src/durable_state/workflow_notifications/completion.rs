@@ -125,6 +125,8 @@ pub(crate) fn capture_in(
             if !matches(&sub, &env) {
                 continue;
             }
+            let env = protect_envelope(env)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             // Source-owned receipt is committed with completion, before transport.
             if let Err(e) = insert_receipt(
                 tx,

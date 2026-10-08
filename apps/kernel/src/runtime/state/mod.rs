@@ -485,6 +485,7 @@ mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
+mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
 mod workflow_notification_peers;
@@ -1175,6 +1176,7 @@ impl KernelRuntimeState {
 
 mod room_agent_admission;
 
+mod agent_delegation_runtime;
 mod agent_inbox_delivery;
 mod agent_lifecycle_runtime;
 mod agent_task_cancellation;
