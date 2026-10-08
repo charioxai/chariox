@@ -218,3 +218,32 @@ test("MP-11 the native tracker retires on isolated-frame DOM, navigation and att
   const now = performance.timeOrigin + performance.now();
   assert.deepEqual(await guard.regions({ width: 1280, height: 800, captured_ms: now }), [{ x: 523, y: 83, width: 60, height: 12 }]);
 });
+
+// MP-11: a protected CDP capture's getDocument resets this session's node ids.
+// Native measurement uses backend ids, so masks survive; a stale session id
+// (fallback only) fails closed instead of reading as "not rendered".
+test("MP-11 native measurement survives another inspector's getDocument; stale session ids fail closed", async () => {
+  let generation = 0;
+  const connection = { async send(method, params) {
+    if (method === "DOM.getDocument") { generation++; return { root: { nodeId: 1, backendNodeId: 1, localName: "html", children: [{ nodeId: 10 * generation, backendNodeId: 77, localName: "input", attributes: ["type", "password"] }] } }; }
+    if (method === "DOM.querySelectorAll") return { nodeIds: [] };
+    assert.equal(method, "DOM.getBoxModel");
+    if (params.nodeId !== undefined && params.nodeId !== 10 * generation) throw new Error("Protocol error (DOM.getBoxModel): Could not find node with given id");
+    return { model: { border: [5, 6, 25, 6, 25, 16, 5, 16] } };
+  } };
+  const guard = new NativeRegionProtection(connection, "s");
+  await guard.refresh();
+  await connection.send("DOM.getDocument", {});
+  const now = () => performance.timeOrigin + performance.now();
+  for (let readback = 0; readback < 2; readback++)
+    assert.deepEqual(await guard.regions({ width: 1280, height: 800, captured_ms: now() }), [{ x: 5, y: 6, width: 20, height: 10 }], "readback " + readback);
+  // Without backend ids the stale id must not read as an unrendered field.
+  const legacy = { async send(method, params) {
+    if (method === "DOM.getDocument") { generation++; return { root: { nodeId: 1, localName: "html", children: [{ nodeId: 10 * generation, localName: "input", attributes: ["type", "password"] }] } }; }
+    return connection.send(method, params);
+  } };
+  const masks = await captureRegionMasks(legacy, "s", { reinspect: false });
+  await legacy.send("DOM.getDocument", {});
+  assert.deepEqual(await masks.afterCapture(), [{ x: 0, y: 0, width: 1280, height: 800 }]);
+  assert.equal(masks.failed, true);
+});

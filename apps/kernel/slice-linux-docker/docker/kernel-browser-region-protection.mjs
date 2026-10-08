@@ -34,11 +34,14 @@ async function inspect(connection, sessionId, { frames = () => null, record = ()
       ({ root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, session));
       ({ nodeIds } = await connection.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector }, session));
       if (!Array.isArray(nodeIds)) throw new Error("Capture protection unavailable");
-    } catch (error) { if (!frame) throw error; nodes.push({ nodeId: frame.nodeId, kind: 'frame', ...frame.owner }); record('frame_uninspectable'); continue; }
-    const kinds=new Map(), seen=new Set(), pending=[[root,false]];
+    } catch (error) { if (!frame) throw error; nodes.push({ nodeId: frame.nodeId, backendNodeId: frame.backendNodeId, kind: 'frame', ...frame.owner }); record('frame_uninspectable'); continue; }
+    // MP-11: measure by backend node id. Another inspector's getDocument on
+    // this session (e.g. a protected CDP capture) resets session node ids.
+    const kinds=new Map(), seen=new Set(), backend=new Map(), pending=[[root,false]];
     while (pending.length) {
       if (++visited > 100_000) return {nodes:[],unbounded:true,sessions};
       const [node,marked] = pending.pop();
+      if(Number.isSafeInteger(node.backendNodeId))backend.set(node.nodeId,node.backendNodeId);
       for(const shadow of node.shadowRoots??[]){
         if(shadow.shadowRootType==='user-agent')continue;
         if(shadow.shadowRootType==='open')pending.push([shadow,marked]);else kinds.set(node.nodeId,'opaque');
@@ -48,7 +51,7 @@ async function inspect(connection, sessionId, { frames = () => null, record = ()
         seen.add(node.nodeId);
         const child=!marked&&!node.contentDocument&&typeof node.frameId==='string'&&frames(node.frameId);
         if(marked||!node.contentDocument&&!child){kinds.set(node.nodeId,'frame');record(marked?'frame_marked':'frame_session_unavailable');}
-        else if(child)documents.push({sessionId:child,frame:{nodeId:node.nodeId,owner:at}});
+        else if(child)documents.push({sessionId:child,frame:{nodeId:node.nodeId,backendNodeId:backend.get(node.nodeId),owner:at}});
         else pending.push([node.contentDocument,false]);
         continue;
       }
@@ -57,13 +60,16 @@ async function inspect(connection, sessionId, { frames = () => null, record = ()
     }
     // A selector match the walk did not classify stays conservatively unbounded.
     for(const id of nodeIds)if(!kinds.has(id)&&!seen.has(id))kinds.set(id,'explicit');
-    for(const [nodeId,kind] of [...kinds].sort((a,b)=>a[0]-b[0]))nodes.push({nodeId,kind,...at});
+    for(const [nodeId,kind] of [...kinds].sort((a,b)=>a[0]-b[0]))nodes.push({nodeId,backendNodeId:backend.get(nodeId),kind,...at});
   }
   if (nodes.length > 1024) return {nodes:[],unbounded:true,sessions};
   return {nodes,unbounded:false,sessions};
 }
 const selector='input[type="password"], [data-chariox-secret], [data-chariox-observation-protected], [data-observation-protected], input[autocomplete*="password" i], input[autocomplete*="one-time-code" i], input[autocomplete*="cc-" i], iframe, frame';
-const notRendered=/Could not compute box model|Could not find node with given id/;
+// A backend node that no longer exists renders nothing; session node ids are
+// only a fallback; a stale session id fails closed (full mask, re-inspection).
+const notRendered=/Could not compute box model|No node found for given backend id/;
+const target=node=>Number.isSafeInteger(node.backendNodeId)?{backendNodeId:node.backendNodeId}:{nodeId:node.nodeId};
 const rectOf=quad=>{
   if (!Array.isArray(quad) || quad.length !== 8 || quad.some(n => !Number.isFinite(n))) return null;
   const xs = [quad[0], quad[2], quad[4], quad[6]], ys = [quad[1], quad[3], quad[5], quad[7]];
@@ -75,7 +81,7 @@ async function frameRect(connection,frame,cache){
   const key=frame.owner.sessionId+' '+frame.nodeId;
   if(!cache.has(key))cache.set(key,(async()=>{
     let model;
-    try{model=(await connection.send("DOM.getBoxModel",{nodeId:frame.nodeId},frame.owner.sessionId)).model;}
+    try{model=(await connection.send("DOM.getBoxModel",target(frame),frame.owner.sessionId)).model;}
     catch(error){if(!notRendered.test(error?.message??''))throw error;return undefined;}
     const border=rectOf(model?.border),content=rectOf(model?.content);
     if(!border||!content)return null;
@@ -93,14 +99,14 @@ async function frameRect(connection,frame,cache){
 async function measure(connection, inspection) {
   if(inspection.unbounded)return null;
   const cache=new Map();
-  const rects=await Promise.all(inspection.nodes.map(async({nodeId,kind,sessionId,frame})=>{
+  const rects=await Promise.all(inspection.nodes.map(async node=>{const {kind,sessionId,frame}=node;
     const clip=frame?await frameRect(connection,frame,cache):{left:0,top:0,right:geometry.width,bottom:geometry.height,origin:[0,0]};
     if(!clip)return clip;
     let box;
     if(clip.whole)box=clip;
     else{
       let quad;
-      try{quad=(await connection.send("DOM.getBoxModel", { nodeId }, sessionId)).model?.border;}
+      try{quad=(await connection.send("DOM.getBoxModel", target(node), sessionId)).model?.border;}
       catch(error){if(!notRendered.test(error?.message??''))throw error;return kind==='frame'||kind==='input'?undefined:null;}
       const rect=rectOf(quad);if(!rect)return null;
       box={left:rect.left+clip.origin[0],top:rect.top+clip.origin[1],right:rect.right+clip.origin[0],bottom:rect.bottom+clip.origin[1]};
