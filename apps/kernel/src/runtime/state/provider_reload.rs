@@ -250,8 +250,8 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// `unlocked` proves the caller already holds vault access, so this
-    /// reload never waits on a human vault popup.
+    /// `unlocked` is the caller's vault access, checked just before this
+    /// call, so this reload never waits on a human vault popup.
     pub(super) async fn reload_agent_provider_if_idle(
         &self,
         session_id: &str,

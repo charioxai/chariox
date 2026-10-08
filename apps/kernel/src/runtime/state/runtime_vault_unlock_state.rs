@@ -13,9 +13,9 @@ impl VaultUnlockGuard {
         }
     }
 
-    fn unlocked_until_expiry() -> Self {
+    fn unlocked_until_expiry(path: std::path::PathBuf) -> Self {
         Self {
-            path: None,
+            path: Some(path),
             lock_on_drop: false,
         }
     }
@@ -25,6 +25,14 @@ impl VaultUnlockGuard {
             path: None,
             lock_on_drop: false,
         }
+    }
+
+    /// No guard keeps the vault open: a lease can expire and another
+    /// operation's guard locks it for everyone. Re-check before reuse.
+    pub(crate) fn still_unlocked(&self) -> bool {
+        self.path.as_ref().is_none_or(|path| {
+            crate::secret::chariox_encrypted_vault_status(path).is_ok_and(|status| status.unlocked)
+        })
     }
 }
 
@@ -300,7 +308,7 @@ impl KernelRuntimeState {
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
@@ -374,12 +382,12 @@ impl KernelRuntimeState {
             crate::config::CredentialVaultUnlockPolicy::Always
         );
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
         let unlock_request_lock = vault_unlock_request_lock(&vault_path);
         let _dedupe_guard = unlock_request_lock.lock().await;
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
         let resolution = self
@@ -437,7 +445,7 @@ impl KernelRuntimeState {
         if lock_after_operation {
             Ok(VaultUnlockGuard::unlocked_for_operation(vault_path))
         } else {
-            Ok(VaultUnlockGuard::unlocked_until_expiry())
+            Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path))
         }
     }
 

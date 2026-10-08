@@ -32,7 +32,8 @@ The first sudo turn waits for the refresh to complete, keeping its work hold.
 The 60-second budget counts only idle refresh attempts, including deferred
 retries. Ordinary work resets it. A locked Chariox vault is unlocked before
 the budget starts, so its passphrase and duration popups never count; they
-keep their own expiry, and a window revoked meanwhile closes them. Budget
+keep their own expiry, and a window revoked meanwhile closes them. Each retry
+re-checks the vault, so a relock between retries prompts again. Budget
 exhaustion, a refresh failure or an unanswered vault popup returns a typed
 kernel-access error saying "provider catalog refresh failed", ends the window
 as `refused_or_cancelled` and releases the held work.

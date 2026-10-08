@@ -266,15 +266,20 @@ impl KernelRuntimeState {
         // MP-08/MP-10/MP-11: the catalog budget counts only idle refresh
         // attempts. Busy work restarts it; human vault popups precede it.
         let mut catalog_deadline = None;
-        let mut vault = None;
+        let mut vault: Option<super::super::runtime_vault_unlock_state::VaultUnlockGuard> = None;
         loop {
             if reload && self.sudo_agent_busy(entry)? {
                 catalog_deadline = None;
+                // Ordinary work must not keep an operation unlock open.
                 vault = None;
             } else if reload {
                 use super::super::provider_reload::ProviderReloadOutcome;
                 self.live_queued_sudo(entry)?;
-                if vault.is_none() {
+                // A relock (lease expiry, another operation's guard) prompts
+                // again, outside the budget. Release the stale guard first so
+                // its drop cannot relock the fresh unlock.
+                if !vault.as_ref().is_some_and(|guard| guard.still_unlocked()) {
+                    vault = None;
                     let unlock =
                         self.unlock_vault_for_agent_reload(&entry.session_id, &entry.agent_id);
                     vault = Some(
