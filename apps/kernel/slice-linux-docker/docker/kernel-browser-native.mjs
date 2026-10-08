@@ -44,8 +44,9 @@ export class LinuxCapture {
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
-   // Native DPR2: fit800 CSS pixels below Chromium's87px browser chrome.
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width,height:geometry.height+87}});
+   // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
+   // Page emulation owns negotiated DPR; keep the crop exact at both scales.
+   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale,height:geometry.height*this.scale+87}});
    await this.connection.send('Page.bringToFront',{},this.sessionId);
    const {frameTree}=await this.connection.send('Page.getFrameTree',{},this.sessionId);
    const {executionContextId}=await this.connection.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'chariox-native-surface-fence',grantUniveralAccess:false},this.sessionId);

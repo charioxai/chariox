@@ -29,6 +29,13 @@ try{
   for(const kind of ['click','wheel','keydown','beforeinput'])document.addEventListener(kind,e=>{if(e.isTrusted&&(e.target instanceof HTMLCanvasElement||e.target instanceof HTMLTextAreaElement))stats.inputs.push({at:performance.timeOrigin+performance.now(),kind})},true);
  });
  stage='waiting room';await page.goto(origin+'/waiting-room');await page.getByText('Waiting Room Ready',{exact:true}).waitFor({timeout:60000});await page.waitForTimeout(20000);
+ // MP-08/MP-10/MP-11: bootstrap receipt alone does not select the UI client.
+ for(const [field,id] of [['Machine',process.env.MD_MACHINE_ID],['Kernel',process.env.MD_KERNEL_ID]]){
+  if(!/^[a-zA-Z0-9_-]+$/.test(id??''))throw Error('MP-11: public enrollment identifier required');
+  await page.getByRole('button',{name:new RegExp('^'+field)}).click();
+  await page.locator(`[data-option-picker-value="${id}"]`).click({timeout:60000});
+ }
+ await page.waitForTimeout(5000);
  const expectedKernel=process.env.MD_KERNEL_ID;const target=r.bootstrap_protocol.find(t=>t.daemon_id===expectedKernel&&t.protocol>=466);if(!target)throw Error('MP-10: selected kernel protocol not ready');r.enrollment={machine_id:process.env.MD_MACHINE_ID,kernel_id:target.daemon_id,protocol:target.protocol,admission:'real application bootstrap; Cloud selects fresh heartbeat targets'};
  await page.waitForTimeout(2000);
  const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(process.env.MD_OPEN_SESSION==='1'&&await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}

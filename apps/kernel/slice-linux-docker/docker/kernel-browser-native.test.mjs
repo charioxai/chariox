@@ -126,3 +126,20 @@ test('MP-08/MP-10 Rust capture retains supported planning and wheel controls',as
  assert.equal(source.wheel(10,20,0,1),true);
  assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true},{wheel:[10,20,0,1]}]);
 });
+
+// MP-08/MP-10/MP-11: The host window uses physical DPR1; negotiated page DPR
+// sets physical capture bounds before exact RGB attestation.
+for(const scale of [1,2])test(`MP-10 native window fits negotiated DPR${scale} before exact attestation`,async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {displayGeometry:geometry}=await import('./kernel-browser-geometry.mjs');
+ const calls=[],stop=Error('bounds observed');
+ const connection={subscribe:()=>()=>{},send:async(method,params)=>{
+  calls.push({method,params});if(method==='Browser.getWindowForTarget')return {windowId:7};
+  if(method==='Browser.setWindowBounds')throw stop;
+  assert.fail('readback cannot precede bounded window setup');
+ }};
+ const source=new LinuxCapture({pid:42,connection,tab:{target_id:'own'},scale});source.valid=()=>true;
+ await assert.rejects(source.start(),stop);
+ assert.deepEqual(calls[1],{method:'Browser.setWindowBounds',params:{windowId:7,bounds:{width:geometry.width*scale,height:geometry.height*scale+87}}});
+ assert.equal(source.attested,false,'bounds do not admit a surface');assert.equal(source.latest,null);
+});
