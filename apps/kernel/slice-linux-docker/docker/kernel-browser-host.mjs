@@ -18,7 +18,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureRegionMasks, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
@@ -354,9 +354,9 @@ export class KernelBrowserHost {
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
-      if(regionProtectionChanged(message,sessionId)){
-        stream.regionEpoch=(stream.regionEpoch??0)+1;
-        stream.latest=this.maskedStreamFrame(stream);captureProtected();return;
+      if(regionProtectionChanged(message,sessionId,stream.latest?.[displayMaskRegions]?.length!==0)){
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=this.maskedStreamFrame(stream);}
+        captureProtected();return;
       }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;

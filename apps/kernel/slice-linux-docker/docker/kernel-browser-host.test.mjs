@@ -353,6 +353,16 @@ test('MP-11 legacy observation retires an in-flight frame after attribute-only p
  release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
  assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],0,'retired capture cannot overwrite the opaque observation');
 }));
+test('MP-11 legacy observation keeps its bound frame through DOM tree churn',()=>using(async({host,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
+ const stream=host.streams.get(subscription.subscription_id);
+ for(let n=0;n<50&&(stream.capturing||decodePng(stream.latest.data_base64).pixels[0]!==255);n++)await new Promise(resolve=>setTimeout(resolve,5));
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const method of ['DOM.childNodeInserted','DOM.childNodeCountUpdated'])for(const handler of handlers)handler({sessionId:session,method,params:{}});
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'class'}});
+ assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],255,'tree churn cannot swap in an opaque frame');
+}));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
   await host.protect({ unknown: false, values: ["synthetic-protected-value"], targets: [] });
