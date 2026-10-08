@@ -26,6 +26,86 @@ Draft protocol aligned with `docs/spec-v1.md`.
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
 
+## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+
+The owner-approved multidomain access contract is specified in
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
+Focus grants resource-scoped authority; changing focus does not revoke prior
+holders. Existing kernel turn/wake state retains grants until fully idle expiry,
+session/agent end or explicit revocation. Authenticated owner terminals use
+`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
+agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
+holders and non-focused-use notice. Revocation cancels grant epochs and idle
+subscriptions. MP-11: retained holders have the same input and mutations as
+focused agents on granted resources, including typing, keys, Tab and clicks.
+Explicit start/open is allowed; open grants its newly created tab. Claiming an
+unrelated existing resource requires focus. Loading a capability requires focus
+or the A05 owner approval described below. Vault,
+protected regions, sensitive approvals and App/passkey validation keep their
+shared protections. Ordinary input has no retained/focused classification;
+revoke and idle lapse still cancel authority immediately. Observation reads,
+including state, never start/restart Chromium or its controller for any caller;
+stopped/unavailable reads require explicit start/open (`browser_unavailable`).
+Browser/App window projections identify the owning kernel and focused-agent
+reachability; cross-kernel control is refused. Consumers of these new fields and
+commands require local 432. Existing multidomain feature minima remain 427.
+The focused MP-10 drill and protocol snapshots cover these changes; they do not
+alone establish ordinary/managed parity or official-provider wait behavior.
+
+MP-08 / MP-11: ordinary text and text-producing key events use the same
+Vault-only protected-target check, including password/OTP fields, focused
+frames and open nested shadow fields, for both focused and retained holders.
+Successful browser results are bound to the exact admission epoch under the
+grant lock before resource/subscription registration or inventory projection;
+revocation followed by refocus cannot adopt an old call's result into a fresh
+grant. A final live cancellation/provider-run check fences returned results.
+
+### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+through a human attachment supplies acquisition causation. Agent messages,
+workflows, schedules and continuations do not. A new App binding or kernel
+browser grant also requires the owner's resource-specific `RuntimeInteraction`
+reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
+and a missing owner request return the typed `user_domain_not_requested`
+refusal; a revoke reaching that agent while its decision is pending returns
+`user_domain_not_granted`. Other holders' grant changes do not affect a pending
+decision. Provider MCP errors carry the same code. Existing focus grants remain
+available through the shared browser authority path; focus is the owner's live
+act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
+through idle, revocation or session/agent end.
+Explicit owner focus promotes an existing requested or delegated browser grant
+to that focus lifecycle without retiring its resources, subscriptions or epoch.
+
+Browser loader arguments may request `lifetime_hours` from 1 through 24; the
+default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
+existing resource and Vault-sensitive actions retain the focus checks.
+`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
+to a direct local child. A delegated grant cannot open additional tabs, outlive
+its source or survive source revocation. Grant projections include absolute
+`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
+expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+
+App bindings use the existing trusted installation, admitted publisher key and
+capability checks. Issued bindings carry an optional `app_grant` generation,
+absolute expiry and prompt/delegation attribution; agents cannot submit this
+issued authority as grant input. App grants default to 8 hours and child
+bindings inherit the parent's deadline. Revocation removes only bindings
+actually delegated from that generation, wakes retained calls and prevents an
+old call or expiry wake from adopting a replacement binding. Recovery rearms
+absolute expiry; an untimed legacy binding needs fresh owner approval in room
+mode, and recovery without a live expiry executor fails closed. Recovery
+removals record the normal `agent.extension_revoked` event and
+`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
+resources; they use their Room Browser/Computer route.
+
+Clients consuming this metadata require local 462; relay peer shapes are
+unchanged. The focused A05 drill exercises the built TUI, kernel and official
+Codex resource-approval path: owner Deny with the typed refusal code, owner
+Allow with the 462 grant projection over the real client transport, and the
+live absolute-expiry wake. Source refusal and protocol snapshot tests are
+supplementary and do not establish hosted, public-site or managed acceptance.
+
 ## 1. Scope
 
 This document defines message classes and protocol contracts between:
@@ -3279,3 +3359,17 @@ as blocked obligations requiring exact reconciliation, without guessing success.
 PR10 must supply leased event execution and receipt parity before those cells
 are accepted. PR3 supplies process/timer watcher sources. These dependencies
 and the real-provider/hosted validation matrix remain acceptance gates.
+
+### Protocol 418: user-domain App views
+
+`OpenUserAppView`, `ListUserAppViews`, `CloseUserAppView`,
+`GetUserAppViewFrontend`, `CallUserAppView` and `SubscribeUserAppViews` address
+ephemeral owner-scoped App view instances with no session, Room or slice.
+Bundles contain only verified signed frontend assets; page calls retain the
+existing durable App tool/host-action path and omit the optional SDK
+`room_id`. The owner snapshot subscription includes detached kernel
+`RuntimeInteraction` decisions. `AnswerUserDomainInteraction` uses the
+existing terminal/passkey gate and shared pending-interaction authority;
+a detached passkey popup has an empty session routing field. Room App views
+retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
+for host isolation, lifecycle and migration. No relay-peer shape changes.

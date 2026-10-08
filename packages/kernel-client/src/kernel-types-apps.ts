@@ -154,3 +154,20 @@ export interface AppDataSnapshotRestored {
   generation: string
   snapshot_id: string
 }
+
+/** Protocol 418. Kernel identity; neither an installation grant nor a session. */
+export type UserAppView = {
+  view_id: string
+  installation_id: string
+  generation: string
+  origin: string
+  browser?: { tab_id: string; generation: number }
+  access?: import("./kernel-types-kernel-browser.js").UserDomainWindowAccess
+}
+
+export type AppFrontendBundle = {
+  entry: string
+  assets: { path: string; content_type: string; body_base64: string }[]
+  content_security_policy: string
+  iframe_sandbox: string
+}

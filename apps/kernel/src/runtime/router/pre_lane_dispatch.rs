@@ -58,6 +58,14 @@ impl CommandRouter {
         {
             return Ok(Some(response));
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .execute_user_app_view_request(command, request)
+            .await
+        {
+            return response.map(Some);
+        }
         // Protocols 358–360: App routes and grants on a generator connection
         // are checked with that generator before the App lane stores them.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -84,10 +92,11 @@ impl CommandRouter {
             return Ok(Some(response));
         }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(response) = self
-            .runtime_state
-            .execute_app_view_request(command, request)
-            .await
+        if let Some(response) = Box::pin(
+            self.runtime_state
+                .execute_app_view_request(command, request),
+        )
+        .await
         {
             return response.map(Some);
         }

@@ -7,6 +7,9 @@ pub use api::{
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
 mod api;
+pub use api::{
+    CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
+};
 mod client;
 mod harness;
 pub(crate) mod ipc;
@@ -241,18 +244,21 @@ pub use api::{
     RUNTIME_CONTROL_CAPABILITIES,
 };
 pub use api::{
-    AcceptAppHostActionRequest, AppAutomationStatus, AppAutomationSummary,
-    AppCapabilityDecisionStatus, AppConnectionSummary, AppFileContents, AppHostAction,
-    AppInboxConnection, AppInboxRouteRequest, AppInboxRouteSummary, AppInstallationRequest,
-    AppInstallationSummary, AppLogEntrySummary, AppReleaseSummary, AppRequestErrorCode,
-    AppSetInstallation, AppUpdatePhase, AppUpdateSummary, AppWorkerAction, AppWorkerPhase,
-    AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
+    AcceptAppHostActionRequest, AnswerUserDomainInteractionRequest, AppAutomationStatus,
+    AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary, AppFileContents,
+    AppFrontendAsset, AppFrontendBundle, AppHostAction, AppInboxConnection, AppInboxRouteRequest,
+    AppInboxRouteSummary, AppInstallationRequest, AppInstallationSummary, AppLogEntrySummary,
+    AppReleaseSummary, AppRequestErrorCode, AppSetInstallation, AppUpdatePhase, AppUpdateSummary,
+    AppViewChannelError, AppWorkerAction, AppWorkerPhase, AppWorkerRequest, AppWorkerSummary,
+    CallUserAppViewRequest, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
     CreateAppInboxRouteRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus,
     DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest, GrantAppConnectionRequest,
-    GrantAppFileRequest, ListAppInstallationsRequest, OpenAppViewRequest,
-    PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest,
-    RevokeAppConnectionRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
-    SetAppViewPanelRequest, TestAppInboxRouteRequest, UninstallAppRequest, APP_SET_SCHEMA,
+    GrantAppFileRequest, ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
+    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
+    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
+    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
+    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
+    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
@@ -278,7 +284,15 @@ pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
+pub use api::{
+    KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+};
 pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
+pub use api::{
+    NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
+    NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
+};
+pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 

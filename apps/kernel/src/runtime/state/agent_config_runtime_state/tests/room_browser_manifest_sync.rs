@@ -1368,6 +1368,7 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         crate::transport::relay_peer::RelayPeerResponse::Pong {
             value: "launch request observed".to_string(),
             daemon_id: "worker-1".to_string(),
+            relay_peer_protocol_version: None,
         },
     )
     .await;
@@ -1377,7 +1378,7 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         .expect("actual provider launch sender should return its peer response");
     assert!(matches!(
         launch_response,
-        crate::transport::relay_peer::RelayPeerResponse::Pong { ref value, ref daemon_id }
+        crate::transport::relay_peer::RelayPeerResponse::Pong { ref value, ref daemon_id, .. }
             if value == "launch request observed" && daemon_id == "worker-1"
     ));
 

@@ -51,7 +51,7 @@ impl KernelRuntimeState {
                 continue;
             }
             let Some(session) = self.validation_session(&operation.owner) else {
-                // No session to show it in yet; it stays pending until one exists.
+                // No owner view or Room yet; retain the durable pending request.
                 self.app_control()
                     .end_validation_prompt(&operation.operation_id);
                 continue;
@@ -108,10 +108,14 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The owner's most recently used session hosts the approval, so it
-    /// appears on the terminals the person is using: preferably one the owner
-    /// hosts. Collaborators in that session see it; only the owner answers.
+    /// Native views route owner decisions to the user domain, even when an
+    /// unrelated Room exists. Otherwise the most recently used session hosts it.
+    /// Prefer a Room the owner hosts. Collaborators see its decisions, but
+    /// only the owner can answer.
     pub(super) fn validation_session(&self, owner: &str) -> Option<String> {
+        if !self.app_control().user_views().list(owner).is_empty() {
+            return Some(String::new());
+        }
         self.owned
             .session_store
             .list_sessions()

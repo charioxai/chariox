@@ -43,6 +43,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn pump_transport_runtime(&self) {
         self.owned.announce_durable_writer_condition();
+        self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -452,6 +453,24 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.stop_app_grant_wakes();
+        for id in self.app_control().user_views().shutdown() {
+            self.app_control().views().forget_session(&id);
+            self.app_control().views().keep_pumping(&id);
+        }
+        let browser_host = self.owned.kernel_browser_host.clone();
+        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "kernel_browser.shutdown",
+                message: "MD-2: shutdown task failed".into(),
+            })
+            .and_then(|result| {
+                result.map_err(|message| DaemonError::LocalTransport {
+                    operation: "kernel_browser.shutdown",
+                    message,
+                })
+            });
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;
@@ -499,6 +518,7 @@ impl KernelRuntimeState {
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        browser_result?;
         controller_result?;
         app_result
     }

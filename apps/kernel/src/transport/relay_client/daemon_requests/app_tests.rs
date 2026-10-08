@@ -25,6 +25,7 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
             Some(caller("alice")),
             encrypted,
             &cache,
+            &Default::default(),
         )
         .await;
         assert!(outcome.encrypted_response.is_none());
@@ -1043,4 +1044,158 @@ fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[tokio::test]
+async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Open {
+            url: "about:blank".into(),
+        },
+    });
+    let command = KernelCommand::from_local_request_with_caller(
+        "browser-retry",
+        KernelCommandSource::RelayClient,
+        KernelCaller::from_relay_identity(caller("alice")),
+        None,
+        None,
+        &request,
+    );
+    let revision = router
+        .runtime_state()
+        .kernel_browser_receipt_revision(&command, &request)
+        .unwrap();
+    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request)
+        .with_browser_protection_revision(revision);
+    assert!(matches!(
+        cache.reserve("browser-retry", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    let response = serde_json::json!({"KernelBrowser":{"result":{"tab_id":"alice-private-tab"}}});
+    cache
+        .complete(
+            "browser-retry".into(),
+            fingerprint,
+            &KernelOutgoingFrame::Response {
+                request_id: "browser-retry".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    let sequence = AtomicU64::new(1);
+    let replay = |identity| {
+        dispatch_relay_client_request(
+            &router,
+            &sequence,
+            identity,
+            request.clone(),
+            Some("browser-retry".into()),
+            &cache,
+        )
+    };
+    // Same admitted caller gets the original receipt, so an open/input is not repeated.
+    match replay(Some(caller("alice"))).await {
+        RelayDispatchOutcome::Response(value) => assert_eq!(value, response),
+        _ => panic!("same caller lost its browser retry receipt"),
+    }
+    match replay(Some(caller("bob"))).await {
+        RelayDispatchOutcome::RelayError(error) => {
+            assert_eq!(error.code, "duplicate_command_conflict")
+        }
+        _ => panic!("another user received Alice's browser receipt"),
+    }
+    for identity in [
+        None,
+        Some(RelayCallerIdentity {
+            user_id: None,
+            ..caller("alice")
+        }),
+        Some(RelayCallerIdentity {
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Service,
+            ..caller("alice")
+        }),
+    ] {
+        match replay(identity).await {
+            RelayDispatchOutcome::RelayError(error) => assert_eq!(error.code, "unauthorized"),
+            _ => panic!("browser cache bypassed terminal admission"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
+    for pixels in [false, true] {
+        let root = TestRoot::new();
+        let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+        let router =
+            CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
+        let state = router.runtime_state();
+        state.install_kernel_browser_fixture("alice", &root.0);
+        let cache = CommandResultCache::default();
+        let sequence = AtomicU64::new(1);
+        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: if pixels {
+                crate::local::KernelBrowserCommand::Screenshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            } else {
+                crate::local::KernelBrowserCommand::Snapshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            },
+        });
+        assert!(matches!(
+            dispatch_relay_client_request(
+                &router,
+                &sequence,
+                Some(caller("alice")),
+                request.clone(),
+                Some("MD5-receipt".into()),
+                &cache
+            )
+            .await,
+            RelayDispatchOutcome::Response(_)
+        ));
+        state.register_kernel_browser_fixture_value("alice", "MD5-sensitive-fixture");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    Some(caller("alice")),
+                    request.clone(),
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: changed Vault protection must reject the old text/pixel receipt"
+        );
+        state.fence_kernel_browser_fixture("alice");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    Some(caller("alice")),
+                    request,
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: a fenced registry cannot replay an observation"
+        );
+        state.shutdown_cleanup().await.unwrap();
+    }
 }

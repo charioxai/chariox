@@ -33,10 +33,25 @@ impl KernelRuntimeState {
         let turn_cancelled = Arc::new(self.app_call_turn_cancellation(agent));
         let observe_turn = turn_cancelled.clone();
         let cancelled = CancelOnDrop(Arc::new(AtomicBool::new(false)));
-        let lease = match self
-            .app_lease_on_demand(agent.owner_user_id(), &tool.name)
-            .await
-        {
+        // MP-08/MP-11: every wait observes the captured binding generation,
+        // including startup and reply admission, not just App execution.
+        let authority_lost = || async {
+            while !turn_cancelled()
+                && self
+                    .owned
+                    .agent_store
+                    .get_agent(agent.id())
+                    .is_ok_and(|current| same_binding(&current, agent, &tool.name))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        let lease_result = tokio::select! {
+            biased;
+            _ = authority_lost() => return Err(unavailable()),
+            result = self.app_lease_on_demand(agent.owner_user_id(), &tool.name) => result,
+        };
+        let lease = match lease_result {
             Ok(lease) => lease,
             Err(_) if self.app_updating(agent.owner_user_id(), &tool.name).await => {
                 return Err(coded(app_call_errors::updating()));
@@ -96,20 +111,19 @@ impl KernelRuntimeState {
         // The MCP connection can remain open after its turn is cancelled.
         // Dropping the response future asks the existing worker peer to abort
         // the handler, preserving that peer's cancellation/receipt ownership.
+        // MP-08/MP-11: revoking the binding wakes and fails the waiting call too.
         let reply = tokio::select! {
             biased;
-            _ = async {
-                while !turn_cancelled() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            } => return Err(unavailable()),
+            _ = authority_lost() => return Err(unavailable()),
             reply = response.receive() => reply.map_err(worker_call_error)?,
         };
-        let permit = self
-            .app_control()
-            .admit_reply(reply.remaining(crate::session::unix_epoch_ms()))
-            .await
-            .map_err(|_| coded(app_call_errors::reply_unrecorded()))?;
+        let permit = tokio::select! {
+            biased;
+            _ = authority_lost() => return Err(unavailable()),
+            permit = self.app_control().admit_reply(reply.remaining(crate::session::unix_epoch_ms())) => {
+                permit.map_err(|_| coded(app_call_errors::reply_unrecorded()))?
+            }
+        };
         let owned = self.owned.clone();
         let payload = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -268,7 +282,7 @@ fn require_binding(
 ) -> Result<(), DaemonError> {
     if current.owner_user_id() != expected.owner_user_id()
         || current.session_id() != expected.session_id()
-        || !current.has_extension_grant(ExtensionKind::App, &tool.name)
+        || !same_binding(current, expected, &tool.name)
     {
         return Err(unavailable());
     }
@@ -285,6 +299,24 @@ fn require_binding(
         }
     }
     Ok(())
+}
+
+// MP-11: revoke/regrant cannot revive a retained call from the old grant.
+fn same_binding(
+    current: &crate::agent::AgentInstance,
+    expected: &crate::agent::AgentInstance,
+    name: &str,
+) -> bool {
+    let grant = |agent: &crate::agent::AgentInstance| {
+        agent
+            .extension_grants()
+            .iter()
+            .find(|grant| grant.kind == ExtensionKind::App && grant.name == name)
+            .map(|grant| grant.app_grant.clone())
+    };
+    current.has_extension_grant(ExtensionKind::App, name)
+        && current.remote_execution() == expected.remote_execution()
+        && grant(current) == grant(expected)
 }
 
 #[cfg(test)]

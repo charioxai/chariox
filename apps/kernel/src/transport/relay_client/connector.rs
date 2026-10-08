@@ -795,7 +795,16 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(RELAY_CONNECT_TIMEOUT, connect_async(&relay_url)).await {
+        match timeout(
+            RELAY_CONNECT_TIMEOUT,
+            tokio_tungstenite::connect_async_with_config(
+                &relay_url,
+                None,
+                std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
+            ),
+        )
+        .await
+        {
             Err(_) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",

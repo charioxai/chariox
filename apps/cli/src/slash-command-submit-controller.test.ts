@@ -335,3 +335,10 @@ test("slash command submit sends workflow notification settings to shared shell"
   assert.deepEqual(harness.calls(), [])
   assert.equal(harness.clearPromptCount(), 1)
 })
+
+test("attachment commands clear their command text before intake inserts image tokens",async()=>{
+  const events:string[]=[]
+  const harness=createHarness({clearPromptText:()=>events.push("clear"),handleAttachmentCommand:()=>{events.push("image-token")}})
+  await createSlashCommandSubmitController(harness.deps).submit("/attach region tab t 0 0 1 1",{allowSlashCommandSubmission:true})
+  assert.deepEqual(events,["clear","image-token"])
+})

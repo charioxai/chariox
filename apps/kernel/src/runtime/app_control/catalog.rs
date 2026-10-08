@@ -157,7 +157,9 @@ impl AppControlService {
     /// The caller holds an App admission slot.
     pub(crate) fn seed_bound_dormant(&self, agent: &AgentInstance) {
         for grant in agent.extension_grants() {
-            if grant.kind == ExtensionKind::App {
+            if grant.kind == ExtensionKind::App
+                && agent.has_extension_grant(ExtensionKind::App, &grant.name)
+            {
                 self.seed_dormant(agent.owner_user_id(), &grant.name);
             }
         }

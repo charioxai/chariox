@@ -369,7 +369,7 @@ async fn rejects_oversized_chunk_request() {
         .contains("between 1 and 131072 bytes"));
 }
 
-async fn create_running_slice(fixture: &LiveWorker) {
+pub(super) async fn create_running_slice(fixture: &LiveWorker) {
     dispatch_json(
         &fixture.home,
         json!({"CreateSlice": {

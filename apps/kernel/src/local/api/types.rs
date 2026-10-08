@@ -24,9 +24,11 @@ mod event_publication;
 mod external_provider_session;
 mod history;
 mod kernel_access;
+mod kernel_browser;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod notes;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -37,10 +39,12 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod screenshot;
 mod session_control;
 mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod user_domain_access;
 mod waiting_room;
 mod workflow;
 mod workflow_notification;
@@ -60,9 +64,11 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
+pub use kernel_browser::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use notes::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -73,10 +79,12 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
@@ -255,8 +263,13 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 452;
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+/// Version 477 combines 452 and 462 (MP-08/MP-10/MP-11 A02 + A05).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 477;
