@@ -11,6 +11,7 @@ type AppCommandClient = {
 }
 
 type ConnectionOptions = {
+  relayAuthorizationIssuer?: { endpoint: string; daemonId: string }
   relayAuthToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
@@ -72,6 +73,7 @@ export async function runAppCommand(
       options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(),
       {
         ...(options.relayToken ? { relayAuthToken: options.relayToken } : {}),
+        ...(options.relayTokenIssuer ? { relayAuthorizationIssuer: options.relayTokenIssuer } : {}),
         ...(options.targetDaemonId ? { targetDaemonId: options.targetDaemonId } : {}),
         ...(options.targetDaemonAlias ? { targetDaemonAlias: options.targetDaemonAlias } : {}),
       },

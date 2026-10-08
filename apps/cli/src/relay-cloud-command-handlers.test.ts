@@ -122,8 +122,9 @@ test("restarted TUI client-token command issues for its saved paired login ident
   const claims = { sub: linked.clientId, client_id: linked.clientId, subject_kind: "CLIENT",
     public_key_thumbprint: "restart-key", allowed_targets: ["kernel-1"] }
   const token = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic`
-  const client = { send: async (request: { IssueCloudRelayClientToken?: { client_id: string } }) => {
+  const client = { socketPath: "ws://127.0.0.1:49911/kernel", send: async (request: { RelayStatus?: null; IssueCloudRelayClientToken?: { client_id: string } }) => {
     requests.push(request)
+    if ("RelayStatus" in request) return { RelayStatus: {status: {daemon_id: "issuing-kernel"}} }
     // Session-authenticated Cloud issuance refuses a different, unpaired subject.
     assert.equal(request.IssueCloudRelayClientToken?.client_id, linked.clientId, "identity_revoked")
     return { CloudRelayClientTokenIssued: {
@@ -145,9 +146,12 @@ test("restarted TUI client-token command issues for its saved paired login ident
   assert.deepEqual(requests, [{ IssueCloudRelayClientToken: {
     target_daemon_alias: "builder-kernel", client_id: linked.clientId,
     session_id: "session-1", public_key_thumbprint: "restart-key",
-  } }])
+  } }, {RelayStatus: null}])
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
   assert.match(notices[0]!, /--target-daemon-id kernel-1/)
+  assert.match(notices[0]!, /--relay-token-issuer/)
+  const commandOptions = parseArgs(["--relay-url", "wss://relay.example", "--relay-token", "synthetic", "--target-daemon-id", "kernel-1", "--relay-token-issuer", "ws://127.0.0.1:49911/kernel", "issuing-kernel"])
+  assert.deepEqual(commandOptions.relayTokenIssuer, {endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "issuing-kernel"})
 })
 
 test("explicit Cloud revocation preserves the link when acknowledgement fails", async () => {

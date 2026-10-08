@@ -1,5 +1,6 @@
 import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
+import { isLocalRelayIssuerEndpoint, type RelayAuthorizationIssuer } from "./relay-authorization.js"
 import { randomUUID } from "node:crypto"
 import {
   closeSync,
@@ -235,10 +236,14 @@ type LocalIpcClientOptions = {
   controlRequestRetryDeadlineMs?: number | undefined
   controlResponseStallMs?: number | undefined
   relayIdentity?: RelayClientIdentity | undefined
+  relayAuthorizationIssuer?: RelayAuthorizationIssuer | undefined
 }
 
 export class LocalIpcClient {
   readonly socketPath: string
+  private readonly relayIssuer: LocalIpcClient | null
+  private readonly relayIssuerDaemonId: string | null
+  private relayIssuerNoticeSent = false
   private readonly localAuthEnvironment: NodeJS.ProcessEnv
   private readonly localAuthEndpoint: string | null
   private readonly localAuthToken: string | null
@@ -310,6 +315,10 @@ export class LocalIpcClient {
     )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
     this.relayIdentity = options.relayIdentity ?? null
+    const issuer = options.relayAuthorizationIssuer
+    if (issuer && (!this.relayAuthToken || !issuer.daemonId || !isLocalRelayIssuerEndpoint(issuer.endpoint))) throw new Error("relay renewal issuer must identify an authenticated local kernel")
+    this.relayIssuerDaemonId = issuer?.daemonId ?? null
+    this.relayIssuer = issuer ? new LocalIpcClient(issuer.endpoint, {localAuthEnvironment, kernelPingIntervalMs: 60_000, controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 10_000}) : null
     if (this.relayIdentity && !this.relayAuthToken) {
       throw new Error("a CLI relay identity can only be used with relay transport")
     }
@@ -532,6 +541,7 @@ export class LocalIpcClient {
   }
 
   destroy(): void {
+    this.relayIssuer?.destroy()
     this.clearRuntimeTransportState("kernel client destroyed")
     this.destroyWebSocket("control")
     this.destroyWebSocket("event")
@@ -967,19 +977,21 @@ export class LocalIpcClient {
     if (claims.public_key_thumbprint !== this.relayIdentity.publicKeyThumbprint) return
     const renewal: RelayAuthorizationRenewal = new RelayAuthorizationRenewal(claims.exp * 1000,
       (): Promise<number> => this.renewRelayAuthorization(renewal), message => this.refuseRelayAuthorization(message), message => {
-        this.emitSyntheticEvent({event: "runtime_notices", notices: [{message}]})
+        this.relayRenewalNotice(message)
       })
     this.relayRenewal = renewal
     // Probe immediately, before the user relies on silent renewal. Capability
     // negotiation also handles kernels on branches with unrelated version bumps.
     void this.requireRelayRenewalSupport().catch(error => {
+      if (this.relayRenewal === renewal && error instanceof LocalIpcError && error.code === "relay_renewal_issuer_unavailable") this.relayRenewalNotice(error.message)
       if (this.relayRenewal === renewal && error instanceof LocalIpcError && !error.retryable) this.refuseRelayAuthorization(error.code === "kernel_upgrade_required" ? error.message : undefined)
     })
   }
 
   private async requireRelayRenewalSupport(): Promise<void> {
-    if (this.relayRenewalNegotiated) return
-    const response = await this.send<{RelayStatus: {status: {capabilities?: string[]}}}>({RelayStatus: null})
+    if (this.relayRenewalNegotiated && !this.relayIssuer) return
+    const response = await this.sendToRelayIssuer<{RelayStatus: {status: {capabilities?: string[]; daemon_id?: string}}}>({RelayStatus: null})
+    if (this.relayIssuer && response.RelayStatus?.status?.daemon_id !== this.relayIssuerDaemonId) throw new LocalIpcError("negotiate relay renewal", "The original relay issuing kernel identity changed", "authorization_denied", false)
     if (!response.RelayStatus?.status?.capabilities?.includes(relayAuthorizationRenewalCapability)) {
       throw new LocalIpcError("negotiate relay renewal", `Hosted terminal renewal requires kernel protocol ${relayAuthorizationRenewalMinimumProtocolVersion} or newer; update the kernel before attaching this terminal.`, "kernel_upgrade_required", false)
     }
@@ -993,13 +1005,14 @@ export class LocalIpcClient {
     if (!target || !this.relayIdentity) throw new LocalIpcError("renew relay authorization", "Relay authorization is invalid", "authorization_denied")
     // The kernel keeps its Cloud authority private and performs the existing
     // control-plane issuance call. Runtime traffic remains encrypted via relay.
-    const reply = await this.send<{CloudRelayClientTokenIssued: {token: {relay_url: string; relay_token: string}}}>(
+    const reply = await this.sendToRelayIssuer<{CloudRelayClientTokenIssued: {token: {relay_url: string; relay_token: string}}}>(
       issueCloudRelayClientTokenRequest(target, previous.sub, previous.session_id, this.relayIdentity.publicKeyThumbprint))
     const grant = reply.CloudRelayClientTokenIssued?.token
     if (!grant || grant.relay_url !== this.socketPath) throw new LocalIpcError("renew relay authorization", "Relay authorization renewal targets an invalid relay", "authorization_denied")
     const next = requireRenewedRelayAuthorization(previous, grant.relay_token, target)
     if (this.relayAuthorizationFailure || this.relayRenewal !== renewal) throw new LocalIpcError("renew relay authorization", "Renewal was cancelled", "client_closed")
     this.relayAuthToken = grant.relay_token
+    this.relayIssuerNoticeSent = false
     // A lane opening concurrently must finish its handshake, then receive the
     // same grant as the retained lane. Future reconnects use the new token.
     await Promise.all((["control", "event"] as const).map(async lane => {
@@ -1009,6 +1022,23 @@ export class LocalIpcClient {
       if (socket?.readyState === WebSocket.OPEN) await reauthenticateRelaySocket(socket, this.relayAuthToken!, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
     }))
     return next.exp * 1000
+  }
+
+  private relayRenewalNotice(message: string): void {
+    if (this.relayIssuerNoticeSent) return
+    this.relayIssuerNoticeSent = true
+    this.emitSyntheticEvent({event: "runtime_notices", notices: [{message}]})
+  }
+
+  private async sendToRelayIssuer<T>(request: unknown): Promise<T> {
+    try { return await (this.relayIssuer ?? this).send<T>(request) }
+    catch (error) {
+      if (this.relayIssuer && error instanceof LocalIpcError && (error.retryable || error.code === "outcome_unknown" || error.code === "authentication_failed")) {
+        const expires = new Date(relayAuthorization(this.relayAuthToken)!.exp * 1000).toISOString()
+        throw new LocalIpcError("renew relay authorization", `The original issuing kernel is unavailable. The current connection remains valid until ${expires}; renewal will retry without changing its authority.`, "relay_renewal_issuer_unavailable", true)
+      }
+      throw error
+    }
   }
 
   private refuseRelayAuthorization(upgradeMessage?: string): void {

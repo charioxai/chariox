@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import test from "node:test"
+import { LocalIpcError } from "./local-ipc-error.js"
 import { setTimeout as sleep } from "node:timers/promises"
-import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal } from "./relay-authorization.js"
+import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, isLocalRelayIssuerEndpoint } from "./relay-authorization.js"
 
 const original={sub:"terminal",subject_kind:"client",realm_id:"realm",account_id:"account",user_id:"owner",client_id:"terminal",public_key_thumbprint:"a".repeat(64),exp:Date.now()/1000+10,allowed_actions:["client.connect","packet.route"],allowed_targets:["kernel","friendly"]}
 const token=(claims:unknown)=>`synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`
@@ -44,4 +45,28 @@ test("explicit shutdown retires an in-flight issuer response",async()=>{
   const renewal=new RelayAuthorizationRenewal(Date.now()+100,()=>new Promise(resolve=>{release=resolve}),()=>{refused++})
   await sleep(30);renewal.stop();release(Date.now()+100)
   await sleep(140);assert.equal(refused,0)
+})
+
+
+test("issuer routes accept only local endpoints without credential-bearing URLs", () => {
+  for (const endpoint of ["/private/kernel.sock", "ws+unix:///private/kernel.sock", "ws://127.0.0.1:49911/kernel", "ws://[::1]:49911/kernel"]) assert.equal(isLocalRelayIssuerEndpoint(endpoint), true)
+  for (const endpoint of ["wss://hosted.example/kernel", "ws://remote.example/kernel", "ws://user:secret@127.0.0.1/kernel", "ws://127.0.0.1/kernel?token=secret", "ws://127.0.0.1/other"]) assert.equal(isLocalRelayIssuerEndpoint(endpoint), false)
+})
+
+test("an unavailable issuer retries and resumes across multiple original expiries", async () => {
+  let attempts = 0, successes = 0, refused = 0
+  const notices: string[] = []
+  const expiry = Date.now() + 1500
+  const renewal = new RelayAuthorizationRenewal(expiry, async () => {
+    attempts++
+    if (attempts <= 2) throw new LocalIpcError("renew", "Original issuing kernel unavailable", "relay_renewal_issuer_unavailable", true)
+    successes++
+    return Date.now() + 1500
+  }, () => { refused++ }, message => { notices.push(message) })
+  try {
+    await sleep(4200)
+    assert.equal(refused, 0)
+    assert.equal(notices.length, 1)
+    assert(successes >= 3, "admission survives several original lifetimes after recovery")
+  } finally { renewal.stop() }
 })

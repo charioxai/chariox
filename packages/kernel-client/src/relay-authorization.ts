@@ -7,6 +7,21 @@ import { LocalIpcError } from "./local-ipc-error.js"
 export const relayAuthorizationRenewalCapability = "terminal_relay_authorization_renewal_v1"
 export const relayAuthorizationRenewalMinimumProtocolVersion = 472
 
+export type RelayAuthorizationIssuer = { endpoint: string; daemonId: string }
+
+// Issuer routes are public bootstrap metadata. Local authentication stays in
+// the private profile; never send its bearer credential to a remote endpoint.
+export function isLocalRelayIssuerEndpoint(endpoint: string): boolean {
+  if (typeof endpoint !== "string") return false
+  if (endpoint.startsWith("/")) return true
+  if (endpoint.startsWith("ws+unix:///")) return !/[?#]/.test(endpoint)
+  try {
+    const url = new URL(endpoint)
+    return url.protocol === "ws:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)
+      && !url.username && !url.password && !url.search && !url.hash && ["/", "/kernel"].includes(url.pathname)
+  } catch { return false }
+}
+
 export function relayCloseError(reason: string): LocalIpcError {
   const temporary = reason === "target daemon disconnected from relay" || reason === "target daemon is not connected to relay"
   return new LocalIpcError("relay transport", reason, temporary ? "connection_closed" : "authorization_denied", temporary)
@@ -53,7 +68,7 @@ export class RelayAuthorizationRenewal {
   private timer?: ReturnType<typeof setTimeout>
   private expiryTimer?: ReturnType<typeof setTimeout>
   private stopped = false
-  private authorityUnavailable = false
+  private authorityUnavailable: "machine" | "issuer" | null = null
   constructor(private expiresAtMs: number, private readonly renew: () => Promise<number>, private readonly refused: (message?: string) => void, private readonly notice: (message: string) => void = () => {}) { this.armExpiry(); this.schedule() }
   stop() { this.stopped = true; if (this.timer) clearTimeout(this.timer); if (this.expiryTimer) clearTimeout(this.expiryTimer) }
   private armExpiry() {
@@ -73,20 +88,25 @@ export class RelayAuthorizationRenewal {
     try {
       const expiry = await this.renew()
       if (this.stopped) return
+      this.authorityUnavailable = null
       this.expiresAtMs = expiry
       this.armExpiry()
       this.schedule()
     } catch (error) {
       if (this.stopped) return
       if (error instanceof LocalIpcError && error.code === "relay_renewal_authority_unavailable") {
-        this.authorityUnavailable = true
+        this.authorityUnavailable = "machine"
         this.notice(error.message) // Retain only the current admission's expiry timer.
+      } else if (error instanceof LocalIpcError && error.code === "relay_renewal_issuer_unavailable") {
+        if (!this.authorityUnavailable) this.notice(error.message)
+        this.authorityUnavailable = "issuer"
+        this.schedule(true)
       } else if (error instanceof LocalIpcError && !error.retryable) { this.refused(); this.stop() }
       else this.schedule(true)
     }
   }
   private expire() {
-    this.refused(this.authorityUnavailable ? "The account-issued relay grant expired; this machine-only target cannot renew it. Connection ended. Obtain a fresh grant from the account-linked issuing kernel." : undefined)
+    this.refused(this.authorityUnavailable === "issuer" ? "The relay grant expired while the original issuing kernel was unavailable. Connection ended. Obtain a fresh grant from that issuing kernel." : this.authorityUnavailable === "machine" ? "The account-issued relay grant expired; this machine-only target cannot renew it. Connection ended. Obtain a fresh grant from the account-linked issuing kernel." : undefined)
     this.stop()
   }
 }

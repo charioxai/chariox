@@ -405,6 +405,7 @@ export type CliOptions = {
   automationSocket?: string
   relayUrl?: string
   relayToken?: string
+  relayTokenIssuer?: { endpoint: string; daemonId: string }
   targetDaemonId?: string
   targetDaemonAlias?: string
   detached?: boolean

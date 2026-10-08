@@ -301,11 +301,7 @@ fn terminal_client_issuance<'a>(
         },
         CloudTerminalClientOptions {
             pair_account_client: !keyed && profile.client_id.is_none(),
-            ttl_ms: Some(if keyed {
-                CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS
-            } else {
-                CLOUD_RELAY_CLIENT_TOKEN_TTL_MS
-            }),
+            ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
             session_id: request.session_id.clone(),
             public_key_thumbprint: request.public_key_thumbprint.clone(),
             ..CloudTerminalClientOptions::default()
@@ -448,7 +444,7 @@ mod tests {
         };
         let (subject, options) = terminal_client_issuance(&profile, &request);
         assert_eq!(subject, "paired-terminal");
-        assert_eq!(options.ttl_ms, Some(CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS));
+        assert_eq!(options.ttl_ms, Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS));
         assert_eq!(options.session_id.as_deref(), Some("session-target"));
         assert!(!options.pair_account_client);
         // Revocation must be enforced by issuance, never undone by re-pairing.

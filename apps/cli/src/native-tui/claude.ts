@@ -61,6 +61,7 @@ type NativeClaudeOptions = {
   kernelUrl?: string
   kernelPort?: string
   relayUrl?: string
+  relayTokenIssuer?: { endpoint: string; daemonId: string }
   relayToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
@@ -91,6 +92,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,
     }
@@ -259,6 +261,9 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
         break
       case "--relay-url":
         options.relayUrl = next()
+        break
+      case "--relay-token-issuer":
+        options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
         options.relayToken = next()
