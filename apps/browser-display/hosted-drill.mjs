@@ -33,11 +33,10 @@ try{
  await page.waitForTimeout(2000);
  const session=page.getByText(process.env.MD_SESSION_ALIAS??'display-phase31',{exact:true});if(process.env.MD_OPEN_SESSION==='1'&&await session.count()===1){await session.click();await page.waitForTimeout(5000);r.opened_session=true}
  await page.getByRole('button',{name:'Open Browser panel',exact:true}).click();
- r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
  for(const [site,url]of sites){
   stage=site;const row={site,url,status:'RED',screenshots:[],clicks:[],typing:[]};r.sites.push(row);await sample();
   try{
-   row.step='address';await page.getByRole('textbox',{name:'Browser address'}).fill(url);row.step='open';await page.getByRole('button',{name:site===sites[0][0]?'Open tab':'Go',exact:true}).click();
+   row.step='address';await page.getByRole('textbox',{name:'Browser address'}).fill(url);row.step='open';await page.getByRole('button',{name:await page.getByRole('button',{name:'Close tab',exact:true}).count()?'Go':'Open tab',exact:true}).click();
    row.step='tab';await page.getByRole('button',{name:'Close tab',exact:true}).waitFor({timeout:30000});row.step='presentation';const readiness=Date.now();await page.waitForFunction(()=>{const mode=document.querySelector('[data-paint-mode]')?.getAttribute('data-paint-mode');return mode==='mirror'||mode==='video'&&Boolean(document.querySelector('[data-display-sequence]'))||document.querySelector('.kernel-browser-fallback')?.textContent?.includes('Image fallback')},{},{timeout:60000});row.mode_ready_ms=Date.now()-readiness;
    row.mode=await page.locator('[data-paint-mode]').count()?await page.locator('[data-paint-mode]').getAttribute('data-paint-mode'):'image';
    row.alerts=await page.locator('[role=alert]').allTextContents();
@@ -57,10 +56,11 @@ try{
     row.final_canvas=await canvas.evaluate(c=>({width:c.width,height:c.height,kind:c.dataset.displayKind,sequence:c.dataset.displaySequence}));
    }
    const screen2=output+'/'+site+'-dpr'+dpr+'-after-scroll.png';await page.screenshot({path:screen2,fullPage:true});row.screenshots.push(screen2);row.alerts=await page.locator('[role=alert]').allTextContents();row.status=!['mirror','video'].includes(row.mode)?'RED_RENDER_NOT_READY':row.alerts.some(a=>/input unavailable/i.test(a))?'RED_INPUT':'PUBLIC_SITE_CAPTURED';if(row.status==='RED_INPUT')row.scroll={...row.scroll,valid:false,reason:'MP-10: refused input, not scroll performance'};row.visible_text=(await page.locator('[aria-label="Kernel browser"]').last().innerText()).slice(-1000);
-  }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).catch(()=>{})}
+  }catch(e){row.failedStage=stage;row.failed_step=row.step;row.errorCode=e.name;row.alerts=await page.locator('[role=alert]').allTextContents().catch(()=>[]);await page.screenshot({path:output+'/'+site+'-failure.png',fullPage:true}).then(()=>row.screenshots.push(output+'/'+site+'-failure.png')).catch(()=>{})}
   await save();shaped?.check();
  }
- r.observations=await page.evaluate(()=>mdHosted);r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';
+ r.http_rtt=[];for(let i=0;i<10;i++)r.http_rtt.push(await page.evaluate(async()=>{const t=performance.now();await fetch('/validation/ready',{cache:'no-store'});return performance.now()-t}));
+ r.observations=await page.evaluate(()=>mdHosted);r.status=r.sites.every(s=>s.status==='PUBLIC_SITE_CAPTURED')?'MEASURED_HOSTED_B3':'RED';if(r.status==='RED')process.exitCode=1;
 }catch(e){r.failedStage=stage;r.errorCode=e.name;process.exitCode=1;if(page)await page.screenshot({path:output+'/failure.png',fullPage:true}).catch(()=>{})}
 finally{
  if(page)await page.getByRole('button',{name:'Close tab',exact:true}).click({timeout:5000}).catch(()=>{});await browser?.close();if(shaped)try{r.network_statistics=await shaped.close()}catch(e){r.cleanup_error=e.name;r.status='RED_CLEANUP';process.exitCode=1}await save();console.log(JSON.stringify({MP:r.MP,status:r.status,sites:r.sites.map(s=>({site:s.site,status:s.status,mode:s.mode,fps:s.scroll?.fps})),failedStage:r.failedStage,errorCode:r.errorCode}));
