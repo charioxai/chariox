@@ -461,7 +461,7 @@ Split at responsibility boundaries when a PR exceeds its budget.
 
 | PR | Size | Deliverable and merge proof |
 | --- | --- | --- |
-| M0, feasibility helper | S, 250-450 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
+| M0, feasibility helper | M, 650-800 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
 | M1, shared adapter and lifecycle | M, 400-700 | Implement Linux-approved Computer adapter registration, private helper pairing, health/Stop/revoke and stale epochs; focused fake-backend tests and actual crash/denial proof |
 | M2, capture attachment | M, 500-800 | SCK filters/exclusions, HiDPI transforms, damage and protected exact repair; shared viewer shows public fixture pixels over encrypted kernel/relay events |
 | M3, input and takeover | M, 500-800 | Scoped mouse/scroll/keys/Unicode, seat serialization, local-human fence and owned reset; Linux-equivalent physical fixture and adversarial focus/takeover/death cases |
@@ -558,3 +558,7 @@ M0 adds the standalone helper, public fixture, fake-source tests, build script
 and owner guide. Compile checks and ad-hoc signing have run; real-window drills,
 Developer ID signing and TCC attribution remain unproven. This lane touches no
 running kernel, Keychain or reviewer state.
+
+M0 has no `LocalDaemonRequest`/`LocalDaemonResponse`, relay-event or terminal
+transport shape changes. Its standalone helper is not a client protocol, so
+the Protocol Change Rule requires no shared version bump for M0.
