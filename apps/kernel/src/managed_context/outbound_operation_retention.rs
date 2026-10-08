@@ -31,6 +31,11 @@ impl ManagedContextOutboundOperationStore {
             .artifact_lock
             .lock()
             .expect("operation retirement lock");
+        // Reopening an unused store must not materialize metadata. Persistence
+        // creates the directory only when admitting the first real record.
+        if !path_entry_exists(&parent)? {
+            return Ok(());
+        }
         create_private_directory(&parent)?;
         let entries = fs::read_dir(&parent)
             .map_err(|error| outbound_service_io_error("list operation metadata", error))?
