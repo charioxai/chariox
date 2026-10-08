@@ -43,7 +43,7 @@ test("flagged detached approval popup labels user domain and refuses a switched 
   let dispose!:()=>void
   const approvals=createRoot(cleanup=>{dispose=cleanup;return createCliKernelApprovalComposition({client,renderer:h.renderer,
     session:()=>({id:"",agents:[],active_interactions:[]}) as never,connected:()=>false,attached:()=>false,kernelConnected:()=>true,
-    dimensions:()=>({width:100,height:28}),themeRevision:()=>0,currentFocus:()=>null,promptFocus:()=>null,closeOtherDialog(){},notify(){},flashFooter(){},applySession(){},
+    dimensions:()=>({width:100,height:28}),themeRevision:()=>0,currentFocus:()=>null,promptFocus:()=>null,closeOtherDialog(){},notify(){},flashFooter(){},applySession(){},attachmentId:()=>null,
   })})
   const box=new BoxRenderable(h.renderer,{});h.renderer.root.add(box);approvals.assignPopupBox(box)
   try{

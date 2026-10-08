@@ -89,7 +89,7 @@ test("Manage then a real workspace header click returns to the room and focuses 
     promptPlaceholder: "Agent prompt", promptInputMaxHeight: 1, promptKeyBindings: [], promptAreaBackground: theme.background,
     onPaneGridBottomBorderRowRef: noop, onPaneGridBottomHorizontalSegmentRef: noop, onPaneGridBottomJunctionTextRef: noop,
     onRootMouseUp: noop, onResponseSurfaceMouseUp: noop, onFooterMouseUp: noop,
-    onResponseLayoutBoxRef: noop, onResponseRowBoxRef: noop, onPaneGridBorderRowRef: noop,
+    onResponseLayoutBoxRef: noop, onResponseRowBoxRef: noop, onPaneGridBorderRowRef: noop, onSudoBandRef: noop,
     onPaneGridHorizontalSegmentRef: noop, onPaneGridJunctionTextRef: noop, onPaneGridVerticalSegmentRef: noop,
     onResponsePrimaryPaneRef: noop, onHistoryLoadingBoxRef: noop, onTranscriptScrollboxRef: noop,
     onResponsePrimaryInteractionBoxRef: noop, onResponsePrimaryFooterBoxRef: noop,

@@ -44,7 +44,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
           return createCliKernelApprovalComposition({
             client: client as never, renderer: h.renderer,
             session: () => ({ id: sessionId, agents: [] }) as unknown as RuntimeSession,
-            connected: () => true, attached: () => true, kernelConnected: () => true,
+            connected: () => true, attached: () => true, kernelConnected: () => true, attachmentId: () => null,
             flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
             currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
             notify(message) { notices.push(message) },
@@ -365,7 +365,7 @@ test("MP-11 kafix owner request arrival, Esc, one badge and focused entry preser
       renderer: h.renderer, session: () => ({ id: "session", alias: "Daily", agents: [], active_interactions: [interaction] }) as unknown as RuntimeSession,
       connected: () => true, attached: () => true, kernelConnected: () => true, notify() {}, flashFooter() {},
       dimensions: () => ({ width: 90, height: 30 }), themeRevision: () => 0,
-      currentFocus: () => draft, promptFocus: () => draft, closeOtherDialog() {}, applySession() {},
+      currentFocus: () => draft, promptFocus: () => draft, closeOtherDialog() {}, applySession() {}, attachmentId: () => null,
     })
   })
   h.renderer.keyInput.on("keypress", approvals.handleKey)
