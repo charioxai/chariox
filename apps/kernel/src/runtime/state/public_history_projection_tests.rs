@@ -368,3 +368,124 @@ fn public_history_batch_withholds_secret_reference_collision() {
     drop(store);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn public_history_worker_provider_provenance_survives_local_run_collision() {
+    // MP-08 / MP-10 / MP-11: exercise authenticated projection and real fan-out.
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+    use crate::transport::relay_peer::{RelayPeerEvent, RelayProjectedOutputChunk};
+    let root = std::env::temp_dir().join(format!(
+        "chariox-am9-worker-provenance-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.history.operational.path =
+        Some(root.join("history.sqlite").display().to_string());
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+        .unwrap();
+    let make_run = |provider: &str, session_id: &str, agent_id: &str| {
+        RuntimeProviderRun::new(
+            "provider-run-1",
+            &LaunchProviderRequest::new(session_id, provider, provider, "default", "default")
+                .with_agent_id(agent_id),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "provenance-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    };
+    app.providers_mut()
+        .insert_run_for_test(make_run("opencode", session.id(), "local-agent"));
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel-1".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "execution-lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: Some("provider-run-1".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let protection = room_secret_observation::RoomSecretObservations::new(
+        root.join("observations"),
+        Default::default(),
+    );
+    let store = app.operational_history_store();
+    store.set_public_history_projector(Arc::new(move |event| {
+        protection.public_history_document(event, event.public_history_owner_user_id.as_deref()?)
+    }));
+    let outcome = crate::app::RemoteLeaseRuntime::new(&mut app).project_remote_runtime_projection(
+        crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+        RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: session.id().into(), home_agent_id: agent.id().into(), provider_run_id: "provider-run-1".into(),
+            provider_run: Some(make_run("codex", "worker-session", "worker-agent")), prompts: vec![],
+            output_chunks: vec![
+                RelayProjectedOutputChunk { kind: crate::terminal::TerminalOutputKind::ProviderTool, merge_key: Some("mcp".into()), bytes: br#"{"tool":"read","title":"files","output":"unregistered_private_canary"}"#.to_vec() },
+                RelayProjectedOutputChunk { kind: crate::terminal::TerminalOutputKind::ProviderTool, merge_key: Some("native".into()), bytes: br#"{"tool":"bash","description":"cwd /worker","input":{"command":"printf worker_native_canary","cwd":"/worker"},"output":"worker_native_canary"}"#.to_vec() },
+            ], notices: vec![], completions: vec![],
+        }).unwrap();
+    assert!(outcome.accepted);
+    let guard = store.lock_public_history().unwrap();
+    let private = store
+        .search_public_history_locked(
+            session.owner_user_id(),
+            session.id(),
+            None,
+            "unregistered_private_canary",
+            50,
+            None,
+        )
+        .unwrap();
+    assert!(
+        private.hits.is_empty(),
+        "worker MCP was classified using the colliding local OpenCode run"
+    );
+    let native = store
+        .search_public_history_locked(
+            session.owner_user_id(),
+            session.id(),
+            None,
+            "worker_native_canary",
+            50,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        native.hits.len(),
+        1,
+        "admitted worker-native tools must remain public"
+    );
+    let detail = store
+        .read_public_history_locked(
+            session.owner_user_id(),
+            session.id(),
+            &native.hits[0].event_ref,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(detail.text.contains("worker_native_canary"));
+    assert!(!detail.text.contains("unregistered_private_canary"));
+    drop(guard);
+    drop(store);
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
