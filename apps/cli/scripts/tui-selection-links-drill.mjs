@@ -210,7 +210,8 @@ try {
   // Real SGR drag across `width` cells of a visible row, then release.
   const dragSelect = async (at, width) => {
     await press(`\x1b[<0;${at.x+1};${at.y+1}M`)
-    await press(`\x1b[<32;${at.x+width};${at.y+1}M`)
+    const move = `\x1b[<32;${at.x+width};${at.y+1}M`
+    await press(options['batch-mouse'] ? `\x1b[<32;${at.x+2};${at.y+1}M${move}` : move)
     await press(`\x1b[<0;${at.x+width};${at.y+1}m`)
     await sleep(400)
   }
@@ -364,7 +365,8 @@ try {
     retained = await page.evaluate(() => term.getSelection() === 'Provider Accounts')
   } else {
   await press(`\x1b[<0;${selection.x+1};${selection.y+1}M`)
-  await press(`\x1b[<32;${selection.x+16};${selection.y+1}M`)
+  const move = `\x1b[<32;${selection.x+16};${selection.y+1}M`
+  await press(options['batch-mouse'] ? `\x1b[<32;${selection.x+8};${selection.y+1}M${move}` : move)
   }
   const during = await colors()
   if (!options['no-mouse']) await capture('02-dragging')

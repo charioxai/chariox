@@ -14,6 +14,19 @@ test("cli stdin key controller ignores unparsable input", () => {
   assert.deepEqual(harness.calls(), ["parse:x:true"])
 })
 
+test("MP-08 / MP-10 only named key presses clear text selection", () => {
+  for (const [event, shouldClear] of [
+    [keyEvent("x", { eventType: "press" }), true],
+    [keyEvent("x", { eventType: "release" }), false],
+    [keyEvent("", { eventType: "press" }), false],
+  ] as const) {
+    let clears = 0
+    const harness = createHarness({ parsedEvent: event, clearTextSelection: () => { clears++ } })
+    harness.controller.handleData("x")
+    assert.equal(clears, shouldClear ? 1 : 0)
+  }
+})
+
 test("cli stdin key controller closes dialog overlays on escape before other handlers", () => {
   const harness = createHarness({
     dialogOpen: true,
@@ -267,6 +280,7 @@ test("MP-08/MP-11 Ctrl+Shift+C never stops the provider or exits when selection 
 
 function createHarness(options: {
   parsedEvent?: CliStdinKeyEvent | null
+  clearTextSelection?: () => void
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
@@ -292,6 +306,7 @@ function createHarness(options: {
     ? keyEvent("x")
     : options.parsedEvent
   const deps: CliStdinKeyControllerDeps = {
+    ...(options.clearTextSelection ? { clearTextSelection: options.clearTextSelection } : {}),
     parseKeypress: (chunk, parseOptions) => {
       calls.push(`parse:${String(chunk)}:${parseOptions.useKittyKeyboard}`)
       return parsedEvent

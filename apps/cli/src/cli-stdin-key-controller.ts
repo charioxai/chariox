@@ -54,7 +54,9 @@ export function createCliStdinKeyController(
   return {
     handleData(chunk) {
       const event = deps.parseKeypress(chunk, { useKittyKeyboard: true })
-      if (!event) {
+      // Raw stdin may batch several mouse reports. OpenTUI parses those as an
+      // unnamed event here; its own stdin parser handles the individual reports.
+      if (!event?.name) {
         return false
       }
       const copyKey = event.name === "c" && (event.meta || (event.ctrl && event.shift))
