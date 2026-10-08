@@ -1,5 +1,30 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-11 room security corrections, am1 (2026-10-08)
+
+Agent allocation uses random 128-bit identities independent of the live-agent
+snapshot, so deletion and kernel restart do not restore a retired counter value.
+Current and legacy ID forms are reserved from aliases; message resolution rejects
+ambiguous references already present in restored state. Workflow execution bindings
+require the caller or an immutable direct child, including code-built definitions
+and persisted definitions at endpoint invocation.
+
+The workflow lane retains each command's provider epoch and forwarded peer binding
+and rechecks authority before execution and result delivery. Compiler work, including
+registry compilation and summary generation, runs outside the global app mutex with
+bounded admission; authorization and target validation are repeated after the wait.
+Linux adds `workflow_code/compiler_seccomp.rs`: Node threads remain allowed, process
+and namespace creation are refused, and a process-count limit supplies an additional
+bound. The private scratch mount is non-writable; no generated executable can be
+placed there. Trusted runtime mounts remain read-only. These are shared kernel
+policies, with no managed provider launch restriction or client-specific behavior.
+
+These corrections change no serialized protocol shape (local450/peer73). This entry
+records source policy only. Focused RED/GREEN checks, real relay/TUI/Codex evidence,
+current semantic review, and hosted/fresh-machine acceptance are separate gates;
+no acceptance result is inferred from this inventory.
+
+
 ## MP-08 / MP-10 / MP-11 room workflow compilation boundary, am1 (2026-10-07)
 
 The shared compiler selects Node from kernel operator configuration and ignores
