@@ -1,4 +1,10 @@
 """MP-08 / MP-11: one native clipboard policy for reads and agent paste."""
+# MP-08/MP-11: do not connect an owned display number to a host filesystem socket.
+import importlib.util as _x11_import
+from pathlib import Path as _X11Path
+_x11_spec=_x11_import.spec_from_file_location('native_x11',_X11Path(__file__).with_name('native-x11.py'))
+_x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module(_x11_module)
+
 import subprocess
 
 
@@ -44,7 +50,7 @@ def public_clipboard(processes, accessibility, mask=False, browser_processes=Non
         from selkies.Xlib import display
     connection=None
     try:
-        connection=display.Display()
+        connection=_x11_module.open_display(display)
         source=clipboard_source(connection,processes,before,accessibility)
         if source is None:return None
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)

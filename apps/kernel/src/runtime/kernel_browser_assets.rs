@@ -99,6 +99,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
     ),
     (
+        "native-x11.py",
+        include_bytes!("../../slice-linux-docker/docker/native-x11.py"),
+    ),
+    (
         "native-clipboard.py",
         include_bytes!("../../slice-linux-docker/docker/native-clipboard.py"),
     ),
