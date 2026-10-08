@@ -107,13 +107,15 @@ struct MacSource: NativeSource {
         }
         throw Refusal.target
     }
-    func fence(_ request: Request, element: AXUIElement, typing: Bool) throws {
+    func fence(_ request: Request, element: AXUIElement, typing: Bool,
+               clickGeometry: ClickGeometry? = nil, eventLocation: CGPoint? = nil) throws {
         try validateTarget(request)
         let app = AXUIElementCreateApplication(request.pid)
         let window = try selectedWindow(request, app: app)
         let focused = try focusedElement(app: app, window: window)
         try bind(element, to: window, pid: request.pid)
-        guard try bounds(window).contains(try bounds(element)) else { throw Refusal.target }
+        let geometry = try ClickGeometry(windowBounds: bounds(window), elementBounds: bounds(element))
+        guard geometry.windowBounds.contains(geometry.elementBounds) else { throw Refusal.target }
         if request.ownerWindow {
             guard CFEqual(focused, element) else { throw Refusal.target }
         }
@@ -122,7 +124,11 @@ struct MacSource: NativeSource {
                   let role = try attribute(element, kAXRoleAttribute) as? String,
                   [kAXTextFieldRole, kAXTextAreaRole].contains(role) else { throw Refusal.target }
         } else {
-            let location = try point(element)
+            let location: CGPoint
+            if let clickGeometry {
+                guard let eventLocation, try windowBounds(request) == geometry.windowBounds else { throw Refusal.target }
+                location = try clickGeometry.checkedLocation(eventLocation, current: geometry)
+            } else { location = try point(element) }
             var hit: AXUIElement?
             guard AXUIElementCopyElementAtPosition(app, Float(location.x), Float(location.y), &hit) == .success,
                   let hit else { throw Refusal.target }
@@ -134,6 +140,12 @@ struct MacSource: NativeSource {
                 candidate = parent as! AXUIElement
             }
             guard matched else { throw Refusal.target }
+            if let clickGeometry {
+                // AX hit-testing can itself race a move or resize. Recheck its snapshot.
+                _ = try clickGeometry.checkedLocation(location, current:
+                    ClickGeometry(windowBounds: windowBounds(request), elementBounds: bounds(element)))
+                guard try bounds(window) == clickGeometry.windowBounds else { throw Refusal.target }
+            }
         }
     }
     func bind(_ element: AXUIElement, to ancestor: AXUIElement, pid: pid_t) throws {
@@ -240,10 +252,13 @@ struct MacSource: NativeSource {
         }
         let source = CGEventSource(stateID: .privateState)
         var events: [CGEvent] = []
+        var clickGeometry: ClickGeometry?
         switch operation {
         case .click:
-            events = try windowClickEvents(window: request.window, location: try point(element),
-                                          windowBounds: try windowBounds(request), eventNumber: Int.random(in: 1...Int(Int32.max)))
+            let geometry = try ClickGeometry(windowBounds: windowBounds(request), elementBounds: bounds(element))
+            clickGeometry = geometry
+            events = try windowClickEvents(window: request.window, location: geometry.location,
+                                          windowBounds: geometry.windowBounds, eventNumber: Int.random(in: 1...Int(Int32.max)))
         case .text(let text):
             let units = try textUnits(text)
             for down in [true, false] {
@@ -256,20 +271,12 @@ struct MacSource: NativeSource {
         }
         guard CGPreflightPostEventAccess() else { throw Refusal.permission }
         let typing: Bool = { if case .text = operation { return true }; return false }()
-        var release: CGEvent?
-        defer {
-            // Best effort for a fence failure between the paired events; fatal death is unproven.
-            if let release, (try? fence(request, element: element, typing: typing)) != nil, CGPreflightPostEventAccess() {
-                release.flags = []; release.postToPid(request.pid)
-            }
-        }
-        for event in events {
-            try fence(request, element: element, typing: typing)
-            if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
-            event.flags = []; event.postToPid(request.pid)
-            if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
-        }
-        try fence(request, element: element, typing: typing)
+        try dispatchInputEvents(events, fence: { event in
+            try fence(request, element: element, typing: typing,
+                      clickGeometry: clickGeometry, eventLocation: event.location)
+        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { $0.postToPid(request.pid) })
+        try fence(request, element: element, typing: typing,
+                  clickGeometry: clickGeometry, eventLocation: events.last?.location)
         return inputReceipt(path: path == .windowEvent ? "CGEventWindow" : "CGEventPIDText")
     }
 }

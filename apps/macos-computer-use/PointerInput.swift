@@ -2,6 +2,36 @@ import AppKit
 
 enum InputPath: String { case axPress, axScrollValue, windowEvent, pidText }
 
+struct ClickGeometry: Equatable {
+    let windowBounds: CGRect
+    let elementBounds: CGRect
+    var location: CGPoint { CGPoint(x: elementBounds.midX, y: elementBounds.midY) }
+
+    func checkedLocation(_ eventLocation: CGPoint, current: ClickGeometry) throws -> CGPoint {
+        guard current == self, eventLocation == location,
+              eventLocation.x.isFinite, eventLocation.y.isFinite,
+              windowBounds.contains(elementBounds), elementBounds.contains(eventLocation) else { throw Refusal.target }
+        return eventLocation
+    }
+}
+
+func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
+                         releaseAllowed: () -> Bool, post: (CGEvent) -> Void) throws {
+    var release: CGEvent?
+    defer {
+        // Best effort for a fence failure between paired events; fatal death is unproven.
+        if let release, (try? fence(release)) != nil, releaseAllowed() {
+            release.flags = []; post(release)
+        }
+    }
+    for event in events {
+        try fence(event)
+        if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
+        event.flags = []; post(event)
+        if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
+    }
+}
+
 func inputPath(_ operation: Operation, role: String) throws -> InputPath {
     switch operation {
     case .click where role == kAXButtonRole: return .axPress

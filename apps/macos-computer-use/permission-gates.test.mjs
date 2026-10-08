@@ -5,6 +5,7 @@ import test from 'node:test';
 
 const native = readFileSync(new URL('./Native.swift', import.meta.url), 'utf8');
 const policy = readFileSync(new URL('./Policy.swift', import.meta.url), 'utf8');
+const pointer = readFileSync(new URL('./PointerInput.swift', import.meta.url), 'utf8');
 
 test('run owns the pre-dispatch permission gate', () => {
   const dispatch = policy.slice(policy.indexOf('for operation in request.operations {', policy.indexOf('var result:')));
@@ -18,7 +19,9 @@ test('run owns the pre-dispatch permission gate', () => {
 
 test('capture completion and event posting retain permission fences', () => {
   assert.match(native, /await SCScreenshotManager.captureImage[\s\S]*guard CGPreflightScreenCaptureAccess\(\)/);
-  assert.match(native, /guard CGPreflightPostEventAccess\(\) else[\s\S]*for event in events/);
+  assert.match(native, /guard CGPreflightPostEventAccess\(\) else[\s\S]*dispatchInputEvents\(events/);
+  assert.match(pointer, /for event in events \{\s*try fence\(event\)[\s\S]*post\(event\)/);
+  assert.match(native, /releaseAllowed: \{ CGPreflightPostEventAccess\(\) \}/);
 });
 
 test('AX mutation and observation keep permission, ownership and hit-test fences', () => {
@@ -27,9 +30,17 @@ test('AX mutation and observation keep permission, ownership and hit-test fences
   assert.match(ax, /AXUIElementSetAttributeValue[\s\S]*AXUIElementPerformAction/);
   assert.match(ax, /Task.sleep[\s\S]*checkPermission\(operation\)[\s\S]*fence\(request, element: element, typing: false\)[\s\S]*scrollValue/);
   assert.match(ax, /bind\(scroller, to: element, pid: request.pid\)/);
-  assert.match(native, /bind\(element, to: window, pid: request.pid\)[\s\S]*bounds\(window\).contains\(try bounds\(element\)\)/);
+  assert.match(native, /bind\(element, to: window, pid: request.pid\)[\s\S]*ClickGeometry\(windowBounds: bounds\(window\), elementBounds: bounds\(element\)\)[\s\S]*geometry.windowBounds.contains\(geometry.elementBounds\)/);
   assert.match(native, /AXUIElementCopyElementAtPosition[\s\S]*guard matched/);
   assert.doesNotMatch(ax, /postToPid|post\(tap:|kAXFocusedAttribute|kAXRaiseAction/);
+});
+
+test('posting fences retain click geometry and hit-test the actual event location', () => {
+  assert.match(native, /clickGeometry = geometry[\s\S]*windowClickEvents\(window: request.window, location: geometry.location,\s*windowBounds: geometry.windowBounds/);
+  assert.match(native, /dispatchInputEvents\(events, fence: \{ event in[\s\S]*clickGeometry: clickGeometry, eventLocation: event.location/);
+  assert.match(native, /location = try clickGeometry.checkedLocation\(eventLocation, current: geometry\)[\s\S]*AXUIElementCopyElementAtPosition\(app, Float\(location.x\), Float\(location.y\)/);
+  assert.match(native, /guard matched else[\s\S]*clickGeometry.checkedLocation\(location, current:/);
+  assert.match(pointer, /guard current == self, eventLocation == location/);
 });
 
 test('input has one role-selected path and no global posting or cursor warp', () => {

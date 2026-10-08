@@ -3,7 +3,7 @@
 Owner only. Use the rebuilt bundles in the build directory for this recheck.
 The installed bundles are retained. This helper's ad-hoc cdhash changed, so the
 previous permission entry is insufficient. Do not rebuild after granting.
-Run only the three input operations below. No login/logout, account revocation,
+Run only the three input operations below. No login/logout/re-login, account revocation,
 TCC reset command, certificate, Keychain or kernel changes are part of this check.
 
 ## 0:00-1:30, replace the helper entries in both permission lists
@@ -137,3 +137,23 @@ All paths retain frontmost, unique CG/AX window binding, focused-window,
 PID/AX ancestry, inside-window geometry, live hit-test, permission and secure
 fences. Completion polls recheck them after dispatch. Source/policy tests and
 the build do not prove real GUI delivery; this owner recheck remains required.
+
+## 2026-10-08, review at 4667722815
+
+The P2 stale-coordinate finding in #920 is corrected. Coordinate click pairs
+retain the selected window bounds, element bounds and center used at
+construction. Each posting fence refuses changed bounds or event coordinates,
+hit-tests the actual event location, and rechecks geometry after the AX hit-test.
+The deferred mouse-up uses the same fence and refuses stale geometry too.
+
+The injected regression first failed by recording a stale mouse-down after
+the element moved between construction and dispatch. It now passes for element
+and window movement and resizing, including resizes with an unchanged center,
+altered event locations, and movement between down and up. Unchanged geometry
+still delivers one pair to the recorder. These tests make no native input or
+permission calls. All five structural checks pass, and `build.sh` compiled and
+verified both ad-hoc bundles in `/Users/miguel/.chariox/dev/cumac/build`.
+
+This review pass did not launch either bundle or perform the owner steps above.
+TCC and login state were left unchanged. Real GUI delivery remains UNPROVEN;
+the owner recheck still applies to this rebuilt helper's changed cdhash.
