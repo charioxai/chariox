@@ -53,6 +53,10 @@ with that data under one total deadline; unrelated workspace JSON is never read.
 Provider launch paths are unchanged; compiler isolation adds no provider fence.
 The private compiler envelope changes no shared client shape (local450/peer73).
 
+MP-11 F14: root compiler jobs use one randomized high host UID/GID per kernel
+process, so their64-task budget does not collide with ordinary UID65534 services.
+The namespace UID remains65534; private operator runtime paths still fail closed.
+
 MP-11 F7 / review R1: all source-compiling request paths, including Room artifact
 create/update and stored-source rebuild/update, use the shared two-job compiler
 lane without holding the app mutex. Caller authority and current artifact/workflow

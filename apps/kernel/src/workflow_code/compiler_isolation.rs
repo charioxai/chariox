@@ -292,7 +292,11 @@ mod seccomp;
 
 #[cfg(target_os = "linux")]
 fn root_compiler_host_id() -> libc::uid_t {
-    65534
+    // MP-11 F14: NPROC counts every task of a host UID, including unrelated
+    // services using nobody. Choose a high, process-private identity once in the
+    // parent, so the two compiler jobs share a budget without sharing service UIDs.
+    static ID: std::sync::OnceLock<libc::uid_t> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| 1_000_000 + rand::random::<u32>() % 1_000_000_000)
 }
 
 #[cfg(target_os = "linux")]
@@ -343,7 +347,7 @@ pub(super) fn compiler_command(
         .saturating_add(1024 * 1024 * 1024);
     let cpu_seconds = limits.script_timeout_ms.div_ceil(1000).max(1);
     let drop_root_privileges = unsafe { libc::getuid() == 0 || libc::geteuid() == 0 };
-    let host_id = root_compiler_host_id();
+    let host_id = drop_root_privileges.then(root_compiler_host_id);
     unsafe {
         command.pre_exec(move || {
             // Mark every non-stdio descriptor close-on-exec, including a descriptor
@@ -365,7 +369,7 @@ pub(super) fn compiler_command(
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            if drop_root_privileges {
+            if let Some(host_id) = host_id {
                 // NPROC counts the host UID. A namespace UID change alone
                 // retains host root's exemption. Use an unprivileged host UID.
                 // Ordinary users retain their existing per-user process limit;
