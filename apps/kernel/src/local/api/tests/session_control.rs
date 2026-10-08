@@ -1641,18 +1641,19 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
     let root = harness.with_app(|app| app.config().private_runtime_state_root());
     let store = ProjectEnvironmentStore::new(&root);
     let mut cache:EnvironmentDetectionCache=serde_json::from_value(serde_json::json!({
-        "project_id":"edit-project","evidence_digest":"a".repeat(64),"proposals":(["accept","exclude"].iter().map(|id|serde_json::json!({"proposal_id":id,"requirement":{"requirement_id":id,"title":id,"scope":{"kind":"folder","folder_id":before.folders[0].folder_id},"origins":[{"kind":"detected_metadata","source":"test-metadata","reference":"safe"}],"spec":{"kind":"software","identity":id,"version_constraint":null,"platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":false,"legacy_entry":null}})).collect::<Vec<_>>()),
+        "project_id":"edit-project","evidence_digest":"a".repeat(64),"proposals":(["accept","exclude"].iter().map(|id|serde_json::json!({"proposal_id":format!("proposal-{id}"),"requirement":{"requirement_id":id,"title":id,"scope":{"kind":"folder","folder_id":before.folders[0].folder_id},"origins":[{"kind":"detected_metadata","source":"test-metadata","reference":"safe"}],"spec":{"kind":"software","identity":id,"version_constraint":null,"platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":false,"legacy_entry":null}})).collect::<Vec<_>>()),
         "operation":{"operation_id":"detect-test","attempt":1,"local_project_id":"edit-project","revision_digest":before.content_digest,"target":{"machine_id":"machine","target_instance_generation":"generation","slice_ref":null},"kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}}})).unwrap();
     store.save_detection(&cache).unwrap();
     let detected = envp02b_read(&harness);
-    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":["accept"],"excludedProposalIds":["exclude"]}})).unwrap();
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":["proposal-accept"],"excludedProposalIds":["proposal-exclude"]}})).unwrap();
     let LocalDaemonResponse::ProjectEnvironmentSaved {
-        environment: saved, ..
+        environment: saved, diff
     } = harness.dispatch(request).unwrap()
     else {
         panic!("proposal review Save expected")
     };
     assert!(saved.proposals.is_empty());
+    assert!(diff.requirements.iter().any(|row| row.requirement_id == "accept" && row.kind == EnvironmentDiffKind::Added), "accepted proposal must be in review diff even when proposal ID differs");
     assert_eq!(saved.folders[0].requirements[0].requirement_id, "accept");
     assert!(saved.folders[0].requirements[0].required);
     let history_path = root
