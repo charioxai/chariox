@@ -42,6 +42,7 @@ impl UserDomainRefusalReason {
         match message {
             "MD-3: current local focus required"
             | "MD-N4: current focused agent required"
+            | "MD-3: not_focused_agent: browser stop requires live owner focus"
             | "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent"
             | "MP-08: not_focused_agent: user-domain browser access requires current local agent focus; ask the user to focus this agent"
             | "MD-3: user-domain browser access follows current local agent focus" => {

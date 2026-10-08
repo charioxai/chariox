@@ -195,6 +195,9 @@ impl KernelRuntimeState {
             LocalDaemonRequest::SubmitPrompt(prompt) => {
                 check(&prompt.session_id, &prompt.attachment_id)
             }
+            LocalDaemonRequest::UpdateQueuedPrompt(prompt) => {
+                check(&prompt.session_id, &prompt.attachment_id)
+            }
             LocalDaemonRequest::SubmitPrompts(batch) => {
                 for item in &batch.prompts {
                     check(

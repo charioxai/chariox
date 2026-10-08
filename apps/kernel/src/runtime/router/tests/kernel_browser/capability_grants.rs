@@ -921,16 +921,22 @@ fn security_sb02_prompt_grant_cannot_stop_unrelated_browser() {
                 .await
                 .unwrap();
             let before = human(&room.router, KernelBrowserCommand::State).await;
-            assert!(
-                tool(
-                    &room.router,
-                    &token,
-                    "chariox.kernel_browser",
-                    json!({"command":{"op":"stop"}})
-                )
-                .await
-                .is_err(),
-                "MP-11 SB-02: new-tabs approval cannot stop the whole browser"
+            let error = tool(
+                &room.router,
+                &token,
+                "chariox.kernel_browser",
+                json!({"command":{"op":"stop"}}),
+            )
+            .await
+            .expect_err("MP-11 R3: new-tabs approval cannot stop the whole browser");
+            assert_eq!(
+                refusal(error),
+                Some(crate::error::UserDomainRefusalReason::NotFocusedAgent),
+                "MP-11 R3: Stop keeps the typed not-focused refusal"
+            );
+            assert_eq!(
+                crate::error::UserDomainRefusalReason::NotFocusedAgent.code(),
+                "user_domain_not_focused_agent"
             );
             assert_eq!(
                 human(&room.router, KernelBrowserCommand::State).await,
@@ -1023,4 +1029,246 @@ async fn decided_tool(
             .unwrap();
     });
     result
+}
+
+// MP-08/MP-10/MP-11 R1: an admitted external edit must not retain the
+// human queue item's acquisition provenance through promotion.
+#[test]
+fn capability_review_r1_external_queue_edit_cannot_acquire_browser() {
+    run_test(|| {
+        Box::pin(async {
+            let setup = setup("capability-r1-edit", &[], &[]);
+            let (agent, token) = setup.agents[0].clone();
+            let room = start(setup, agent.owner_user_id());
+            running_prompt(
+                &room,
+                agent.id(),
+                ClientCapabilityLevel::FullTerminal,
+                "human",
+            )
+            .await;
+            let (human, automation, queued) = {
+                let mut app = room.router.app.lock().await;
+                let human = app
+                    .attachments()
+                    .list_client_attachments("human")
+                    .into_iter()
+                    .next()
+                    .unwrap();
+                let automation = crate::app::KernelSessionService::new(&mut app)
+                    .attach(AttachRequest::new(
+                        &room.session,
+                        "external",
+                        ClientCapabilityLevel::AutomationOnly,
+                    ))
+                    .unwrap();
+                app.submit_prompt(
+                    &room.session,
+                    human.id(),
+                    Some(agent.id()),
+                    "Human queued request",
+                    Vec::new(),
+                )
+                .unwrap();
+                let session = app.sessions().get_session(&room.session).unwrap();
+                let (_, queued) = app.prompt_state_owner().state_parts(&session, agent.id());
+                (human, automation, queued.back().unwrap().clone())
+            };
+            assert!(queued.owner_request());
+            let grant = room
+                .router
+                .runtime_state()
+                .insert_access_grant_for_test(&room.session);
+            // MP-11 R1: external callers cannot borrow the human attachment for edits either.
+            let make_request = |attachment: &str| {
+                LocalDaemonRequest::UpdateQueuedPrompt(crate::local::UpdateQueuedPromptRequest {
+                    session_id: room.session.clone(),
+                    attachment_id: attachment.into(),
+                    target_agent_id: agent.id().into(),
+                    prompt_id: queued.id().into(),
+                    prompt: "Automation requests my browser".into(),
+                })
+            };
+            let mut request = make_request(human.id());
+            let mut command =
+                KernelCommand::from_local_request("MP-11-R1-borrow", None, None, &request);
+            command.caller.connection_class =
+                Some(crate::local::KernelConnectionClass::ExternalAgent);
+            command.caller.caller_id = grant.clone();
+            let borrowed = room
+                .router
+                .authorize_external_request(&command, &mut request);
+
+            let request = make_request(automation.id());
+            let mut command =
+                KernelCommand::from_local_request("MP-11-R1-edit", None, None, &request);
+            command.caller.connection_class =
+                Some(crate::local::KernelConnectionClass::ExternalAgent);
+            command.caller.caller_id = grant;
+            room.router.dispatch(command, request).await.unwrap();
+            {
+                let app = room.router.app.lock().await;
+                let session = app.sessions().get_session(&room.session).unwrap();
+                let prompts = app.prompt_state_owner();
+                prompts
+                    .complete_active_prompt_only(&session, agent.id())
+                    .unwrap();
+                let promoted = prompts
+                    .activate_next_queued_prompt(&session, agent.id(), Some(queued.id()))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(promoted.prompt(), "Automation requests my browser");
+                assert!(
+                    !promoted.owner_request(),
+                    "MP-11 R1: editing automation owns acquisition provenance"
+                );
+            }
+            let attempt = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tool(
+                    &room.router,
+                    &token,
+                    "chariox.load_kernel_browser",
+                    json!({}),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                refusal(attempt.unwrap_err()),
+                Some(crate::error::UserDomainRefusalReason::NotRequested)
+            );
+            assert!(grants(&room.router).await.is_empty());
+            assert!(
+                borrowed.is_err(),
+                "MP-11 R1: external edits cannot borrow a human attachment"
+            );
+            room.router
+                .runtime_state()
+                .shutdown_cleanup()
+                .await
+                .unwrap();
+            std::fs::remove_dir_all(&room.root).unwrap();
+        })
+    });
+}
+
+// MP-08/MP-10/MP-11 R2: same prompt, different run or delivery witness.
+#[test]
+fn capability_review_r2_browser_decision_withdraws_on_same_prompt_replacement() {
+    run_test(|| {
+        Box::pin(async {
+            for delivery_only in [false, true] {
+                let setup = setup("capability-r2-replacement", &[], &[]);
+                let (agent, token) = setup.agents[0].clone();
+                let room = start(setup, agent.owner_user_id());
+                let prompt_id = running_prompt(
+                    &room,
+                    agent.id(),
+                    ClientCapabilityLevel::FullTerminal,
+                    "owner",
+                )
+                .await;
+                let (attempt, ()) = tokio::join!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        tool(
+                            &room.router,
+                            &token,
+                            "chariox.load_kernel_browser",
+                            json!({})
+                        )
+                    ),
+                    async {
+                        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                            loop {
+                                let snapshot = room
+                                    .router
+                                    .runtime_state()
+                                    .session_snapshot(&room.session)
+                                    .await
+                                    .unwrap();
+                                if snapshot
+                                    .active_interactions()
+                                    .iter()
+                                    .any(|i| i.title() == Some("Chariox resource access"))
+                                {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            }
+                        })
+                        .await
+                        .unwrap();
+                        let mut app = room.router.app.lock().await;
+                        if delivery_only {
+                            let session = app.sessions().get_session(&room.session).unwrap();
+                            let prompts = app.prompt_state_owner();
+                            let active = prompts
+                                .active_prompt_for_agent_snapshot(&session, agent.id())
+                                .unwrap();
+                            let mut changed = active.clone();
+                            changed.set_durable_delivery(
+                                crate::session::DurablePromptDeliveryPhase::Delivered,
+                                Some("replacement-run".into()),
+                                None,
+                            );
+                            assert!(prompts.replace_active_prompt_if_matches(
+                                &session,
+                                agent.id(),
+                                &active,
+                                changed
+                            ));
+                        } else {
+                            let run = app
+                                .providers()
+                                .get_run_for_agent(&room.session, agent.id())
+                                .unwrap();
+                            app.providers_mut()
+                                .mark_run_ended_provider_only(&room.session, run.id())
+                                .unwrap();
+                            launch_test_provider(
+                                &mut app,
+                                &room.session,
+                                agent.id(),
+                                "dev-stub",
+                                "dev-stub",
+                                "native-tui-idle",
+                            );
+                        }
+                    }
+                );
+                assert!(attempt
+                    .expect("MP-11 R2: stale browser acquisition must finish without owner reply")
+                    .is_err());
+                let snapshot = room
+                    .router
+                    .runtime_state()
+                    .session_snapshot(&room.session)
+                    .await
+                    .unwrap();
+                assert!(
+                    snapshot
+                        .active_interactions()
+                        .iter()
+                        .all(|i| i.title() != Some("Chariox resource access")),
+                    "MP-11 R2: stale popup withdrawn"
+                );
+                assert_eq!(
+                    room.router
+                        .runtime_state()
+                        .owner_requested_prompt(&agent)
+                        .as_deref(),
+                    Some(prompt_id.as_str())
+                );
+                assert!(grants(&room.router).await.is_empty());
+                room.router
+                    .runtime_state()
+                    .shutdown_cleanup()
+                    .await
+                    .unwrap();
+                std::fs::remove_dir_all(&room.root).unwrap();
+            }
+        })
+    });
 }

@@ -820,3 +820,89 @@ async fn security_sb03_wrong_prompt_delivery_cannot_acquire() {
     assert!(!bound(&room, &agent).await);
     room.router.runtime_state.shutdown_cleanup().await.unwrap();
 }
+
+// MP-08/MP-10/MP-11 R1: promoted externally edited human work cannot request Apps.
+#[tokio::test]
+async fn capability_review_r1_external_queue_edit_cannot_acquire_app() {
+    let room = room();
+    let (agent, token) = room.agents[0].clone();
+    running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "human").await;
+    let (automation, queued) = {
+        let mut app = room.app.lock().await;
+        let human = app
+            .attachments()
+            .list_client_attachments("human")
+            .into_iter()
+            .next()
+            .unwrap();
+        let automation = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::for_user(
+                &room.session,
+                "external",
+                ClientCapabilityLevel::AutomationOnly,
+                "alice",
+            ))
+            .unwrap();
+        app.submit_prompt(
+            &room.session,
+            human.id(),
+            Some(&agent),
+            "Human queued request",
+            Vec::new(),
+        )
+        .unwrap();
+        let session = app.sessions().get_session(&room.session).unwrap();
+        let (_, queued) = app.prompt_state_owner().state_parts(&session, &agent);
+        (automation, queued.back().unwrap().clone())
+    };
+    assert!(queued.owner_request());
+    let request = LocalDaemonRequest::UpdateQueuedPrompt(crate::local::UpdateQueuedPromptRequest {
+        session_id: room.session.clone(),
+        attachment_id: automation.id().into(),
+        target_agent_id: agent.clone(),
+        prompt_id: queued.id().into(),
+        prompt: "Automation requests my App".into(),
+    });
+    let mut command = KernelCommand::from_local_request("MP-11-R1-app-edit", None, None, &request);
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    command.caller.user_id = Some("alice".into());
+    command.caller.caller_id = room
+        .router
+        .runtime_state
+        .insert_access_grant_for_test(&room.session);
+    room.router.dispatch(command, request).await.unwrap();
+    {
+        let app = room.app.lock().await;
+        let session = app.sessions().get_session(&room.session).unwrap();
+        let prompts = app.prompt_state_owner();
+        prompts
+            .complete_active_prompt_only(&session, &agent)
+            .unwrap();
+        let promoted = prompts
+            .activate_next_queued_prompt(&session, &agent, Some(queued.id()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(promoted.prompt(), "Automation requests my App");
+        assert!(
+            !promoted.owner_request(),
+            "MP-11 R1: edited automation cannot retain owner provenance"
+        );
+    }
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request_app(&room, &token, "installed"),
+    )
+    .await;
+    assert!(!result.expect("MP-11 R1: automated acquisition returns without an owner popup"));
+    assert!(!bound(&room, &agent).await);
+    assert!(room
+        .router
+        .runtime_state
+        .session_snapshot(&room.session)
+        .await
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|i| i.title() != Some("Chariox resource access")));
+    room.router.runtime_state.shutdown_cleanup().await.unwrap();
+}
