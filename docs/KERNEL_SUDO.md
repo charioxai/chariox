@@ -29,9 +29,10 @@ ends the window as `refused_or_cancelled` and releases the held work. Retry
 
 A native provider may be idle while its catalog operation lane is still busy.
 The first sudo turn waits for the refresh to complete, keeping its work hold.
-Deferred refreshes have a 60-second budget from the first deferral, including
-later refresh attempts. Exhaustion returns a typed kernel-access error saying
-"provider catalog refresh failed" and releases the window and held work.
+Refreshes have a 60-second budget from the first idle attempt, including
+deferred retries. Ordinary work resets that budget; the next idle attempt
+starts a fresh one. Idle budget exhaustion or a refresh failure ends the
+request and releases the window and held work.
 
 The initial window permits owner session inventory. Additional typed operations
 require a fresh owner passkey in an operation-scope popup showing their exact

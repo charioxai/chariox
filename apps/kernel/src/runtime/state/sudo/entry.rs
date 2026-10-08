@@ -244,32 +244,29 @@ impl KernelRuntimeState {
         let mut relaunch_deadline = None;
         let mut catalog_deadline = None;
         loop {
-            if let Some(deadline) = catalog_deadline {
-                self.live_queued_sudo(entry)?;
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(catalog_refresh_timeout());
-                }
+            // MP-08/MP-10/MP-11: ordinary work is not a failed refresh.
+            // Start a fresh budget when the agent next becomes idle.
+            if reload && self.sudo_agent_busy(entry)? {
+                catalog_deadline = None;
             }
             if reload && !self.sudo_agent_busy(entry)? {
                 use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
+                self.live_queued_sudo(entry)?;
+                let deadline = *catalog_deadline
+                    .get_or_insert(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(catalog_refresh_timeout());
+                }
                 let refresh = self.reload_agent_provider_if_idle_for_reason(
                     &entry.session_id,
                     &entry.agent_id,
                     &ProviderReloadReason::RuntimeToolCatalog,
                 );
-                let outcome = if let Some(deadline) = catalog_deadline {
-                    tokio::time::timeout_at(deadline, refresh)
-                        .await
-                        .map_err(|_| catalog_refresh_timeout())??
-                } else {
-                    refresh.await?
-                };
+                let outcome = tokio::time::timeout_at(deadline, refresh)
+                    .await
+                    .map_err(|_| catalog_refresh_timeout())??;
                 reload = matches!(outcome, ProviderReloadOutcome::Deferred);
-                if reload {
-                    catalog_deadline.get_or_insert(
-                        tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT,
-                    );
-                } else {
+                if !reload {
                     catalog_deadline = None;
                 }
                 if matches!(outcome, ProviderReloadOutcome::Reloaded) {
