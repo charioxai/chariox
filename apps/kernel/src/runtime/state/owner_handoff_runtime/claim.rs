@@ -55,7 +55,21 @@ impl KernelRuntimeOwnedState {
                     handoff_error("hand-off is not pending")
                 }
             })?;
-        if pending.kernel_operation_owner.as_deref() != Some(caller_user_id) {
+        // Local TUI and the configured Cloud owner are the same product owner.
+        // Preserve that existing user-domain alias without admitting collaborators.
+        let config = self.config_projection.snapshot();
+        let caller_owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &config,
+            caller_user_id,
+        );
+        if !pending
+            .kernel_operation_owner
+            .as_deref()
+            .is_some_and(|owner| {
+                crate::account_profile::provider_account_authority_owner_user_id(&config, owner)
+                    == caller_owner
+            })
+        {
             return Err(handoff_error("Only the hand-off owner can answer it"));
         }
         if pending

@@ -4,10 +4,20 @@ use crate::runtime::router::CommandRouter;
 use crate::session::{HandoffChangeOp, RuntimeSession, DEFAULT_LOCAL_USER_ID};
 
 fn fixture() -> (KernelRuntimeState, String) {
+    fixture_with_owner(None, DEFAULT_LOCAL_USER_ID)
+}
+fn fixture_with_owner(
+    cloud_owner: Option<&str>,
+    session_owner: &str,
+) -> (KernelRuntimeState, String) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
+    config.cloud_relay = cloud_owner.map(|owner| crate::config::PersistedCloudRelayProfile {
+        user_id: owner.into(),
+        ..Default::default()
+    });
     let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
-    let session = RuntimeSession::new(
+    let mut session = RuntimeSession::new(
         format!("am7-{:016x}", rand::random::<u64>()),
         None,
         "workspace",
@@ -15,6 +25,7 @@ fn fixture() -> (KernelRuntimeState, String) {
         "machine",
         "kernel",
     );
+    session.set_owner_user_id(session_owner);
     let id = session.id().to_owned();
     app.sessions_mut().restore_session(session);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
@@ -391,4 +402,51 @@ fn mp08_mp10_mp11_a07_publishes_approved_shared_request_contract() {
     );
     assert_eq!(spec.input_schema["additionalProperties"], false);
     assert!(spec.description.contains("chariox.events.yield"));
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_answer_without_collaborator_authority() {
+    for (owner, caller) in [
+        (DEFAULT_LOCAL_USER_ID, "cloud-owner"),
+        ("cloud-owner", DEFAULT_LOCAL_USER_ID),
+    ] {
+        let (state, room) = fixture_with_owner(Some("cloud-owner"), owner);
+        let h = handoff();
+        state
+            .register_handoff_interaction(&room, owner, h.clone(), 900)
+            .await
+            .unwrap();
+        let id = RuntimeHandoff::interaction_id(&h.obligation_id);
+        assert!(state
+            .owned
+            .claim_handoff(&room, &id, "collaborator", |_| Ok(()))
+            .is_err());
+        assert!(
+            state
+                .owned
+                .claim_handoff(&room, &id, caller, |_| Ok(()))
+                .is_ok(),
+            "same owner across terminals"
+        );
+    }
+    let (state, room) = fixture_with_owner(Some("cloud-owner"), "collaborator");
+    let h = handoff();
+    state
+        .register_handoff_interaction(&room, "collaborator", h.clone(), 900)
+        .await
+        .unwrap();
+    let id = RuntimeHandoff::interaction_id(&h.obligation_id);
+    for caller in ["cloud-owner", DEFAULT_LOCAL_USER_ID] {
+        assert!(
+            state
+                .owned
+                .claim_handoff(&room, &id, caller, |_| Ok(()))
+                .is_err(),
+            "home owner cannot answer a collaborator's hand-off"
+        );
+    }
+    assert!(state
+        .owned
+        .claim_handoff(&room, &id, "collaborator", |_| Ok(()))
+        .is_ok());
 }
