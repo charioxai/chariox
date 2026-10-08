@@ -96,7 +96,7 @@ def main(request):
     op = request['op']
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
-        return accessibility.snapshot(request['processes']) if op=='accessibility' else accessibility.act(request)
+        return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
     if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None); return {'applied':True}
     if op == 'release':
         connection=display.Display()
@@ -109,18 +109,18 @@ def main(request):
         return {'released':True}
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
-        coverage=accessibility.snapshot(request.get('processes',[]))
+        coverage=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
         if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected'] or coverage.get('uncovered'): return {'text':'[protected]'}
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
-        after=accessibility.snapshot(request.get('processes',[]))
+        after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
         if coverage!=after:raise ValueError('native protection changed during clipboard read')
         if len(result.stdout)>65536: raise ValueError('clipboard too large')
         return {'text':result.stdout.decode('utf-8')}
     accessibility=load('native-accessibility')
-    before=accessibility.snapshot(request.get('processes',[]))
+    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
-    after=accessibility.snapshot(request.get('processes',[]))
+    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
     if before!=after:
         image.close()
         raise ValueError('native protection changed during capture')

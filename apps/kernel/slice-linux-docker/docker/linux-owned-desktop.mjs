@@ -60,10 +60,13 @@ export class LinuxOwnedDesktop {
     for(const item of current)this.known.set(item.pid,item);
     return current;
   }
-  async recordOwned(child) {
+  async recordOwned(child, browser = false) {
     const identity=await processIdentity(child.pid);
     if(!identity)throw new Error('MP-11: graphical process ownership unavailable');
-    this.children.push({child,identity,core:false});
+    this.children.push({child,identity,core:false,browser});
+  }
+  async browserProcesses() {
+    return descendants(this.children.filter(({child,identity,browser})=>browser && identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity));
   }
   async start() {
     if (this.current) {
@@ -123,7 +126,7 @@ export class LinuxOwnedDesktop {
       await this.launch('openbox', ['--sm-disable'], env);
       await delay(100);
       if (this.children.some(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: desktop failed to become ready');
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), width: 1280, height: 800, environment: Object.freeze(env) });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), width: 1280, height: 800, environment: Object.freeze(env) });
       return this.current;
     } catch (error) { await this.stop(); throw error; }
   }

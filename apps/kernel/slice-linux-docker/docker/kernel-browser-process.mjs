@@ -95,7 +95,7 @@ export class HostChromium {
     child.once('error', () => { void connection.close(); });
     child.once('exit', () => { void connection.close(); });
     try {
-      if (this.desktop?.binding()) await this.desktop.recordOwned(child);
+      if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
       await connection.send('Browser.getVersion'); return connection;
     }
     catch {}

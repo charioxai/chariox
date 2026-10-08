@@ -88,8 +88,18 @@ def subtract(rect, cover):
     return parts
 
 
-def snapshot(processes):
+def snapshot(processes, browser_processes=None):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
+    browsers={item['pid'] for item in browser_processes or () if alive(item)}
+    # MP-08 / MP-11: slice placement does not own Chromium's launch object.
+    # Kernel host placement supplies the full tracked browser process tree.
+    # OS executable metadata and document-web roles conservatively protect
+    # additional browser apps; they never grant coverage or input authority.
+    for pid in allowed:
+        try:
+            binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
+            if 'chrome' in binary or 'chromium' in binary or 'firefox' in binary:browsers.add(pid)
+        except OSError:pass
     nodes=[];complete=True;protected=False;seen=set();pending=deque();uncovered=[];masks=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
@@ -147,6 +157,7 @@ def snapshot(processes):
         while pending and len(nodes)<MAX_NODES:
             visit(*pending.popleft())
         if pending:complete=False
+        browsers.update(node['pid'] for node in nodes if node['role']=='document web')
         # A private bus alone does not prove all visible windows expose AT-SPI.
         # Unknown/unscoped native windows make password coverage uncertain.
         try:
@@ -171,7 +182,7 @@ def snapshot(processes):
                 pid=int(pid.value[0]) if pid is not None and len(pid.value) else None
                 # MP-08: an owned window without AT-SPI (e.g. xterm) has unknown
                 # contents; capture blacks out its frame instead of the desktop.
-                if pid in allowed and pid not in seen:
+                if pid in allowed and (pid not in seen or pid in browsers):
                     uncovered.append(frame_rect(root,window));masks.append(uncovered[-1])
                 elif pid not in seen:complete=False
                 else:
@@ -195,6 +206,14 @@ def snapshot(processes):
                         geometry=child.get_geometry()
                         uncovered.append([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width]);masks.append(uncovered[-1])
         finally:connection.close()
+        # MP-11: without a proved CDP document-to-desktop transform, withhold
+        # the browser window and its entire structured app, including titles,
+        # OTP/payment/private ancestors, nested frames and shadow content.
+        # The before/after capture fence includes these masks and identities.
+        for node in nodes:
+            if node['pid'] in browsers:
+                node['native_protected']=node['protected']
+                node.update(name='[protected]',actions=[],protected=True)
         return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
@@ -225,7 +244,7 @@ def input_target(processes, expected=None):
     if len(leaves)!=1:raise ValueError('native focus ambiguous')
     leaf=leaves[0]
     ancestors=[node for node in tree['nodes'] if belongs(node) and leaf['path'][:len(node['path'])]==node['path']]
-    if any(node['protected'] or node['role'] in ('document web','password text') for node in ancestors):
+    if any(node.get('native_protected',node['protected']) or node['role'] in ('document web','password text') for node in ancestors):
         raise ValueError('protected target requires Browser or Vault input')
     identity={key:leaf[key] for key in ('pid','started','path','bounds')}
     if expected is not None and identity!=expected:raise ValueError('native focus changed during input')
@@ -233,7 +252,7 @@ def input_target(processes, expected=None):
 
 
 def act(request):
-    tree=snapshot(request['processes'])
+    tree=snapshot(request['processes'],request.get('browser_processes'))
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')
     expected=next((node for node in tree['nodes'] if node['pid']==request['pid'] and node['path']==request['path'] and node['started']==request['started']),None)
     if not expected or expected['protected'] or request['action'] not in expected['actions']:raise ValueError('target denied')

@@ -276,5 +276,15 @@ class TraversalTest(unittest.TestCase):
                 with patch.object(self.driver,'snapshot',return_value=changed):
                     with self.assertRaises(ValueError):self.driver.input_target([],expected)
 
+    def test_mp11_finding2_browser_dom_privacy_is_withheld_without_coordinate_mapping(self):
+        self.terminal(200)
+        browser=Node('Chromium','application',[Node('xterm','frame',[
+            Node('human-entered-otp-canary','text'),Node('private-ancestor-canary','label'),
+            Node('nested-frame-canary','document web'),Node('shadow-private-canary','text')])])
+        tree=self.snapshot([browser])
+        self.assertNotIn('canary',str(tree))
+        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertTrue(all(node['protected'] and not node['actions'] for node in tree['nodes']))
+
 
 if __name__ == '__main__': unittest.main()

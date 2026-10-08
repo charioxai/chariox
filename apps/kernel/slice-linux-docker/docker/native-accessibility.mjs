@@ -11,7 +11,8 @@ export class NativeAccessibility {
     if(!binding || policy?.unknown)throw new Error('MP-11: accessibility protection unavailable');
     const processes=await binding.ownedProcesses?.();
     if(!processes)throw new Error('MP-11: accessibility app scope unavailable');
-    const raw=await this.execute({op:'accessibility',processes},binding.environment,signal);
+    const browser_processes=await binding.browserProcesses?.();
+    const raw=await this.execute({op:'accessibility',processes,...(browser_processes?{browser_processes}:{})},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: stale accessibility surface');
     const tree=redactObservation(raw,policy?.values??[]);
     return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree,canonical(policy??{})])).digest('hex')};
@@ -61,7 +62,8 @@ export class NativeAccessibility {
     if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.
     this.observers.delete(observer);
-    const result=await this.execute({op:'accessibility_action',processes,path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
+    const browser_processes=await binding.browserProcesses?.();
+    const result=await this.execute({op:'accessibility_action',processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return result;
   }
