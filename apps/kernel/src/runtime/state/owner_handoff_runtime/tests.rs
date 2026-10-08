@@ -16,7 +16,7 @@ fn fixture_with_owner(
         user_id: owner.into(),
         ..Default::default()
     });
-    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
     let mut session = RuntimeSession::new(
         format!("am7-{:016x}", rand::random::<u64>()),
         None,

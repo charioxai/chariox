@@ -8,10 +8,8 @@ pub(crate) use lifecycle::AppWorkerDrain;
 mod startup;
 #[cfg(test)]
 mod tests;
-pub(crate) use call::{
-    AppCallSlot, AppToolError, AppToolReply, AppToolResponse, PreparedAppToolCall,
-};
-pub(crate) use startup::{FirstInstallHealth, HealthyAppWorker, RegisteredAppWorker};
+pub(crate) use call::{AppCallSlot, AppToolError, AppToolReply, AppToolResponse};
+pub(crate) use startup::{FirstInstallHealth, RegisteredAppWorker};
 
 use chariox_app_runtime::{
     app_outbox::EventCatalog,

@@ -15,7 +15,7 @@ use chariox_app_runtime::app_outbox::{
     VerifiedAutomation,
 };
 pub(crate) use preparation::PreparedAppEvent;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::sync::{mpsc, Arc};
 
 #[derive(Debug, thiserror::Error)]

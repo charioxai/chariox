@@ -39,7 +39,6 @@ async fn run_controlled_workspace_live_sync_target(
             .await
             .expect("controlled target registration should send");
 
-        let mut reconnect = false;
         loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -119,7 +118,6 @@ async fn run_controlled_workspace_live_sync_target(
                                 .expect("controlled business rejection should send");
                         }
                         ControlledWorkspaceLiveSyncAction::Disconnect => {
-                            reconnect = true;
                             break;
                         }
                         ControlledWorkspaceLiveSyncAction::Success => {
@@ -158,9 +156,6 @@ async fn run_controlled_workspace_live_sync_target(
         }
 
         drop(socket);
-        if !reconnect {
-            return;
-        }
         loop {
             if *shutdown.borrow() {
                 return;

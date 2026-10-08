@@ -5,8 +5,7 @@ use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::AppOperationBudget;
 use chariox_app_runtime::app_outbox::{
-    AppOutbox, AutomationConfiguration, AutomationStatus, AutomationTarget, EventCatalog,
-    OutboxError,
+    AppOutbox, AutomationConfiguration, AutomationStatus, EventCatalog, OutboxError,
 };
 use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{mpsc, Arc};

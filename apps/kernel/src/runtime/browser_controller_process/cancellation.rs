@@ -336,7 +336,7 @@ impl BrowserControllerProcessStore {
         request_id: &str,
     ) -> bool {
         let (signal, planned) = {
-            let mut state = self
+            let state = self
                 .executions
                 .state
                 .lock()

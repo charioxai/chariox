@@ -116,7 +116,6 @@ pub(super) fn serve(
                             || context.control.stopped(),
                         )
                         .map_err(|_| LifecycleError::Notification)?;
-                    callback_settled = true;
                 }
             }
             callback_settled = false;
@@ -214,7 +213,6 @@ pub(super) fn serve(
                     owner
                         .notify_blocking(request.event, request.data, || context.control.stopped())
                         .map_err(|_| LifecycleError::Notification)?;
-                    callback_settled = true;
                     if let Some(reservation) = reservation {
                         // Commit before stopping: a crash after suspension must
                         // leave this App dormant, rather than booting it again.
@@ -269,7 +267,6 @@ pub(super) fn serve(
                                 || context.control.stopped(),
                             )
                             .map_err(|_| LifecycleError::Notification)?;
-                        callback_settled = true;
                         configuration = current;
                     }
                     pending_check = None;

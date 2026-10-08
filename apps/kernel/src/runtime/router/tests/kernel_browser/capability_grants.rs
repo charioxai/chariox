@@ -535,7 +535,7 @@ fn capability_child_subset_transfer_never_widens_and_follows_parent_revoke() {
 fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
     run_test(|| {
         Box::pin(async {
-            let mut setup = setup("capability-s04", &["leased"], &[]);
+            let setup = setup("capability-s04", &["leased"], &[]);
             let (parent, parent_token) = setup.agents[0].clone();
             let (child, child_token) = setup.agents[1].clone();
             setup

@@ -207,7 +207,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
         )
     };
     {
-        let mut app = app_home.lock().await;
+        let app = app_home.lock().await;
         app.agents()
             .bind_remote_execution(
                 &agent_id,
@@ -590,7 +590,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         )
     };
     {
-        let mut app = app_home.lock().await;
+        let app = app_home.lock().await;
         app.agents()
             .bind_remote_execution(
                 &agent_id,

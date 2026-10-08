@@ -24,7 +24,7 @@ impl Fixture {
     fn with_session_config(session_id: String, room_tools: bool) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = room_tools;
-        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             session_id,
             None,

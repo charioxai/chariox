@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::local::{
     CreateSliceRequest, LocalDaemonRequest, ReleaseRoomEnvironmentInputRequest,
-    RequestRoomEnvironmentInputTakeoverRequest, RestoreSliceBackupRequest, SliceCreateBase,
-    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+    RequestRoomEnvironmentInputTakeoverRequest, SliceCreateBase, SliceStateSaveMode,
+    SliceStateSaveRequest, SliceStateSaveScope,
 };
 use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, ActionAdmission, CanonicalViewport,
