@@ -260,11 +260,7 @@ async function showProviderLoginStatus(
   if (summary) deps.appendNotice(summary)
   // Status output is cumulative; only a waiting login hands off, and links
   // scraped from provider output are never opened automatically.
-  if (login.state === "running") {
-    for (const url of urls) await presentUrl(deps, url, { autoOpen: false })
-  } else {
-    for (const url of urls) deps.appendNotice(`\n${url}\n`)
-  }
+  for (const url of urls) await presentUrl(deps, url, login.state === "running" ? { autoOpen: false } : null)
   const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
   deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login ${login.state}`, login.state === "failed" ? "error" : "info")
 }
@@ -502,20 +498,20 @@ function formatProviderLoginNotice(
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,
-    login.verification_url ?? login.auth_url ? "authorization link below" : null,
+    providerLoginUrl(login.verification_url ?? login.auth_url ?? "") ? "authorization link below" : null,
   ].filter(Boolean).join(" • ")
 }
 
 async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart): Promise<void> {
   const url = login.verification_url ?? login.auth_url
   if (!url || !providerLoginUrl(url)) return
-  // Keep the full link on its own logical line even in text-only projections.
   await presentUrl(deps, url, { userCode: login.user_code, autoOpen: true })
 }
 
-async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, options: ProviderLoginLinkOptions): Promise<void> {
-  const displayed = deps.showProviderLoginLink ? await deps.showProviderLoginLink(url, options) : false
-  if (displayed === false) deps.appendNotice(`\n${url}\n`)
+async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, handoff: ProviderLoginLinkOptions | null): Promise<void> {
+  // The transcript keeps the complete link after the link view closes.
+  deps.appendNotice(`\n${url}\n`)
+  if (handoff) await deps.showProviderLoginLink?.(url, handoff)
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {

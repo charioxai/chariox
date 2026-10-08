@@ -70,3 +70,23 @@ test("MP-08/MP-11 the link view shows each authorization link once", async () =>
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test("MP-08/MP-11 the transcript keeps the complete link after the link view closes", async () => {
+  const notices: string[] = []
+  const flashes: string[] = []
+  let verificationUrl = url
+  const deps = {
+    currentProviderId: () => "claude", flashFooter: (value: string) => { flashes.push(value) }, appendNotice: (value: string) => { notices.push(value) },
+    showProviderLoginLink: async () => true,
+    startProviderLogin: async () => ({ provider: "claude", account_profile: "default", login_kind: "oauth", login_id: null, auth_url: null, verification_url: verificationUrl, user_code: null }),
+    getProviderLoginStatus: async () => ({ provider: "claude", account_profile: "default", login_id: "fixture", state: "running" as const, terminal_output_base64: Buffer.from(`Authorize:\n${url}2\n`).toString("base64"), started_at_ms: 0, updated_at_ms: 0 }),
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", value: "login claude", raw: "/provider login claude" })
+  await handleProviderSlashCommand(deps, { kind: "provider", value: "login-status fixture", raw: "/provider login-status fixture" })
+  assert.match(flashes[0] ?? "", /authorization link below/)
+  assert.ok(notices.includes(`\n${url}\n`))
+  assert.ok(notices.includes(`\n${url}2\n`))
+  verificationUrl = "https://user:secret@example.org/authorize"
+  await handleProviderSlashCommand(deps, { kind: "provider", value: "login claude", raw: "/provider login claude" })
+  assert.doesNotMatch(flashes.at(-1) ?? "", /authorization link below/)
+})
