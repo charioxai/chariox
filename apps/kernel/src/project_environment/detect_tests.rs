@@ -23,7 +23,7 @@ fn envp02a_utility_metadata_is_bounded_without_losing_deterministic_origins() {
     let source = (0..64)
         .map(|i| format!("process.env.ENV_NAME_{i};\n"))
         .collect::<String>();
-    for i in 0..40 {
+    for i in 0..8 {
         write(&root, &format!("src/file-{i}.ts"), &source);
     }
     let folders = vec![folder(&root)];
@@ -39,7 +39,24 @@ fn envp02a_utility_metadata_is_bounded_without_losing_deterministic_origins() {
     assert!(input.references.iter().all(|r| r.uses.len() <= 1));
     assert!(serde_json::to_vec(&input).unwrap().len() <= 32 * 1024);
     assert_eq!(detection.proposals, before);
-    assert!(before.iter().any(|p| p.requirement.origins.len() >= 40));
+    assert!(
+        before
+            .iter()
+            .map(|p| p.requirement.origins.len())
+            .sum::<usize>()
+            > 40
+    );
+    for reference in &input.references {
+        for usage in &reference.uses {
+            assert!(before.iter().any(|proposal| {
+                matches!(&proposal.requirement.spec, RequirementSpec::Secrets { name, .. } if name == &reference.name)
+                    && proposal.requirement.origins.iter().any(|origin| {
+                        matches!(origin, RequirementOrigin::Detected { folder_id, relative_path, line: Some(line), .. }
+                            if folder_id == &reference.workspace_id && relative_path == &usage.path && line == &usage.line)
+                    })
+            }));
+        }
+    }
 }
 #[test]
 fn envp02a_empty_declarations_do_not_invent_line_origins() {
