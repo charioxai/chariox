@@ -28,3 +28,15 @@ test('MP-08 slice image native accessibility module graph imports outside checko
   execFileSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify(new URL('file://'+root+'/native-accessibility.mjs').href)})`],{timeout:10000});
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('MP-11 #904 review 2 slice image copies every Python helper its installed helpers load',async()=>{
+ const dockerfile=await readFile(new URL('Dockerfile',import.meta.url),'utf8');
+ const copied=new Set([...dockerfile.matchAll(/apps\/kernel\/slice-linux-docker\/docker\/([A-Za-z0-9._-]+\.py)/g)].map(m=>m[1]));
+ const missing=new Set();
+ for(const name of copied){
+  const source=await readFile(new URL(name,import.meta.url),'utf8');
+  const siblings=[...source.matchAll(/with_name\(\s*['"]([A-Za-z0-9._-]+\.py)['"]\s*\)/g)].map(m=>m[1]).concat([...source.matchAll(/\bload\(\s*'([A-Za-z0-9._-]+)'\s*\)/g)].map(m=>m[1]+'.py'));
+  for(const sibling of siblings)if(!copied.has(sibling))missing.add(name+' -> '+sibling);
+ }
+ assert.deepEqual([...missing],[]);
+});

@@ -247,10 +247,12 @@ COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/c
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
 # MP-08 / MP-11: shared native Computer adapter and typed-refusal assets.
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs apps/kernel/slice-linux-docker/docker/native-computer.mjs apps/kernel/slice-linux-docker/docker/native-computer.py apps/kernel/slice-linux-docker/docker/native-accessibility.mjs apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs apps/kernel/slice-linux-docker/docker/native-accessibility.py apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs apps/kernel/slice-linux-docker/docker/linux-desktop-session.py apps/kernel/slice-linux-docker/docker/x11-text-keyboard.py /opt/chariox-slice/
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-clipboard.py /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-clipboard.py apps/kernel/slice-linux-docker/docker/native-x11.py /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py apps/kernel/slice-linux-docker/docker/room-native-protection.py /opt/chariox-slice/
+# MP-11: import the installed native helpers (not the bind-mounted source) so a missing sibling fails the build.
+RUN cd / && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c 'import importlib.util as u,sys; [(s:=u.spec_from_file_location(n.replace("-","_"),"/opt/chariox-slice/"+n+".py")).loader.exec_module(u.module_from_spec(s)) for n in sys.argv[1:]]' native-x11 native-clipboard native-accessibility slice-keyboard room-native-protection native-computer
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs /opt/chariox-slice/browser-observation-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
