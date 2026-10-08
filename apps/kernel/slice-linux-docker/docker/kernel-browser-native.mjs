@@ -29,6 +29,7 @@ export function nativeRefusalReason(error,helperStage){
  return 'other';
 }
 // Pixels inside protected regions of the reference capture (null: none).
+const STATUS_BAND_DIP=26;
 export function attestationMask(regions,width,height){
  if(!regions.length)return null;
  const mask=new Uint8Array(width*height);
@@ -133,7 +134,10 @@ export class LinuxCapture {
     // MP-08/MP-11: the reference is the protected capture; its masked
     // regions (+2 px for rounding) are excluded. The same trusted regions
     // mask every native frame before any encoder or client sees it.
-    const masked=attestationMask(shot[displayMaskRegions]??[],raw.width,raw.height);
+    // MP-08/MP-10: Chromium's link-status bubble (browser UI under a parked
+    // XTest pointer, bottom 24 DIP) is absent from CDP references; it is not
+    // page content and stays visible to the viewer, as on a native desktop.
+    const band=STATUS_BAND_DIP*this.scale,masked=attestationMask([...(shot[displayMaskRegions]??[]),{x:0,y:raw.height-band,width:raw.width,height:band}],raw.width,raw.height);
     // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
     let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
     for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
