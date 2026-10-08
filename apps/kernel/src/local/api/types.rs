@@ -258,4 +258,5 @@ pub use workspace::*;
 /// `/v1/browser` handshake.
 /// Version 464 adds relay-renewed `local_browser_renew` leases and the
 /// 30-second relay identity ceiling for local browser grants and renewals.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 464;
+/// Version 473 adds explicit short bound-client terminal direct leases with paired Origin.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 473;

@@ -633,9 +633,9 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
 }
 
 #[test]
-fn mp08_mp11_local_browser_wire_is_bound_to_protocol464() {
+fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 464);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 473);
     let payload = EncryptedRelayPayload {
         sender_public_key: "key".into(),
         nonce: "nonce".into(),
@@ -667,6 +667,10 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol464() {
         "path": LOCAL_BROWSER_PATH,
         "default_port": configured_port(None),
         "request": {"local_browser_connect": {}},
+        "terminal_request": {"local_terminal_connect": {}},
+        "terminal_renew_request": {"local_terminal_renew": {"grant": "grant", "sequence": 1}},
+        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "paired_origin"],
+        "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "next_sequence"],
         "renew_request": {"local_browser_renew": {"grant": "grant", "sequence": 1}},
         "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "next_sequence"],
         "lease_ms": GRANT_TTL_MS,
@@ -678,7 +682,7 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol464() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "8ed751d30f75a5c07f946ed52d55034952221c7d1f1a19b6a7b6a3a3c89a064f"
+        "1d76b5e7fa463afc67e4222a1b7ef74061b906c5846356b12fd2035422bdc473"
     );
 }
 
@@ -1237,5 +1241,128 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             list["SessionsListed"]["sessions"].as_array().unwrap().len(),
             1
         );
+    });
+}
+
+// MP-08/MP-11: an ordinary paired CLI identity may outlive its explicit
+// terminal lease. Only authenticated relay renewal extends that short lease.
+async fn terminal_request(
+    kernel: &Kernel,
+    terminal: &Browser,
+    identity: RelayCallerIdentity,
+    body: serde_json::Value,
+    via_relay: bool,
+) -> Result<serde_json::Value, RelayError> {
+    let request = relay_crypto::encrypt_payload_for_peer(
+        &terminal.private_key,
+        &kernel.daemon_public_key,
+        body.to_string().as_bytes(),
+    )
+    .unwrap();
+    let outcome = handle_daemon_request(
+        &kernel.direct.router,
+        &kernel.direct.command_sequence,
+        Some(identity),
+        request,
+        &kernel.direct.command_result_cache,
+        if via_relay {
+            Some(&kernel.direct)
+        } else {
+            None
+        },
+    )
+    .await;
+    if let Some(error) = outcome.error {
+        return Err(error);
+    }
+    let plaintext = relay_crypto::decrypt_payload_for_private_key(
+        &terminal.private_key,
+        &outcome.encrypted_response.unwrap(),
+    )
+    .unwrap();
+    Ok(serde_json::from_slice(&plaintext.plaintext).unwrap())
+}
+
+#[test]
+fn mp08_mp11_terminal_short_lease_uses_shared_bound_admission() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let terminal = Browser::new();
+        let mut identity = terminal.identity();
+        identity.subject = "terminal:cli-1".into();
+        identity.expires_at_ms = crate::session::unix_epoch_ms() + 900_000;
+        assert!(
+            kernel.mint(&terminal, identity.clone()).await.is_err(),
+            "browser admission must still refuse long-lived identities"
+        );
+        let before = crate::session::unix_epoch_ms();
+        let issued = terminal_request(
+            &kernel,
+            &terminal,
+            identity.clone(),
+            serde_json::json!({"local_terminal_connect": {}}),
+            true,
+        )
+        .await
+        .unwrap();
+        let issued = &issued["LocalTerminalConnectIssued"];
+        assert_eq!(issued["paired_origin"], ORIGIN);
+        assert!(issued["expires_at_ms"].as_u64().unwrap() <= before + 30_100);
+        let grant: Grant = serde_json::from_value(issued.clone()).unwrap();
+        let (mut socket, verdict) = connect(&kernel, &terminal, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let renewal =
+            serde_json::json!({"local_terminal_renew": {"grant": grant.grant, "sequence": 1}});
+        assert!(
+            terminal_request(&kernel, &terminal, identity.clone(), renewal.clone(), false)
+                .await
+                .is_err()
+        );
+        let mut foreign = identity.clone();
+        foreign.user_id = Some("another-user".into());
+        assert!(
+            terminal_request(&kernel, &terminal, foreign, renewal.clone(), true)
+                .await
+                .is_err()
+        );
+        let mut unbound = identity.clone();
+        unbound.public_key_thumbprint = None;
+        assert!(
+            terminal_request(&kernel, &terminal, unbound, renewal.clone(), true)
+                .await
+                .is_err()
+        );
+        let renewed = terminal_request(&kernel, &terminal, identity.clone(), renewal.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(renewed["LocalTerminalLeaseRenewed"]["next_sequence"], 2);
+        assert!(
+            renewed["LocalTerminalLeaseRenewed"]["expires_at_ms"]
+                .as_u64()
+                .unwrap()
+                <= crate::session::unix_epoch_ms() + 30_000
+        );
+        assert!(
+            terminal_request(&kernel, &terminal, identity.clone(), renewal, true)
+                .await
+                .is_err()
+        );
+        assert!(
+            renew(&kernel, &terminal, terminal.identity(), &grant, 2, true)
+                .await
+                .error
+                .is_some(),
+            "browser renewal cannot change a terminal lease"
+        );
+        socket.close(None).await.unwrap();
+        assert!(terminal_request(
+            &kernel,
+            &terminal,
+            identity,
+            serde_json::json!({"local_terminal_connect": {}}),
+            false
+        )
+        .await
+        .is_err());
     });
 }

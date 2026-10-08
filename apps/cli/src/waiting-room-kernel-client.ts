@@ -1,3 +1,4 @@
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { LocalIpcClient } from "./ipc.js"
 import { resolveKernelClientConnection } from "./relay-api.js"
 import { beginMutableLocalIpcClientPivot, type MutableLocalIpcClient, type MutableLocalIpcClientPivot } from "./mutable-local-ipc-client.js"
@@ -13,10 +14,12 @@ type KernelClientTarget = {
 async function openWaitingRoomKernelClient(controlClient: LocalIpcClient, target: KernelClientTarget) {
   // MP-08 / MP-11: resolve through the current authority; never probe a
   // discovered TCP endpoint before its listener has been authenticated.
-  const connection = await resolveKernelClientConnection(controlClient, target)
+  const relayIdentity = createCliRelayIdentityStore().getOrCreate()
+  const connection = await resolveKernelClientConnection(controlClient, { ...target, publicKeyThumbprint: relayIdentity.publicKeyThumbprint })
   if (!target.isActive()) return null
   const client = new LocalIpcClient(connection.relayUrl, {
     relayAuthToken: connection.relayToken,
+    relayIdentity,
     targetDaemonId: connection.targetDaemonId ?? undefined,
     targetDaemonAlias: connection.targetDaemonAlias ?? undefined,
   })

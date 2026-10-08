@@ -46,9 +46,16 @@ struct LocalBrowserAuthority {
     relay_public_key: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalDirectClient {
+    Browser,
+    Terminal,
+}
+
 #[derive(Debug, Clone)]
 struct LocalBrowserGrant {
     lease_id: String,
+    client: LocalDirectClient,
     identity: RelayCallerIdentity,
     thumbprint: String,
     authority: LocalBrowserAuthority,
@@ -128,6 +135,23 @@ impl LocalBrowserDirect {
         self: &Arc<Self>,
         identity: &RelayCallerIdentity,
     ) -> Result<serde_json::Value, RelayError> {
+        self.issue_client_grant(identity, LocalDirectClient::Browser)
+            .await
+    }
+
+    pub(super) async fn issue_terminal_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+    ) -> Result<serde_json::Value, RelayError> {
+        self.issue_client_grant(identity, LocalDirectClient::Terminal)
+            .await
+    }
+
+    async fn issue_client_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+        client: LocalDirectClient,
+    ) -> Result<serde_json::Value, RelayError> {
         let authority = self
             .refresh_authority()
             .ok_or_else(|| unavailable("this kernel is not paired with a Cloud origin"))?;
@@ -144,13 +168,14 @@ impl LocalBrowserDirect {
                 false,
             ));
         }
-        let expires_at_ms = short_identity_deadline(identity, now_ms).ok_or_else(|| {
+        let expires_at_ms = client_identity_deadline(identity, now_ms, client).ok_or_else(|| {
             relay_error(
                 "unauthorized",
                 "local browser connect requires a live 30-second relay identity; check that the system clock is synchronized",
                 false,
             )
         })?;
+        let paired_origin = authority.origin.clone();
         let endpoint = self.ensure_endpoint().await?;
         let grant = random_token();
         {
@@ -170,6 +195,7 @@ impl LocalBrowserDirect {
                 grant.clone(),
                 LocalBrowserGrant {
                     lease_id: grant.clone(),
+                    client,
                     identity: identity.clone(),
                     thumbprint,
                     authority,
@@ -177,15 +203,21 @@ impl LocalBrowserDirect {
                 },
             );
         }
-        Ok(serde_json::json!({
-            "LocalBrowserConnectIssued": {
-                "endpoint": format!("ws://127.0.0.1:{}{LOCAL_BROWSER_PATH}", endpoint.port),
-                "grant": grant,
-                "kernel_id": self.router.relay_daemon_id(),
-                "endpoint_epoch": endpoint.epoch,
-                "expires_at_ms": expires_at_ms,
+        let mut issued = serde_json::json!({
+            "endpoint": format!("ws://127.0.0.1:{}{LOCAL_BROWSER_PATH}", endpoint.port),
+            "grant": grant,
+            "kernel_id": self.router.relay_daemon_id(),
+            "endpoint_epoch": endpoint.epoch,
+            "expires_at_ms": expires_at_ms,
+        });
+        let name = match client {
+            LocalDirectClient::Browser => "LocalBrowserConnectIssued",
+            LocalDirectClient::Terminal => {
+                issued["paired_origin"] = serde_json::json!(paired_origin);
+                "LocalTerminalConnectIssued"
             }
-        }))
+        };
+        Ok(serde_json::json!({name: issued}))
     }
 
     /// Single-use redemption: a grant is removed before it is checked.
@@ -333,4 +365,19 @@ fn random_token() -> String {
 
 fn unavailable(message: &str) -> RelayError {
     relay_error("local_browser_unavailable", message, false)
+}
+
+// MP-08/MP-11 protocol 473: an explicit terminal lease is short even when
+// the CLI's bound relay identity is long-lived. Every extension re-enters the
+// authenticated relay dispatcher; the direct session cannot renew itself.
+fn client_identity_deadline(
+    identity: &RelayCallerIdentity,
+    now: u64,
+    client: LocalDirectClient,
+) -> Option<u64> {
+    match client {
+        LocalDirectClient::Browser => short_identity_deadline(identity, now),
+        LocalDirectClient::Terminal => (identity.expires_at_ms > now)
+            .then(|| identity.expires_at_ms.min(now.saturating_add(GRANT_TTL_MS))),
+    }
 }

@@ -481,11 +481,12 @@ Current implementation notes:
 
 ### Same-machine browser carrier (local protocol 464, MP-08/MP-11)
 
-MP-08 / MP-11: relay-addressed TUI launches and waiting-room kernel switches
-retain their authenticated relay transport, including for a same-machine target.
-Local presence is discovery metadata, not server identity proof. A matching
-`RelayStatus.daemon_id` from a loopback TCP listener does not authorize a carrier
-switch or disclosure of a local bearer credential.
+MP-08 / MP-11: at protocol 473, relay-addressed detached/native TUI launches
+and waiting-room kernel switches automatically use the shared authenticated
+terminal direct lease described below when fresh same-machine discovery exists.
+Older and alias-only targets retain their authenticated relay transport.
+Local presence and a matching `RelayStatus.daemon_id` do not authenticate a
+loopback TCP listener or authorize disclosure of a local bearer credential.
 
 The kernel's CLI listener keeps refusing every request that carries an
 `Origin` header. A paired web terminal whose kernel runs on the same machine
@@ -3244,3 +3245,50 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### MP-08/MP-11 terminal direct lease (local protocol 473)
+
+Detached and native provider TUIs automatically attempt the same kernel-owned
+loopback carrier for an id-addressed target with fresh same-machine discovery at
+protocol 473 or newer. Discovery gates attempts and the Local/Relay indicator;
+it never authenticates the listener. Alias-only targets retain relay transport.
+`ResolveKernelClientConnection.public_key_thumbprint` optionally binds the issued
+CLI token to the caller's persisted public key. Older callers may omit it.
+
+The terminal sends encrypted `{"local_terminal_connect":{}}` through its real
+relay connection with a live, user-bearing, key-bound client identity in the
+paired kernel's realm. The existing direct service returns
+`LocalTerminalConnectIssued` with `endpoint`, `grant`, `kernel_id`,
+`endpoint_epoch`, `expires_at_ms` and `paired_origin`. An ordinary CLI token may
+be long-lived; this explicit terminal lease is always capped at 30 seconds and
+never exceeds that token's expiry. The CLI uses the returned paired Origin and
+the existing challenge, encrypted grant proof and pinned kernel-key proof.
+There is no unauthenticated loopback probe or bearer credential disclosure.
+
+Every 10 seconds, the terminal renews its live lane grants through the real relay
+using `{"local_terminal_renew":{"grant","sequence"}}` and receives
+`LocalTerminalLeaseRenewed {expires_at_ms,next_sequence}`. Every attempt spends
+its sequence, and one failed renewal retries after one second. Renewal checks the
+same user, realm, key and unchanged pairing authority; browser and terminal lease
+kinds cannot replace one another. Direct sessions cannot issue or renew grants.
+The existing encrypted request dispatcher, command receipts, authorization and
+subscription replay cursors govern both carriers. Carrier loss falls back to the
+relay, and an eligible local kernel is retried automatically after a cooldown.
+Native TUIs continue to use their normal home session and provider adapter paths.
+
+Web browser admission still requires protocol 464 and short Cloud identities;
+its minimum is unchanged. Terminal callers depend on 473 for this additional
+lease and token-binding behavior. Same-machine direct transport is automatic,
+with no new user authentication command. Cloud #307 supplies the browser carrier;
+OSS #916 supplies this terminal contract. Focused drill:
+`apps/cli/scripts/live-terminal-local-direct-drill.mjs`.
+
+MP-08/MP-11: Cloud's first-visit Safari/WebKit notice is informational only.
+Cloud compares the browser request's ingress-observed public IP with a fresh
+ONLINE kernel presence on an active machine owned by the same user. Hosted
+reverse proxies must overwrite forwarding headers. Shared-session viewers do not
+receive the hint. NAT can make different computers share a public IP; the hint
+never selects a route, grants access, proves locality, or shows a Local indicator.
+The notice appears only while there is no direct connection, is dismissible, and
+remembers dismissal per browser profile. V1 remains literal loopback `ws://`;
+per-kernel publicly trusted `wss://` certificates belong to V2.

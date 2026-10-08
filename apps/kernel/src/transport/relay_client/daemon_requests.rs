@@ -213,6 +213,59 @@ pub(super) async fn handle_daemon_request(
                 });
             ("browser_import_delivery", Some(command_id), true, result)
         }
+        ParsedRelayClientMessage::LocalTerminalRenew(request) => {
+            let result = require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local terminal lease renewal",
+            )
+            .and_then(|identity| match local_browser {
+                Some(direct) => {
+                    direct.renew_terminal_lease(identity, &request.grant, request.sequence)
+                }
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local terminal lease renewal requires the relay",
+                    false,
+                )),
+            });
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => {
+                    renewal_refusals::log(&error);
+                    RelayDispatchOutcome::RelayError(error)
+                }
+            };
+            ("local_terminal_renew", None, false, result)
+        }
+        ParsedRelayClientMessage::LocalTerminalConnect(LocalBrowserConnectRequest {}) => {
+            let identity = match require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local terminal connect",
+            ) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            let result = match local_browser {
+                Some(direct) => direct.issue_terminal_grant(identity).await,
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local terminal connect is only issued over the relay",
+                    false,
+                )),
+            };
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => RelayDispatchOutcome::RelayError(error),
+            };
+            ("local_terminal_connect", None, false, result)
+        }
         ParsedRelayClientMessage::LocalBrowserRenew(request) => {
             let result = require_bound_client_sender(
                 caller_identity.as_ref(),
@@ -451,6 +504,21 @@ enum ParsedRelayClientMessage {
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
     LocalBrowserConnect(LocalBrowserConnectRequest),
     LocalBrowserRenew(LocalBrowserRenewRequest),
+    LocalTerminalConnect(LocalBrowserConnectRequest),
+    LocalTerminalRenew(LocalBrowserRenewRequest),
+}
+
+/// MP-08/MP-11 protocol 473: terminal admission uses the shared service and
+/// paired Origin, with an explicitly short lease rather than a short token.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalTerminalConnectEnvelope {
+    local_terminal_connect: LocalBrowserConnectRequest,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalTerminalRenewEnvelope {
+    local_terminal_renew: LocalBrowserRenewRequest,
 }
 
 /// Protocol 464: encrypted renewal handle and one-use sequence, relay only.
@@ -500,6 +568,16 @@ struct BrowserImportDeliveryEnvelope {
 }
 
 fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, serde_json::Error> {
+    if let Ok(envelope) = serde_json::from_slice::<LocalTerminalConnectEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalTerminalConnect(
+            envelope.local_terminal_connect,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalTerminalRenewEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalTerminalRenew(
+            envelope.local_terminal_renew,
+        ));
+    }
     if let Ok(envelope) = serde_json::from_slice::<BrowserImportDeliveryEnvelope>(bytes) {
         return Ok(ParsedRelayClientMessage::BrowserImportDelivery(
             envelope.browser_import_delivery,

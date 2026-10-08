@@ -318,6 +318,7 @@ export async function resolveKernelClientConnection(
     machineRef?: string | null
     clientId?: string | null
     sessionId?: string | null
+    publicKeyThumbprint?: string | null
   },
 ): Promise<KernelClientConnectionView> {
   const response = await client.send<Record<string, unknown>>(
@@ -326,6 +327,7 @@ export async function resolveKernelClientConnection(
   const payload = expectVariant<{
     connection: KernelClientConnectionPayload
   }>(response, "KernelClientConnectionResolved").connection
+  if (input.publicKeyThumbprint) requireRelayTokenKeyBinding(payload.relay_token, input.publicKeyThumbprint, "resolved CLI kernel connection")
   return {
     relayUrl: payload.relay_url,
     relayToken: payload.relay_token,

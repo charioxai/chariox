@@ -1,3 +1,4 @@
+import { TerminalLocalDirect } from "./terminal-local-direct.js"
 import { randomUUID } from "node:crypto"
 import {
   closeSync,
@@ -218,7 +219,7 @@ function isHostedPublicationGateway() {
   return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
 }
 
-type LocalIpcClientOptions = {
+export type LocalIpcClientOptions = {
   /** State directory of a private local kernel; never used for relay connections. */
   localAuthEnvironment?: NodeJS.ProcessEnv | undefined
   localAuthToken?: string | undefined
@@ -243,6 +244,7 @@ export class LocalIpcClient {
   private readonly relayAuthToken: string | null
   private readonly relayTarget: RelayTarget | null
   private readonly relayIdentity: RelayClientIdentity | null
+  private readonly terminalLocalDirect: TerminalLocalDirect | null
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
   private connectingControlWebsocket: WebSocket | null = null
@@ -340,6 +342,23 @@ export class LocalIpcClient {
         daemon_alias: options.targetDaemonAlias?.trim() || null,
       }
       : null
+    this.terminalLocalDirect = this.relayAuthToken && this.relayTarget && this.relayIdentity
+      ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: this.relayAuthToken, target: this.relayTarget,
+        identity: this.relayIdentity, eligible: () => this.localDirectEligible(this.relayTarget!),
+        retryCarrier: () => {
+          for (const lane of ["control", "event"] as const) {
+            const socket = this.getWebSocket(lane)
+            if (socket && !this.terminalLocalDirect?.isLocal(socket)) this.destroyWebSocket(lane, "retrying local terminal carrier")
+          }
+          this.scheduleReconnect()
+        },
+      }) : null
+  }
+
+  protected localDirectEligible(_target: RelayTarget): boolean { return false }
+
+  isLocalDirectTransport(): boolean {
+    return this.terminalLocalDirect?.isLocal(this.controlWebsocket) === true
   }
 
   supportsKernelEvents() {
@@ -498,6 +517,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.terminalLocalDirect?.close()
     this.clearRuntimeTransportState("kernel client closed")
     let timedOut = false
     let timeout: ReturnType<typeof setTimeout> | undefined
@@ -522,6 +542,7 @@ export class LocalIpcClient {
   }
 
   destroy(): void {
+    this.terminalLocalDirect?.close()
     this.clearRuntimeTransportState("kernel client destroyed")
     this.destroyWebSocket("control")
     this.destroyWebSocket("event")
@@ -767,7 +788,7 @@ export class LocalIpcClient {
     }
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
-      const socket = this.openKernelWebSocket()
+      let socket = this.openKernelWebSocket()
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
@@ -915,7 +936,21 @@ export class LocalIpcClient {
             }
             this.setRelayDaemonPublicKey(lane, frame.daemon_public_key)
             socket.off("message", handleRelayHandshakeMessage)
-            finalizeOpen()
+            const relaySocket = socket
+            void (async () => {
+              const direct = await this.terminalLocalDirect?.open(frame.daemon_public_key) ?? null
+              if (settled || this.getConnectingWebSocket(lane) !== relaySocket) {
+                direct?.terminate()
+                return
+              }
+              if (direct && direct.readyState === WebSocket.OPEN) {
+                clearConnectListeners()
+                socket = direct
+                this.setConnectingWebSocket(lane, direct)
+                relaySocket.terminate()
+              }
+              finalizeOpen()
+            })().catch(error => fail("connect terminal carrier", error))
             return
           }
           if (frame.kind === "close") {
