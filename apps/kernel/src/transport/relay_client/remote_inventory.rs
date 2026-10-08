@@ -2,7 +2,6 @@
 
 use std::future::Future;
 
-use crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -90,12 +89,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let mut discovery_config = runtime_config.clone();
-    if let Some(profile) = runtime_config.cloud_relay.as_ref() {
-        let token =
-            issue_cloud_relay_inventory_discovery_token(profile, &runtime_config.daemon_id).await?;
-        discovery_config.relay_token = Some(token.token);
-    }
+    let discovery_config = relay_discovery::metadata_config(&runtime_config).await?;
 
     let live_machines = relay_discovery::list_live_machines(&discovery_config).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
