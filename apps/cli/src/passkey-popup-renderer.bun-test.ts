@@ -246,7 +246,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
       assert.match(frame, /Executable: "\/opt\/codex\\n\\u001b\[31m\\u202e"/)
       assert.match(frame, /Process start: 18446744073709551615 · exec version 7/)
       assert.match(frame, /Display text mentions Claude/)
-      surface.render({ ...view, prompt: { ...prompt, kind, requester: undefined } }, { width: 100, height: 50 })
+      surface.render({ ...view, prompt: { ...prompt, kind, requester: null } }, { width: 100, height: 50 })
       await h.renderOnce()
       assert.match(h.captureCharFrame(), /Requester identity unavailable/)
     } finally { h.renderer.destroy() }
