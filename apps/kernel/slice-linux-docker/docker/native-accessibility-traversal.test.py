@@ -294,6 +294,24 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(tree['masks'],[[20,30,246,152]])
         self.assertTrue(all(node['protected'] and not node['actions'] for node in tree['nodes']))
 
+    def test_mp08_mp11_known_browser_content_is_opaque_without_accessibility_queries(self):
+        # MP-10 real Wikipedia capture timed out walking content already masked.
+        from unittest.mock import Mock
+        self.terminal(200)
+        browser=Node('private browser application', 'application', pid=200)
+        browser.getRoleName=Mock(side_effect=AssertionError('browser content must not be queried'))
+        self.desktop=Node('Desktop','desktop',[browser])
+        processes=[{'pid':200,'started':'1'}]
+        tree=self.driver.snapshot(processes, browser_processes=processes)
+        self.assertTrue(tree['available'])
+        self.assertTrue(tree['complete'])
+        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertEqual(tree['nodes'][0]['name'],'[protected]')
+        self.assertTrue(tree['nodes'][0]['protected'])
+        self.assertEqual(tree['nodes'][0]['actions'],[])
+        self.assertIsNone(tree['active_window'])
+        browser.getRoleName.assert_not_called()
+
     def test_mp11_finding3_popup_is_masked_on_an_all_accessible_desktop(self):
         popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
             get_geometry=lambda:types.SimpleNamespace(x=300,y=40,width=100,height=60,border_width=1))

@@ -13,6 +13,14 @@ class ProtectionTests(unittest.TestCase):
         accessibility=SimpleNamespace(snapshot=unittest.mock.Mock(side_effect=[before,after]))
         with patch.object(module,'load',return_value=accessibility),patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'synthetic-private-canary')):
             with self.assertRaises(ValueError):module.main({'op':'clipboard_read','mask':False,'processes':[]})
+    def test_mp11_opaque_browser_keeps_unknown_clipboard_contents_withheld(self):
+        tree={'available':True,'complete':True,'protected':False,
+              'nodes':[{'protected':True,'name':'[protected]'}],'uncovered':[]}
+        accessibility=SimpleNamespace(snapshot=lambda *args:tree)
+        with patch.object(module,'load',return_value=accessibility),patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'private-browser-canary')) as read:
+            self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
+        read.assert_not_called()
+
     def test_unchanged_complete_coverage_allows_public_clipboard(self):
         before={'available':True,'complete':True,'protected':False,'nodes':[]}
         accessibility=SimpleNamespace(snapshot=lambda *args:before)

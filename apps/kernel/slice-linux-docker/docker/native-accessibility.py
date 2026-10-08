@@ -155,6 +155,13 @@ def snapshot(processes, browser_processes=None):
             if pid not in allowed:
                 complete=False
                 continue
+            if pid in browsers:
+                # MP-08 / MP-11: native observation already masks this entire
+                # browser. Do not inspect its private, potentially huge tree.
+                nodes.append({'pid':pid,'started':allowed[pid],'path':[],
+                              'role':'application','name':'[protected]','states':[],
+                              'bounds':None,'actions':[],'protected':True})
+                continue
             pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=False
         # MP-08: traverse applications fairly before deep hidden menu trees.

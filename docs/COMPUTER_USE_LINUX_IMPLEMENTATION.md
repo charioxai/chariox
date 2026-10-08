@@ -26,7 +26,9 @@ this same native coverage, including an empty secret registry. Both captures
 fence the native tree before and after reading pixels. Room agent text and
 key-repeat helpers bind and recheck the same public native leaf before each
 press. Chords permit modifiers and at most one ordinary key. Human and approved
-Vault typing keep their existing actor paths.
+Vault typing keep their existing actor paths. Known browser applications stay
+opaque during native traversal; clipboard reads also stay protected while
+those applications exist, since the clipboard has no proved source.
 
 These conservative fallbacks are security restrictions, not functional or
 MP-10 acceptance evidence. Real-live hosted/client/provider parity still

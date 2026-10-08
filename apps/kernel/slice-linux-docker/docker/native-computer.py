@@ -109,7 +109,7 @@ def main(request):
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
         coverage=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
-        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected'] or coverage.get('uncovered'): return {'text':'[protected]'}
+        if request['mask'] or not coverage['available'] or not coverage['complete'] or coverage['protected'] or coverage.get('uncovered') or any(node.get('protected') for node in coverage.get('nodes', [])): return {'text':'[protected]'}
         result=subprocess.run(['xclip','-selection','clipboard','-o'],check=True,capture_output=True,timeout=2)
         after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
         if coverage!=after:raise ValueError('native protection changed during clipboard read')
