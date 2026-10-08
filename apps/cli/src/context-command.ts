@@ -1,4 +1,5 @@
 // MP-05/MP-08/MP-10/MP-11: CLI projection of the shared owner-copy contract.
+import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import {
   startOwnerManagedContextTransferRequest, getManagedContextTransferStatusRequest,
@@ -28,7 +29,7 @@ export async function runContextCommand(argv: string[]): Promise<boolean> {
   const options = parseArgs(connection)
   let request: unknown
   if (args[0] === "copy" && args.length === 2) {
-    const file = await open(args[1]!, "r")
+    const file = await open(args[1]!, constants.O_RDONLY | constants.O_NONBLOCK)
     let selection: OwnerManagedContextTransfer
     try {
       if (!(await file.stat()).isFile()) throw new Error("Context selection must be a regular file")
