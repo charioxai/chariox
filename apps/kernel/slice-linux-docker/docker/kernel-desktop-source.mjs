@@ -54,9 +54,11 @@ export class DesktopSource {
   }
   async verify() {
     while(!this.closed) {
-      const {started,verified,changed}=await this.gate.step();
-      const held=this.held;
-      if(held&&held.captured<=started){this.held=null;if(verified===held.serial)this.publish(held.sample);}
+      // The latest frame captured before this measurement begins; frames
+      // arriving meanwhile wait for the next one (no starvation while scrolling).
+      const held=this.held;this.held=null;
+      const {verified,changed}=await this.gate.step();
+      if(held&&verified===held.serial)this.publish(held.sample);
       if(changed)await this.wake();
       await delay(this.binding.browser?.()?4:50);
     }
