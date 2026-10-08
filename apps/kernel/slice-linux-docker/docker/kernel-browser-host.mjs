@@ -104,7 +104,11 @@ export class KernelBrowserHost {
     return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
       width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
-  async save() {
+  save() {
+    // MP-11: display reads overlap barrier operations; one tabs.json.new writer.
+    return this.saving = (this.saving ?? Promise.resolve()).catch(() => {}).then(() => this.write());
+  }
+  async write() {
     const name = path.join(this.root, "tabs.json");
     const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
@@ -175,7 +179,7 @@ export class KernelBrowserHost {
   }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
-      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close();
+      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close().catch(()=>{});
     }
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.

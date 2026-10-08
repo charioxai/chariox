@@ -383,6 +383,16 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
  pages.get(tab.target_id).document_id='next';tab.document_id='next';
  assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
 }));
+test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
+ await host.request({op:'open',url:'about:blank'});
+ await Promise.all(Array.from({length:20},()=>{host.lastSaved=null;return host.save();}));
+ assert.equal(JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8')).tabs.length,1);
+}));
+test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
+ assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+}));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
   await host.protect({ unknown: false, values: ["synthetic-protected-value"], targets: [] });
