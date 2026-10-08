@@ -159,16 +159,20 @@ export class KernelBrowserHost {
       this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close();
     }
   }
+  // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
+  nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
-    if(stream.codec==='png'||this.protection.unknown||this.protection.values.length||this.protection.targets.length||
-      [...this.streams.values()].some(s=>s.tabId===tab.tab_id))return null;
+    const scope=stream.codec==='png'?'png_codec':this.protection.unknown||this.protection.values.length||this.protection.targets.length?'protection_policy':
+      [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
+    if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
     if(entry&&(entry.document!==tab.document_id||entry.source?.closed)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      let source=await selectNativeCapture({display:this.chromium.display,create:async()=>{
-        if(this.tabs.size!==1)throw Error('native tab scope');
+      let source=await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
+        if(this.tabs.size!==1){this.nativeScope('tab_count');throw Error('native tab scope');}
+        this.nativeScope(null);
         const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,policy,screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         return await source.start();
       }});
