@@ -38,6 +38,7 @@ final class FakeSource: NativeSource {
 }
 @main struct Tests {
     static func main() async throws {
+        try testPointerInput()
         let revoked = FakeSource()
         revoked.screenRecording = false; revoked.accessibility = false
         do {

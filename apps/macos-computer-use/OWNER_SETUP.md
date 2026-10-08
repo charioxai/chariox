@@ -1,5 +1,9 @@
 # M0 owner-attended session
 
+For the click/scroll repair after the 2026-10-08 owner session, use
+[OWNER_RECHECK.md](OWNER_RECHECK.md). It reruns only fixture button, fixture scroll
+and TextEdit click after replacing the rebuilt helper's permission entries.
+
 Budget 15 minutes. macOS 14+; use the public fixture and one owner-selected
 real TextEdit window, both with synthetic text. Owner mode and `--list-windows`
 admit only `com.apple.TextEdit` whose running PID satisfies the code requirement
@@ -260,7 +264,7 @@ cu_delay screen-revoked-input --text public
 
 Expect `revoked-frame` to print `refused: permission` with no PNG. The capture
 path checks Screen Recording before Accessibility or AX target resolution.
-Expect `screen-revoked-input` to print `dispatched; application completion unproven`
+Expect `screen-revoked-input` to print `dispatched; path=CGEventPIDText; application completion unproven`
 and observe exactly `public` inserted in TextEdit. This input does not check
 Screen Recording. Record both results and that Accessibility stayed enabled;
 these establish the Screen Recording revocation separately. Stop and record

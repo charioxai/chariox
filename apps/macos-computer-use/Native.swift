@@ -112,11 +112,10 @@ struct MacSource: NativeSource {
         let app = AXUIElementCreateApplication(request.pid)
         let window = try selectedWindow(request, app: app)
         let focused = try focusedElement(app: app, window: window)
+        try bind(element, to: window, pid: request.pid)
+        guard try bounds(window).contains(try bounds(element)) else { throw Refusal.target }
         if request.ownerWindow {
             guard CFEqual(focused, element) else { throw Refusal.target }
-            var pid: pid_t = 0
-            guard AXUIElementGetPid(element, &pid) == .success, pid == request.pid else { throw Refusal.target }
-            guard try bounds(window).contains(try bounds(element)) else { throw Refusal.target }
         }
         if typing {
             guard CFEqual(focused, element), request.ownerWindow || request.target == "ordinary",
@@ -136,6 +135,76 @@ struct MacSource: NativeSource {
             }
             guard matched else { throw Refusal.target }
         }
+    }
+    func bind(_ element: AXUIElement, to ancestor: AXUIElement, pid: pid_t) throws {
+        var actual: pid_t = 0, candidate = element
+        guard AXUIElementGetPid(element, &actual) == .success, actual == pid else { throw Refusal.target }
+        for _ in 0..<32 {
+            if (try? attribute(candidate, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole { throw Refusal.secure }
+            if CFEqual(candidate, ancestor) { return }
+            let parent = try attribute(candidate, kAXParentAttribute)
+            guard CFGetTypeID(parent) == AXUIElementGetTypeID() else { throw Refusal.target }
+            candidate = parent as! AXUIElement
+        }
+        throw Refusal.target
+    }
+    func fixtureCounter(_ request: Request, element: AXUIElement) -> Int? {
+        guard !request.ownerWindow, request.target == "button",
+              let title = try? attribute(element, kAXTitleAttribute) as? String,
+              title.hasPrefix("Clicks: "), title.count <= 24 else { return nil }
+        return Int(title.dropFirst(8))
+    }
+    func scrollValue(_ scroller: AXUIElement) throws -> Double {
+        guard let number = try attribute(scroller, kAXValueAttribute) as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
+              (0...1).contains(number.doubleValue) else { throw Refusal.target }
+        return number.doubleValue
+    }
+    func performAX(_ path: InputPath, operation: Operation, request: Request,
+                   element: AXUIElement) async throws -> String {
+        var scroller: AXUIElement?, before: Double?, counter: Int?
+        if path == .axPress {
+            var names: CFArray?
+            guard AXUIElementCopyActionNames(element, &names) == .success,
+                  let actions = names as? [String], actions.contains(kAXPressAction) else { throw Refusal.target }
+            counter = fixtureCounter(request, element: element)
+        } else {
+            let value = try attribute(element, kAXVerticalScrollBarAttribute)
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else { throw Refusal.target }
+            scroller = (value as! AXUIElement)
+            guard let scroller, try attribute(scroller, kAXRoleAttribute) as? String == kAXScrollBarRole else { throw Refusal.target }
+            try bind(scroller, to: element, pid: request.pid)
+            var settable: DarwinBoolean = false
+            guard AXUIElementIsAttributeSettable(scroller, kAXValueAttribute as CFString, &settable) == .success,
+                  settable.boolValue else { throw Refusal.target }
+            before = try scrollValue(scroller)
+        }
+        try checkPermission(operation)
+        try fence(request, element: element, typing: false)
+        if let scroller, let before {
+            try bind(scroller, to: element, pid: request.pid)
+            guard try scrollValue(scroller) == before else { throw Refusal.target }
+            try fence(request, element: element, typing: false)
+            guard AXUIElementSetAttributeValue(scroller, kAXValueAttribute as CFString,
+                NSNumber(value: try nextScrollValue(before))) == .success else { throw Refusal.native }
+        } else {
+            guard AXUIElementPerformAction(element, kAXPressAction as CFString) == .success else { throw Refusal.native }
+        }
+        // Poll only the synthetic counter or numeric scrollbar. Never field text.
+        for _ in 0..<4 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            try checkPermission(operation)
+            try fence(request, element: element, typing: false)
+            if let scroller, let before {
+                try bind(scroller, to: element, pid: request.pid)
+                if try scrollValue(scroller) > before {
+                    return inputReceipt(path: "AXScrollValue", observed: "observed vertical scroll position increased")
+                }
+            } else if let counter, fixtureCounter(request, element: element) == counter + 1 {
+                return inputReceipt(path: "AXPress", observed: "observed fixture counter increment")
+            }
+        }
+        return inputReceipt(path: path == .axPress ? "AXPress" : "AXScrollValue")
     }
     func perform(_ operation: Operation, request: Request) async throws -> String {
         let element = try target(request)
@@ -164,17 +233,17 @@ struct MacSource: NativeSource {
                   [kAXTextFieldRole, kAXTextAreaRole, kAXButtonRole, kAXScrollAreaRole].contains(role) else { throw Refusal.target }
             return "target=\(request.target) role=\(role)"
         }
+        guard let role = try attribute(element, kAXRoleAttribute) as? String else { throw Refusal.target }
+        let path = try inputPath(operation, role: role)
+        if path == .axPress || path == .axScrollValue {
+            return try await performAX(path, operation: operation, request: request, element: element)
+        }
         let source = CGEventSource(stateID: .privateState)
         var events: [CGEvent] = []
         switch operation {
         case .click:
-            for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-                guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: try point(element), mouseButton: .left)
-                else { throw Refusal.native }; events.append(event)
-            }
-        case .scroll:
-            guard let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1, wheel1: -24, wheel2: 0, wheel3: 0)
-            else { throw Refusal.native }; event.location = try point(element); events.append(event)
+            events = try windowClickEvents(window: request.window, location: try point(element),
+                                          windowBounds: try windowBounds(request), eventNumber: Int.random(in: 1...Int(Int32.max)))
         case .text(let text):
             let units = try textUnits(text)
             for down in [true, false] {
@@ -201,7 +270,7 @@ struct MacSource: NativeSource {
             if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
         }
         try fence(request, element: element, typing: typing)
-        return "dispatched; application completion unproven"
+        return inputReceipt(path: path == .windowEvent ? "CGEventWindow" : "CGEventPIDText")
     }
 }
 

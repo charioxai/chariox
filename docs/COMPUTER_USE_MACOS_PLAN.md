@@ -459,7 +459,7 @@ Split at responsibility boundaries when a PR exceeds its budget.
 
 | PR | Size | Deliverable and merge proof |
 | --- | --- | --- |
-| M0, feasibility helper | M, 650-800 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
+| M0, feasibility helper | M, 800-950 | Native regression fixture and owner-selected real-window helper, disabled by default, signed launch identity, explicit owner setup, one scoped SCK frame and benign AX/CGEvent round trip in a real app; owner-attended evidence required |
 | M1, shared adapter and lifecycle | M, 400-700 | Implement Linux-approved Computer adapter registration, private helper pairing, health/Stop/revoke and stale epochs; focused fake-backend tests and actual crash/denial proof |
 | M2, capture attachment | M, 500-800 | SCK filters/exclusions, HiDPI transforms, damage and protected exact repair; shared viewer shows public fixture pixels over encrypted kernel/relay events |
 | M3, input and takeover | M, 500-800 | Scoped mouse/scroll/keys/Unicode, seat serialization, local-human fence and owned reset; Linux-equivalent physical fixture and adversarial focus/takeover/death cases |
@@ -477,8 +477,18 @@ published as draft PR #920, with GitHub CI skipped.
 
 M0's standalone helper is implemented but unattended. Follow
 `apps/macos-computer-use/OWNER_SETUP.md` with the owner present for the fixture
-regression checks and one explicitly selected real TextEdit window. M0 uses per-PID
-CGEvent delivery only. It does not prove session/HID posting, system cursor
+regression checks and one explicitly selected real TextEdit window. M0 uses
+supported AXPress for buttons, a bounded numeric AX vertical-scrollbar value
+step for scroll areas, and per-PID CGEvent delivery for text and coordinate
+clicks. Coordinate clicks carry an explicit AppKit window number as well as
+the public CG pointer-window fields. Scrollbar assignment is an explicit primary
+scroll operation, never text assignment or a fallback after failed posting.
+Every path retains the PID/window, frontmost, focused-window, secure-input and
+live hit-test fences. Receipts identify the path and report only an observed
+synthetic fixture counter increment or numeric scrollbar increase. Otherwise
+application completion remains unproven, with no replay. See
+`apps/macos-computer-use/OWNER_RECHECK.md` for the pending owner delivery recheck.
+It does not prove session/HID posting, system cursor
 movement, session-tap observation or self-tagging. Text requests admit at most
 20 UTF-16 units and refuse whole overflowing strings without splitting a
 grapheme or surrogate pair. The broader steps below remain later acceptance
