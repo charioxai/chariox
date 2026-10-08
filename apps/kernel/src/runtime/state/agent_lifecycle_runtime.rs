@@ -82,7 +82,9 @@ impl KernelRuntimeOwnedState {
         answer_run: &str,
         cancelled: bool,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
-        if !self.config_projection.snapshot().room_agent_tools {
+        if !self.config_projection.snapshot().room_agent_tools
+            || self.provider_run_projection.is_leased_provider_run(run)
+        {
             return Ok(None);
         }
         if !self
@@ -139,12 +141,22 @@ impl KernelRuntimeState {
         let (actor, origin_run) = self.room_provider_origin.as_ref().ok_or_else(|| {
             ledger::error("durable messages require authenticated provider origin")
         })?;
+        // A10: a leased sender's origin is its current projected worker run.
+        let leased_origin = sender.remote_execution().and_then(|remote| {
+            remote.active_worker_provider_run_id.as_deref().map(|run| {
+                crate::provider::projected_leased_provider_run_id(&remote.leased_agent_id, run)
+            })
+        });
         if actor != sender.id()
-            || self
-                .owned
-                .provider_store
-                .get_run_for_agent(session.id(), sender.id())
-                .is_none_or(|run| run.id() != origin_run)
+            || leased_origin.as_ref().map_or_else(
+                || {
+                    self.owned
+                        .provider_store
+                        .get_run_for_agent(session.id(), sender.id())
+                        .is_none_or(|run| run.id() != origin_run)
+                },
+                |leased| leased != origin_run,
+            )
         {
             return Err(ledger::error("stale provider message authority"));
         }

@@ -851,3 +851,83 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         "the worker refuses after expiry: {expired_call:?}"
     );
 }
+
+#[test]
+fn mp10_a10_leased_room_tools_act_at_home_with_the_lease_origin() {
+    run_test(leased_room_tools_act_at_home_with_the_lease_origin);
+}
+
+/// Placement parity: a leased agent's event and message tools run against
+/// the home ledger with its current lease as provider origin, and the worker
+/// keeps no task ledger of its own for the backing turn. Base: event tools
+/// hit the worker ledger and durable messages lack a provider origin.
+async fn leased_room_tools_act_at_home_with_the_lease_origin() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let leased = spawn_on_agent_worker(&mut fixture, &room).await;
+    let peer = local_agent(&fixture, &room, &leased).await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &leased,
+        "MP-10 A10 leased room tools",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&leased))
+        .unwrap()
+        .pop()
+        .expect("the home admitted the leased turn's task");
+    let run = worker.run_for(&fixture, &leased).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let inbox = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.inbox",
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"after":0}),
+        )
+        .await;
+    let sent = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.send_agent_message",
+            json!({"agent":peer,"message":"MP-10 A10 leased hello","origin_prompt_id":task.prompt_id}),
+        )
+        .await;
+    let peer_inbox = store.agent_inbox(&room, &peer, 0).unwrap();
+    let worker_tasks = worker
+        .router
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .agent_tasks(None, None)
+        .unwrap();
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        inbox.as_ref().is_ok_and(|r| r.ok),
+        "the leased event tool reads the home ledger: {inbox:?}"
+    );
+    assert!(
+        sent.as_ref().is_ok_and(|r| r.ok),
+        "the leased agent sends a durable message: {sent:?}"
+    );
+    assert!(
+        peer_inbox
+            .iter()
+            .any(|event| event.source_id == leased && event.kind == "message"),
+        "the home records the message from the leased agent: {peer_inbox:?}"
+    );
+    assert!(
+        worker_tasks.is_empty(),
+        "the worker supervises no task of its own: {worker_tasks:?}"
+    );
+}

@@ -208,13 +208,19 @@ impl KernelRuntimeState {
                 .dispatch_leased_agent_event_tool(&context, name, arguments)
                 .await;
         }
-        self.dispatch_meta_runtime_tool_call_for_agent(
-            &context.home_session_id,
-            &context.home_agent_id,
-            &tool_name,
-            arguments,
-        )
-        .await
+        // A10: room tools of a leased agent act with its lease-verified origin.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            .dispatch_meta_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+            )
+            .await
     }
 
     pub(super) async fn try_dispatch_remote_capability_runtime_tool_call(
@@ -391,7 +397,14 @@ impl KernelRuntimeState {
             Ok(())
         })
         .await?;
+        // A10: a leased sender acts with its lease-verified origin, as a local
+        // provider turn does.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
         let (result, package) = self
+            .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,
                 &context.home_agent_id,

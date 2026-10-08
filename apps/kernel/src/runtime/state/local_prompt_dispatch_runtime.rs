@@ -3578,7 +3578,13 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &dispatch.hidden_system_context,
         );
-        if owned.config_projection.snapshot().room_agent_tools {
+        // A10: a leased backing run is supervised by its home kernel only; the
+        // worker keeps no task ledger or task context of its own for it.
+        if owned.config_projection.snapshot().room_agent_tools
+            && !owned
+                .provider_run_projection
+                .is_leased_provider_run(&dispatch.provider_run_id)
+        {
             if !dispatch.steering {
                 owned.durable_state_store.agent_lifecycle(
                     crate::durable_state::agent_lifecycle::Operation::Begin {
