@@ -783,3 +783,14 @@ test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutat
   assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
+
+test('MP-08/MP-10/MP-11 viewer wheel on the CDP capture fallback uses awaited input and keeps Chromium live',()=>using(async({host,chromium,sent})=>{
+ const {CompositorSource}=await import('./kernel-browser-compositor.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const source=new CompositorSource({tab,policy:host.protection,allowed:()=>true});source.attested=true;source.close=async()=>{};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const result=await host.handle({id:1,method:'host.browser',params:{op:'input',_display_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}});
+ assert.equal(result.ok,true);assert(chromium.child);assert.equal(host.generation,opened.generation);
+ assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent').length,1);
+}));
