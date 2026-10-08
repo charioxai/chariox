@@ -66,9 +66,12 @@ impl KernelBrowserAdmission {
         mut self,
         authority: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
+        // MP-11 A07: an added task/grant fence must retain the existing
+        // terminal-lifetime fence used during physical CDP dispatch.
+        let previous = self.cancellation.clone();
         self.cancellation = Arc::new(BrowserCancellation::for_authority(
             self.epoch.clone(),
-            authority,
+            move || !previous.requested() && authority(),
         ));
         self
     }
@@ -753,6 +756,21 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp08_mp10_mp11_a07_owner_handoff_preserves_inflight_terminal_lifetime_authority() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/owner-handoff-lifetime"));
+        let lifetime = crate::runtime::command::TerminalLifetime::default();
+        let admission = host
+            .admit_terminal("owner", lifetime.clone())
+            .with_authority(|| true);
+        assert!(!admission.cancellation.requested());
+        lifetime.cancel();
+        assert!(
+            admission.cancellation.requested(),
+            "physical dispatch must see terminal disconnect through the added hand-off fence"
+        );
+    }
+
     /// MP-08/MP-11 A05: absolute expiry is a live wake. With no further call,
     /// the grant disappears, its epoch cancels in-flight work and clients see it.
     #[tokio::test]
