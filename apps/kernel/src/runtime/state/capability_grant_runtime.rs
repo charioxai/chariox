@@ -36,6 +36,8 @@ mod tests {
         let (session, parent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(worktree.session_request().with_owner_user_id("alice"))
             .unwrap();
+        // A02: spawning a child requires the creator's live turn.
+        crate::test_support::admit_room_test_turn(&mut app, session.id(), parent.id());
         let child = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")

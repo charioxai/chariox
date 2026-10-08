@@ -28,6 +28,19 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
     let (session, first) = crate::app::KernelSessionService::new(&mut app)
         .create_session(workspace.session_request())
         .unwrap();
+    // A02: spawning children requires the creator's live turn.
+    let launch = |app: &mut DaemonApp, agent: &crate::agent::AgentInstance| {
+        let run = launch_test_provider(
+            app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "native-tui-idle",
+        );
+        run.runtime_mcp_auth_token().unwrap().to_string()
+    };
+    let mut tokens = vec![launch(&mut app, &first)];
     let mut agents = vec![first.clone()];
     for child in spawned {
         agents.push(
@@ -43,21 +56,10 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
     for peer in peers {
         agents.push(spawn_test_agent(&mut app, session.id(), peer, "dev-stub"));
     }
-    let agents = agents
-        .into_iter()
-        .map(|agent| {
-            let run = launch_test_provider(
-                &mut app,
-                session.id(),
-                agent.id(),
-                "dev-stub",
-                "dev-stub",
-                "native-tui-idle",
-            );
-            let token = run.runtime_mcp_auth_token().unwrap().to_string();
-            (agent, token)
-        })
-        .collect();
+    for agent in &agents[1..] {
+        tokens.push(launch(&mut app, agent));
+    }
+    let agents = agents.into_iter().zip(tokens).collect();
     Setup {
         app,
         session: session.id().into(),
