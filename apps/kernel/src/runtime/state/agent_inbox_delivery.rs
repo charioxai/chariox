@@ -76,12 +76,6 @@ impl KernelRuntimeState {
             }
             break event;
         };
-        if tasks
-            .last()
-            .is_some_and(|t| t.state == ExecutionState::Cancelled)
-        {
-            return Ok(());
-        }
         if event.state != "pending" {
             return Ok(());
         }
