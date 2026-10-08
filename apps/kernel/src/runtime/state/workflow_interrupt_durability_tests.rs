@@ -1490,12 +1490,12 @@ async fn kernel_access_workflow_control_resume_rechecks_settlement_wait() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_app_wait() {
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_app_wait() {
     revoked_remote_workflow_interrupt(false, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_discovery_wait(
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_discovery_wait(
 ) {
     revoked_remote_workflow_interrupt(true, true).await;
 }
