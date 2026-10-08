@@ -287,7 +287,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
             "continue",
             PromptStatus::Queued,
         )
-        .with_durable_operation(&continuation, &format!("task:{task}:{}", resumed.revision)),
+        .with_durable_operation(&continuation, format!("task:{task}:{}", resumed.revision)),
         force_queue: false,
         refresh_projection: true,
     };

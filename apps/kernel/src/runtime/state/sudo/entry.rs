@@ -1,5 +1,33 @@
 use super::*;
 
+// MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
+const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn not_ready() -> String {
+    format!(
+        "not ready within {} seconds",
+        SUDO_PROVIDER_RELAUNCH_TIMEOUT.as_secs()
+    )
+}
+
+fn sudo_ended(what: &str, detail: &str) -> DaemonError {
+    error(format!(
+        "{what}: {detail}; sudo window ended; retry /sudo when the provider is available"
+    ))
+}
+
+fn catalog_refresh_failed(cause: DaemonError) -> DaemonError {
+    let detail = match cause {
+        DaemonError::LocalTransport { message, .. } => message,
+        other => other.to_string(),
+    };
+    sudo_ended("provider catalog refresh failed", &detail)
+}
+
+fn catalog_not_ready() -> DaemonError {
+    sudo_ended("provider catalog refresh failed", &not_ready())
+}
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -234,27 +262,77 @@ impl KernelRuntimeState {
             app.ensure_prompt_provider_run_for_agent(&entry.session_id, &entry.agent_id)
         })
         .await?;
-        let mut relaunched = false;
+        let mut relaunch_deadline = None;
+        // MP-08/MP-10/MP-11: the catalog budget counts only idle refresh
+        // attempts. Busy work restarts it; human vault popups precede it.
+        let mut catalog_deadline = None;
+        let mut vault: Option<super::super::runtime_vault_unlock_state::VaultUnlockGuard> = None;
         loop {
-            if reload && !self.sudo_agent_busy(entry)? {
-                use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
-                let outcome = self
-                    .reload_agent_provider_if_idle_for_reason(
-                        &entry.session_id,
-                        &entry.agent_id,
-                        &ProviderReloadReason::RuntimeToolCatalog,
-                    )
-                    .await?;
-                reload = matches!(outcome, ProviderReloadOutcome::Deferred);
-                relaunched = matches!(outcome, ProviderReloadOutcome::Reloaded);
-            }
-            // The relaunched provider takes the first turn once it runs again.
-            if relaunched && !self.sudo_provider_running(entry) {
+            if reload && self.sudo_agent_busy(entry)? {
+                catalog_deadline = None;
+                // Ordinary work must not keep an operation unlock open.
+                vault = None;
+            } else if reload {
+                use super::super::provider_reload::ProviderReloadOutcome;
                 self.live_queued_sudo(entry)?;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
+                // A relock (lease expiry, another operation's guard) prompts
+                // again; the budget pauses while the popups are open. Release
+                // the stale guard first so its drop cannot relock the fresh
+                // unlock.
+                if !vault.as_ref().is_some_and(|guard| guard.still_unlocked()) {
+                    drop(vault.take());
+                    let prompted = tokio::time::Instant::now();
+                    let unlock =
+                        self.unlock_vault_for_agent_reload(&entry.session_id, &entry.agent_id);
+                    vault = Some(
+                        self.while_sudo_queued(entry, unlock)
+                            .await?
+                            .map_err(catalog_refresh_failed)?,
+                    );
+                    if let Some(deadline) = catalog_deadline.as_mut() {
+                        *deadline += prompted.elapsed();
+                    }
+                }
+                let deadline = *catalog_deadline
+                    .get_or_insert(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
+                let refresh = self.reload_agent_provider_if_idle(
+                    &entry.session_id,
+                    &entry.agent_id,
+                    &super::super::provider_reload::ProviderReloadReason::RuntimeToolCatalog,
+                    vault.as_ref(),
+                );
+                let outcome = tokio::time::timeout_at(deadline, refresh)
+                    .await
+                    .map_err(|_| catalog_not_ready())?
+                    .map_err(catalog_refresh_failed)?;
+                reload = matches!(outcome, ProviderReloadOutcome::Deferred);
+                if reload && tokio::time::Instant::now() >= deadline {
+                    return Err(catalog_not_ready());
+                }
+                if !reload {
+                    catalog_deadline = None;
+                    vault = None;
+                }
+                if matches!(outcome, ProviderReloadOutcome::Reloaded) {
+                    relaunch_deadline =
+                        Some(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
+                }
             }
-            let submission = self.try_start_sudo(entry, request, prompt, &attachments)?;
+            // A detached relaunch can fail without leaving a run. Bound every
+            // readiness state, including absent, Starting and Parked, so the
+            // normal request error cleanup releases the window and work hold.
+            if let Some(deadline) = relaunch_deadline {
+                self.live_queued_sudo(entry)?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(sudo_ended("provider relaunch failed", &not_ready()));
+                }
+                if !self.sudo_provider_running(entry) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                relaunch_deadline = None;
+            }
+            let submission = self.try_start_sudo(entry, request, prompt, &attachments, !reload)?;
             if let Some(submission) = submission {
                 if let Some(dispatch) = submission.dispatch {
                     self.start_active_turn_with_trace_id(
@@ -274,6 +352,23 @@ impl KernelRuntimeState {
                 });
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    /// Human waits are bounded by their own popup expiry; a window that ends
+    /// meanwhile drops `wait`, which closes its popups.
+    async fn while_sudo_queued<T>(
+        &self,
+        entry: &KernelSudoTurn,
+        wait: impl std::future::Future<Output = T>,
+    ) -> Result<T, DaemonError> {
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                done = &mut wait => return Ok(done),
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                    self.live_queued_sudo(entry)?;
+                }
+            }
         }
     }
     fn sudo_provider_running(&self, entry: &KernelSudoTurn) -> bool {
@@ -311,6 +406,7 @@ impl KernelRuntimeState {
         request: &SubmitPromptRequest,
         text: &str,
         attachments: &[crate::session::PromptAttachment],
+        catalog_ready: bool,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         // Release sudo_turns before reading session/prompt state: interaction
         // resolution holds session_store, then prompt state, then sudo_turns.
@@ -328,11 +424,15 @@ impl KernelRuntimeState {
                 &entry.entry_id,
             );
         }
-        if self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &entry.agent_id)
-            .is_some()
+        // MP-08/MP-10/MP-11: native refresh can be Deferred even while idle.
+        // Install the work hold above, but never admit a stale first turn,
+        // including when ordinary work is cancelled during the busy check.
+        if !catalog_ready
+            || self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &entry.agent_id)
+                .is_some()
         {
             return Ok(None);
         }

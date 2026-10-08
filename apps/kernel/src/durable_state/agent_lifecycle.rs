@@ -162,6 +162,7 @@ impl DurableKernelStateStore {
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
+    #[cfg(test)]
     pub(crate) fn agent_inbox(
         &self,
         room: &str,

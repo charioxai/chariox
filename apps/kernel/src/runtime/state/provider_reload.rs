@@ -246,6 +246,19 @@ impl KernelRuntimeState {
         agent_id: &str,
         cause: &ProviderReloadReason,
     ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_if_idle(session_id, agent_id, cause, None)
+            .await
+    }
+
+    /// `unlocked` is the caller's vault access, checked just before this
+    /// call, so this reload never waits on a human vault popup.
+    pub(super) async fn reload_agent_provider_if_idle(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cause: &ProviderReloadReason,
+        unlocked: Option<&super::runtime_vault_unlock_state::VaultUnlockGuard>,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
         self.authorize_current_external_command()?;
         // A leased provider is owned by the worker. Its run identity must be
         // replaced through the authenticated lease launch/prompt handshake;
@@ -300,9 +313,18 @@ impl KernelRuntimeState {
                     owned.session_store.get_session(session_id).ok().as_ref(),
                 ),
             );
-            let launch_request = self
-                .prepare_provider_launch_request_with_vault(launch_request, "reload provider run")
-                .await?;
+            let launch_request = match unlocked {
+                Some(_) => self
+                    .owned
+                    .prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?,
+                None => {
+                    self.prepare_provider_launch_request_with_vault(
+                        launch_request,
+                        "reload provider run",
+                    )
+                    .await?
+                }
+            };
             self.authorize_current_external_command()?;
             let has_active_prompt = owned
                 .prompt_state_owner

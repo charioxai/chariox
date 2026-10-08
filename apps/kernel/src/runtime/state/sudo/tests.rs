@@ -24,6 +24,21 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
 }
 
 pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fixture {
+    fixture_with_run_profile(script, room_tools, "dev-stub", "dev-stub")
+}
+
+// MP-08/MP-10/MP-11: metadata-only warm catalog-caching run. Its agent
+// remains dev-stub; no real provider credentials or processes are used.
+pub(super) fn fixture_with_catalog_reload() -> Fixture {
+    fixture_with_run_profile(None, true, "codex", "sudo-relaunch-fixture")
+}
+
+pub(super) fn fixture_with_run_profile(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -43,9 +58,8 @@ pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fi
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    let launch =
-        LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "default")
-            .with_agent_id(agent.id());
+    let launch = LaunchProviderRequest::new(session.id(), adapter, provider, "default", "default")
+        .with_agent_id(agent.id());
     let mut run = RuntimeProviderRun::new(
         "sudo-fixture-run",
         &launch,
