@@ -221,6 +221,13 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
         .record_leased_answer_for_test(&room, &child, "MP-10 A10 delegated answer")
         .unwrap();
     if worker_completes {
+        // As in the real drill: the owner watches the delegator meanwhile.
+        dispatch_json(
+            &fixture.home,
+            json!({"FocusAgent":{"session_id":room,"agent_id":parent}}),
+        )
+        .await
+        .unwrap();
         let leased = binding(&fixture, &child).await.leased_agent_id;
         let (backing_session, _) =
             crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)

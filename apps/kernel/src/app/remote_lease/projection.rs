@@ -1316,8 +1316,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             }
                         }
                     };
+                    // The completion is committed: a focus refresh failure
+                    // must not lose it (A10: its home task still settles).
                     if started_next.is_none() {
-                        self.app.sync_focused_provider_run_if_idle(session_id)?;
+                        if let Err(error) = self.app.sync_focused_provider_run_if_idle(session_id) {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "focus refresh after a leased completion failed",
+                                serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+                            );
+                        }
                     }
                     outcome.completions.push(PromptCompletion {
                         completed,

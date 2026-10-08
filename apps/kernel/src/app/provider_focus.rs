@@ -77,23 +77,36 @@ impl DaemonApp {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self.providers.get_run(current_active_run_id).or_else(|_| {
-                self.provider_run_projection
-                    .get(current_active_run_id)
-                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                        provider_run_id: current_active_run_id.to_string(),
-                    })
-            })?;
+            let local = self.providers.get_run(current_active_run_id).ok();
+            let projected = local.is_none();
+            let active_run = local
+                .or_else(|| self.provider_run_projection.get(current_active_run_id))
+                .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                    provider_run_id: current_active_run_id.to_string(),
+                })?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
                 && active_run.client_interface().is_chariox()
                 && !self.provider_run_has_prompt_work(session_id, &active_run)?
             {
-                let outcome = self
-                    .providers
-                    .park_run_provider_only(session_id, current_active_run_id)?;
-                clear_active_provider_run_session_pointer(self, session_id, outcome.run().id())?;
-                self.update_provider_run_projection(outcome.into_run());
+                if projected {
+                    // A leased run lives on its worker: only drop the focus.
+                    clear_active_provider_run_session_pointer(
+                        self,
+                        session_id,
+                        current_active_run_id,
+                    )?;
+                } else {
+                    let outcome = self
+                        .providers
+                        .park_run_provider_only(session_id, current_active_run_id)?;
+                    clear_active_provider_run_session_pointer(
+                        self,
+                        session_id,
+                        outcome.run().id(),
+                    )?;
+                    self.update_provider_run_projection(outcome.into_run());
+                }
             }
         }
 
