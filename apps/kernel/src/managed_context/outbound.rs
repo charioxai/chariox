@@ -24,7 +24,7 @@ use crate::transport::relay_client::{
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextImportReceipt,
     RelayManagedContextTransferPhase, RelayManagedContextTransferStatus, RelayPeerRequest,
-    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 const IMPORT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -133,7 +133,7 @@ pub(crate) async fn transfer_managed_context_package(
             relay_peer_protocol_version,
             ..
         } => {
-            if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+            if relay_peer_protocol_version < MINIMUM_RELAY_PEER_RUNTIME_VERSION {
                 return Err(outbound_error(
                     "target kernel does not support the selected managed-context protocol",
                     false,
@@ -599,7 +599,7 @@ mod tests {
         let transport = FakeTransport::new(vec![Ok(armed_with_version(
             &capability,
             512,
-            RELAY_PEER_PROTOCOL_VERSION - 1,
+            MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1,
         ))]);
 
         let error = transfer_managed_context_package(

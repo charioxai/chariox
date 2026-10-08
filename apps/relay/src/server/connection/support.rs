@@ -695,6 +695,41 @@ pub(super) async fn route_daemon_peer_event(
     false
 }
 
+// MP-11: use exactly the existing caller-bound route and slow-viewer cleanup.
+// Decode only the bounded transport header; never inspect encrypted content.
+pub(super) async fn route_daemon_binary_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    daemon: &DaemonKey,
+    counter: &AtomicU64,
+    bytes: &[u8],
+) -> Result<bool, std::io::Error> {
+    let (mut header, ciphertext) = crate::binary_event::decode(bytes)?;
+    if header.kind != "daemon_event" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid binary event direction",
+        ));
+    }
+    let Some(route) = routes
+        .subscription(&header.subscription_id)
+        .filter(|route| &route.daemon_key == daemon)
+    else {
+        return Ok(false);
+    };
+    header.kind = "client_event".into();
+    let frame = crate::binary_event::encode(&header, ciphertext)?;
+    if route
+        .client_sender
+        .try_send(Message::Binary(frame.into()))
+        .is_ok()
+    {
+        return Ok(true);
+    }
+    close_slow_subscription(registry, routes, &header.subscription_id, daemon, counter).await;
+    Ok(false)
+}
+
 pub(super) async fn route_daemon_event(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<RelayRouteIndex>,

@@ -59,6 +59,29 @@ async function using(callback) {
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
+test('MP-08/MP-10/MP-11 agent wheel awaits Chromium even with an attached display',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const source={attested:true,wheel:()=>assert.fail('MP-11: agent input cannot use native wheel'),close:async()=>{}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ let release,dispatched;const ack=new Promise(r=>release=r),started=new Promise(r=>dispatched=r);
+ const send=connection.send;
+ connection.send=async(method,params,session)=>{if(method==='Input.dispatchMouseEvent'){dispatched();await ack;return {}}return send(method,params,session)};
+ let settled=false;
+ const operation=host.request({op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}).then(()=>settled=true);
+ try{await started;await new Promise(r=>setImmediate(r));assert.equal(settled,false,'agent snapshot ordering requires the wheel ack');}finally{release();await operation}
+}));
+
+test('MP-08/MP-10/MP-11 refused viewer wheel falls back without stopping Chromium',()=>using(async({host,chromium,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const source={attested:true,valid:()=>true,wheel:()=>false,close:async()=>{}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const result=await host.handle({id:1,method:'host.browser',params:{op:'input',_display_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}});
+ assert.equal(result.ok,true);assert.ok(chromium.child);assert.equal(host.generation,opened.generation);
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
+}));
+
 test('MP-08/MP-10/MP-11 an unchanged admitted native credit performs no CDP observation',()=>using(async({host,sent})=>{
  const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
  try{

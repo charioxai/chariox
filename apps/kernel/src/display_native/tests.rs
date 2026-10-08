@@ -4,6 +4,34 @@ use super::{
     raster,
 };
 #[test]
+fn mp11_codec_lease_prevents_reuse_and_keeps_mapping_alive_after_owner_drop() {
+    use std::os::unix::fs::DirBuilderExt;
+    let root =
+        std::env::temp_dir().join(format!("chariox-mp11-slot-{:032x}", rand::random::<u128>()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let mut slot = raster::Slot::create(&root, 0, 4096).unwrap();
+    unsafe {
+        *slot.pixels = 0x5a;
+    }
+    slot.serial = Some(7);
+    let lease = slot.codec_lease();
+    slot.serial = None; // Client timed out while the codec is still reading.
+    assert!(
+        !slot.available(),
+        "MP-11: released slot remains codec-owned"
+    );
+    drop(lease);
+    assert!(slot.available());
+    let lease = slot.codec_lease();
+    drop(slot); // Supervisor failure cannot unmap the encoder's input.
+    assert_eq!(unsafe { *lease.pixels() }, 0x5a);
+    drop(lease);
+    std::fs::remove_dir(root).unwrap();
+}
+#[test]
 fn mp08_native_damage_covers_disjoint_changes_since_the_exact_base_and_rejects_dense_tiles() {
     let (w, h) = (1280, 800);
     let base = vec![255; w * h * 4];

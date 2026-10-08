@@ -16,13 +16,13 @@ import { cpuContention } from './kernel-browser-contention.mjs';
 // MP-08/MP-10: protocol 466 binary frame: JSON header without payload strings
 // plus raw payload bytes, then the relay's base64 ciphertext and envelope.
 const egressLimit = 1024 * 1024;
-const egressBytes = packet => {
+const egressBytes = (packet, binary = false) => {
   let raw = packet.native_packet?.length ?? 0;
   const header = JSON.stringify(packet, (key, value) => {
     if (key === 'data_base64') { raw += Math.ceil(value.length * 3 / 4); return undefined; }
     return key === 'native_packet' ? undefined : value;
   });
-  return Math.ceil((8 + Buffer.byteLength(header) + raw) * 4 / 3) + 1024;
+  return Math.ceil((8 + Buffer.byteLength(header) + raw) * (binary ? 1 : 4 / 3)) + 1024;
 };
 const packetName = packet => process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT && /^[a-f0-9]{32}\.json$/.test(packet?.name) &&
   Number.isSafeInteger(packet.length) && packet.length >= 1 && packet.length <= 1024 * 1024;
@@ -196,9 +196,10 @@ export class DisplayStream {
   canPatchNative(sample) {
     if(!this.previous||this.repair)return false;
     const raw=sample.raw;
-    if(raw?.nativeExact&&sample.serial===this.compositorSerial+1&&
+    const committed=this.exact?(this.compositorCommittedSerial??this.compositorSerial):this.compositorSerial;
+    if(raw?.nativeExact&&sample.serial===committed+1&&
        this.compositorMasks===JSON.stringify(raw[displayMaskRegions]??[])&&nativeDamageTiles(raw,true,true)!==null)return true;
-    return (Number.isSafeInteger(raw?.base_serial)?this.exact&&raw.base_serial===this.compositorSerial:sample.serial===this.compositorSerial+1)&&nativeDamageTiles(raw,true)!==null;
+    return (Number.isSafeInteger(raw?.base_serial)?this.exact&&raw.base_serial===committed:sample.serial===committed+1)&&nativeDamageTiles(raw,true)!==null;
   }
   discardSource(source){this.encoder.discard?.(source.encoded);if(source.native_packet)this.encoder.discard?.({packet:source.native_packet});}
   // MP-08/MP-10: lossless scroll needs a complete exact unprotected canvas
@@ -208,7 +209,7 @@ export class DisplayStream {
   shiftKind(sample) {
     const raw=sample?.raw;
     if(!this.shiftCandidate(sample))return null;
-    return sample.serial===this.compositorSerial+1&&raw.shift_adjacent?'adjacent':'overlay';
+    return sample.serial===(this.compositorCommittedSerial??this.compositorSerial)+1&&raw.shift_adjacent?'adjacent':'overlay';
   }
   // The motion encoder skips candidates before their credit; a refused plan
   // holds lossless frames until exactness returns (see shiftHold).
@@ -227,7 +228,7 @@ export class DisplayStream {
     const pixels=raw.width*raw.height;
     if(!plan||!Number.isSafeInteger(plan.dirty_pixels)||plan.dirty_pixels<0||plan.dirty_pixels>pixels)return false;
     // Wire bytes per residual pixel include WebP, frame header and the relay's base64.
-    const estimate=plan.dirty_pixels*(this.shiftBytesPerPixel??.3),link=this.bitrate/8,[bytes,area]=this.shiftRate();
+    const estimate=plan.dirty_pixels*(this.shiftBytesPerPixel??(this.relay_binary ? .225 : .3)),link=this.bitrate/8,[bytes,area]=this.shiftRate();
     return plan.dirty_pixels<=pixels/4&&estimate<=link*.25&&bytes+estimate<=link*.9&&area+plan.dirty_pixels<=pixels*2.5;
   }
   // Cheaper WebP effort while residual traffic stays under half the link.
@@ -239,7 +240,7 @@ export class DisplayStream {
     return [this.shiftBytes,this.shiftArea];
   }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
-  invalidate() { this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
+  invalidate() { this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     try{return await this.buildFrame(source,documentId,afterSequence,validate,currentBinding)}
     catch(error){this.discardSource(source);throw error}
@@ -323,7 +324,7 @@ export class DisplayStream {
       width: source.motion ? (this.css_width??1280)*this.device_scale_factor : current.width, height: source.motion ? (this.css_height??800)*this.device_scale_factor : current.height, css_width: this.css_width??1280, css_height: this.css_height??800,
       device_scale_factor: this.device_scale_factor, colour: 'srgb' });
     let packet = envelope(payload);
-    if (payload.kind === 'png' && egressBytes(packet) > egressLimit) {
+    if (payload.kind === 'png' && egressBytes(packet,this.relay_binary) > egressLimit) {
       // Existing repair certificates belong to the replaced video canvas,
       // not this new black base. Bootstrap must cover EVERY protected pixel.
       const raster=current.pixels?current:await this.pixels.run('decode',{data:payload.data_base64,scale:this.device_scale_factor});
@@ -336,7 +337,7 @@ export class DisplayStream {
       packet=envelope(payload);
     }
     this.timing('select_encode', at); at = timestamp();
-    const bytes = egressBytes(packet);
+    const bytes = egressBytes(packet,this.relay_binary);
     if (bytes > egressLimit) throw new Error('MD-DISPLAY: packet exceeds bounded egress');
     this.timing('packet_serialize', at); at = timestamp();
     // MD-DISPLAY-02/04: bounded 16 KiB burst accrued while capture/input runs.
@@ -372,7 +373,7 @@ export class DisplayStream {
       this.encoder.handedOff?.({packet:source.native_packet});
       const pixels=source.native_tiles.reduce((n,t)=>n+t.width*t.height,0);
       this.shiftRate(bytes,pixels);
-      if(pixels>=4096)this.shiftBytesPerPixel=(this.shiftBytesPerPixel??.3)*.8+bytes/pixels*.2;
+      if(pixels>=4096)this.shiftBytesPerPixel=(this.shiftBytesPerPixel??(this.relay_binary ? .225 : .3))*.8+bytes/pixels*.2;
     }
     this.document_id = documentId; this.previous = current; this.repair = repair?.length ? repair : null;this.repairSerial=source.refinement_serial;
     // A small exact patch can acknowledge input over a lossy video base. It

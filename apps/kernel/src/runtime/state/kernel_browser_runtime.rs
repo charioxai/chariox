@@ -358,7 +358,9 @@ impl KernelRuntimeState {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
                     return Err(host_error("MD-3: observed document required".into()));
                 }
-                serde_json::json!({"op":"input","tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
+                // MP-08/MP-10/MP-11: only this admitted human display path may
+                // use asynchronous wheel dispatch; agent calls keep their ack.
+                serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
             }
             KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
                 let outcome = host

@@ -150,6 +150,11 @@ export class BrowserDisplayPresenter {
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
+  // MP-08/MP-10/MP-11: the app adapter must decode authenticated CXD1
+  // events before enabling this experimental display. Refuse before opening
+  // a stream so an old JSON-only adapter cannot receive unusable pixels.
+  if (!Number.isSafeInteger(transport.kernelProtocolVersion) || transport.kernelProtocolVersion < minimumProtocolVersion || transport.displayEventEncoding !== 'CXD1')
+    throw Error('MP-08/MP-10: protocol466 binary display adapter required');
   const request = async command => {
     const reply = await transport.request({ KernelBrowser: { command } });
     return reply.KernelBrowser.result;
@@ -157,6 +162,11 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // MP-10: the owner GPU comparison can negotiate the existing whole-video
   // capability. Default stripe negotiation and serialized shapes are unchanged.
   const codecs=options.codec ? [options.codec,'png','chariox-video-dependencies-v1',...(['avc1.420033','vp8'].includes(options.codec)?['chariox-stripes-v1']:[])] : await supportedCodecs();
+  if (transport.relayProtocolVersion >= 96) {
+    // Keep the existing eight-entry offer bound, retaining the preferred codec.
+    if (codecs.length === 8) codecs.splice(codecs.indexOf('png') - 1, 1);
+    codecs.push('chariox-relay-binary-v96');
+  }
   const binding = { ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }), ...tab };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);

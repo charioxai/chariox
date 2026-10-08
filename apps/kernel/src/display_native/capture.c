@@ -257,7 +257,8 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
         while(head[i]!=-1&&keys[i]!=k)i=(i+1)&(SLOTS-1);
         if(head[i]==-1){keys[i]=k;count[i]=0;}
         next[y]=head[i];head[i]=y;count[i]++;}
-    static int votes[3201];memset(votes,0,sizeof(votes));
+    /* MP-11: independent captures and test threads never share vote state. */
+    int votes[3201]={0};
     int same=0;
     for(int y=0;y<height;y++){uint64_t k=c->hash_cur[y];unsigned i=(unsigned)(k>>52)&(SLOTS-1);
         while(head[i]!=-1&&keys[i]!=k)i=(i+1)&(SLOTS-1);

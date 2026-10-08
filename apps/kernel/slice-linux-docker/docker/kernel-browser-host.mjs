@@ -483,7 +483,7 @@ export class KernelBrowserHost {
         if(shift){
           // MP-08/MP-10: lossless scroll frame: proved moves plus WebP residuals.
           stream.producer.retireUnsent();
-          const reply=await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:[],patch:true,shift,effort:stream.shiftEffort(),...(shift==='overlay'?{base:stream.compositorSerial}:{})});
+          const reply=await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:[],patch:true,shift,effort:stream.shiftEffort(),...(shift==='overlay'?{base:stream.compositorCommittedSerial??stream.compositorSerial}:{})});
           if(reply.shift_refused===true){
             this.timing(`shift_refused_${shift} ${/^MP-1[01]: [a-z ]{1,40}$/.test(reply.reason)?reply.reason:''}`,timestamp());
             // A refused plan holds lossless frames until exactness returns
@@ -496,7 +496,7 @@ export class KernelBrowserHost {
           source={...sample,...reply,...(reply.moves.length?{}:{moves:undefined}),motion:false,generation:this.generation};
         }else if(patchable){
           stream.producer.retireUnsent();
-          const adjacent=sample.serial===stream.compositorSerial+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
+          const adjacent=sample.serial===(stream.exact?(stream.compositorCommittedSerial??stream.compositorSerial):stream.compositorSerial)+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
           const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
           source={...sample,...patch,motion:false,generation:this.generation};
         }
@@ -521,7 +521,7 @@ export class KernelBrowserHost {
         await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
         return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
       },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
-      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact)source.raw?.nativeCommit?.(stream.encoder.nativeSession,!source.moves);}
+      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
       compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
       return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
     }
@@ -556,7 +556,7 @@ export class KernelBrowserHost {
       this.scales.set(tab.tab_id, command.device_scale_factor);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
-      const stream = new DisplayStream({ subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: command.device_scale_factor };
@@ -600,9 +600,14 @@ export class KernelBrowserHost {
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
       try {
+        // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
+        // including the lifetime of hidden-target focus emulation. Only an
+        // admitted human viewer with a live display lease owns the fast path.
+        const viewerActive=()=>command._display_input===true&&!command._agent_input&&!command.focused_agent&&
+          [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
         const owned=this.compositors.get(tab.tab_id)?.source;
-        const nativeWheel=owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>owned.wheel(x,y,dx,dy):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: true, nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
+        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&owned.valid(), nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

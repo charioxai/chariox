@@ -426,3 +426,23 @@ test('MP-08/MP-10 lossless scroll frames keep exactness and own their native pac
   assert.deepEqual(discarded.at(-1),{packet},'a refused frame retires its residual packet');
  }finally{await stream.close()}
 });
+
+
+test('MP-08/MP-10 peer96 pacing charges raw encrypted wire bytes and preserves peer94 pacing',async()=>{
+ const source={generation:1,data_base64:encodePng(256,256,randomBytes(256*256*4))};
+ const elapsed=[];
+ for(const relay_binary of [false,true]){
+  let clock=0;const stream=new DisplayStream({...binding,codec:'png',relay_binary},{now:()=>clock,wait:async ms=>{clock+=ms},encoder:{close:async()=>{}}});
+  try{assert.equal((await stream.frame(source,'d',0)).kind,'png');elapsed.push(clock)}finally{await stream.close()}
+ }
+ assert.ok(elapsed[0]>100,'large baseline packet is paced');
+ assert.ok(elapsed[1]<elapsed[0]*.8&&elapsed[1]>elapsed[0]*.7,'binary transport removes outer base64 cost only');
+});
+test('MP-08/MP-10/MP-11 identical source adoption keeps the worker committed base distinct',()=>{
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,codec:'avc1.420033',bitrate:8000000},{encoder:{close:async()=>{}}});
+ Object.assign(stream,{previous:{},exact:true,compositorSerial:8,compositorCommittedSerial:7,compositorMasks:'[]'});
+ const raw={nativeExact(){},format:'bgr0',length:1280*800*4,base_serial:6,adjacent_damage_tiles:[[0,0,32,32]],shift_adjacent:{dy:-10,dirty_pixels:12800,moves:[[0,0,1280,790]],dirty:[[0,790,1280,10]]},width:1280,height:800,[displayMaskRegions]:[]};
+ assert.equal(stream.canPatchNative({serial:9,raw}),false,'an adjacent patch cannot silently discard the committed overlay');
+ assert.equal(stream.shiftKind({serial:9,raw}),'overlay','overlay planning uses the last actual commit');
+ stream.invalidate();assert.equal(stream.compositorCommittedSerial,null);
+});

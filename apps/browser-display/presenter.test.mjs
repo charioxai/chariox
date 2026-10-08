@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachBrowserDisplay, IdleCredit } from './presenter.mjs';
+test('MP-08/MP-10/MP-11 display requires protocol466 and a binary event decoder before subscribing',async()=>{
+ for(const capability of [{},{kernelProtocolVersion:465,displayEventEncoding:'CXD1'},{kernelProtocolVersion:466},{kernelProtocolVersion:466,displayEventEncoding:'JSON'}]) {
+  let requests=0;
+  const transport={...capability,request:async()=>{requests++;return {KernelBrowser:{result:{}}}},onEvent:()=>()=>{}};
+  await assert.rejects(attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1}),/binary display adapter/);
+  assert.equal(requests,0,'incompatible adapters cannot start a display');
+ }
+});
 test('MP-08/MP-10 empty local credits bound retries to eight milliseconds and input wakes them',async()=>{
  const idle=new IdleCredit();idle.observeRoundTrip(2);idle.wake();const wait=idle.wait();
  try{assert.equal(idle.delay,8)}finally{idle.wake();await wait}
@@ -31,7 +39,7 @@ test('MD-DISPLAY credit stays occupied through event-before-receipt and presenta
   const presenting = new Promise(resolve => { presentationStarted = resolve; });
   const presentation = new Promise(resolve => { finishPresentation = resolve; });
   let calls = 0;
-  const transport = {
+  const transport = {kernelProtocolVersion:466,displayEventEncoding:'CXD1',
     onEvent: callback => { listener = callback; return () => {}; },
     request: async ({ KernelBrowser: { command } }) => ({ KernelBrowser: { result:
       command.op === 'display_subscribe' ? { subscription_id: 's' } :
@@ -55,7 +63,7 @@ test('MD-DISPLAY credit stays occupied through event-before-receipt and presenta
 
 test('MD-DISPLAY bounded window sends three credits before any receipt and drains before stop', async () => {
  let listener; const credits=[];
- const transport={onEvent:fn=>{listener=fn;return()=>{}},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?await new Promise(resolve=>credits.push({command,resolve})):{}}})};
+ const transport={kernelProtocolVersion:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?await new Promise(resolve=>credits.push({command,resolve})):{}}})};
  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
  stream.presenter.present=async frame=>{stream.presenter.sequence=frame.sequence;return true};
  stream.start(); await new Promise(resolve=>setTimeout(resolve,10));
@@ -112,7 +120,7 @@ for (const fresh of [true, false]) test(`MD-DISPLAY-04 credited video/tile/video
   decode(chunk){queueMicrotask(()=>this.callbacks.output({displayWidth:1280,displayHeight:800,raster:'video-'+chunk.timestamp/33333,close(){closed++}}))}
  };
  globalThis.createImageBitmap=async()=>({width:8,height:8,patch:true,close(){}});
- const transport={onEvent:fn=>{listener=fn;return()=>{}},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?await new Promise(resolve=>credits.push(resolve)):{}}})};
+ const transport={kernelProtocolVersion:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?await new Promise(resolve=>credits.push(resolve)):{}}})};
  const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:1},{codec:'vp09.00.10.08'});
  const common={...stream.binding,document_id:'d',width:2560,height:1600,css_width:1280,css_height:800,device_scale_factor:2};
  try{
@@ -141,7 +149,7 @@ test('MP-08/MP-10 1080p motion admits 720p video while rejecting arbitrary decod
 
 test('MP-08/MP-10 #893 default viewer offers DPR1 for a 1080p host',async()=>{
  let command;
- const transport={onEvent:()=>()=>{},request:async request=>{
+ const transport={kernelProtocolVersion:466,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async request=>{
   if(request.KernelBrowser.command.op==='display_subscribe')command=request.KernelBrowser.command;
   return{KernelBrowser:{result:{subscription_id:'s',generation:1,codec:'png'}}};
  }};

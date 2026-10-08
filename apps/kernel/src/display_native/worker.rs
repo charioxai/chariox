@@ -145,7 +145,7 @@ pub(super) fn run() -> Result<(), String> {
     // during x264; capture damage queues while that thread holds the sessions.
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
     let mut pending_rows = 0u8;
-    let (codec_tx, codec_rx) = std::sync::mpsc::sync_channel::<(Encode, usize)>(4);
+    let (codec_tx, codec_rx) = std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease)>(4);
     let codec_sessions = sessions.clone();
     std::thread::spawn(move || {
         let lock = || {
@@ -153,10 +153,10 @@ pub(super) fn run() -> Result<(), String> {
                 .lock()
                 .map_err(|_| "MP-11: native sessions poisoned".to_string())
         };
-        while let Ok((q, pixels)) = codec_rx.recv() {
+        while let Ok((q, lease)) = codec_rx.recv() {
             // x264 runs between two short critical sections.
             let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
-                let outcome = Sessions::run_encode(&job, pixels as *const u8);
+                let outcome = Sessions::run_encode(&job, lease.pixels());
                 let mut sessions = lock()?;
                 match outcome {
                     Ok(outcome) => sessions.finish_encode(&q, job, outcome),
@@ -179,7 +179,7 @@ pub(super) fn run() -> Result<(), String> {
         }
         let due = dirty && (wake.is_some() || last.elapsed() >= Duration::from_millis(16));
         if due {
-            if let Some(slot) = slots.iter_mut().find(|s| s.serial.is_none()) {
+            if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
                 last = Instant::now();
                 let changed =
@@ -248,7 +248,7 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = if dirty && slots.iter().any(|s| s.serial.is_none()) {
+        let timeout = if dirty && slots.iter().any(|s| s.available()) {
             16u128.saturating_sub(last.elapsed().as_millis()).min(16) as i32
         } else {
             1000
@@ -357,7 +357,7 @@ pub(super) fn run() -> Result<(), String> {
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
                     codec_tx
-                        .try_send((q, slot.pixels as usize))
+                        .try_send((q, slot.codec_lease()))
                         .map_err(|_| "MP-11: native codec queue unavailable")?;
                 }
                 Command::Exact { exact: q } => {

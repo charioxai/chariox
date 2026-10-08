@@ -481,3 +481,68 @@ The local/relay versions and shared client constant are bumped together; the
 focused subscription snapshot/hash now pins the capability value, and the
 frame-contract drill covers both legacy independent offers and negotiated
 dependencies. Historical427/74 receipts retain their own source identities.
+
+
+## MP-08/MP-10/MP-11 peer-96 binary relay events
+
+Local protocol 466's `CXD1` display plaintext is unchanged. Peer 96 adds an
+optional `CXR1` WebSocket binary envelope: four magic bytes, a big-endian u32
+JSON-header length, a bounded routing header, then contiguous opaque ciphertext.
+The header contains event direction, subscription ID, event ID, sender public
+key and nonce. Its maximum size is 4096 bytes; ciphertext is 16 through 1048576
+bytes. No display metadata or pixels are exposed to the relay.
+
+The kernel offers `x-chariox-relay-protocol: 96` in the WebSocket handshake and
+enables binary writes only after the relay echoes that response header. The
+configured URL, authority, path and query remain unchanged.
+Browsers use the `chariox-relay-binary-v96` WebSocket subprotocol; if a legacy
+relay cannot select it, they reconnect using the existing connection contract.
+The display presenter offers the matching codec-list capability only after
+successful negotiation. This changes internal byte accounting, without changing
+any local request, response or display-frame JSON shape. Legacy offers retain
+base64 byte accounting and pacing.
+
+The relay applies the existing daemon/realm/subscription route and backpressure
+cleanup to both encodings. A receiver that did not negotiate binary events gets
+the original JSON/base64 envelope. A peer-94 relay therefore continues to work,
+and an older client can attach to a newer kernel and relay. The existing peer90
+runtime/security admission floor remains unchanged: advertising optional
+transport96 does not revoke compatible peer94 workers. Binary-event routing
+never decrypts ciphertext or parses a display payload. Kernel and browser bounds,
+wrong-daemon/realm refusal, sender-key pinning, ciphertext authentication,
+legacy negotiation and wire-size accounting have focused regression coverage.
+
+These source and component checks do not establish MP-08/MP-10 live acceptance.
+Hosted realistic-network, public-site, real-app/provider, DPR1/DPR2, Intel/iHD
+and multi-hour validation remain separate required gates.
+
+### MP-08/MP-10/MP-11 adapter and native-input review gates
+
+Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
+`decryptRelayEvent` for authenticated CXD1 events, pass the connected kernel's
+version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
+The presenter refuses missing/older versions and JSON-only adapters before any
+subscription request. These are adapter properties, not serialized protocol
+fields; the local protocol remains 466. Peer-96 negotiation is independent.
+
+Only the kernel-admitted human display input path with a live caller-owned
+viewer lease may use asynchronous or native wheel dispatch. Agent wheel calls
+retain the awaited CDP acknowledgement and hidden-target capture lifetime.
+A native wheel that reports no dispatch falls back to fenced CDP input.
+
+Identical readbacks may advance source bookkeeping, but overlay plans and
+adjacent commits use the last actual worker commit. Codec jobs retain an owned
+mapping lease: releasing a client lease cannot recycle its pixels while encoding,
+and dropping the supervisor cannot unmap a codec's input. Scroll votes are local
+to each planner invocation. Focused checks are supplementary; real app/provider,
+hosted-network and public-site acceptance remain required.
+
+### MP-08/MP-10 typing measurement conditions
+
+The original component campaign's `type_latency` probes run after motion has
+settled. They do not establish typing latency during scrolling. A separate run
+with `MD_TYPE_DURING_MOTION=1 MD_WINDOW=1` keeps scroll/wheel active through20
+admitted typing actions and measures their presented-pixel echoes under
+`motion.typing`. This extra input changes the workload, so its CPU/fps results
+must be labelled separately from the unchanged phase29 matrix. Both are
+supplementary fixture checks, not real live acceptance.

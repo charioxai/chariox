@@ -93,12 +93,13 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
           const nx = notches(input.delta_x), ny = notches(input.delta_y);
           if (nativeWheel && nx !== null && ny !== null && Math.abs(nx) <= 10 && Math.abs(ny) <= 10 && (nx || ny)) {
-            await check(); await mirrorGuard?.(); onDispatch?.();
-            if (nativeWheel(input.x, input.y, nx, ny)) return;
-            throw new Error("MD-2: native wheel unavailable");
+            await check(); await mirrorGuard?.();
+            // MP-11: a retired source has dispatched nothing. Fall back to
+            // fenced CDP input without claiming an uncertain native action.
+            if (nativeWheel(input.x, input.y, nx, ny)) { onDispatch?.(); return; }
           }
           const params = { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y };
-          if (!asyncScroll) { await sendInput("Input.dispatchMouseEvent", params); return; }
+          if (!asyncScroll || (typeof asyncScroll === 'function' && !asyncScroll())) { await sendInput("Input.dispatchMouseEvent", params); return; }
           // MP-08/MP-10: the document fence and dispatch stay serialized; the
           // caller does not hold the input lane for the renderer's
           // frame-aligned wheel ack. CDP preserves dispatch order.

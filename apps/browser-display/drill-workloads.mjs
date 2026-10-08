@@ -2,6 +2,7 @@
 import {verifySettled,verifyContinuousSettled,waitQuiet} from './drill-settle.mjs';
 import {cpuSpan} from './drill-cpu.mjs';
 import { distribution } from './drill-metrics.mjs';
+import {measureMotionTyping} from './drill-motion-input.mjs';
 export async function measureWorkload({page,workload,pair,pause,resource,durationMs}) {
  const before=await page.evaluate(()=>({bytes:mdWireBytes,frames:mdFrames.length,presentations:mdPresentations?.length??0}));
  const cpuBefore=(await resource()).cpu;
@@ -11,6 +12,10 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  if(workload!=='scroll'&&!wheel)await page.evaluate(()=>mdStream.input({kind:'click',x:60,y:88}));
  let last=performance.now();const continuous=process.env.MD_WINDOW==='1';
  if(continuous)await page.evaluate(()=>mdStream.start());
+ // MP-08/MP-10: opt-in, separate from the unchanged phase29 workload matrix.
+ // Keep scroll/wheel active until every typing echo has been measured.
+ const typing=process.env.MD_TYPE_DURING_MOTION==='1'&&continuous?measureMotionTyping(page):null;
+ typing?.catch(()=>{});
  while(performance.now()-started<durationMs){
   if(workload==='scroll')await page.evaluate(()=>mdStream.input({kind:'scroll',x:700,y:600,delta_x:0,delta_y:240}));
   const frame=continuous?null:await page.evaluate(()=>mdStream.next());
@@ -22,6 +27,7 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
   if(continuous&&livePairs.length<2&&performance.now()-started>(livePairs.length+1)*1000)livePairs.push(await pair('moving-live-'+livePairs.length));
   await resource();
  }
+ const typingSamples=typing?await typing:null;
  const cpuAfter=(await resource()).cpu;
  let freezeRequestedMs=performance.timeOrigin+performance.now();
  if(wheel&&continuous)wheelStats=await page.evaluate(async()=>{clearInterval(mdWheel.timer);await Promise.allSettled([...mdWheel.pending]);if(mdWheel.error)throw Error(mdWheel.error);return {sent:mdWheel.sent,dropped:mdWheel.dropped,target_hz:mdWheel.hz,max_in_flight:4}});
@@ -45,7 +51,7 @@ export async function measureWorkload({page,workload,pair,pause,resource,duratio
  }
  const refinements=repair.polls,exact=repair.fidelity,exactPresentedMs=exact.presentation_ms??exact.presentation_drawn_ms;
  if(!exact.lossless)throw Error('MD-DISPLAY: moving workload did not settle exactly');
- return {workload,cpu:cpuSpan(cpuBefore,cpuAfter),wheel_stats:wheelStats,duration_ms:motionEnd-started,presented_frames:samples.length,effective_fps:samples.length*1000/(motionEnd-started),effective_content_fps:after.presentations.slice(before.presentations).filter(p=>p.content_changed).length*1000/(motionEnd-started),
+ return {workload,cpu:cpuSpan(cpuBefore,cpuAfter),wheel_stats:wheelStats,...(typingSamples?{typing:{condition:'concurrent active motion; separate supplementary workload',samples:typingSamples,latency:distribution(typingSamples.map(s=>s.latency_ms))}}:{}),duration_ms:motionEnd-started,presented_frames:samples.length,effective_fps:samples.length*1000/(motionEnd-started),effective_content_fps:after.presentations.slice(before.presentations).filter(p=>p.content_changed).length*1000/(motionEnd-started),
   cadence:distribution(cadence),samples,live_pairs:livePairs,received_application_bytes:after.bytes-before.bytes,application_mbps:(after.bytes-before.bytes)*8/(motionEnd-started)/1000,
   event_mbps:after.frames.slice(before.frames).reduce((n,frame)=>n+frame.bytes,0)*8/(motionEnd-started)/1000,frame_kinds:after.frames.slice(before.frames).map(frame=>frame.kind),freeze_first:{kind:first?.kind??'unchanged',fidelity:frozen},
   settle_ms:performance.now()-settleStart,settle_present_ms:Math.max(0,exactPresentedMs-freezeRequestedMs),settle_definition:continuous?'Continuous credits remain active through freeze and exact repair. settle_present_ms is the presentation bound atomically to independently verified exact RGB, minus freeze request. settle_ms includes readback/verification and stop ownership. No manual300ms pause or prediction counts.':'Manual-credit legacy comparison:300ms pause plus drain/readback; presentation bound to exact RGB snapshot.',refinements,verification_attempts:repair.verification_attempts,settled_fidelity:exact,

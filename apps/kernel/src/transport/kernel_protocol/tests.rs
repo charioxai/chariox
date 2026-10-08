@@ -790,7 +790,7 @@ fn user_domain_refusals_protocol_443_snapshot() {
     assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 466);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        90
+        96
     );
     let values = [
         Reason::NotFocusedAgent,

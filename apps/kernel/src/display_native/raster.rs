@@ -5,6 +5,26 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+// MP-11: a codec job owns the mapping while it reads it, including after a
+// control timeout releases the client lease or the supervisor exits.
+struct Mapping {
+    address: usize,
+    length: usize,
+}
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.address as *mut libc::c_void, self.length);
+        }
+    }
+}
+pub(super) struct CodecLease(Arc<Mapping>);
+impl CodecLease {
+    pub fn pixels(&self) -> *const u8 {
+        self.0.address as *const u8
+    }
+}
 pub(super) struct Slot {
     pub pixels: *mut u8,
     pub length: usize,
@@ -18,6 +38,7 @@ pub(super) struct Slot {
     pub base: u64,
     file: File,
     path: PathBuf,
+    mapping: Arc<Mapping>,
 }
 impl Slot {
     pub fn create(root: &Path, index: usize, length: usize) -> Result<Self, String> {
@@ -57,17 +78,24 @@ impl Slot {
             base: 0,
             file,
             path,
+            mapping: Arc::new(Mapping {
+                address: pixels as usize,
+                length,
+            }),
         })
     }
     pub fn bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.pixels, self.length) }
     }
+    pub fn codec_lease(&self) -> CodecLease {
+        CodecLease(self.mapping.clone())
+    }
+    pub fn available(&self) -> bool {
+        self.serial.is_none() && Arc::strong_count(&self.mapping) == 1
+    }
 }
 impl Drop for Slot {
     fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.pixels.cast(), self.length);
-        }
         // Remove only this exact private regular inode; the kernel additionally
         // owns reclamation after abrupt supervisor/worker death.
         if std::fs::symlink_metadata(&self.path)

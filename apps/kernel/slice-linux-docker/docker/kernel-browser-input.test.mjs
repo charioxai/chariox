@@ -130,5 +130,6 @@ test('MP-08/MP-10 notch wheel input routes to the owned display after the docume
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>assert.fail('precise deltas stay on CDP')});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
-  await assert.rejects(inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false}),/native wheel unavailable/);
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false});
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native input falls back to CDP');
 });
