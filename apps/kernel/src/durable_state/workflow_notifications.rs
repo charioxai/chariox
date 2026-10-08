@@ -241,7 +241,7 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|row| {
             let (s, e) = row.map_err(sql)?;
-            Ok((decode(&s)?, decode(&e)?))
+            Ok((decode(&s)?, protect_envelope(decode(&e)?)?))
         })
         .collect()
     }

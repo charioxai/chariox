@@ -1486,3 +1486,46 @@ fn security_f8_redaction_expansion_cannot_accept_oversize_receipts() {
     assert!(f.candidates(true).is_empty());
     cleanup(f);
 }
+
+#[test]
+fn security_f8_legacy_candidates_redact_before_local_or_peer_delivery() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("source");
+    let (b, _, bp) = f.workflow("target");
+    let source = f.source(&a);
+    f.attach(&source, &b, &bp);
+    f.complete(&a, "legacy", None, WorkflowRunStatus::Completed, "fixture");
+    let (_, mut env) = f.candidates(false).pop().unwrap();
+    let synthetic = format!("ghp_{}", "a".repeat(36));
+    env.output = Some(WorkflowOutputPayload::new(&synthetic, vec![]));
+    env.subject = Some(synthetic.clone());
+    env.fields = serde_json::json!({"password":"synthetic-not-a-secret","summary":"useful"});
+    use sha2::{Digest, Sha256};
+    let legacy_bytes = encode(&env).unwrap();
+    let digest = format!("{:x}", Sha256::digest(legacy_bytes.as_bytes()));
+    // Model a pre-fix immutable receipt. Its original digest stays unchanged.
+    for state in ["retryable", "accepted"] {
+        {
+            let db = Connection::open(f.root.join("kernel.sqlite")).unwrap();
+            db.execute("UPDATE app_outbox SET payload_json=?1,state=?2,content_digest=?3 WHERE source_kind='workflow_completion'", rusqlite::params![legacy_bytes,state,digest]).unwrap();
+        }
+        let (_, safe) = f.candidates(state == "accepted").pop().unwrap();
+        assert_ne!(
+            safe.output, env.output,
+            "MP-11 / MP-08 / MP-10 F8: old receipts must never forward raw output"
+        );
+        assert_ne!(safe.subject, env.subject);
+        assert_ne!(safe.fields["password"], env.fields["password"]);
+        assert_eq!(safe.fields["summary"], "useful");
+        let db = f.store.lock_connection("MP-11 F8 legacy digest").unwrap();
+        let retained: String = db
+            .query_row(
+                "SELECT content_digest FROM app_outbox WHERE source_kind='workflow_completion'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, digest);
+    }
+    cleanup(f);
+}
