@@ -160,7 +160,7 @@ try {
    const name=new URL(req.url,'http://localhost').pathname;
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
    // MP-11 (owner 2026-10-08): a cross-site (isolated) consent-style frame with a protected field.
-   if(name==='/frame-consent'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><body style="margin:0;background:rgb(0,90,200)" onclick="document.body.style.background=\'rgb(0,200,90)\'"><input type="password" value="fixture" style="position:absolute;left:250px;top:120px;width:120px;height:40px;border:0"></body>');return;}
+   if(name==='/frame-consent'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><body style="margin:0;height:100vh;background:rgb(0,90,200)" onclick="document.body.style.background=\'rgb(0,200,90)\'"><input type="password" value="fixture" style="position:absolute;left:250px;top:120px;width:120px;height:40px;border:0"></body>');return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
    if(page){
     res.setHeader('Content-Type','text/html');const dynamic=process.env.MD_DYNAMIC_PROTECTED==='1'&&!dynamicFixtureServed;if(dynamic)dynamicFixtureServed=true;
