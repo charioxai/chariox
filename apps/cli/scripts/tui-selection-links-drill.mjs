@@ -183,8 +183,8 @@ try {
   await capture('03-released')
   if (!options['no-mouse']) retained = JSON.stringify(before) !== JSON.stringify(during) && JSON.stringify(during) === JSON.stringify(after)
   const copyCount = await page.evaluate(() => copies.length)
-  if (!options['no-mouse']) await press('\x1b[99;6u') // real Ctrl+Shift+C (CSI u)
-  const keyboardCopy = options['no-mouse'] ? null : await page.evaluate(count => copies.length > count, copyCount)
+  if (!options['no-mouse'] && !options['expect-red']) await press('\x1b[99;6u') // real Ctrl+Shift+C (CSI u)
+  const keyboardCopy = options['no-mouse'] || options['expect-red'] ? null : await page.evaluate(count => copies.length > count, copyCount)
   // Stage a command through real key input. Never start a real login process.
   await command('/provider login-status fixture')
   await waitFor(() => requests.includes('GetProviderLoginStatus'))
