@@ -83,3 +83,28 @@ for (const args of [["--help"], ["-h"], ["--unknown"], ["unexpected"], ["--works
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 }
+
+// Kernel subcommands own their parsers; the TUI option gate must not reject them.
+for (const args of [["access", "list"], ["sudo", "request"]]) {
+  test(`CLI entry admits ${args[0]} to its subcommand`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "chariox-cli-startup-"))
+    try {
+      const code = path.join(root, "code")
+      await mkdir(code)
+      await writeFile(path.join(code, "package.json"), '{"type":"module"}')
+      for (const name of ["index", "cli-options", "app-command-catalog"]) {
+        const result = await transformAsync(await readFile(path.join(source, `${name}.ts`), "utf8"), { filename: `${name}.ts`, presets: [tsPreset] })
+        await writeFile(path.join(code, `${name}.js`), result.code)
+      }
+      await writeFile(path.join(code, "cli-main.js"), `process.stdout.write("admitted:" + process.argv.slice(2).join(" "))`)
+      await writeFile(path.join(code, "runner.mjs"), 'globalThis.Bun={plugin(){}}; await import("./index.js");')
+      const child = spawn(process.execPath, [path.join(code, "runner.mjs"), ...args], { stdio: ["ignore", "pipe", "pipe"] })
+      let stdout = "", stderr = ""
+      child.stdout.on("data", chunk => { stdout += chunk })
+      child.stderr.on("data", chunk => { stderr += chunk })
+      const [exit] = await once(child, "close")
+      assert.equal(exit, 0, stderr)
+      assert.equal(stdout, `admitted:${args.join(" ")}`)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+}
