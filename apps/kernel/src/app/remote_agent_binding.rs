@@ -240,6 +240,27 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 };
             account_materialization.profile.owner_user_id = plan.agent.owner_user_id().to_string();
             let expected_account = account_materialization.profile.clone();
+            let expected_copy = match plan.provider_account_profiles.prepare_account_copy(
+                &account_owner_user_id,
+                &account_materialization,
+                materialization_target_kind,
+                &worker_kernel.machine_id,
+                &worker_kernel.kernel_id,
+            ) {
+                Ok(expected) => expected,
+                Err(error) => {
+                    cleanup_remote_binding_setup_off_lock(
+                        &relay_config,
+                        &plan.relay_state,
+                        &target,
+                        &lease_id,
+                        None,
+                        use_connected_relay,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             match send_remote_binding_request_off_lock(
                 &relay_config,
                 &plan.relay_state,
@@ -269,7 +290,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                         plan.provider_account_profiles
                             .record_confirmed_account_copy(
                                 &account_owner_user_id,
-                                &crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&account_materialization)?,
+                                &expected_copy,
                                 materialization_target_kind,
                                 &worker_kernel.machine_id,
                                 &worker_kernel.kernel_id,
@@ -898,6 +919,19 @@ target_kind: materialization_target_kind,
                 // stamp that identity on the encrypted replica envelope.
                 account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
                 let expected_account = account_materialization.profile.clone();
+                let expected_copy = match self.provider_account_profiles.prepare_account_copy(
+                    &account_owner_user_id,
+                    &account_materialization,
+                    materialization_target_kind,
+                    &worker_kernel.machine_id,
+                    &worker_kernel.kernel_id,
+                ) {
+                    Ok(expected) => expected,
+                    Err(error) => {
+                        cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                        return Err(error);
+                    }
+                };
                 match self.send_remote_binding_request_authorized(
                     &relay_config,
                     target.clone(),
@@ -928,7 +962,7 @@ target_kind: materialization_target_kind,
                                 .provider_account_profiles
                                 .record_confirmed_account_copy(
                                     &account_owner_user_id,
-                                    &crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&account_materialization)?,
+                                    &expected_copy,
                                     materialization_target_kind,
                                     &worker_kernel.machine_id,
                                     &worker_kernel.kernel_id,

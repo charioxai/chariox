@@ -247,13 +247,16 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             &provider,
             &provider_account.profile_id,
         )?;
-        let expected_copy =
-            crate::account_profile::ProviderAccountCopyExpectation::from_materialization(
-                &materialization,
-            )?;
         let relay = lifecycle::local_docker_slice_relay(config_projection, &slice).await?;
         let config = relay.worker_discovery_config(config_projection.snapshot());
         let target = worker_discovery::discover_started_slice_worker(&config, &slice).await?;
+        let expected_copy = registry.prepare_account_copy(
+            &owner,
+            &materialization,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+            &target.machine_id,
+            &target.kernel_id,
+        )?;
         let response = runtime_state.send_remote_profile_request(
             &config, &target.kernel_id,
             crate::transport::relay_peer::RelayPeerRequest::ImportManagedSliceProviderAccountCopy {

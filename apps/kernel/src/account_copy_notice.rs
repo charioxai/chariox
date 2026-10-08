@@ -235,11 +235,8 @@ impl ProviderAccountProfileRegistry {
             .iter()
             .find(|entry| entry.target_kind == target_kind && entry.target_ref == target_kernel)
             .and_then(|entry| entry.copy.as_ref());
-        let valid = self
-            .copy_identity
-            .as_ref()
-            .zip(status.copy.as_ref())
-            .is_some_and(|(identity, copy)| {
+        let valid =
+            if let Some((identity, copy)) = self.copy_identity.as_ref().zip(status.copy.as_ref()) {
                 expected.source.machine_id == identity.machine_id
                     && expected.source.kernel_id == identity.kernel_id
                     && copy.source_machine_id == identity.machine_id
@@ -248,15 +245,27 @@ impl ProviderAccountProfileRegistry {
                     && copy.target_machine_id == target_machine
                     && copy.target_kernel_id == target_kernel
                     && copy.target_account_id == target_account
+                    && copy.auth_state != ProviderAccountCopyAuthState::Removed
                     && status.target_ref == target_kernel
                     && status.target_kind == target_kind
                     && (expected.matches(copy)
-                        || previous.is_some_and(|issued| same_copy_generation(issued, copy)))
-            });
+                        || previous.is_some_and(|issued| same_copy_generation(issued, copy))
+                        || self.issued_copy_matches(
+                            owner,
+                            expected,
+                            target_kind,
+                            target_machine,
+                            target_kernel,
+                            copy,
+                        )?)
+            } else {
+                false
+            };
         if !valid {
             return Err(registry_error("record account copy", "copy receipt does not match the home-issued account, generation and receiving placement"));
         }
         let copy = status.copy.as_mut().unwrap();
+        let confirmed_generation = copy.copied_at_ms;
         copy.warning_seen = previous.is_some_and(|copy| copy.warning_seen);
         status.observed_at_ms = crate::session::unix_epoch_ms();
         status.state = if copy.auth_state == ProviderAccountCopyAuthState::Authenticated {
@@ -271,7 +280,14 @@ impl ProviderAccountProfileRegistry {
             &expected.source_account_id,
             status,
         )?;
-        Ok(())
+        self.finish_issued_account_copy(
+            owner,
+            expected,
+            target_kind,
+            target_machine,
+            target_kernel,
+            confirmed_generation,
+        )
     }
 
     /// Home-confirmed provenance selects the receiving profile; the worker owns live auth.

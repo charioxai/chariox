@@ -243,6 +243,16 @@ fn secrev_f2_live_linked_codex_replay_after_local_removal() {
         let mut target_socket = register_live_copy_peer(address, &target).await;
         wait_for_daemon_registration(presence.clone(), &source.daemon_id).await;
         wait_for_daemon_registration(presence, &target.daemon_id).await;
+        let first_generation = materialization.generated_at_ms;
+        source_registry
+            .prepare_account_copy(
+                "local",
+                &materialization,
+                ProviderAccountMaterializationTargetKind::Slice,
+                &target.host_machine_id,
+                &target.daemon_id,
+            )
+            .unwrap();
         let frame = relay_crypto::encrypt_payload_for_peer(
             &source.relay_private_key,
             &target.relay_public_key,
@@ -289,6 +299,24 @@ fn secrev_f2_live_linked_codex_replay_after_local_removal() {
         let no_op_materialization = source_registry
             .export_managed_context_materialization("local", "codex", &account)
             .unwrap();
+        assert!(no_op_materialization.generated_at_ms > first_generation);
+        let retry_expected = source_registry
+            .prepare_account_copy(
+                "local",
+                &no_op_materialization,
+                ProviderAccountMaterializationTargetKind::Slice,
+                &target.host_machine_id,
+                &target.daemon_id,
+            )
+            .unwrap();
+        // The first successful receipt deliberately remains unconfirmed at home.
+        assert!(!source_registry
+            .get("local", "codex", &account)
+            .unwrap()
+            .materializations
+            .iter()
+            .filter_map(|status| status.copy.as_ref())
+            .any(|copy| copy.copied_at_ms == first_generation));
         let no_op_frame = relay_crypto::encrypt_payload_for_peer(
             &source.relay_private_key,
             &target.relay_public_key,
@@ -314,6 +342,41 @@ fn secrev_f2_live_linked_codex_replay_after_local_removal() {
             no_op.error.is_none(),
             "fresh owner request should preserve the receiving login"
         );
+        let decrypted = relay_crypto::decrypt_payload_for_private_key(
+            &source.relay_private_key,
+            no_op.encrypted_response.as_ref().unwrap(),
+        )
+        .unwrap();
+        let RelayPeerResponse::ManagedSliceProviderAccountCopyImported { profile: received } =
+            serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext).unwrap()
+        else {
+            panic!("receiver did not acknowledge the retry")
+        };
+        let copy = received
+            .materializations
+            .iter()
+            .find(|status| status.copy.is_some())
+            .unwrap()
+            .clone();
+        assert_eq!(copy.copy.as_ref().unwrap().copied_at_ms, first_generation);
+        source_registry
+            .record_confirmed_account_copy(
+                "local",
+                &retry_expected,
+                ProviderAccountMaterializationTargetKind::Slice,
+                &target.host_machine_id,
+                &target.daemon_id,
+                &received.profile_id,
+                copy,
+            )
+            .unwrap();
+        assert!(source_registry
+            .get("local", "codex", &account)
+            .unwrap()
+            .is_installed_at(
+                ProviderAccountMaterializationTargetKind::Slice,
+                &target.daemon_id
+            ));
         // Delete only the Chariox-created receiving profile through the kernel.
         // This is local removal: never invoke provider logout/revocation/re-login.
         let removed = crate::runtime::provider_account_control::execute_provider_account_request(
@@ -334,6 +397,29 @@ fn secrev_f2_live_linked_codex_replay_after_local_removal() {
             removed,
             crate::local::LocalDaemonResponse::ProviderAccountProfileDataDeleted { .. }
         ));
+        for observation in registry
+            .received_copy_observations("local", &source.daemon_id)
+            .unwrap()
+        {
+            source_registry
+                .apply_remote_account_copy_observation(
+                    "local",
+                    "codex",
+                    &account,
+                    ProviderAccountMaterializationTargetKind::Slice,
+                    &target.host_machine_id,
+                    &target.daemon_id,
+                    &observation,
+                )
+                .unwrap();
+        }
+        assert!(!source_registry
+            .get("local", "codex", &account)
+            .unwrap()
+            .is_installed_at(
+                ProviderAccountMaterializationTargetKind::Slice,
+                &target.daemon_id
+            ));
         assert!(registry.get("local", "codex", &account).is_err());
         assert!(!std::path::Path::new(codex_home).join("auth.json").exists());
         let replay = deliver_live_copy_frame(
@@ -384,7 +470,7 @@ fn secrev_f2_live_linked_codex_replay_after_local_removal() {
         target_socket.close(None).await.unwrap();
         stop.send(()).unwrap();
         relay.await.unwrap();
-        let receipt = serde_json::json!({"local_protocol": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, "peer_protocol": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, "official_source_login":true, "official_receiving_login_before_local_removal":true, "receiving_profile_removed":true, "official_logout_invoked":false, "original_frame_rejected":true, "no_op_frame_rejected_after_kernel_restart":true, "credential_restored":false, "source_machine":source.host_machine_id,"source_kernel":source.daemon_id,"receiving_machine":target.host_machine_id,"receiving_kernel":target.daemon_id,"receiving_account":account,"transport":"real websocket relay; production encrypted peer dispatcher","placement":"home-managed receiving kernel on this host with pinned slice bootstrap; no Docker container","runtime_state":"retained; receiving copy removed locally by kernel-managed profile deletion; provider login never revoked"});
+        let receipt = serde_json::json!({"local_protocol": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, "peer_protocol": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, "official_source_login":true, "official_receiving_login_before_local_removal":true, "receiving_profile_removed":true,"first_receipt_left_unconfirmed":true,"preserved_first_generation_reconciled":true,"home_observed_local_removal":true, "official_logout_invoked":false, "original_frame_rejected":true, "no_op_frame_rejected_after_kernel_restart":true, "credential_restored":false, "source_machine":source.host_machine_id,"source_kernel":source.daemon_id,"receiving_machine":target.host_machine_id,"receiving_kernel":target.daemon_id,"receiving_account":account,"transport":"real websocket relay; production encrypted peer dispatcher","placement":"home-managed receiving kernel on this host with pinned slice bootstrap; no Docker container","runtime_state":"retained; receiving copy removed locally by kernel-managed profile deletion; provider login never revoked"});
         crate::config::write_private_file(&evidence, &serde_json::to_vec_pretty(&receipt).unwrap())
             .unwrap();
         println!("live Codex replay-after-removal: PASS; credential-free receipt written");

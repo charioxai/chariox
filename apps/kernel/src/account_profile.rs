@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
+#[path = "account_copy_issuance.rs"]
+mod copy_issuance;
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
 pub(crate) use copy_notice::{validate_copy_source_kernel, ProviderAccountCopyExpectation};
@@ -712,8 +714,9 @@ impl ProviderAccountProfile {
                 )
         })?;
         match &status.copy {
-            Some(copy) => (!copy.target_account_id.trim().is_empty())
-                .then_some(copy.target_account_id.as_str()),
+            Some(copy) => (copy.auth_state != ProviderAccountCopyAuthState::Removed
+                && !copy.target_account_id.trim().is_empty())
+            .then_some(copy.target_account_id.as_str()),
             None => Some(self.profile_id.as_str()),
         }
     }

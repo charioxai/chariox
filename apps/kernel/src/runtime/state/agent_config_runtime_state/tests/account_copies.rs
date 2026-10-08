@@ -30,6 +30,7 @@ impl CopyFixture {
         home.relay_token = Some("synthetic-relay".into());
         let mut worker = crate::config::DaemonConfig::for_tests();
         worker.daemon_id = "copy-worker".into();
+        worker.host_machine_id = "copy-worker-machine".into();
         let (app, runtime, session, agent) = agent_config_runtime_with_config(home.clone()).await;
         app.lock()
             .await
@@ -406,6 +407,26 @@ async fn review_ack_lost_first_response_reconciles_the_production_receivers_copy
             owner,
         )
         .unwrap();
+    let initial_account = receiver
+        .provider_account_profile_registry()
+        .get(owner, "codex", "default")
+        .unwrap()
+        .profile_id;
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut receiver)
+        .create_leased_agent_from_base_directory(
+            root.path(),
+            &lease.id,
+            "codex",
+            &initial_account,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     let mut binding = fixture
         .runtime
         .owned
@@ -416,6 +437,7 @@ async fn review_ack_lost_first_response_reconciles_the_production_receivers_copy
         .unwrap()
         .clone();
     binding.execution_lease_id = lease.id;
+    binding.leased_agent_id = leased.id;
     fixture
         ._app
         .lock()
@@ -525,8 +547,27 @@ async fn review_ack_lost_first_response_reconciles_the_production_receivers_copy
         response = &mut retry => panic!("home rejected the committed first copy on retry: {response:?}"),
         request = fixture.request() => request,
     };
+    let RelayPeerRequest::UpdateLeasedAgentProfile {
+        leased_agent_id,
+        provider,
+        account_profile,
+        model,
+        effort,
+    } = worker_request.1
+    else {
+        panic!("confirmed copy must proceed to the worker profile update")
+    };
+    let updated = crate::app::RemoteLeaseRuntime::new(&mut receiver)
+        .update_leased_agent_profile(&leased_agent_id, provider, account_profile, model, effort)
+        .unwrap();
+    assert_eq!(updated.account_profile, fixture.account);
     fixture
-        .acknowledge_profile(worker_request.0, worker_request.1)
+        .reply(
+            worker_request.0,
+            RelayPeerResponse::LeasedAgentProfileUpdated {
+                leased_agent: updated,
+            },
+        )
         .await;
     assert_eq!(
         retry.await.unwrap().unwrap().provider_account_profile(),

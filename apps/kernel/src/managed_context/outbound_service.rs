@@ -641,6 +641,26 @@ pub(crate) fn start_managed_context_outbound_operation(
             status.phase = ManagedContextOutboundOperationPhase::Uploading;
             status.package_size_bytes = prepared.package.package_size_bytes;
         });
+        let copy_owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &config,
+            config
+                .cloud_relay
+                .as_ref()
+                .map(|cloud| cloud.user_id.as_str())
+                .unwrap_or("local"),
+        );
+        for expected in &prepared.account_copy_expectations {
+            if let Err(error) = provider_account_profiles.remember_issued_account_copy(
+                &copy_owner,
+                expected,
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                &authoritative_ticket.target.machine_id,
+                &authoritative_ticket.target.kernel_id,
+            ) {
+                task_store.update(&task_context_id, |status| fail_status(status, &error));
+                return;
+            }
+        }
         let transport = RelayManagedContextPeerTransport::new(
             config.clone(),
             relay_state,
@@ -674,14 +694,6 @@ pub(crate) fn start_managed_context_outbound_operation(
         .await;
         match transfer {
             Ok(result) => match finish_committed_account_package(&prepared.artifact_root, || {
-                let owner = crate::account_profile::provider_account_authority_owner_user_id(
-                    &config,
-                    config
-                        .cloud_relay
-                        .as_ref()
-                        .map(|cloud| cloud.user_id.as_str())
-                        .unwrap_or("local"),
-                );
                 for receipt in &result.receipt.provider_accounts {
                     if let Some(status) = &receipt.copy {
                         let copy = status.copy.as_ref().ok_or_else(|| {
@@ -693,7 +705,7 @@ pub(crate) fn start_managed_context_outbound_operation(
                         let expected = prepared.account_copy_expectations.iter().find(|expected| expected.provider == receipt.provider && expected.source_account_id == copy.source_account_id)
                             .ok_or_else(|| outbound_service_error("target account receipt does not match an issued provider account", false))?;
                         provider_account_profiles.record_confirmed_account_copy(
-                            &owner, expected, crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                            &copy_owner, expected, crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
                             &authoritative_ticket.target.machine_id, &authoritative_ticket.target.kernel_id,
                             &receipt.profile_id, status.clone(),
                         )?;

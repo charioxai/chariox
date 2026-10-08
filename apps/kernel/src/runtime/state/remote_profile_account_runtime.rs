@@ -47,10 +47,19 @@ impl KernelRuntimeState {
             }
             // Cloud-owner aliases are local registry details, not lease owners.
             materialization.profile.owner_user_id = agent.owner_user_id().to_string();
-            let expected_copy =
-                crate::account_profile::ProviderAccountCopyExpectation::from_materialization(
-                    &materialization,
-                )?;
+            let binding = agent
+                .remote_execution()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "issue account copy",
+                    message: "worker binding disappeared".into(),
+                })?;
+            let expected_copy = registry.prepare_account_copy(
+                &owner,
+                &materialization,
+                target_kind,
+                &binding.worker_machine_id,
+                &update.worker_kernel_id,
+            )?;
             let response = self
                 .send_remote_profile_request(
                     config,
@@ -78,13 +87,6 @@ impl KernelRuntimeState {
                 return Err(unconfirmed_profile_account());
             }
             if let Some(status) = copy {
-                let binding =
-                    agent
-                        .remote_execution()
-                        .ok_or_else(|| DaemonError::LocalTransport {
-                            operation: "record account copy",
-                            message: "worker binding disappeared".into(),
-                        })?;
                 // This validates placement/generation and persists the confirmed
                 // receipt in one path. Never cache success before it accepts.
                 registry.record_confirmed_account_copy(
