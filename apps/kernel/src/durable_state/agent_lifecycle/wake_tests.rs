@@ -888,6 +888,14 @@ fn a03_wake_history_and_receipts_are_bounded() {
             tail: String::new(),
             now: 50,
         });
+        // History retention is independent of the outstanding source budget.
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: f.inbox().last().unwrap().sequence,
+            handled: true,
+            now: 51,
+        });
     }
     let wakes = f.store.agent_wakes(None, None).unwrap();
     assert!(
