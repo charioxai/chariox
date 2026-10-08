@@ -128,19 +128,7 @@ async fn human_review(source_project: bool, legacy_local: bool) {
         .await
         .unwrap();
         let id = interaction.id().to_string();
-        let attempted = router
-            .dispatch_authenticated_runtime_tool_call(
-                &auth,
-                crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-                serde_json::json!({"interaction_id": id, "choice_id": "continue"}),
-            )
-            .await
-            .unwrap();
-        assert!(
-            !attempted.ok,
-            "MP-11 Meta approval bypassed owner review: {:?}",
-            attempted.payload
-        );
+        // MP-08/MP-11 A04 (#924): the Meta resolve tool no longer exists; agents never answer approvals.
         if source_project {
             assert_eq!(interaction.agent_id(), Some(worker.id()));
             assert!(

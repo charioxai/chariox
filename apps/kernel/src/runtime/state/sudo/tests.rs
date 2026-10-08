@@ -73,19 +73,19 @@ async fn owner_context_review_rejects_sudo(source_project: bool) {
     .await
     .unwrap();
     assert!(
+        // MP-08/MP-10/MP-11 A04 (#924): sudo never answers approvals.
         f.state
-            .answer_sudo_interaction(
+            .authorize_sudo_request(
                 &turn.entry_id,
-                RespondToInteractionRequest {
+                &LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
                     session_id: session.id().into(),
                     interaction_id: id.into(),
                     choice_id: "continue".into(),
                     custom_reply: None,
                     passkey: None,
                     passkey_remember_minutes: None,
-                }
+                })
             )
-            .await
             .is_err(),
         "MP-11 sudo agent must not approve source owner review"
     );

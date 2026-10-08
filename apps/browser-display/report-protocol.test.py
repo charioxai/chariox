@@ -1,4 +1,4 @@
-"""MP-8/MP-10/MP-11: aggregation accepts bound versions and rejects mismatches."""
+"""MP-08/MP-10/MP-11: aggregation accepts bound versions and rejects mismatches."""
 import json
 from pathlib import Path
 import subprocess

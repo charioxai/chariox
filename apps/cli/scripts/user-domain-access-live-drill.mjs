@@ -44,7 +44,7 @@ try {
   await until(async () => { const s = net.createConnection(port, '127.0.0.1'); return new Promise(resolve => { s.on('connect', () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false)); }); }, 'kernel listener');
   control = new LocalIpcClient(`ws://127.0.0.1:${port}/kernel`, { localAuthEnvironment: { ...process.env, CHARIOX_HOME: home } }); clients.push(control);
   const presence = await until(async () => JSON.parse(await readFile(home + "/kernels/active/mdgrants-drill.json", "utf8")), "kernel protocol presence");
-  assert.equal(presence.local_daemon_protocol_version, 461);
+  assert.equal(presence.local_daemon_protocol_version, 467);
   const created = (await send(request.createSessionRequest(oss, oss, 'mdgrants', { provider: 'dev-stub', model: 'slow-first-output-drill' }))).SessionCreated;
   assert.ok(created); sessionId = created.session.id; const first = created.agent.id;
   const attachment = (await send(request.attachToSessionRequest(sessionId, 'mdgrants-drill'))).SessionAttached.attachment.id;

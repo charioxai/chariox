@@ -988,8 +988,8 @@ fn capability_tool_refusal_keeps_its_typed_code() {
         reason: crate::error::UserDomainRefusalReason::NotRequested,
     };
     assert_eq!(
-        super::tool_error_message(&refused),
-        "User-domain request refused: user_domain_not_requested"
+        super::tool_errors::message(&refused),
+        "user_domain_not_requested: User-domain request refused"
     );
 }
 
@@ -1032,7 +1032,7 @@ fn runtime_tool_content_preserves_objects_and_extracts_images() {
 #[test]
 fn primitive_mcp_result_shape_is_versioned_and_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 464);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false

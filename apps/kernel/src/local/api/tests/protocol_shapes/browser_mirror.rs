@@ -1,4 +1,4 @@
-//! MP-8/MP-10/MP-11: protocol 461 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 461 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
@@ -6,10 +6,10 @@ use crate::local::{
 };
 #[test]
 fn browser_mirror_protocol_454_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 463);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        94
+        95
     );
     let binding = |action| C::MirrorInput {
         tab_id: "t".into(),

@@ -123,6 +123,9 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "pty_resize_failed"
             | "kernel_request_failed"
             | "kernel_access_denied"
+            | "sudo_refused"
+            | "kernel_access_refused"
+            | "owner_request_expired"
             | "invalid_request"
             | "invalid_frame"
             | "kernel_request_overloaded"
@@ -154,6 +157,8 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // User-domain browser frames never leave the host terminal boundary.
+                KernelEvent::KernelBrowserFrame { .. } => {},
             }
         }
         fn public_event(name: &str) -> bool { matches!(name, $($wire)|*) }
@@ -177,6 +182,7 @@ public_events! {
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",
     WorkflowRunUpdated => "workflow_run_updated",
+    RoomWorkflowsChanged => "room_workflows_changed",
     Heartbeat => "heartbeat",
     TransportResumed => "transport_resumed",
     ReplayGap => "replay_gap",

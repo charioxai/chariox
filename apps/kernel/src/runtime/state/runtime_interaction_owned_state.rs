@@ -279,7 +279,7 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error("Kernel operation decision expired"));
         }
         if let Some(interaction) = &pending.user_domain_interaction {
-            if custom_reply.is_some() || sudo.is_some() || authorizing_terminal.is_some() {
+            if custom_reply.is_some() || authorizing_terminal.is_some() {
                 return Err(interaction_error(
                     "Invalid unattached decision reply authority",
                 ));
@@ -359,7 +359,7 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if super::owner_context_review::is_owner_context_review(&interaction)
-            && (!terminal_answer || sudo.is_some())
+            && !terminal_answer
         {
             return Err(interaction_error(
                 "Only the owner's Chariox terminal can answer this review",

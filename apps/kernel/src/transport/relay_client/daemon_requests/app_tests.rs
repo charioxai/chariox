@@ -1087,7 +1087,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     )
                     .unwrap();
                     let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(1), None, encrypted, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(1), None, encrypted, &cache, &Default::default(), None)
                             .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");
                     let create = LocalDaemonRequest::CreateTerminalPairingLink(
@@ -1121,7 +1121,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
                     let joined =
-                        handle_daemon_request(&router, &AtomicU64::new(2), None, encrypted, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(2), None, encrypted, &cache, &Default::default(), None)
                             .await;
                     assert!(joined.error.is_none(), "Cloud-free join must be admitted");
                     let reply = relay_crypto::decrypt_payload_for_private_key(
@@ -1142,7 +1142,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     )
                     .unwrap();
                     let allowed =
-                        handle_daemon_request(&router, &AtomicU64::new(3), None, encrypted, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(3), None, encrypted, &cache, &Default::default(), None)
                             .await;
                     assert!(allowed.error.is_none());
                     assert!(allowed.encrypted_response.is_some());
@@ -1151,7 +1151,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         relay_crypto::encrypt_payload_for_peer(&foreign, &receiver, &join_bytes)
                             .unwrap();
                     let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(4), None, encrypted, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(4), None, encrypted, &cache, &Default::default(), None)
                             .await;
                     assert_eq!(refused.error.unwrap().code, "unauthorized");
                     crate::runtime::self_host_terminal_grants::revoke(
@@ -1164,7 +1164,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
                     let replayed =
-                        handle_daemon_request(&router, &AtomicU64::new(99), None, replay, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(99), None, replay, &cache, &Default::default(), None)
                             .await;
                     assert!(
                         replayed.error.is_some(),
@@ -1178,7 +1178,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     )
                     .unwrap();
                     let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(5), None, encrypted, &cache)
+                        handle_daemon_request(&router, &AtomicU64::new(5), None, encrypted, &cache, &Default::default(), None)
                             .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");
                 });
@@ -1235,7 +1235,7 @@ async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
         dispatch_relay_client_request(
             &router,
             &sequence,
-            identity,
+            crate::runtime::command::KernelCaller::for_relay_request(identity),
             request.clone(),
             Some("browser-retry".into()),
             &cache,
@@ -1298,7 +1298,7 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
             dispatch_relay_client_request(
                 &router,
                 &sequence,
-                Some(caller("alice")),
+                crate::runtime::command::KernelCaller::for_relay_request(Some(caller("alice"))),
                 request.clone(),
                 Some("MD5-receipt".into()),
                 &cache
@@ -1312,7 +1312,7 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
                 dispatch_relay_client_request(
                     &router,
                     &sequence,
-                    Some(caller("alice")),
+                    crate::runtime::command::KernelCaller::for_relay_request(Some(caller("alice"))),
                     request.clone(),
                     Some("MD5-receipt".into()),
                     &cache
@@ -1328,7 +1328,7 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
                 dispatch_relay_client_request(
                     &router,
                     &sequence,
-                    Some(caller("alice")),
+                    crate::runtime::command::KernelCaller::for_relay_request(Some(caller("alice"))),
                     request,
                     Some("MD5-receipt".into()),
                     &cache

@@ -10,10 +10,10 @@ const version = Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[
 const compatible = provisioner.match(/image_runtime_compatible\(\) \{[\s\S]*?\n\}/)?.[0]
 assert.ok(compatible)
 
-test("MP-08/MP-10/MP-11 peer73 preflight rejects v70 and accepts only matching v73 image lineage", () => {
+test("MP-08/MP-10/MP-11 peer95 preflight rejects v70 and accepts only matching v95 image lineage", () => {
   for (const [imageVersion, imageRevision, expected] of [
-    [70, "fixture-current", false], [73, "fixture-current", true],
-    [73, "fixture-stale", false], ["<no value>", "fixture-current", false],
+    [70, "fixture-current", false], [95, "fixture-current", true],
+    [95, "fixture-stale", false], ["<no value>", "fixture-current", false],
   ]) {
     const result = spawnSync("bash", ["-c", `
       set -eu
@@ -32,5 +32,5 @@ test("MP-08/MP-10/MP-11 peer73 preflight rejects v70 and accepts only matching v
     } })
     assert.equal(result.status === 0, expected, `peer=${imageVersion}, source=${imageRevision}: ${result.stderr}`)
   }
-  assert.equal(version, 73)
+  assert.equal(version, 95)
 })

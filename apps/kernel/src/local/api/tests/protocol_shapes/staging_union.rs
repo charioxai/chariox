@@ -4,10 +4,10 @@ use super::*;
 #[test]
 fn staging_union_protocol_454_snapshot_and_hash() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 454);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        94
+        95
     );
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("staging-union-454.json")).unwrap();

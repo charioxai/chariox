@@ -9,6 +9,8 @@ use super::*;
 pub(super) enum PromptDispatchAcceptance {
     Submitted,
     PreparingBrief,
+    /// The prompt waits for copied-login recovery (#913) before submission.
+    AwaitingProviderLogin,
     Dropped,
 }
 
@@ -3927,7 +3929,7 @@ impl KernelRuntimeState {
             .try_provider_auth_recovery(&provider_run, "not_logged_in", Some(&dispatch.prompt_id))
             .await?
         {
-            return Ok(true);
+            return Ok(PromptDispatchAcceptance::AwaitingProviderLogin);
         }
         let mut hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,

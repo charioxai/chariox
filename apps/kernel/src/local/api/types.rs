@@ -267,8 +267,11 @@ pub use workspace::*;
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
-/// Version 463 is integration candidate 1: the union of main 435 with the
-/// next/integration2 queue (436-439), multidomain round 2 (443), display
-/// (447), Linux computer use (461), the agent model (450/452/453), kernel
-/// access scope (451), login copies (455) and same-machine direct (456).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 463;
+/// Version 463 was integration candidate 1.
+/// Version 467 is integration candidate 2: the union of main 435 with the
+/// next/integration2 queue (436-439), multidomain round 2 (443), the staging
+/// mirroring/display union (454), display (447), owner-managed machines
+/// (444/445, with the Cloud owner-copy ticket binding), the agent model
+/// (450/452/453/459/460/462), kernel access scope (451), login copies (455),
+/// same-machine direct (456/464) and Linux computer use (461).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 467;

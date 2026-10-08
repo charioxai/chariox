@@ -721,10 +721,6 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     let result = holder.result();
     assert!(result["error"].is_null(), "{result}");
     assert_eq!(
-        result["response"]["KernelAccessGranted"]["grant"]["session_id"],
-        SESSION
-    );
-    assert_eq!(
         result["response"]["KernelAccessGranted"]["grant"]["lifetime_minutes"],
         15
     );

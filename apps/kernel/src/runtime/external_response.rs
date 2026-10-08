@@ -26,6 +26,16 @@ fn protect_error(error: DaemonError) -> DaemonError {
     {
         return error;
     }
+    // Integration candidate 1: the typed owner-decision outcomes from the
+    // next/integration2 queue carry only kernel constants; keep them too.
+    if matches!(
+        &error,
+        DaemonError::KernelSudoRefused
+            | DaemonError::KernelAccessRefused
+            | DaemonError::OwnerRequestExpired
+    ) {
+        return error;
+    }
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
     DaemonError::ExternalRequestFailed {
         code: mapped.code,
@@ -87,6 +97,20 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        // Integration candidate 1: user-domain browser/notes/App views, SSH machine
+        // receipts and portability preflight stay with the host terminal (fail closed).
+        KernelBrowser,
+        Notes,
+        VisibleRegionCaptured,
+        UserAppViewOpened,
+        UserAppViewsListed,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewCallResult,
+        UserAppViewsChanged,
+        UserDomainInteractionAnswered,
+        SshMachine,
+        ProviderAccountPortabilityPreflightPassed,
         SessionInviteCreated,
         DebugBundleExported,
         McpServerInstalled,
@@ -130,8 +154,14 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
         CloudRelayLoggedOut,
         KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,

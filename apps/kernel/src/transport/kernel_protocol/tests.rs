@@ -896,10 +896,10 @@ fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
 #[test]
 fn user_domain_refusals_protocol_443_snapshot() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 462);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        94
+        95
     );
     let values = [
         Reason::NotFocusedAgent,
