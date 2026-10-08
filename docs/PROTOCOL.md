@@ -3294,6 +3294,20 @@ Reply opt-in registers one correlated result obligation; ordinary messages
 request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
 as blocked obligations requiring exact reconciliation, without guessing success.
 
-PR10 must supply leased event execution and receipt parity before those cells
-are accepted. PR3 supplies process/timer watcher sources. These dependencies
-and the real-provider/hosted validation matrix remain acceptance gates.
+Leased recipients (MP-08 / MP-09 / MP-10 / MP-11 A10, relay peer 83): the home
+kernel orders and delivers their events through the existing leased prompt
+dispatch. The worker's exact acceptance is the delivery receipt; a lost reply
+is reconciled from `GetLeasedPromptReceipt`, never a second turn; only a proven
+worker rejection returns the event to pending, and the retry uses a new home
+prompt id because the worker fences a rejected one. A leased turn's completion
+settles the home task as a local turn does, so delegators wake, and a leased
+run's `chariox.events.*` calls are forwarded home over `ForwardMetaRuntimeTool`
+with its current lease, worker run and running home prompt. Watched processes
+remain local-only. `UpdateLeasedSudo {leased_agent_id, home_prompt_id, grant:
+{entry_id, revision, remaining_ms, initial}}` installs, renews or ends
+(`remaining_ms` 0) the worker fence of a home sudo window for one exact leased
+home prompt; the worker lists and forwards `chariox_kernel_request` only under
+it and the home rechecks its own window on every call. A worker that lost the
+window refuses a non-initial renewal and the home ends the window. PR3
+supplies process/timer watcher sources. The real-provider/hosted validation
+matrix remains the acceptance gate.
