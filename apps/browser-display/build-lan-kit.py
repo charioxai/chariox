@@ -14,6 +14,11 @@ source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=checkout,text=True
 build_source=os.environ.get('MD_KERNEL_BUILD_SOURCE',source)
 if not re.fullmatch('[a-f0-9]{40}',build_source):raise SystemExit('MD-DISPLAY: exact kernel build source required')
 subprocess.run(['git','cat-file','-e',build_source+'^{commit}'],cwd=checkout,check=True)
+# MP-08/MP-10/MP-11: unchanged embedded assets alone cannot attest newer
+# Rust/C behavior. Harness-only commits may reuse byte-identical runtime source.
+runtime_paths=['Cargo.toml','Cargo.lock','.cargo','apps/kernel','apps/relay','packages']
+if subprocess.run(['git','diff','--quiet',build_source,'HEAD','--',*runtime_paths],cwd=checkout).returncode:
+ raise SystemExit('MP-08/MP-10/MP-11: kernel runtime sources differ from exact build source')
 build_versions=versions(lambda relative:subprocess.check_output(['git','show',build_source+':'+relative],cwd=checkout))
 out.mkdir(parents=True,exist_ok=True);kit=out/'display-lan-kit';kit.mkdir(exist_ok=False)
 def copy(source,dest):
