@@ -1,5 +1,4 @@
 use super::*;
-use crate::runtime::session_membership::scope::{request_session_scope, SessionMembershipScope};
 
 impl KernelRuntimeState {
     pub(crate) fn audit_access_terminal_attempt(
@@ -37,61 +36,14 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(crate) fn external_request_in_session(
-        &self,
-        session_id: &str,
-        request: &LocalDaemonRequest,
-    ) -> bool {
-        // This request has no caller-supplied session or attachment. Resolve the
-        // exact target ID against the granted session before transport admission.
-        if let LocalDaemonRequest::RequestKernelSudo(request) = request {
-            return self
-                .owned
-                .agent_store
-                .get_agent(&request.agent_id)
-                .is_ok_and(|agent| agent.session_id() == session_id);
-        }
-        match request_session_scope(request) {
-            Some(SessionMembershipScope::SessionId(id)) => id == session_id,
-            Some(SessionMembershipScope::SessionIds(ids)) => {
-                !ids.is_empty() && ids.iter().all(|id| id == session_id)
-            }
-            Some(SessionMembershipScope::AllSessions) => {
-                matches!(request, LocalDaemonRequest::ListSessions(_))
-            }
-            Some(SessionMembershipScope::SessionRef {
-                session_ref,
-                workspace_id,
-            })
-            | Some(SessionMembershipScope::DeleteSessionRef {
-                session_ref,
-                workspace_id,
-            }) => self
-                .owned
-                .session_store
-                .read()
-                .resolve_session_ref(&session_ref, workspace_id.as_deref())
-                .is_ok_and(|session| session.id() == session_id),
-            Some(SessionMembershipScope::AttachmentId(id)) => {
-                self.owned
-                    .session_projection
-                    .session_id_for_attachment(&id)
-                    .as_deref()
-                    == Some(session_id)
-            }
-            None => false,
-        }
-    }
-
-    /// Return the authorized session. Global requests fail closed; references
-    /// and attachments resolve through kernel state.
+    /// Every ordinary request on this LOCAL kernel; no grant-specific session scope.
     pub(crate) fn authorize_external_request(
         &self,
         grant_id: &str,
         request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<(), DaemonError> {
         if grant_id.starts_with("sudo:") {
-            return self.authorize_sudo_request(grant_id, request);
+            return self.authorize_sudo_request(grant_id, request).map(|_| ());
         }
         if matches!(request, LocalDaemonRequest::RespondToInteraction(answer) if answer.passkey.is_some())
         {
@@ -111,44 +63,44 @@ impl KernelRuntimeState {
             .get(grant_id)
             .cloned()
             .ok_or_else(|| error("grant revoked or expired"))?;
-        let session_id = &grant.summary.session_id;
-        let permitted = self.external_request_in_session(session_id, request);
         let forbidden = matches!(
             request,
-            LocalDaemonRequest::RespondToInteraction(_)
-                | LocalDaemonRequest::RequestNativeProviderTurnInteraction(_)
-                // These create durable authority or automation beyond this grant.
-                | LocalDaemonRequest::CreateAgentPromptSchedule(_)
-                | LocalDaemonRequest::CreateWorkflowSchedule(_)
-                | LocalDaemonRequest::SetWorkflowScheduleEnabled(_)
-                | LocalDaemonRequest::CreateWorkflowWatchdog(_)
-                | LocalDaemonRequest::SetWorkflowWatchdogEnabled(_)
-                | LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(_)
-                | LocalDaemonRequest::CreateWorkspaceLink(_)
-                | LocalDaemonRequest::AttachWorkspaceLink(_)
-                | LocalDaemonRequest::CreateSessionInvite(_)
-                | LocalDaemonRequest::RevokeSessionInvite(_)
-                | LocalDaemonRequest::PrepareBrowserImport(_)
-                | LocalDaemonRequest::ClaimBrowserImportSource(_)
-                | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
-                | LocalDaemonRequest::ApproveBrowserImport(_)
-                | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
-                | LocalDaemonRequest::ExportDebugBundle(_)
-                | LocalDaemonRequest::ImportExternalProviderAgent(_)
-                // Saved artifacts are kernel/user resources, not session-owned.
-                | LocalDaemonRequest::CreateWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::UpdateWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::GetWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::ListWorkflowCodeArtifacts(_)
-                | LocalDaemonRequest::DeleteWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::ExportWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::ImportWorkflowCodeArtifact(_)
-                | LocalDaemonRequest::ImportWorkflowCodePackage(_)
-        ) || matches!(request, LocalDaemonRequest::ExportWorkflowCodePackage(request)
-            if !matches!(request.target, Some(crate::local::WorkflowCodePackageExportTarget::Workflow { .. })))
-            || matches!(request, LocalDaemonRequest::ExportWorkflowCodeSource(request)
-                if matches!(request.target, crate::local::WorkflowCodeSourceExportTarget::Artifact { .. }));
-        // Responding to routine agent questions is allowed; kernel decisions, even denials, remain human owned.
+            LocalDaemonRequest::RequestKernelAccess(_)
+                | LocalDaemonRequest::ManageCredentialVault(_)
+                // Raw credential configs can contain literal injection headers.
+                | LocalDaemonRequest::GetCredential(_)
+                | LocalDaemonRequest::ListCredentials(_)
+                // Registry reads and imports return literal env/header credentials.
+                | LocalDaemonRequest::GetMcpServer(_)
+                | LocalDaemonRequest::ListMcpServers(_)
+                | LocalDaemonRequest::ImportMcpServers(_)
+                // These expose remote admission credentials or connect to another kernel.
+                | LocalDaemonRequest::CreatePairingInvite(_)
+                | LocalDaemonRequest::JoinPairingInvite(_)
+                | LocalDaemonRequest::CreateTerminalPairingLink(_)
+                | LocalDaemonRequest::JoinTerminalPairingLink(_)
+                | LocalDaemonRequest::RecordPairedClient(_)
+                | LocalDaemonRequest::ApproveRemoteMachine(_)
+                | LocalDaemonRequest::JoinSessionInvite(_)
+                | LocalDaemonRequest::CreateCloudSessionInvite(_)
+                | LocalDaemonRequest::ShowCloudSessionInvite(_)
+                | LocalDaemonRequest::AcceptCloudSessionInvite(_)
+                | LocalDaemonRequest::ConfigureRelay(_)
+                | LocalDaemonRequest::CloudRelayStatus(_)
+                | LocalDaemonRequest::StartCloudRelayLogin(_)
+                | LocalDaemonRequest::PollCloudRelayLogin(_)
+                | LocalDaemonRequest::LogoutCloudRelay(_)
+                | LocalDaemonRequest::PairCloudRelayClient(_)
+                | LocalDaemonRequest::PairCloudRelayMachine(_)
+                | LocalDaemonRequest::ConnectCloudRelay(_)
+                | LocalDaemonRequest::IssueCloudRelayClientToken(_)
+                | LocalDaemonRequest::ResolveKernelClientConnection(_)
+        ) || matches!(request, LocalDaemonRequest::SetUserConfigValue(config)
+            if protected_config(&config.path))
+            || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config)
+                if protected_config(&config.path));
+        // Routine approvals retain user authority. Critical and credential
+        // decisions remain human-only, including refusals and remember proofs.
         let forbidden = if let LocalDaemonRequest::RespondToInteraction(response) = request {
             response.passkey.is_some()
                 || response.passkey_remember_minutes.is_some()
@@ -158,13 +110,13 @@ impl KernelRuntimeState {
                     .write()
                     .get(&response.interaction_id)
                     .is_none_or(|pending| {
-                        pending.kernel_operation_owner.is_some()
+                        pending.passkey_prompt.is_some()
                             || pending.terminal_credential_owner.is_some()
                     })
         } else {
             forbidden
         };
-        if !permitted || forbidden {
+        if forbidden {
             let mut state = self
                 .owned
                 .kernel_access
@@ -176,16 +128,23 @@ impl KernelRuntimeState {
                 .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(60))
             {
                 let _ = self.owned.durable_state_store.append_event("kernel_access.denied", Some(grant_id.into()),
-                    serde_json::json!({ "session_id": session_id, "suppressed": state.suppressed_denials }));
+                    serde_json::json!({ "owner_user_id": grant.summary.owner_user_id, "suppressed": state.suppressed_denials }));
                 state.last_denial = Some(now);
                 state.suppressed_denials = 0;
             } else {
                 state.suppressed_denials += 1;
             }
             return Err(error(
-                "request is outside this external agent's session authority",
+                "external access cannot answer critical approvals, change authority, disclose secrets or reach a remote kernel",
             ));
         }
-        Ok(session_id.clone())
+        Ok(())
     }
+}
+
+fn protected_config(path: &str) -> bool {
+    let path = path.trim().to_ascii_lowercase();
+    ["kernel_access", "credential_vault", "relay"]
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }

@@ -15,8 +15,8 @@ pub struct UserKernelAccessConfig {
 impl Default for UserKernelAccessConfig {
     fn default() -> Self {
         Self {
-            grant_default_minutes: 30,
-            grant_max_minutes: 240,
+            grant_default_minutes: 480,
+            grant_max_minutes: 1440,
             grant_extend_notice_minutes: 5,
             request_timeout_minutes: 10,
         }
@@ -46,6 +46,12 @@ impl UserKernelAccessConfig {
                     message: "value must not be zero",
                 });
             }
+        }
+        if self.grant_max_minutes > 1440 {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_access.grant_max_minutes",
+                message: "value must not exceed 1440 minutes (24 hours)",
+            });
         }
         if self.grant_default_minutes > self.grant_max_minutes {
             return Err(DaemonError::InvalidConfig {

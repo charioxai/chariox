@@ -9,12 +9,17 @@ impl KernelRuntimeState {
         owner: &str,
         terminal: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.submit_sudo_entry(request, owner, terminal, None).await
+        let prompt = policy::parse_sudo_prompt(&request.prompt)
+            .unwrap_or_default()
+            .to_owned();
+        self.submit_sudo_entry(request, &prompt, owner, terminal, None)
+            .await
     }
 
     pub(super) async fn submit_sudo_entry(
         &self,
         mut request: SubmitPromptRequest,
+        prompt: &str,
         owner: &str,
         terminal: &str,
         requester: Option<KernelAccessGrant>,
@@ -51,16 +56,6 @@ impl KernelRuntimeState {
                 "sudo requires a local regular agent; finish Meta mode first",
             ));
         }
-        let prompt = if requester.is_some() {
-            request.prompt.strip_prefix("/sudo ").unwrap_or_default()
-        } else {
-            request
-                .prompt
-                .trim_start()
-                .strip_prefix("/sudo")
-                .unwrap_or_default()
-                .trim()
-        };
         if prompt.trim().is_empty() {
             return Err(error("usage: /sudo <prompt>"));
         }

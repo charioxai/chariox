@@ -48,12 +48,17 @@ function child(executable, argv, extraEnv = {}) {
 }
 let serial = 0
 const responses = new Map()
+let accessPrompts = []
 async function request(command) {
   const id = `kit-${++serial}`
   socket.send(JSON.stringify({ type: "request", request_id: id, request: command }))
   return until(() => responses.get(id))
 }
 async function popup(suffix) {
+  if (suffix !== "-sudo") {
+    const prompt = await until(() => accessPrompts.find(item => item.interaction_id.endsWith(suffix)))
+    return { ...prompt, id: prompt.interaction_id }
+  }
   const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
     const result = await request({ GetSessionState: { session_id: "access-session" } })
@@ -65,7 +70,7 @@ async function popup(suffix) {
 }
 async function answer(id, choice, passkey) {
   // Exact synthetic test passkey from existing kernel_access_child_server.
-  return request({ RespondToInteraction: { session_id: "access-session", interaction_id: id, choice_id: choice,
+  return request({ RespondToInteraction: { session_id: id.endsWith("-grant") || id.endsWith("-extension") ? "kernel-access" : "access-session", interaction_id: id, choice_id: choice,
     ...(passkey ? { passkey: "Access TEST Passkey" } : {}) } })
 }
 try {
@@ -75,7 +80,13 @@ try {
   const endpoint = `ws://${address}`
   socket = new WebSocket(endpoint, { headers: { Authorization: "Bearer test-terminal" } })
   await new Promise((done, reject) => { socket.once("open", done); socket.once("error", reject) })
-  socket.on("message", bytes => { const value = JSON.parse(bytes); if (value.request_id) responses.set(value.request_id, value) })
+  socket.on("message", bytes => {
+    const value = JSON.parse(bytes)
+    if (value.request_id) responses.set(value.request_id, value)
+    if (value.event?.event === "passkey_prompts_changed") accessPrompts = value.event.prompts || []
+  })
+  socket.send(JSON.stringify({ type: "subscribe", request_id: "kit-popups", session_id: "", attachment_id: "", subscription_scope: "waiting_room_inventory" }))
+  assert.ok(!(await until(() => responses.get("kit-popups"))).error)
   const base = [join(source, "scripts/sudo-kit.mjs")]
   const publicOptions = ["--checkout", source, "--socket", join(root, "run/k.sock"), "--session", "access-session"]
   const observer = child(process.execPath, [...base, "observe", "--checkout", source, "--endpoint", endpoint], { CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "test-terminal" })
@@ -108,17 +119,17 @@ try {
   holder.command("probe")
   assert.equal((await holder.wait("probe")).ok, true)
   holder.command("list")
-  assert.deepEqual((await holder.wait("list")).session_ids, ["access-session"])
+  assert.deepEqual((await holder.wait("list")).session_ids.sort(), ["access-session", "other-session"])
   const scopeFrom = holder.records.length
   holder.command("foreign-probe other-session")
-  assert.equal((await holder.wait("probe", scopeFrom)).ok, false)
+  assert.equal((await holder.wait("probe", scopeFrom)).ok, true)
   holder.command("child")
   assert.equal((await holder.wait("child")).exit, 0)
   holder.command("subscribe")
   assert.equal((await holder.wait("subscribe")).ok, true)
   holder.command("critical critical-test")
   assert.equal((await holder.wait("critical")).ok, false)
-  emit("kit_descendant_sibling_scope_and_critical_boundary")
+  emit("kit_descendant_sibling_local_kernel_and_critical_boundary")
 
   for (const method of ["request-sudo", "cli-sudo"]) {
     const marker = `full kit prompt ${method} Ω`

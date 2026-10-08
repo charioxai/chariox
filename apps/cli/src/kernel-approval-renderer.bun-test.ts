@@ -7,6 +7,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 
 const view: KernelApprovalView = {
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
@@ -16,6 +17,56 @@ const view: KernelApprovalView = {
     choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }],
     requested_at_ms: 1,
   },
+}
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  for (const sessionId of ["legacy-session", "kernel-access"]) {
+    for (const approve of [false, true]) {
+      test(`access popup ${kind} ${approve ? "approval" : "refusal"} preserves ${sessionId} contract`, async () => {
+        const h = await createTestRenderer({ width: 100, height: 36, useThread: false })
+        let listener!: (event: unknown) => void
+        const requests: Record<string, any>[] = []
+        const notices: string[] = []
+        const client = {
+          onKernelEvent(callback: typeof listener) { listener = callback; return () => {} },
+          async send(request: Record<string, any>) {
+            requests.push(request)
+            return sessionId === "kernel-access"
+              ? { KernelAccessDecisionResponded: { interaction_id: "access-test" } }
+              : { InteractionResponded: { interaction_id: "access-test", session: { id: sessionId, agents: [] } } }
+          },
+        }
+        let dispose!: () => void
+        const composition = createRoot(cleanup => {
+          dispose = cleanup
+          return createCliKernelApprovalComposition({
+            client: client as never, renderer: h.renderer,
+            session: () => ({ id: sessionId, agents: [] }) as unknown as RuntimeSession,
+            connected: () => true, attached: () => true, kernelConnected: () => true,
+            flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
+            currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
+            notify(message) { notices.push(message) },
+          })
+        })
+        try {
+          const prompt: PasskeyPrompt = {
+            kind, session_id: sessionId, interaction_id: "access-test", title: "External access", message: "Review access",
+            approve_choice_id: "approve", refuse_choice_id: "refuse", requested_at_ms: 1, expires_at_ms: 300_001,
+          }
+          listener({ event: "passkey_prompts_changed", prompts: [prompt] })
+          const key = (name: string, extra = {}) => composition.handleKey({ name, preventDefault() {}, stopPropagation() {}, ...extra })
+          key("f8")
+          if (approve) { for (const sequence of "test-proof") key(sequence, { sequence }); key("return") }
+          else key("r", { ctrl: true })
+          await new Promise(resolve => setTimeout(resolve, 0))
+          assert.equal(requests.length, 1)
+          assert.equal(requests[0]?.RespondToInteraction.session_id, sessionId)
+          assert.equal(requests[0]?.RespondToInteraction.choice_id, approve ? "approve" : "refuse")
+          assert.deepEqual(notices, [])
+        } finally { dispose(); h.renderer.destroy() }
+      })
+    }
+  }
 }
 
 const shortcutCases = [
@@ -291,4 +342,24 @@ test("shared approval command opener handles waiting room, empty session and pen
     assert.equal(prompt.focused, false)
     assert.equal(prompt.plainText, "draft kept")
   } finally { dispose(); h.renderer.destroy() }
+})
+
+
+test("MP-08 / MP-10 / MP-11 general interaction panel renders structured requester metadata", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(h.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: true, interaction: { ...view.interaction!,
+      message: "Requester: forged display label",
+      requester: { executable: "/opt/outside\nagent", pid: 43, process_start_id: "9876543210123456789", process_exec_version: 0 },
+    } }, { width: 100, height: 40 })
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Requester: External program · PID 43/)
+    assert.ok(frame.includes('Executable: "/opt/outside\\nagent"'))
+    assert.match(frame, /Process start: 9876543210123456789/)
+  } finally { h.renderer.destroy() }
 })

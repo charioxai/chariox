@@ -10,7 +10,7 @@ pub enum KernelConnectionClass {
     /// The kernel's local token on TCP loopback, or a relay client with a
     /// user id (web, remote TUI).
     Terminal,
-    /// An OS-verified Unix socket peer holding a session access grant.
+    /// An OS-verified Unix socket peer holding a local-kernel access grant.
     ExternalAgent,
     /// An agent the kernel launched, by its per-run runtime MCP bearer.
     KernelAgent,
@@ -51,7 +51,11 @@ pub enum PasskeyPromptKind {
 /// choice without it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeyPrompt {
+    /// Protocol 470: present for access_grant/access_extension; absent on older kernels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<KernelAccessRequester>,
     pub kind: PasskeyPromptKind,
+    /// Protocol 451: access decisions use `kernel-access`, a routing id without a session.
     pub session_id: String,
     /// The session's alias, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,11 +74,32 @@ pub struct PasskeyPrompt {
     pub max_lifetime_minutes: Option<u32>,
 }
 
-/// Protocol 404: an OS-verified Unix peer asks for one session. No passkey or token.
+/// Protocol 470: OS-established identity of the grant holder, never display-text parsing.
+/// Process start is an opaque decimal string to avoid JavaScript integer truncation
+/// (Linux start ticks or macOS process unique ID); exec version is macOS's version,
+/// zero on Linux. Harness identifies a configured executable, not vendor attestation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelAccessRequester {
+    pub executable: String,
+    pub pid: u32,
+    pub process_start_id: String,
+    pub process_exec_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_harness: Option<KernelAccessProviderHarness>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelAccessProviderHarness {
+    Codex,
+    Claude,
+    Opencode,
+}
+
+/// Protocol 451: an OS-verified Unix peer asks for local-kernel access. No passkey or token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestKernelAccessRequest {
-    pub session_id: String,
     pub holder_pid: u32,
     #[serde(default)]
     pub lifetime_minutes: Option<u32>,
@@ -87,7 +112,7 @@ pub struct ListKernelAccessGrantsRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevokeKernelAccessGrantRequest {
-    /// None revokes all grants owned by the terminal's user.
+    /// None revokes all grants owned by the caller's user.
     pub grant_id: Option<String>,
 }
 
@@ -95,7 +120,6 @@ pub struct RevokeKernelAccessGrantRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelAccessGrant {
     pub grant_id: String,
-    pub session_id: String,
     pub owner_user_id: String,
     pub holder_pid: u32,
     pub holder_executable: String,

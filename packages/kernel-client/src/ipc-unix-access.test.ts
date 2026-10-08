@@ -19,7 +19,7 @@ for (const explicit of [true, false]) test(`${explicit ? "ws+unix" : "bare Unix 
     socket.on("message", (bytes) => {
       const frame = JSON.parse(String(bytes))
       assert.equal(frame.type, "request")
-      assert.deepEqual(frame.request, { RequestKernelAccess: { session_id: "s", holder_pid: process.pid } })
+      assert.deepEqual(frame.request, { RequestKernelAccess: { holder_pid: process.pid } })
       socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { KernelAccessGranted: { grant: { holder_pid: process.pid } } }, error: null }))
     })
   })
@@ -27,7 +27,7 @@ for (const explicit of [true, false]) test(`${explicit ? "ws+unix" : "bare Unix 
   const client = new LocalIpcClient(explicit ? `ws+unix://${path}` : path)
   try {
     assert.equal(client.supportsKernelEvents(), true)
-    const result = await client.send<{ KernelAccessGranted: { grant: { holder_pid: number } } }>({ RequestKernelAccess: { session_id: "s", holder_pid: process.pid } })
+    const result = await client.send<{ KernelAccessGranted: { grant: { holder_pid: number } } }>({ RequestKernelAccess: { holder_pid: process.pid } })
     assert.equal(result.KernelAccessGranted.grant.holder_pid, process.pid)
     assert.throws(() => new LocalIpcClient(`ws+unix://${path}`, { localAuthToken: "never" }))
   } finally {
