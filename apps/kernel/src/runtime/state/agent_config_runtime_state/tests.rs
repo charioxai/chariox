@@ -2,6 +2,9 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[path = "tests/profile_selection.rs"]
+mod profile_selection;
+
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
