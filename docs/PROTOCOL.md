@@ -579,13 +579,6 @@ kernels, not to shared-session viewers), and fall back to the relay for the same
 on any refusal, timeout or unreachable endpoint. A kernel-identity mismatch is a
 surfaced security diagnostic that blocks local attempts until the user retries.
 
-Relay-addressed TUI launches (`--relay-url ... --target-daemon-id`) and
-waiting-room kernel switches use the target kernel's local endpoint when its
-active-kernel presence is on this machine and the kernel answers `RelayStatus`
-with the requested id over the owner-only local credential; otherwise they use
-the relay. Alias-only launches stay on the relay because aliases are not unique
-across realms. Existing relay-only clients keep their unchanged transport;
-web clients use direct mode only from protocol 464 after consent.
 
 Current pushed event contract:
 

@@ -39,13 +39,13 @@ impl Drop for Scratch {
     }
 }
 
-struct Browser {
+pub(super) struct Browser {
     private_key: String,
     public_key: String,
 }
 
 impl Browser {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let private_key = relay_crypto::generate_private_key_base64();
         let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
         Self {
@@ -54,7 +54,7 @@ impl Browser {
         }
     }
 
-    fn identity(&self) -> RelayCallerIdentity {
+    pub(super) fn identity(&self) -> RelayCallerIdentity {
         RelayCallerIdentity {
             realm_id: "realm-1".into(),
             subject: "browser:user-1:tab".into(),
@@ -1080,7 +1080,14 @@ fn mp11_renewal_skew_refusal_is_distinct_and_sequence_stays_usable() {
 fn mp11_renewal_refusal_warning_budget_is_shared_across_carriers() {
     large_stack(async {
         super::super::daemon_requests::renewal_refusals::reset_for_test();
+        let prior_capture = crate::logging::capture::start();
+        crate::logging::warn_with_fields(
+            "daemon.local_browser",
+            "local browser lease renewal refused",
+            serde_json::json!({"code": "local_browser_lease_denied"}),
+        );
         let capture = crate::logging::capture::start();
+        let capture_start = capture.records().len();
         let browser = Browser::new();
         for _ in 0..2 {
             let kernel = Kernel::new();
@@ -1098,6 +1105,7 @@ fn mp11_renewal_refusal_warning_budget_is_shared_across_carriers() {
             capture
                 .records()
                 .iter()
+                .skip(capture_start)
                 .filter(|record| {
                     record.contains("local browser lease renewal refused")
                         && (record.contains("local_browser_lease_denied")
@@ -1106,6 +1114,128 @@ fn mp11_renewal_refusal_warning_budget_is_shared_across_carriers() {
                 .count(),
             1,
             "carriers must share the kernel process warning budget"
+        );
+        drop(prior_capture);
+    });
+}
+
+#[test]
+fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let (reserved, release) = kernel
+            .direct
+            .command_result_cache
+            .pause_next_dispatch_for_test()
+            .await;
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let request = LocalDaemonRequest::CreateSession(crate::session::CreateSessionRequest::new(
+            &workspace, &workspace,
+        ));
+        let envelope =
+            serde_json::json!({ "command_id": "mp11-disconnect-create", "request": request });
+        let encrypted = relay_crypto::encrypt_payload_for_peer(
+            &browser.private_key,
+            &kernel.daemon_public_key,
+            envelope.to_string().as_bytes(),
+        )
+        .unwrap();
+        send_json(&mut socket, serde_json::json!({ "kind": "client_request", "request_id": "create", "target": {"daemon_id": kernel.daemon_id}, "encrypted_request": encrypted })).await;
+        timeout(Duration::from_secs(2), reserved)
+            .await
+            .expect("command was not reserved")
+            .unwrap();
+        socket.close(None).await.unwrap();
+        for _ in 0..200 {
+            if !kernel
+                .direct
+                .leases
+                .lock()
+                .unwrap()
+                .contains_key(&grant.grant)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            !kernel
+                .direct
+                .leases
+                .lock()
+                .unwrap()
+                .contains_key(&grant.grant),
+            "direct session did not close"
+        );
+        let _ = release.send(());
+        let retry = handle_daemon_request(
+            &kernel.direct.router,
+            &kernel.direct.command_sequence,
+            Some(browser.identity()),
+            encrypted.clone(),
+            &kernel.direct.command_result_cache,
+            Some(&kernel.direct),
+        );
+        let outcome = timeout(Duration::from_secs(2), retry)
+            .await
+            .expect("accepted direct command left a pending cache receipt after disconnect");
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        let first = relay_crypto::decrypt_payload_for_private_key(
+            &browser.private_key,
+            &outcome.encrypted_response.unwrap(),
+        )
+        .unwrap();
+        let replay = handle_daemon_request(
+            &kernel.direct.router,
+            &kernel.direct.command_sequence,
+            Some(browser.identity()),
+            encrypted,
+            &kernel.direct.command_result_cache,
+            Some(&kernel.direct),
+        )
+        .await;
+        let second = relay_crypto::decrypt_payload_for_private_key(
+            &browser.private_key,
+            &replay.encrypted_response.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            first.plaintext, second.plaintext,
+            "relay retry duplicated the mutation"
+        );
+        let sessions = relay_crypto::encrypt_payload_for_peer(
+            &browser.private_key,
+            &kernel.daemon_public_key,
+            serde_json::to_vec(&LocalDaemonRequest::ListSessions(ListSessionsRequest))
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        let listed = handle_daemon_request(
+            &kernel.direct.router,
+            &kernel.direct.command_sequence,
+            Some(browser.identity()),
+            sessions,
+            &kernel.direct.command_result_cache,
+            Some(&kernel.direct),
+        )
+        .await;
+        let list = relay_crypto::decrypt_payload_for_private_key(
+            &browser.private_key,
+            &listed.encrypted_response.unwrap(),
+        )
+        .unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&list.plaintext).unwrap();
+        assert_eq!(
+            list["SessionsListed"]["sessions"].as_array().unwrap().len(),
+            1
         );
     });
 }

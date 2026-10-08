@@ -110,7 +110,9 @@ pub(super) async fn run(
         }
     };
     direct.retire_lease(&lease_id);
-    requests.abort_all();
+    // Accepted commands own their dispatch and cache settlement independently
+    // of this socket. A relay retry must observe the original result.
+    requests.detach_all();
     abort_subscription_tasks(&direct.router, &subscription_tasks).await;
     let close = serde_json::json!({"kind": "close", "reason": close_reason}).to_string();
     let _ = timeout(
@@ -132,10 +134,28 @@ async fn guarded_io<F: std::future::Future>(
     shutdown: &mut watch::Receiver<bool>,
     io: F,
 ) -> Option<F::Output> {
-    tokio::select! {
-        result = timeout(lease_remaining(lease), io) => result.ok(),
-        _ = authority.changed() => None,
-        _ = shutdown.changed() => None,
+    let mut live_lease = lease.clone();
+    tokio::pin!(io);
+    loop {
+        let remaining = Duration::from_millis(
+            live_lease
+                .borrow_and_update()
+                .expires_at_ms
+                .saturating_sub(crate::session::unix_epoch_ms()),
+        );
+        if remaining.is_zero() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return None,
+            _ = authority.changed() => return None,
+            changed = live_lease.changed() => {
+                if changed.is_err() { return None; }
+            }
+            _ = sleep(remaining) => {},
+            result = &mut io => return Some(result),
+        }
     }
 }
 
@@ -331,5 +351,55 @@ where
     match serde_json::to_string(&envelope) {
         Ok(text) => writer.send(Message::Text(text.into())).await.is_ok(),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn changing_deadline(shorten: bool) {
+        let browser = super::super::tests::Browser::new();
+        let state = LocalBrowserLeaseState {
+            expires_at_ms: crate::session::unix_epoch_ms() + if shorten { 500 } else { 100 },
+            identity: browser.identity(),
+        };
+        let (lease_tx, lease) = watch::channel(state.clone());
+        let (_authority_tx, mut authority) = watch::channel(None);
+        let (_shutdown_tx, mut shutdown) = watch::channel(false);
+        let (done, io) = tokio::sync::oneshot::channel::<()>();
+        let update = tokio::spawn(async move {
+            sleep(Duration::from_millis(20)).await;
+            let mut renewed = state;
+            renewed.expires_at_ms =
+                crate::session::unix_epoch_ms() + if shorten { 50 } else { 500 };
+            lease_tx.send_replace(renewed);
+            sleep(Duration::from_millis(150)).await;
+            let _ = done.send(());
+            sleep(Duration::from_millis(50)).await;
+        });
+        let result = guarded_io(&lease, &mut authority, &mut shutdown, io).await;
+        if shorten {
+            assert!(
+                result.is_none(),
+                "I/O completed after the shortened live deadline"
+            );
+        } else {
+            assert!(
+                result.is_some_and(|result| result.is_ok()),
+                "renewal did not extend the pending I/O guard"
+            );
+        }
+        update.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mp11_pending_io_observes_extended_lease() {
+        changing_deadline(false).await;
+    }
+
+    #[tokio::test]
+    async fn mp11_pending_io_observes_shortened_lease() {
+        changing_deadline(true).await;
     }
 }

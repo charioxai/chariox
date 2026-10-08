@@ -593,6 +593,8 @@ async fn dispatch_relay_client_request(
             CommandReservation::Dispatch => {}
         }
     }
+    #[cfg(test)]
+    command_result_cache.await_dispatch_for_test().await;
     let command_id = command.command_id.clone();
     let result = router.dispatch(command, request).await;
     let outgoing = match result {
