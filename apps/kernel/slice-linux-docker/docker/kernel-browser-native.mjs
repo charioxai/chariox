@@ -120,10 +120,14 @@ export class LinuxCapture {
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.
-   for(let attempt=0;attempt<3&&!matched;attempt++){
+   for(let attempt=0;attempt<6&&!matched;attempt++){
     const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
     await delay(50);
-    const raw=this.latest?.raw;if(!raw||!this.valid())break;
+    // A protection event may have retired the readback meanwhile; its fresh
+    // replacement follows the refreshed fence (bounded wait).
+    let raw=this.latest?.raw;
+    for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
+    if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
     matched=reference.width===raw.width&&reference.height===raw.height;
     const nativePixels=raw.pixels;
     // MP-08/MP-11: the reference is the protected capture; its masked
