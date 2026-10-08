@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { mkdir, readFile, writeFile, rm, mkdtemp, readdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { WebSocketServer } from 'ws'
@@ -19,6 +20,11 @@ const hashClient = async root => {
   await visit(root)
   return hash.digest('hex')
 }
+const hashFile = async filename => {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(filename)) hash.update(chunk)
+  return hash.digest('hex')
+}
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, item, i, args) => i % 2 ? pairs : [...pairs, [item.replace(/^--/, ''), args[i + 1]]], []))
 const cli = path.resolve(options.cli ?? 'apps/cli/dist/index.js')
 const evidence = path.resolve(options.output)
@@ -27,6 +33,18 @@ assert.ok(!evidence.startsWith(`${process.cwd()}/`), 'evidence must be outside t
 assert.ok(process.env.TMPDIR && !process.env.TMPDIR.startsWith('/tmp'), 'TMPDIR must be on disk')
 const chromium = options.interactive ? null : createRequire(path.join(tools, 'package.json'))('playwright').chromium
 const scratch = await mkdtemp(path.join(process.env.TMPDIR, 'tuifix-'))
+const runtimeEnv = { ...process.env }
+for (const key of Object.keys(runtimeEnv)) if (key.startsWith('CHARIOX_')) delete runtimeEnv[key]
+Object.assign(runtimeEnv, {
+  HOME: path.join(scratch,'home'), XDG_CONFIG_HOME: path.join(scratch,'xdg-config'),
+  XDG_STATE_HOME: path.join(scratch,'xdg-state'), XDG_DATA_HOME: path.join(scratch,'xdg-data'),
+  CODEX_HOME: path.join(scratch,'codex'), CLAUDE_CONFIG_DIR: path.join(scratch,'claude'),
+  OPENCODE_CONFIG_DIR: path.join(scratch,'opencode'),
+  // Separate client discovery state prevents bypassing the fixture proxy.
+  CHARIOX_HOME: path.join(scratch,'client-state'), CHARIOX_LOG_DIR: path.join(scratch,'client-logs'),
+  ...(process.env.CHARIOX_TUI_MOUSE === 'off' ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
+})
+await mkdir(runtimeEnv.HOME, { recursive: true })
 await mkdir(evidence, { recursive: true })
 const url = 'https://claude.ai/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback&state=' + '0123456789abcdef'.repeat(25)
 const deviceUrl = 'https://auth.openai.com/codex/device'
@@ -52,8 +70,8 @@ const stop = async child => {
   child.terminal?.close()
 }
 const sleep = ms => Bun.sleep(ms)
-const waitFor = async predicate => {
-  const deadline = Date.now() + 20_000
+const waitFor = async (predicate, timeoutMs = 20_000) => {
+  const deadline = Date.now() + timeoutMs
   while (!await predicate()) { if (Date.now() > deadline) throw Error('terminal condition timed out'); await sleep(50) }
 }
 try {
@@ -61,12 +79,21 @@ try {
     // Own exact-source kernel. The proxy replaces login responses and forwards
     // ordinary inventory/control traffic without logging headers or payloads.
     const listener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
+    const mcpListener = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } })
+    const mcpPort = mcpListener.port; mcpListener.stop(true)
     const port = listener.port; listener.stop(true)
     kernelUrl = `ws://127.0.0.1:${port}/kernel`
     process.env.CHARIOX_HOME = path.join(scratch, 'state')
     KernelClient = (await import(path.join(path.dirname(cli), 'ipc.js'))).LocalIpcClient
-    kernel = Bun.spawn([path.resolve(options['kernel-binary'])], { env: { ...process.env, CHARIOX_HOME: path.join(scratch, 'state'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_LOG_DIR: path.join(scratch, 'logs') }, stdout: 'ignore', stderr: 'ignore' })
-    await waitFor(async () => { try { const res = await fetch(`http://127.0.0.1:${port}/health`); return res.status < 500 } catch { return false } })
+    kernel = Bun.spawn([path.resolve(options['kernel-binary'])], { env: { ...runtimeEnv, CHARIOX_HOME: path.join(scratch, 'state'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_DAEMON_SOCKET: path.join(scratch,'kernel.sock'), CHARIOX_LOG_DIR: path.join(scratch, 'logs') }, stdout: 'ignore', stderr: 'ignore' })
+    const probe = new KernelClient(kernelUrl, {})
+    upstreamClients.add(probe)
+    // The kernel serves WebSocket RPCs, not an HTTP /health endpoint.
+    await waitFor(async () => {
+      if (kernel.exitCode !== null) throw Error(`owned kernel exited: ${kernel.exitCode}`)
+      try { return Object.keys(await probe.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
+    })
+    await probe.close()
   }
   fixture.on('connection', (socket) => {
     const upstream = kernelUrl ? new KernelClient(kernelUrl, {}) : null
@@ -86,13 +113,15 @@ try {
       if (!upstream && variant === 'ListProviderAccountProfiles') response = { ProviderAccountProfilesListed: { profiles: [] } }
       if (response) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response, error: null }))
       else if (upstream) {
-        const request = f.type === 'subscribe' ? { type: 'subscribe', session_id: f.session_id, attachment_id: f.attachment_id, subscription_scope: f.subscription_scope } : req
+        const request = f.type === 'subscribe' || f.type === 'unsubscribe'
+          ? { __kernel_transport: { type: f.type, session_id: f.session_id, attachment_id: f.attachment_id, subscription_scope: f.subscription_scope, resume_from_event_id: f.resume_from_event_id } }
+          : req
         void upstream.send(request).then(response => {
           upstreamResponses.push({ request: variant, response: Object.keys(response)[0] })
           if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response, error: null }))
-        }).catch(() => {
-          upstreamResponses.push({ request: variant, response: 'transport_error' })
-          if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response: { Error: { message: 'owned kernel request unavailable' } }, error: null }))
+        }).catch(error => {
+          upstreamResponses.push({ request: variant, response: 'transport_error', code: error?.code ?? error?.name, unknownVariant: /unknown variant/.test(error?.message ?? '') })
+          if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response: null, error: { message: 'owned kernel request unavailable', code: error?.code ?? 'owned_kernel_transport_failed', retryable: error?.retryable ?? false } }))
         })
       }
       else socket.send(JSON.stringify({ type: 'response', request_id: f.request_id, response: { Error: { message: 'unsupported fixture request' } }, error: null }))
@@ -100,7 +129,7 @@ try {
   })
   if (options.interactive) {
     tui = Bun.spawn(['bun', cli, '--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`], {
-      cwd: process.cwd(), env: { ...process.env, CHARIOX_HOME: path.join(scratch,'state'), CHARIOX_LOG_DIR: path.join(scratch,'logs') },
+      cwd: process.cwd(), env: runtimeEnv,
       stdin: 'inherit', stdout: 'inherit', stderr: 'inherit',
     })
     await tui.exited
@@ -126,7 +155,7 @@ try {
     },
   })
   tui = Bun.spawn(['bun', cli, '--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`], {
-    cwd: process.cwd(), env: { ...process.env, CHARIOX_HOME: path.join(scratch, 'state'), CHARIOX_LOG_DIR: path.join(scratch, 'logs'), TERM: 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2', ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}) },
+    cwd: process.cwd(), env: { ...runtimeEnv, TERM: 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2', ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}) },
     terminal: { cols: 100, rows: 35, data(_terminal, chunk) { const data = new TextDecoder().decode(chunk); output += data; for (const c of clients) c.send(data) } },
   })
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], executablePath: options.chromium })
@@ -141,7 +170,19 @@ try {
   const press = async sequence => { tui.terminal.write(sequence); await sleep(180) }
   const command = async text => {
     // The ordinary waiting-room account control stages and focuses a command.
-    await press('\x1b[A'); await press('\x1b[A'); await press('\r'); await press('\x15')
+    if (options['no-mouse']) { await press('\x1b[A'); await press('\x1b[A') }
+    else {
+    for (let i = 0; i < 60; i++) {
+      // The completed intro pushes the bottom control rows below a short PTY.
+      tui.terminal.write('\x1b[<65;60;20M'.repeat(12)); await sleep(100)
+      if (await page.evaluate(() => />\s+Provider Accounts/.test(terminalScreen()))) break
+      await press('\x1b[A')
+    }
+    assert.ok(await page.evaluate(() => />\s+Provider Accounts/.test(terminalScreen())), 'navigate to the visible Provider Accounts control')
+    }
+    await press('\r')
+    await waitFor(() => page.evaluate(() => terminalScreen().includes('/provider accounts')), 90_000)
+    await capture('03b-accounts-command'); await press('\x15')
     for (const c of text) { tui.terminal.write(c); await sleep(15) }
     await press('\r')
   }
@@ -231,7 +272,7 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? createHash('sha256').update(await readFile(options['kernel-binary'])).digest('hex') : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   if (options['expect-red']) assert.ok(!retained || !fullLink || !exactCopy || !honest || !deviceLink, 'baseline must fail')
@@ -249,5 +290,5 @@ try {
   await stop(kernel)
   await rm(scratch, { recursive: true, force: true })
   if (!options.interactive) await writeFile(path.join(evidence, 'terminal.pty'), output)
-  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ ...result, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
+  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, ...result, requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
 }
