@@ -1069,10 +1069,8 @@ async fn artifact_timeout(update: bool) {
     )
     .await;
     let compiler_result = pending.await.unwrap();
-    assert!(
-        !compiler_result.as_ref().is_ok_and(|result| result.ok),
-        "script must time out: {compiler_result:?}"
-    );
+    let failure = compiler_result.as_ref().err().map(ToString::to_string);
+    assert!(failure.as_deref().is_some_and(|message| message.contains("timeout") || message.contains("timed out")), "MP-11 F7: script must reach its execution timeout, not fail during compiler startup: {compiler_result:?}");
     assert_eq!(
         registry.get("timeout-check").unwrap().map(|a| a.metadata),
         before.map(|a| a.metadata),

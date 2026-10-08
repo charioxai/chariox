@@ -291,6 +291,11 @@ mod linux;
 mod seccomp;
 
 #[cfg(target_os = "linux")]
+fn root_compiler_host_id() -> libc::uid_t {
+    65534
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn compiler_command(
     node: &Path,
     limits: &WorkflowCodeLimitsConfig,
@@ -338,6 +343,7 @@ pub(super) fn compiler_command(
         .saturating_add(1024 * 1024 * 1024);
     let cpu_seconds = limits.script_timeout_ms.div_ceil(1000).max(1);
     let drop_root_privileges = unsafe { libc::getuid() == 0 || libc::geteuid() == 0 };
+    let host_id = root_compiler_host_id();
     unsafe {
         command.pre_exec(move || {
             // Mark every non-stdio descriptor close-on-exec, including a descriptor
@@ -370,8 +376,8 @@ pub(super) fn compiler_command(
                 };
                 if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0
                     || libc::setgroups(0, std::ptr::null()) != 0
-                    || libc::setgid(65534) != 0
-                    || libc::setuid(65534) != 0
+                    || libc::setgid(host_id) != 0
+                    || libc::setuid(host_id) != 0
                 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -463,6 +469,14 @@ mod tests {
         assert!(
             uid.is_some_and(|uid| uid != 0),
             "MP-11 F14: host root UID exempts compiler NPROC limit"
+        );
+    }
+
+    #[test]
+    fn security_f14_root_compiler_avoids_shared_service_uid() {
+        assert!(
+            root_compiler_host_id() >= 1_000_000,
+            "MP-11 F14: root compiler shares a normal host service UID and its task budget"
         );
     }
 
