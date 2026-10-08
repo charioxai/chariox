@@ -1,5 +1,5 @@
 //! MP-08 / MP-10 / MP-11: Data importers, never interpreters, installers or capability admission.
-use super::detect_index::{safe_metadata, skip, EvidenceFile};
+use super::detect_index::{credential_configuration_name, safe_metadata, skip, EvidenceFile};
 use super::*;
 use serde_json::Value;
 
@@ -208,13 +208,15 @@ impl Importer {
             }
         }
         let Some(text) = &file.text else { return };
-        for gui in ["Canva", "Notion", "ChatGPT"] {
-            if let Some((number, _)) = text
-                .lines()
-                .enumerate()
-                .find(|(_, line)| line.contains(gui))
-            {
-                self.software(file, gui, None, Some(number as u32 + 1), true)
+        if !file.protected {
+            for gui in ["Canva", "Notion", "ChatGPT"] {
+                if let Some((number, _)) = text
+                    .lines()
+                    .enumerate()
+                    .find(|(_, line)| line.contains(gui))
+                {
+                    self.software(file, gui, None, Some(number as u32 + 1), true)
+                }
             }
         }
         let is_example = name.starts_with(".env")
@@ -232,8 +234,10 @@ impl Importer {
                     self.secret(file, key.trim(), Some(n as u32 + 1))
                 }
             }
-            for key in super::index::referenced_names(line) {
-                self.secret(file, &key, Some(n as u32 + 1))
+            if !is_example && !credential_configuration_name(name) {
+                for key in super::index::referenced_names(line) {
+                    self.secret(file, &key, Some(n as u32 + 1))
+                }
             }
         }
         match name {

@@ -94,6 +94,17 @@ pub(super) fn credential_content(text: &str) -> bool {
                 })
         })
 }
+pub(super) fn credential_configuration_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".mcp.json"
+            | "devcontainer.json"
+            | "compose.yaml"
+            | "compose.yml"
+            | "docker-compose.yaml"
+            | "docker-compose.yml"
+    )
+}
 fn value_file(path: &str) -> bool {
     let name = Path::new(path)
         .file_name()
@@ -347,7 +358,10 @@ fn walk(
             });
             continue;
         };
-        let protected = credential_content(text) || name.starts_with(".env");
+        // Any environment value is ambiguous, even without a credential-shaped key/literal.
+        let protected = credential_content(text)
+            || name.starts_with(".env")
+            || credential_configuration_name(&name);
         let digest = (!protected).then(|| format!("{:x}", Sha256::digest(&bytes[..])));
         index.files.push(EvidenceFile {
             folder_id: folder.into(),
