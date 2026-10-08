@@ -9,9 +9,14 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 const ORIGIN: &str = "https://cloud.example.test";
+// MP-11: renewal warnings and their capture have process-wide state.
+static BROWSER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Debug builds of the shared dispatch path need the kernel's large stacks.
 fn large_stack(test: impl std::future::Future<Output = ()> + Send + 'static) {
+    let _guard = BROWSER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
@@ -1030,6 +1035,7 @@ fn mp11_renewal_recovers_a_lost_response_without_accepting_replays() {
 #[test]
 fn mp11_renewal_skew_refusal_is_distinct_and_sequence_stays_usable() {
     large_stack(async {
+        super::super::daemon_requests::renewal_refusals::reset_for_test();
         let capture = crate::logging::capture::start();
         let kernel = Kernel::new();
         let browser = Browser::new();
@@ -1049,10 +1055,57 @@ fn mp11_renewal_skew_refusal_is_distinct_and_sequence_stays_usable() {
         );
         assert_eq!(error.code, "local_browser_lease_clock_skew");
         assert!(error.message.contains("system clock is synchronized"));
+        assert!(error
+            .message
+            .contains("expires more than 40 seconds ahead of the kernel clock"));
+        // An expired identity (including a kernel clock ahead of Cloud) is
+        // refused by ordinary relay authentication, not this ceiling check.
+        let mut expired = browser.identity();
+        expired.expires_at_ms = crate::session::unix_epoch_ms() - 1;
+        let error = renew(&kernel, &browser, expired, &grant, 1, true)
+            .await
+            .error
+            .expect("expired identity renewed");
+        assert_eq!(error.code, "unauthorized");
         let lease = renewed_lease(
             &browser,
             renew(&kernel, &browser, browser.identity(), &grant, 1, true).await,
         );
         assert_eq!(lease["next_sequence"], 2);
+    });
+}
+
+// MP-08/MP-11: all carriers share the process warning budget, including relay-only refusals.
+#[test]
+fn mp11_renewal_refusal_warning_budget_is_shared_across_carriers() {
+    large_stack(async {
+        super::super::daemon_requests::renewal_refusals::reset_for_test();
+        let capture = crate::logging::capture::start();
+        let browser = Browser::new();
+        for _ in 0..2 {
+            let kernel = Kernel::new();
+            let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+            for via_relay in [true, false] {
+                assert!(
+                    renew(&kernel, &browser, browser.identity(), &grant, 1, via_relay)
+                        .await
+                        .error
+                        .is_some()
+                );
+            }
+        }
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.contains("local browser lease renewal refused")
+                        && (record.contains("local_browser_lease_denied")
+                            || record.contains("local_browser_unavailable"))
+                })
+                .count(),
+            1,
+            "carriers must share the kernel process warning budget"
+        );
     });
 }

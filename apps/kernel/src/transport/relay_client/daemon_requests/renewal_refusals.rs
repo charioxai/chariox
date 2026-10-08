@@ -7,8 +7,13 @@ use chariox_relay::protocol::RelayError;
 const WARNING_INTERVAL: Duration = Duration::from_secs(10);
 static LAST_WARNING: Mutex<Option<Instant>> = Mutex::new(None);
 
-pub(super) fn log(limiter: Option<&Mutex<Option<Instant>>>, error: &RelayError) {
-    log_at(limiter.unwrap_or(&LAST_WARNING), error, Instant::now());
+#[cfg(test)]
+pub(in crate::transport::relay_client) fn reset_for_test() {
+    *LAST_WARNING.lock().unwrap() = None;
+}
+
+pub(super) fn log(error: &RelayError) {
+    log_at(&LAST_WARNING, error, Instant::now());
 }
 
 fn log_at(last_warning: &Mutex<Option<Instant>>, error: &RelayError, now: Instant) {

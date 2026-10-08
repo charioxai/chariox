@@ -73,7 +73,6 @@ pub(crate) struct LocalBrowserDirect {
     grants: std::sync::Mutex<BTreeMap<String, LocalBrowserGrant>>,
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
-    pub(super) renewal_refusal_warning: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl LocalBrowserDirect {
@@ -116,7 +115,6 @@ impl LocalBrowserDirect {
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
-            renewal_refusal_warning: std::sync::Mutex::new(None),
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.

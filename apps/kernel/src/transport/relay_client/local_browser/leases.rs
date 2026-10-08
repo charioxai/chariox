@@ -65,6 +65,7 @@ impl LocalBrowserDirect {
             || identity.public_key_thumbprint != original.public_key_thumbprint
             || authority.as_ref() != Some(&lease.grant.authority)
             || lease.expiry.borrow().expires_at_ms <= now
+            || identity.expires_at_ms <= now
             // A higher sequence recovers a renewal whose response was lost;
             // every used sequence stays refused.
             || sequence < lease.sequence
@@ -74,7 +75,7 @@ impl LocalBrowserDirect {
         let expires_at_ms = short_identity_deadline(identity, now).ok_or_else(|| {
             relay_error(
                 "local_browser_lease_clock_skew",
-                "local browser lease renewal requires a live 30-second relay identity; check that the system clock is synchronized",
+                "local browser relay identity expires more than 40 seconds ahead of the kernel clock; check that the system clock is synchronized",
                 false,
             )
         })?;

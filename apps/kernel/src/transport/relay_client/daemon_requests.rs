@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod app_tests;
-mod renewal_refusals;
+pub(super) mod renewal_refusals;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -229,7 +229,10 @@ pub(super) async fn handle_daemon_request(
             });
             let result = match result {
                 Ok(response) => RelayDispatchOutcome::Response(response),
-                Err(error) => RelayDispatchOutcome::RelayError(error),
+                Err(error) => {
+                    renewal_refusals::log(&error);
+                    RelayDispatchOutcome::RelayError(error)
+                }
             };
             ("local_browser_renew", None, false, result)
         }
@@ -349,18 +352,10 @@ pub(super) async fn handle_daemon_request(
                 },
             }
         }
-        RelayDispatchOutcome::RelayError(error) => {
-            if request_kind == "local_browser_renew" {
-                renewal_refusals::log(
-                    local_browser.map(|direct| &direct.renewal_refusal_warning),
-                    &error,
-                );
-            }
-            RelayRequestOutcome {
-                encrypted_response: None,
-                error: Some(error),
-            }
-        }
+        RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(error),
+        },
     }
 }
 
