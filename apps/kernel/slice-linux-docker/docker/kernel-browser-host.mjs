@@ -9,6 +9,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
+import { hostErrorLabel } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { NativeAccessibility } from './native-accessibility.mjs';
@@ -643,7 +644,7 @@ export class KernelBrowserHost {
           [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
         const owned=this.compositors.get(tab.tab_id)?.source;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&owned.valid(), nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
@@ -766,9 +767,8 @@ export class KernelBrowserHost {
       }
       throw new Error("MD-2: unsupported host method");
     } catch (error) {
-      // MP-08/MP-10: opt-in diagnostics keep only fixed product error labels.
-      const label=/^(MD|MP)-[0-9A-Z-]+: [a-z ]{1,48}/.exec(String(error?.message))?.[0];
-      if(label)this.timing('host_error '+label,timestamp());
+      // MP-11: only fixed error classes/codes and public source positions.
+      this.timing(hostErrorLabel(error),timestamp());
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id) await this.stop();      if (["browser_unavailable"].includes(error?.code)) {

@@ -11,6 +11,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-desktop-source.mjs"),
     ),
     (
+        "kernel-browser-error-label.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-error-label.mjs"),
+    ),
+    (
         "kernel-browser-codec-protection.py",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py"),
     ),

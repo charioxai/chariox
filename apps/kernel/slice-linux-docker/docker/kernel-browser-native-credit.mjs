@@ -2,13 +2,13 @@
 // The caller already checked scope/generation and renewed the admitted stream.
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 export function nativeRegionPending(stream,source,document,policy){
- return Boolean(source?.attested&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
+ return Boolean(source?.attested&&typeof source.valid==='function'&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
   source.tab?.tab_id===stream.tab_id&&source.tab.document_id===document&&!source.sample());
 }
 export function nativeRegionBaseCurrent(stream,source,document,policy){
  const sample=source?.sample();
  return Boolean(stream.exact&&stream.document_id===document&&stream.producer?.source===source&&
-  source.attested&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
+  source.attested&&typeof source.valid==='function'&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
   sample?.document_id===document&&sample.tab_id===stream.tab_id&&sample.raw?.nativeExact&&
   (sample.raw.base_serial===stream.compositorSerial||identicalToDelivered(stream,sample))&&
   JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks);

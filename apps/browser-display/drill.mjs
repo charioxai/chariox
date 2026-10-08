@@ -72,7 +72,7 @@ try {
  if(process.env.MD_RELAY==='0')throw Error('MD-DISPLAY: browser origins cannot attach to the native local socket; use the scoped relay drill');
  // Chromium SingletonSocket uses TMPDIR, whose Unix path must stay short.
  // Persistent profile/CHARIOX_HOME stay below the requested LAN state root.
- shortTmp=await mkdtemp('/tmp/chariox-md-tmp-');await chmod(shortTmp,0o700);await chown(shortTmp,runUid,runGid);receipt.short_tmp_root=shortTmp;
+ shortTmp=await mkdtemp(path.join(tmpdir(),'chariox-md-tmp-'));await chmod(shortTmp,0o700);await chown(shortTmp,runUid,runGid);receipt.short_tmp_root=shortTmp;
  await writeFile(path.join(output,'run-roots.json'),JSON.stringify({item:'MP-08/MP-10/MP-11',state_root:root,short_tmp_root:shortTmp}));
  await chmod(root,0o755);
  const home=path.join(root,'home');await mkdir(home,{mode:0o700});await chown(home,runUid,runGid);

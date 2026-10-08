@@ -90,3 +90,39 @@ test('MP-08/MP-10/MP-11 protection changes retire pixels without re-attesting th
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});assert.equal(source.closed,true);
  await source.close();
 });
+
+// MP-08/MP-10/MP-11: the Python fallback supports wake/refresh/release only.
+test('MP-11 Python capture stays available across planning credits and uses fenced CDP wheel',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {inputHostTab}=await import('./kernel-browser-input.mjs');
+ const previous=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
+ delete process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
+ try{
+  const writes=[],source=new LinuxCapture({scale:1});source.valid=()=>!source.closed;source.attested=true;
+  source.child={stdin:{destroyed:false,write:text=>{
+   const command=JSON.parse(text);writes.push(command);
+   if('plans'in command||'wheel'in command)source.closed=true;
+  }}};
+  for(const enabled of [false,true,false,true])source.plans(enabled);
+  assert.equal(source.closed,false,'unsupported planning must never retire Python capture');
+  assert.deepEqual(writes,[]);
+  const sent=[],connection={send:async(method,params)=>{
+   sent.push({method,params});return method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'d'}}}:{};
+  }};
+  const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
+  let dispatched=0;
+  await inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:(...args)=>source.wheel(...args),onDispatch:()=>dispatched++});
+  assert.equal(source.closed,false);assert.deepEqual(writes,[]);assert.equal(dispatched,1);
+  assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent'&&call.params.type==='mouseWheel').length,1);
+  source.wake();assert.deepEqual(writes,[{wake:true}]);
+ }finally{if(previous===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;else process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER=previous}
+});
+
+test('MP-08/MP-10 Rust capture retains supported planning and wheel controls',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const commands=[],source=new LinuxCapture({scale:1});source.valid=()=>true;source.attested=true;
+ source.child={stdin:{destroyed:false}};source.nativeWorker={notify:(command,immediate)=>(commands.push({command,immediate}),true)};
+ source.plans(false);source.plans(false);source.plans(true);
+ assert.equal(source.wheel(10,20,0,1),true);
+ assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true},{wheel:[10,20,0,1]}]);
+});
