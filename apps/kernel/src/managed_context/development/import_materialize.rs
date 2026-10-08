@@ -20,6 +20,8 @@ pub(super) fn prepare_repository(
         );
     }
     let bundle = artifacts_root.join(&repository.bundle_path);
+    // Refuse unrelated histories before clone can import their pack objects.
+    super::git::verify_git_bundle_header(&bundle, &repository.head_sha)?;
     let bundle_text = utf8_path(&bundle, "Git bundle")?;
     let destination_text = utf8_path(destination, "repository destination")?;
     let staging_parent = destination

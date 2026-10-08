@@ -101,6 +101,7 @@ impl ManagedContextOutboundOperationStore {
             account_id: profile.account_id.clone(),
             user_id: profile.user_id.clone(),
             ticket: candidate.clone(),
+            consumption_attempted: Some(false),
         };
         let bytes = serde_json::to_vec(&saved)
             .map_err(|_| outbound_service_error("serialize owner ticket binding", false))?;
@@ -112,6 +113,100 @@ impl ManagedContextOutboundOperationStore {
         )
         .map_err(|error| outbound_service_io_error("persist owner context binding", error))?;
         Ok(candidate)
+    }
+
+    fn read_owner_authorization_binding(
+        &self,
+        config: &DaemonConfig,
+        ticket: &ManagedContextTransferTicket,
+    ) -> Result<Option<PersistedOwnerTicket>, DaemonError> {
+        let Some(parent) = self.status_parent() else {
+            return Ok(None);
+        };
+        let context_id = ticket.context_plan.context_id();
+        if !valid_artifact_name(context_id) {
+            return Err(outbound_service_error("invalid context ID", false));
+        }
+        let path = parent.join(format!("{context_id}-owner.json"));
+        if !path_entry_exists(&path)? {
+            return Ok(None);
+        }
+        let bytes = read_bounded_regular_file(&path, MAX_OUTBOUND_ARTIFACT_STATE_BYTES)?;
+        let saved: PersistedOwnerTicket = serde_json::from_slice(&bytes)
+            .map_err(|_| outbound_service_error("invalid owner authorization binding", false))?;
+        let profile = config
+            .cloud_relay
+            .as_ref()
+            .ok_or_else(|| outbound_service_error("source Cloud owner is unavailable", false))?;
+        if saved.account_id != profile.account_id || saved.user_id != profile.user_id {
+            return Err(crate::managed_context::owner_managed::admission_error(
+                "source context belongs to another account or user",
+            ));
+        }
+        if saved.ticket != *ticket {
+            return Err(outbound_service_error(
+                "owner authorization binding changed",
+                false,
+            ));
+        }
+        validate_ticket(config, &saved.ticket)?;
+        Ok(Some(saved))
+    }
+
+    pub(crate) fn owner_ticket_may_issue(
+        &self,
+        config: &DaemonConfig,
+        ticket: &ManagedContextTransferTicket,
+    ) -> Result<bool, DaemonError> {
+        let attempted = self
+            .read_owner_authorization_binding(config, ticket)?
+            .and_then(|saved| saved.consumption_attempted);
+        // A Preparing/Failed status alone says nothing about consumption. New
+        // bindings explicitly record false; resumed legacy bindings stay conservative.
+        Ok(match attempted {
+            Some(attempted) => !attempted,
+            None => self.get(ticket.context_plan.context_id()).is_none(),
+        })
+    }
+
+    pub(crate) fn record_owner_ticket_consumption_attempt(
+        &self,
+        config: &DaemonConfig,
+        ticket: &ManagedContextTransferTicket,
+    ) -> Result<(), DaemonError> {
+        let Some(parent) = self.status_parent() else {
+            return Ok(());
+        };
+        let _guard = self
+            .artifact_lock
+            .lock()
+            .expect("owner authorization binding lock");
+        let mut saved = match self.read_owner_authorization_binding(config, ticket)? {
+            Some(saved) => saved,
+            None => {
+                let profile = config.cloud_relay.as_ref().ok_or_else(|| {
+                    outbound_service_error("source Cloud owner is unavailable", false)
+                })?;
+                PersistedOwnerTicket {
+                    account_id: profile.account_id.clone(),
+                    user_id: profile.user_id.clone(),
+                    ticket: ticket.clone(),
+                    consumption_attempted: Some(false),
+                }
+            }
+        };
+        if saved.consumption_attempted == Some(true) {
+            return Ok(());
+        }
+        saved.consumption_attempted = Some(true);
+        create_private_directory(&parent)?;
+        let name = format!("{}-owner.json", ticket.context_plan.context_id());
+        check_operation_capacity(&parent, &name)?;
+        let bytes = serde_json::to_vec(&saved)
+            .map_err(|_| outbound_service_error("serialize owner authorization binding", false))?;
+        // Persist before sending consume, including cases where its reply is lost.
+        crate::config::write_private_file(&parent.join(name), &bytes)
+            .map_err(|error| outbound_service_io_error("persist owner consumption attempt", error))
     }
 
     pub(crate) fn authorize_status_owner(
@@ -151,6 +246,9 @@ struct PersistedOwnerTicket {
     account_id: String,
     user_id: String,
     ticket: ManagedContextTransferTicket,
+    // Kernel-private checkpoint; absent in legacy records means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consumption_attempted: Option<bool>,
 }
 
 // MP-08/MP-11: durable metadata is bounded separately from archive retention.

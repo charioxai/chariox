@@ -266,14 +266,9 @@ async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
                 },
             },
         };
-        let ticket = ManagedContextTransferTicket {
-            environment_id: String::new(),
-            target: target.clone(),
-            context_plan: crate::managed_bootstrap::ManagedKernelContextPlan::for_owner_managed(
-                &config, &selection,
-            )
-            .unwrap(),
-        };
+        let ticket = store
+            .prepare_owner_ticket(&config, &runtime, selection.clone())
+            .unwrap();
         let context = ticket.context_plan.context_id().to_string();
         let source = serde_json::json!({
             "relayRealmId": "review-realm", "machineId": config.host_machine_id,

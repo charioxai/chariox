@@ -1,5 +1,8 @@
 //! Cloud-only owner authorization. Capabilities never enter IPC, packages or disk.
-use super::outbound_service::{ManagedContextTransferTarget, ManagedContextTransferTicket};
+use super::outbound_service::{
+    ManagedContextOutboundOperationStore, ManagedContextTransferTarget,
+    ManagedContextTransferTicket,
+};
 use super::owner_managed::{admission_error, cloud_admission_error};
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
@@ -113,7 +116,7 @@ fn source_peer(config: &DaemonConfig) -> Result<ManagedContextTransferTarget, Da
 pub(crate) async fn authorize_export(
     config: &DaemonConfig,
     requested: &ManagedContextTransferTicket,
-    allow_first_issuance: bool,
+    store: &ManagedContextOutboundOperationStore,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
     let profile = config
         .cloud_relay
@@ -146,14 +149,15 @@ pub(crate) async fn authorize_export(
             {
                 return Err(admission_error("Cloud owner authorization pins changed"));
             }
+            store.record_owner_ticket_consumption_attempt(config, requested)?;
             return Ok(requested.clone());
         }
         Err(error) => {
-            // Never issue another capability for a resumed context ID: Cloud
-            // retains consumed rows, including expired ones, under a unique ID.
-            let may_issue = allow_first_issuance
-                && crate::runtime::cloud_api_client::cloud_error_code(&error)
-                    == Some("authorization_expired");
+            // Only an operation known not to have attempted consumption may
+            // issue after a missing-row response. Consumed expiry stays terminal.
+            let may_issue = crate::runtime::cloud_api_client::cloud_error_code(&error)
+                == Some("authorization_expired")
+                && store.owner_ticket_may_issue(config, requested)?;
             if !may_issue {
                 return Err(cloud_admission_error(error));
             }
@@ -188,6 +192,7 @@ pub(crate) async fn authorize_export(
         "contextId": plan["contextId"], "planDigest": plan["planDigest"],
     } });
     issued.ticket.zeroize();
+    store.record_owner_ticket_consumption_attempt(config, requested)?;
     let consumed: Binding = crate::runtime::cloud_api_client::post_cloud_json(
         profile.api_url.clone(),
         TICKET_ENDPOINT,

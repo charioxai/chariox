@@ -118,6 +118,7 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("HOME", root)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -165,11 +166,16 @@ fn validate_bundle(
         ],
         MAX_FILE,
     )?;
-    // Object path hints are incomplete: the same blob can have many names,
-    // including blocked names that disappeared from the current tree.
+    // Clone can import pack objects without installing their advertised refs.
+    // Inspect the entire isolated object store, including unreachable objects;
+    // path hints are also incomplete when a blob has multiple historical names.
     let objects = git(
         &repository,
-        &["rev-list", "--objects", "--no-object-names", "--all"],
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objectname)",
+        ],
         MAX_FILE,
     )?;
     let objects = std::str::from_utf8(&objects).map_err(|_| refused())?;
@@ -182,7 +188,7 @@ fn validate_bundle(
     for oid in objects.lines() {
         let kind = git(&repository, &["cat-file", "-t", oid], 128)?;
         if kind == b"tree\n" {
-            // Every commit root tree is reachable, as are any directly tagged trees.
+            // Include every tree in the pack, regardless of ref reachability.
             // NUL framing preserves literal filenames, including tabs/newlines.
             let tree = git(
                 &repository,
