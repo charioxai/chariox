@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import test from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { WebSocketServer } from "ws"
@@ -7,11 +8,13 @@ import { RelayClientIdentity, createRelayKeypair } from "./relay-crypto.js"
 
 // Signed-token verification belongs to the real relay tests. This fixture
 // exercises the shared SDK's encrypted issuer calls and both retained lanes.
-for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-lost", "reauth-denied", "legacy", "legacy-busy"] as const) {
+for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-lost", "reauth-denied", "legacy", "legacy-busy", "machine-only"] as const) {
   test(`short-lived relay authorization ${outcome} on the existing control/event sockets`, async () => {
     const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
     const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
     const claims = { sub:"terminal", client_id:"terminal", subject_kind:"client", realm_id:"realm", account_id:"account", user_id:"owner", public_key_thumbprint:identity.publicKeyThumbprint, allowed_actions:["client.connect","packet.route"], allowed_targets:["kernel"] }
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+    const machineSubject = `machine-client:${hash("managed-machine")}:${hash(claims.sub)}`
     const token = (extra = {}) => `synthetic.${Buffer.from(JSON.stringify({...claims,exp:(Date.now()+1500)/1000,...extra})).toString("base64url")}.signature`
     const server = new WebSocketServer({host:"127.0.0.1",port:0})
     await new Promise<void>(resolve=>server.once("listening",resolve))
@@ -48,7 +51,7 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
             assert.equal(renewal.public_key_thumbprint,identity.publicKeyThumbprint)
           }
           const denied=renewal && (outcome==="revoked" || outcome==="transient" && renewals===1)
-          const response=envelope.request.RelayStatus!==undefined ? {RelayStatus:{status:{capabilities:outcome.startsWith("legacy")?[]:["terminal_relay_authorization_renewal_v1"]}}} : renewal ? {CloudRelayClientTokenIssued:{profile:{},token:{relay_url:`ws://127.0.0.1:${address.port}`,relay_token:token(outcome==="wrong-key"?{public_key_thumbprint:"b".repeat(64)}:{}),token_expires_at:new Date(Date.now()+1500).toISOString()}}} : {ok:true}
+          const response=envelope.request.RelayStatus!==undefined ? {RelayStatus:{status:{capabilities:outcome.startsWith("legacy")?[]:["terminal_relay_authorization_renewal_v1"]}}} : renewal ? {CloudRelayClientTokenIssued:{profile:{},token:{relay_url:`ws://127.0.0.1:${address.port}`,relay_token:token(outcome==="wrong-key"?{public_key_thumbprint:"b".repeat(64)}:outcome==="machine-only"?{sub:machineSubject,client_id:machineSubject,machine_id:"managed-machine"}:{}),token_expires_at:new Date(Date.now()+1500).toISOString()}}} : {ok:true}
           socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,error:denied?{code:outcome==="revoked"?"identity_revoked":"cloud_unavailable",message:"synthetic refusal",retryable:outcome==="transient"}:null,encrypted_response:denied?null:daemon.encrypt(identity.publicKeyBase64,JSON.stringify(response))}))
         } else if(frame.kind==="client_subscribe") {
           socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,error:null,encrypted_response:daemon.encrypt(identity.publicKeyBase64,"null")}))
@@ -58,8 +61,8 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
       })
     })
     const client=new LocalIpcClient(`ws://127.0.0.1:${address.port}`,{relayAuthToken:token(),targetDaemonId:"kernel",relayIdentity:identity,kernelPingIntervalMs:60_000,controlRequestRetryDeadlineMs:0})
-    const closed: string[]=[]
-    client.onKernelEvent(event=>{if(event.event==="transport_closed")closed.push(event.message);else events++})
+    const closed: string[]=[], notices: string[]=[]
+    client.onKernelEvent(event=>{if(event.event==="transport_closed")closed.push(event.message);else {if(event.event==="runtime_notices") for(const notice of event.notices)if(typeof notice.message==="string")notices.push(notice.message);events++}})
     try {
       if(outcome==="legacy-busy") {
         await assert.rejects(client.send({GetDaemonHealth:null}),/protocol 472.*update the kernel/i)
@@ -67,12 +70,25 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-los
       }
       await client.send({GetDaemonHealth:null})
       if(outcome!=="legacy") await client.subscribeToKernelEvents("session","attachment")
-      await sleep(outcome==="renew" || outcome==="transient" || outcome==="target-lost"?4200:outcome==="legacy"?200:1800)
+      await sleep(outcome==="machine-only"?900:outcome==="renew" || outcome==="transient" || outcome==="target-lost"?4200:outcome==="legacy"?200:1800)
       if(outcome==="legacy") {
         assert.equal(renewals,0,"an unsupported kernel must never issue renewal for its login client")
         assert.equal(closed.length,1)
         assert.match(closed[0]!,/protocol 472.*update the kernel/i)
         await assert.rejects(client.send({GetDaemonHealth:null}),/protocol 472/i)
+        return
+      }
+      if(outcome==="machine-only") {
+        assert.equal(renewals,1)
+        assert.deepEqual(closed,[],"an unavailable issuing authority must retain admission until expiry")
+        assert.equal(notices.length,1)
+        assert.match(notices[0]!,/machine-only.*account-issued.*valid until.*issuing kernel/i)
+        assert.equal(authorizations,2,"the changed machine subject must never be applied to either lane")
+        await client.send({GetDaemonHealth:null})
+        await sleep(900)
+        assert.equal(closed.length,1)
+        assert.match(closed[0]!,/machine-only.*expired|expired.*machine-only/i)
+        assert.equal(renewals,1,"unavailable authority is not retried or re-paired")
         return
       }
       assert.ok(renewals>0,"SDK must request fresh authorization before expiry")

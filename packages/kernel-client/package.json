@@ -95,7 +95,8 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test dist/*.test.js"
+    "test": "pnpm run build && node --test dist/*.test.js",
+    "test:relay-renewal-kernel": "pnpm run build && node --test scripts/relay-renewal-kernel.integration.test.mjs"
   },
   "dependencies": {
     "@chariox/tool-display": "workspace:*",

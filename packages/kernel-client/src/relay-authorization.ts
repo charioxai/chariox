@@ -1,4 +1,5 @@
 import WebSocket from "ws"
+import { createHash } from "node:crypto"
 import type { RelayConnectedFrame, RelayCloseFrame, RelayTarget } from "./kernel-transport-frames.js"
 import { buildRelayConnectFrame } from "./relay-transport.js"
 import { LocalIpcError } from "./local-ipc-error.js"
@@ -32,10 +33,19 @@ export function relayAuthorization(token: string | null): RelayAuthorization | n
 
 export function requireRenewedRelayAuthorization(previous: RelayAuthorization, token: string, target: string): RelayAuthorization {
   const next = relayAuthorization(token)
+  // A machine-only target cannot act as the issuer of an account-client grant.
+  // Recognize the kernel's exact machine-subject mapping only to report that
+  // limitation; never admit the replacement identity or extend the old grant.
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+  const machineMapped = previous.machine_id === undefined && previous.client_id === previous.sub
+    && !previous.sub.startsWith("machine-client:") && typeof next?.machine_id === "string"
+    && next.sub === `machine-client:${hash(next.machine_id)}:${hash(previous.sub)}` && next.client_id === next.sub
+  const expected = machineMapped ? {...previous, sub: next!.sub, client_id: next!.client_id, machine_id: next!.machine_id} : previous
   const identity = ["sub", "subject_kind", "realm_id", "account_id", "user_id", "machine_id", "client_id", "session_id", "public_key_thumbprint"] as const
-  if (!next || identity.some(key => next[key] !== previous[key]) || next.exp * 1000 <= Date.now() || next.exp <= previous.exp || next.allowed_actions.length !== previous.allowed_actions.length || previous.allowed_actions.some(action => !next.allowed_actions.includes(action)) || previous.allowed_targets != null && (next.allowed_targets == null || next.allowed_targets.some(value => !previous.allowed_targets!.includes(value))) || next.allowed_targets != null && !next.allowed_targets.includes(target)) {
+  if (!next || identity.some(key => next[key] !== expected[key]) || next.exp * 1000 <= Date.now() || next.exp <= previous.exp || next.allowed_actions.length !== previous.allowed_actions.length || previous.allowed_actions.some(action => !next.allowed_actions.includes(action)) || previous.allowed_targets != null && (next.allowed_targets == null || next.allowed_targets.some(value => !previous.allowed_targets!.includes(value))) || next.allowed_targets != null && !next.allowed_targets.includes(target)) {
     throw new LocalIpcError("renew relay authorization", "Relay authorization renewal returned an invalid identity, key or scope", "authorization_denied", false)
   }
+  if (machineMapped) throw new LocalIpcError("renew relay authorization", `This machine-only target cannot renew an account-issued terminal grant. The current connection remains valid until ${new Date(previous.exp * 1000).toISOString()}. Obtain a fresh grant from the account-linked issuing kernel.`, "relay_renewal_authority_unavailable", false)
   return next
 }
 
@@ -43,17 +53,18 @@ export class RelayAuthorizationRenewal {
   private timer?: ReturnType<typeof setTimeout>
   private expiryTimer?: ReturnType<typeof setTimeout>
   private stopped = false
-  constructor(private expiresAtMs: number, private readonly renew: () => Promise<number>, private readonly refused: () => void) { this.armExpiry(); this.schedule() }
+  private authorityUnavailable = false
+  constructor(private expiresAtMs: number, private readonly renew: () => Promise<number>, private readonly refused: (message?: string) => void, private readonly notice: (message: string) => void = () => {}) { this.armExpiry(); this.schedule() }
   stop() { this.stopped = true; if (this.timer) clearTimeout(this.timer); if (this.expiryTimer) clearTimeout(this.expiryTimer) }
   private armExpiry() {
     if (this.expiryTimer) clearTimeout(this.expiryTimer)
-    this.expiryTimer = setTimeout(() => { if (!this.stopped) { this.refused(); this.stop() } }, Math.max(0, this.expiresAtMs - Date.now()))
+    this.expiryTimer = setTimeout(() => { if (!this.stopped) this.expire() }, Math.max(0, this.expiresAtMs - Date.now()))
     this.expiryTimer.unref?.()
   }
   private schedule(retry = false) {
     if (this.stopped) return
     const remaining = this.expiresAtMs - Date.now()
-    if (remaining <= 0) { this.refused(); this.stop(); return }
+    if (remaining <= 0) { this.expire(); return }
     const delay = retry ? Math.min(1_000, Math.max(25, remaining / 4)) : Math.max(0, remaining - Math.min(60_000, Math.max(1_000, remaining / 5)))
     this.timer = setTimeout(() => void this.run(), delay)
     this.timer.unref?.()
@@ -67,9 +78,16 @@ export class RelayAuthorizationRenewal {
       this.schedule()
     } catch (error) {
       if (this.stopped) return
-      if (error instanceof LocalIpcError && !error.retryable) { this.refused(); this.stop() }
+      if (error instanceof LocalIpcError && error.code === "relay_renewal_authority_unavailable") {
+        this.authorityUnavailable = true
+        this.notice(error.message) // Retain only the current admission's expiry timer.
+      } else if (error instanceof LocalIpcError && !error.retryable) { this.refused(); this.stop() }
       else this.schedule(true)
     }
+  }
+  private expire() {
+    this.refused(this.authorityUnavailable ? "The account-issued relay grant expired; this machine-only target cannot renew it. Connection ended. Obtain a fresh grant from the account-linked issuing kernel." : undefined)
+    this.stop()
   }
 }
 

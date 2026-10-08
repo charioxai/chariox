@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import test from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal } from "./relay-authorization.js"
@@ -14,6 +15,18 @@ test("renewal may narrow an alias while retaining the connected exact target",()
   assert.deepEqual(requireRenewedRelayAuthorization(original,token({...original,exp:original.exp+10,allowed_targets:["kernel"]}),"kernel").allowed_targets,["kernel"])
   assert.equal(relayAuthorization("opaque-operator-token"),null)
   assert.equal(relayAuthorization(token({...original,subject_kind:"kernel"})),null)
+})
+const hash=(value:string)=>createHash("sha256").update(value).digest("hex")
+const machineSubject=`machine-client:${hash("managed-machine")}:${hash(original.sub)}`
+for(const [name,changes] of Object.entries({subject:{sub:"machine-client:foreign"},owner:{user_id:"foreign"},account:{account_id:"foreign"},realm:{realm_id:"foreign"},key:{public_key_thumbprint:"b".repeat(64)},scope:{allowed_targets:["kernel","another"]},permissions:{allowed_actions:["client.connect"]}})) {
+  test(`a machine replacement with invalid ${name} still refuses immediately`,()=>{
+    assert.throws(()=>requireRenewedRelayAuthorization(original,token({...original,exp:original.exp+10,sub:machineSubject,client_id:machineSubject,machine_id:"managed-machine",...changes}),"kernel"),
+      error=>error instanceof Error && "code" in error && error.code==="authorization_denied")
+  })
+}
+test("machine-scoped grants still renew under their unchanged machine authority",()=>{
+  const admitted={...original,sub:machineSubject,client_id:machineSubject,machine_id:"managed-machine"}
+  assert.equal(requireRenewedRelayAuthorization(admitted,token({...admitted,exp:admitted.exp+10}),"kernel").sub,machineSubject)
 })
 test("a stalled issuer cannot extend admission beyond the current grant expiry",async()=>{
   let refused=0,release!:(value:number)=>void

@@ -966,7 +966,9 @@ export class LocalIpcClient {
     if (!claims?.account_id || !claims.user_id) return // Local/operator transports have no Cloud lifetime.
     if (claims.public_key_thumbprint !== this.relayIdentity.publicKeyThumbprint) return
     const renewal: RelayAuthorizationRenewal = new RelayAuthorizationRenewal(claims.exp * 1000,
-      (): Promise<number> => this.renewRelayAuthorization(renewal), () => this.refuseRelayAuthorization())
+      (): Promise<number> => this.renewRelayAuthorization(renewal), message => this.refuseRelayAuthorization(message), message => {
+        this.emitSyntheticEvent({event: "runtime_notices", notices: [{message}]})
+      })
     this.relayRenewal = renewal
     // Probe immediately, before the user relies on silent renewal. Capability
     // negotiation also handles kernels on branches with unrelated version bumps.
