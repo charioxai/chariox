@@ -262,59 +262,101 @@ fn born_after(current: &Member, launch_ms: u64) -> bool {
 
 /// Stops actual orphans still carrying a wake marker, born after its launch.
 /// A live unrelated parent's descendants are ambiguous and never signalled.
-/// Each target is pinned and identity, parent and marker rechecked before kill.
+/// Pin targets, confirm exit, then rescan for newly re-parented descendants.
 #[cfg(target_os = "linux")]
 pub(super) fn reap_orphans(
     wakes: &std::collections::BTreeMap<String, u64>,
-) -> std::collections::BTreeMap<String, usize> {
+) -> io::Result<std::collections::BTreeMap<String, usize>> {
     use std::os::fd::AsRawFd;
+    use std::time::{Duration, Instant};
     let mut stopped = std::collections::BTreeMap::new();
-    let Ok(ids) = process_ids() else {
-        return stopped;
-    };
-    for pid in ids.filter(|pid| *pid > 1 && *pid != std::process::id()) {
-        let Some(wake) = wake_marker(pid).filter(|w| wakes.contains_key(w)) else {
-            continue;
-        };
-        let Ok(current) = member(pid) else { continue };
-        // A marker is inheritable, so it cannot authorize a live unrelated
-        // server's children. Only true orphans born after launch are eligible.
-        if current.exited || current.parent != 1 || !born_after(&current, wakes[&wake]) {
-            continue;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut pins: Vec<(String, std::os::fd::OwnedFd)> = Vec::new();
+    let mut empty_scans = 0;
+    loop {
+        let mut remaining = Vec::new();
+        for (wake, fd) in pins.drain(..) {
+            let mut pfd = libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pfd, 1, 0) };
+            if ready < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if ready > 0 && pfd.revents & libc::POLLIN != 0 {
+                *stopped.entry(wake).or_insert(0) += 1;
+            } else {
+                remaining.push((wake, fd));
+            }
         }
-        let Ok(Some(fd)) = pin_member(&current) else {
-            continue;
-        };
-        if wake_marker(pid).as_ref() != Some(&wake)
-            || !member(pid).is_ok_and(|verified| {
-                verified.start == current.start
-                    && verified.parent == 1
-                    && born_after(&verified, wakes[&wake])
-            })
-        {
-            continue;
+        pins = remaining;
+        // Rescan only after every signalled parent has exited. Its children
+        // are now re-parented, including descendants of a setsid child.
+        if pins.is_empty() {
+            for pid in process_ids()?.filter(|pid| *pid > 1 && *pid != std::process::id()) {
+                let Some(wake) = wake_marker(pid).filter(|w| wakes.contains_key(w)) else {
+                    continue;
+                };
+                let current = match member(pid) {
+                    Ok(current) => current,
+                    Err(error) if vanished(&error) => continue,
+                    Err(error) => return Err(error),
+                };
+                if current.exited || current.parent != 1 || !born_after(&current, wakes[&wake]) {
+                    continue;
+                }
+                let Some(fd) = pin_member(&current)? else {
+                    continue;
+                };
+                if wake_marker(pid).as_ref() != Some(&wake)
+                    || !member(pid).is_ok_and(|verified| {
+                        verified.start == current.start
+                            && verified.parent == 1
+                            && born_after(&verified, wakes[&wake])
+                    })
+                {
+                    return Err(io::Error::other(
+                        "orphan identity changed; physical settlement unconfirmed",
+                    ));
+                }
+                if unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        fd.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    )
+                } < 0
+                    && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                pins.push((wake, fd));
+            }
         }
-        if unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                fd.as_raw_fd(),
-                libc::SIGKILL,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        } == 0
-        {
-            *stopped.entry(wake).or_insert(0) += 1;
+        if pins.is_empty() {
+            empty_scans += 1;
+            if empty_scans == 2 {
+                return Ok(stopped);
+            }
+        } else {
+            empty_scans = 0;
         }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("escaped subtree exit unconfirmed at cleanup deadline; survivors may still be running"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    stopped
 }
 
 #[cfg(not(target_os = "linux"))]
 pub(super) fn reap_orphans(
     _wakes: &std::collections::BTreeMap<String, u64>,
-) -> std::collections::BTreeMap<String, usize> {
-    Default::default()
+) -> io::Result<std::collections::BTreeMap<String, usize>> {
+    Err(io::Error::other("orphan settlement requires Linux"))
 }
 
 #[cfg(all(test, target_os = "linux"))]

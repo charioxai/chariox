@@ -25,7 +25,7 @@ impl KernelRuntimeState {
             format!("watched-process-{}", wake.id), wake.agent_id.clone(),
             RuntimeInteractionKind::Permission, RuntimeInteractionLevel::Warning,
             Some("Run watched command outside the provider sandbox?".into()),
-            format!("Command: {}\nDirectory: {}\nThe kernel runs this command with its own process policy. Provider-native permission and Bash sandbox settings do not apply. Approval permits this command once.", wake.command.join(" "), super::super::agent_process_output::sanitize(cwd.to_string_lossy().as_bytes())),
+            format!("Command: {}\nDirectory: {}\nThe kernel runs this command with its own process policy. Provider-native permission and Bash sandbox settings do not apply. Approval permits this command once.", serde_json::to_string(&wake.command).map_err(|e| ledger::error(e.to_string()))?, super::super::agent_process_output::sanitize(cwd.to_string_lossy().as_bytes())),
             vec![RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", Some(RuntimeInteractionChoiceStyle::Primary)), RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger))],
             None, Some(300), Some("deny".into()),
         ).with_native_origin(self.owned.capture_native_interaction_origin(run.session_id(), &wake.agent_id, run.id()));

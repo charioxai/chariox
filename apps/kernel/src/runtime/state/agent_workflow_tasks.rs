@@ -75,7 +75,6 @@ impl KernelRuntimeOwnedState {
         room: &str,
         run: &str,
     ) -> Result<bool, DaemonError> {
-        let session = self.session_store.get_session(room)?;
         for task in self.durable_state_store.agent_tasks(Some(room), None)? {
             if self
                 .durable_state_store
@@ -89,18 +88,7 @@ impl KernelRuntimeOwnedState {
                     .obligations
                     .iter()
                     .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
-                || self
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &task.agent_id)
-                    .is_some_and(|p| p.id() == task.prompt_id)
-                || session
-                    .queued_prompts_for_agent(&task.agent_id)
-                    .is_some_and(|q| {
-                        q.iter().any(|p| {
-                            p.id() == task.prompt_id
-                                || task.pending_prompt_id.as_deref() == Some(p.id())
-                        })
-                    })
+                || self.agent_task_resources_unsettled(&task)?
             {
                 return Ok(true);
             }

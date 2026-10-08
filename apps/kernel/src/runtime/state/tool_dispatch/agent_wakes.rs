@@ -143,9 +143,9 @@ impl KernelRuntimeState {
                         !a.is_empty()
                             && a.len() <= 64
                             && !a[0].is_empty()
-                            && a.iter().all(|s| s.len() <= 4_096 && !s.contains('\0'))
+                            && a.iter().all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
                     })
-                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell)"))?;
+                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell; control characters are refused)"))?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
@@ -158,7 +158,7 @@ impl KernelRuntimeState {
                     ));
                 }
                 let mut wake = new_wake(task, "process", label(args)?, now);
-                wake.command = argv.iter().map(|a| metadata(a)).collect();
+                wake.command = argv.clone();
                 wake.match_text = match_text;
                 self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
                     .await?;
@@ -300,9 +300,69 @@ mod security_tests {
         );
     }
     #[tokio::test]
-    async fn security_f13_process_metadata_is_sanitized_before_retention() {
+    async fn review_r1_control_arguments_are_refused_before_launch() {
         let (state, run, task, _worktree) = fixture("codex", false).await;
-        let result = state.dispatch_agent_wake_tool(&run, "chariox.events.process", &serde_json::json!({"label":"safe\u{1b}[2Jlabel", "argv":["/bin/echo","safe\u{1b}[31mready\u{85}"], "match_text":"\u{1b}[31mready\u{85}"}), &task).await;
+        for argument in ["safe\u{1b}[31mready", "line\nnext", "safe\u{85}"] {
+            let result = state
+                .dispatch_agent_wake_tool(
+                    &run,
+                    "chariox.events.process",
+                    &serde_json::json!({"label":"safe", "argv":["/bin/echo", argument]}),
+                    &task,
+                )
+                .await;
+            state.owned.agent_wakes.processes.shutdown();
+            assert!(
+                result.is_err(),
+                "MP-11 R1: differing display/execution must be refused: {result:?}"
+            );
+        }
+        assert!(state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .is_empty());
+    }
+    #[tokio::test]
+    async fn review_r1_changed_argv_cannot_reuse_an_approval() {
+        let (state, run, task, worktree) = fixture("codex", false).await;
+        let mut wake = new_wake(
+            &task,
+            "process",
+            "approved echo".into(),
+            crate::session::unix_epoch_ms(),
+        );
+        wake.command = vec!["/bin/echo".into(), "two words".into(), "".into()];
+        let result = state
+            .start_agent_process(
+                wake,
+                vec!["/bin/echo".into(), "different".into()],
+                worktree.path().to_path_buf(),
+                &task.task_id,
+                &task.prompt_id,
+                &run,
+            )
+            .await;
+        state.owned.agent_wakes.processes.shutdown();
+        assert!(
+            result.is_err(),
+            "MP-11 R1: a changed vector requires fresh approval"
+        );
+        assert!(state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_r1_safe_argument_boundaries_survive_metadata_retention() {
+        let (state, run, task, _worktree) = fixture("codex", false).await;
+        let argv = vec!["/bin/echo", "two words", "", "quote\"and\\slash"];
+        let result = state.dispatch_agent_wake_tool(&run, "chariox.events.process",
+            &serde_json::json!({"label":"safe\u{1b}[2Jlabel", "argv":argv, "match_text":"\u{1b}[31mready\u{85}"}), &task).await;
         state.owned.agent_wakes.processes.shutdown();
         result.unwrap();
         let wake = state
@@ -311,16 +371,13 @@ mod security_tests {
             .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
             .unwrap()
             .remove(0);
-        for text in std::iter::once(&wake.label)
-            .chain(wake.command.iter())
-            .chain(wake.match_text.iter())
-        {
-            assert!(
-                !text.chars().any(char::is_control),
-                "unsafe retained metadata: {text:?}"
-            );
-        }
-        assert_eq!(wake.command[1], "safeready");
+        assert_eq!(wake.command, argv);
+        assert!(!wake.label.chars().any(char::is_control));
         assert_eq!(wake.match_text.as_deref(), Some("ready"));
+        let shown = serde_json::to_string(&wake.command).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&shown).unwrap(),
+            wake.command
+        );
     }
 }

@@ -36,6 +36,7 @@ struct OwnedChild {
     wake: String,
     /// Set once the leader is reaped after every session member settled.
     status: Option<std::process::ExitStatus>,
+    leader_status: Option<std::process::ExitStatus>,
     settle_failures: u8,
     lost: bool,
 }
@@ -48,6 +49,7 @@ impl OwnedChild {
                 birth,
                 wake: wake.into(),
                 status: None,
+                leader_status: None,
                 settle_failures: 0,
                 lost: false,
             }),
@@ -73,18 +75,31 @@ impl OwnedChild {
             ));
         }
         if self.status.is_none() {
-            self.status = match super::agent_process_group::poll_exit(&mut self.child, self.birth) {
-                Ok(status) => status,
-                Err(error) => {
+            if self.leader_status.is_none() {
+                self.leader_status =
+                    match super::agent_process_group::poll_exit(&mut self.child, self.birth) {
+                        Ok(status) => status,
+                        Err(error) => {
+                            self.fail_settlement();
+                            return Err(error);
+                        }
+                    };
+            }
+            if self.leader_status.is_some() {
+                // Reaping the leader makes escaped descendants orphans, but a
+                // signal request is not proof that their entire subtree exited.
+                let cleanup = super::agent_process_group::start_time_ms(self.birth)
+                    .ok_or_else(|| std::io::Error::other("process launch clock unavailable"))
+                    .and_then(|launch| {
+                        super::agent_process_group::reap_orphans(
+                            &[(self.wake.clone(), launch)].into(),
+                        )
+                    });
+                if let Err(error) = cleanup {
                     self.fail_settlement();
                     return Err(error);
                 }
-            };
-            if self.status.is_some() {
-                // Descendants that left the session still carry the wake marker.
-                if let Some(launch) = super::agent_process_group::start_time_ms(self.birth) {
-                    super::agent_process_group::reap_orphans(&[(self.wake.clone(), launch)].into());
-                }
+                self.status = self.leader_status;
             }
         }
         Ok(self.status)
@@ -174,7 +189,7 @@ fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
     let Ok(mut child) = child.lock() else {
         return false;
     };
-    if child.status.is_some() || child.lost {
+    if child.status.is_some() || child.leader_status.is_some() || child.lost {
         return false;
     }
     let signalled = signal_session(child.child.id(), child.birth, signal);
@@ -267,6 +282,13 @@ impl KernelRuntimeState {
         prompt: &str,
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<AgentWake, DaemonError> {
+        // One immutable argv is approved and launched. A caller changing it
+        // must return through admission and obtain a new approval.
+        if argv != wake.command {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "watched process argv differs from its approved command",
+            ));
+        }
         let _admission = self.owned.begin_managed_activity_admission()?;
         let store = &self.owned.durable_state_store;
         store.agent_lifecycle(Operation::CreateWake {
@@ -708,54 +730,12 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn a03_restart_reaps_descendants_orphaned_by_a_crashed_kernel() {
-        use super::super::agent_process_group::{marked_count_for_test, reap_orphans};
-        use std::io::BufRead;
-        let wake = format!("a03-orphan-{}", std::process::id());
-        // The descendant leaves the session and process group, as a daemon would.
-        let script = "import os, signal\np=os.fork()\nif p==0:\n os.setsid()\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n while True: signal.pause()\nprint(p,flush=True)\nwhile True: signal.pause()";
+    fn nested_escaped_child(wake: &str) -> Child {
+        // The setsid child owns another resisting child. Both retain the marker;
+        // the grandchild becomes an eligible orphan only after its parent exits.
+        let script = "import os,signal\nif os.fork()==0:\n os.setsid()\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n r,w=os.pipe()\n if os.fork()==0:\n  os.close(r)\n  os.write(w,b'r')\n  while True: signal.pause()\n os.close(w)\n os.read(r,1)\n print('ready',flush=True)\n while True: signal.pause()\nwhile True: signal.pause()";
         let mut child = spawn(
-            &wake,
-            &["python3".into(), "-c".into(), script.into()],
-            &std::env::temp_dir(),
-            &BTreeMap::new(),
-            &[],
-        )
-        .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        // Kernel crash: PDEATHSIG kills only the leader; init reaps it.
-        assert!(child.id() > 1);
-        child.kill().unwrap();
-        child.wait().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while marked_count_for_test(&wake) != 1 {
-            assert!(
-                Instant::now() < deadline,
-                "orphaned descendant keeps running"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(reap_orphans(&BTreeMap::from([("other-wake".to_string(), 0)])).is_empty());
-        let stopped = reap_orphans(&BTreeMap::from([(wake.clone(), 0)]));
-        while marked_count_for_test(&wake) != 0 {
-            assert!(Instant::now() < deadline, "restart must stop the orphan");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(stopped.get(&wake), Some(&1));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a03_termination_stops_a_descendant_that_left_the_session() {
-        use super::super::agent_process_group::marked_count_for_test;
-        let wake = format!("a03-escaped-{}", std::process::id());
-        let script = "import os, signal\nif os.fork()==0:\n os.setsid()\n signal.signal(signal.SIGTERM,signal.SIG_IGN)\n print('ready',flush=True)\n while True: signal.pause()\nwhile True: signal.pause()";
-        let mut child = spawn(
-            &wake,
+            wake,
             &["python3".into(), "-c".into(), script.into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
@@ -768,30 +748,311 @@ mod tests {
             &mut line,
         )
         .unwrap();
-        let processes = WatchedProcesses::default();
-        let owned: Owned = Arc::new(std::sync::Mutex::new(
-            OwnedChild::new(child, &wake).unwrap(),
-        ));
-        processes
-            .live
-            .lock()
-            .unwrap()
-            .insert(wake.clone(), owned.clone());
-        assert_eq!(marked_count_for_test(&wake), 2);
-        processes.shutdown();
-        assert!(
-            processes.stopping(),
-            "outcomes are left to restart recovery"
-        );
+        assert_eq!(line.trim(), "ready");
+        child
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cleanup_nested(wake: &str) {
+        use super::super::agent_process_group::{marked_count_for_test, reap_orphans};
         let deadline = Instant::now() + Duration::from_secs(5);
-        while marked_count_for_test(&wake) != 0 {
+        while marked_count_for_test(wake) != 0 {
+            let _ = reap_orphans(&[(wake.to_owned(), 0)].into());
             assert!(
                 Instant::now() < deadline,
-                "a descendant that left the session outlived its watched process"
+                "MP-11 R2: own test subtree cleanup"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(owned.lock().unwrap().status.is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_r2_restart_confirms_the_nested_escaped_subtree() {
+        use super::super::agent_process_group::{marked_count_for_test, reap_orphans};
+        let wake = w();
+        let mut child = nested_escaped_child(&wake);
+        assert!(child.id() > 1);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let stopped = reap_orphans(&[(wake.clone(), 0)].into());
+        let survivors = marked_count_for_test(&wake);
+        cleanup_nested(&wake);
+        assert_eq!(
+            survivors, 0,
+            "MP-11 R2: recovery returned while escaped descendants still execute: {stopped:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_r2_cancellation_confirms_the_nested_escaped_subtree() {
+        use super::super::agent_process_group::marked_count_for_test;
+        let wake = w();
+        let child = nested_escaped_child(&wake);
+        let owned: Owned = Arc::new(std::sync::Mutex::new(
+            OwnedChild::new(child, &wake).unwrap(),
+        ));
+        assert_eq!(marked_count_for_test(&wake), 3);
+        assert!(signal_owned_session(&owned, libc::SIGTERM));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while owned.lock().unwrap().poll().ok().flatten().is_none() {
+            assert!(Instant::now() < deadline, "MP-11 R2: own leader settlement");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survivors = marked_count_for_test(&wake);
+        cleanup_nested(&wake);
+        assert_eq!(
+            survivors, 0,
+            "MP-11 R2: physical settlement preceded subtree exit"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn review_r3_cancelled_child_retains_delegation_until_process_exit() {
+        cancelled_child_retains_resources(false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn review_r3_matched_child_retains_delegation_and_workflow_until_process_exit() {
+        cancelled_child_retains_resources(true).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn cancelled_child_retains_resources(matched: bool) {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Outcome};
+        let worktree = crate::test_support::TestWorktree::new("review-r3");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let (room, parent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, room.id(), parent.id());
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(room.id(), "dev-stub")
+                    .with_spawned_by_agent_id(parent.id()),
+            )
+            .unwrap();
+        let store = app.durable_state_store();
+        let now = crate::session::unix_epoch_ms();
+        for (agent, prompt) in [(parent.id(), "parent-turn"), (child.id(), "child-turn")] {
+            store
+                .agent_lifecycle(Operation::Begin {
+                    owner: room.owner_user_id().into(),
+                    room: room.id().into(),
+                    agent: agent.into(),
+                    prompt: prompt.into(),
+                    run: Some("run".into()),
+                    now,
+                })
+                .unwrap();
+        }
+        store
+            .agent_lifecycle(Operation::RegisterObligation {
+                owner: room.owner_user_id().into(),
+                room: room.id().into(),
+                agent: parent.id().into(),
+                prompt: "parent-turn".into(),
+                run: Some("run".into()),
+                id: "delegate".into(),
+                kind: "delegate".into(),
+                resource: Some(child.id().into()),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::DispatchReceipt {
+                id: "delegate".into(),
+                accepted: true,
+                resource: Some(child.id().into()),
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: room.owner_user_id().into(),
+                room: room.id().into(),
+                agent: child.id().into(),
+                prompt: "child-turn".into(),
+                run: Some("run".into()),
+                now,
+            })
+            .unwrap();
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":w(), "task_id":"child-turn", "room_id":room.id(), "agent_id":child.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"resisting child", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":["python3"], "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+        })).unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: "child-turn".into(),
+                prompt: "child-turn".into(),
+                wake: wake.clone(),
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::BindWorkflow {
+                task: "child-turn".into(),
+                prompt: "child-turn".into(),
+                run: "watched-workflow".into(),
+                node: "node".into(),
+            })
+            .unwrap();
+        let mut process = spawn(&wake.id, &["python3".into(), "-c".into(), "import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); signal.pause()".into()], worktree.path(), &BTreeMap::new(), &[]).unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(process.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::ProcessStarted {
+                id: wake.id.clone(),
+                pid: process.id(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: "child-turn".into(),
+                prompt: "child-turn".into(),
+                registrations: vec![wake.registration_id.clone()],
+                cursor: 0,
+                deadline: now + 60_000,
+                reason: "watch".into(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: room.id().into(),
+                agent: child.id().into(),
+                prompt: "child-turn".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        if matched {
+            store
+                .agent_lifecycle(Operation::ProcessMatched {
+                    id: wake.id.clone(),
+                    line: "ready".into(),
+                    now,
+                })
+                .unwrap();
+        }
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let owned: Owned = Arc::new(std::sync::Mutex::new(
+            OwnedChild::new(process, &wake.id).unwrap(),
+        ));
+        state
+            .owned
+            .agent_wakes
+            .processes
+            .live
+            .lock()
+            .unwrap()
+            .insert(wake.id.clone(), owned.clone());
+        let store = &state.owned.durable_state_store;
+        let child_task = store
+            .agent_tasks(Some(room.id()), Some(child.id()))
+            .unwrap()
+            .remove(0);
+        assert_eq!(child_task.state, ExecutionState::Waiting);
+        let Outcome::Task(cancelled) = store
+            .agent_lifecycle(Operation::CancelTask {
+                task: child_task.task_id,
+                owner: room.owner_user_id().into(),
+                revision: child_task.revision,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        state.cancel_agent_task_resources(&cancelled).await.unwrap();
+        let after_cancel = store
+            .agent_tasks(Some(room.id()), Some(parent.id()))
+            .unwrap()[0]
+            .obligations[0]
+            .status
+            .clone();
+        state.sweep_agent_lifecycle().await.unwrap();
+        let after_sweep = store
+            .agent_tasks(Some(room.id()), Some(parent.id()))
+            .unwrap()[0]
+            .obligations[0]
+            .status
+            .clone();
+        state
+            .owned
+            .agent_store
+            .set_agent_state(child.id(), crate::agent::AgentState::Error)
+            .unwrap();
+        state.sweep_agent_lifecycle().await.unwrap();
+        let after_error_sweep = store
+            .agent_tasks(Some(room.id()), Some(parent.id()))
+            .unwrap()[0]
+            .obligations[0]
+            .status
+            .clone();
+        let workflow_unsettled = state
+            .owned
+            .workflow_agent_tasks_unsettled(room.id(), "watched-workflow")
+            .unwrap();
+        let still_running = owned.lock().unwrap().poll().unwrap().is_none();
+        // Always settle our test process before reporting a regression.
+        assert!(signal_owned_session(&owned, libc::SIGKILL));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while owned.lock().unwrap().poll().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        store
+            .agent_lifecycle(Operation::ProcessExited {
+                id: wake.id.clone(),
+                exit_code: Some(137),
+                tail: String::new(),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        state.sweep_agent_lifecycle().await.unwrap();
+        let settled = store
+            .agent_tasks(Some(room.id()), Some(parent.id()))
+            .unwrap()[0]
+            .obligations[0]
+            .status
+            .clone();
+        assert!(
+            workflow_unsettled,
+            "MP-11 R3: cancelled workflow still owns the watcher"
+        );
+        assert!(
+            !state
+                .owned
+                .workflow_agent_tasks_unsettled(room.id(), "watched-workflow")
+                .unwrap(),
+            "MP-11 R3: physical exit releases the workflow"
+        );
+        assert!(
+            still_running,
+            "MP-11 R3: resisting watcher remains physically alive during cancellation"
+        );
+        assert_eq!(
+            (after_cancel, after_sweep, after_error_sweep),
+            ("open".to_owned(), "open".to_owned(), "open".to_owned()),
+            "MP-11 R3: cancellation and delegate sweep must retain a child with owned resources"
+        );
+        assert_ne!(
+            settled, "open",
+            "MP-11 R3: physical exit releases the delegation"
+        );
     }
 
     #[test]
@@ -962,7 +1223,7 @@ mod security_tests {
             &[],
         )
         .unwrap();
-        let stopped = reap_orphans(&BTreeMap::from([(wake, 0)]));
+        let stopped = reap_orphans(&BTreeMap::from([(wake, 0)])).unwrap();
         std::thread::sleep(Duration::from_millis(50));
         let survived = child.try_wait().unwrap().is_none();
         if survived {

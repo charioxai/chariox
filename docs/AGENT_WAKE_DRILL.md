@@ -20,9 +20,12 @@ profile without reading or copying its credentials.
    delivery and acknowledgement, and the agent's final disposition.
 4. Repeat with a one-minute recurring check-in, missing several intervals
    across restart. Verify one coalesced fire, its missed count, the next due
-   time, and independent receipts for each fire. Let at least four handled
-   check-ins pass without other progress; the task must stay waiting, not
-   blocked. Cancel it explicitly; the cancellation is not shown as a fire.
+   time, and independent receipts for each fire. Let three handled
+   check-ins pass without other progress. The third must block the task with
+   one owner interaction; the fourth must not start a provider turn. Verify
+   the visible owner gate, explicitly Resume, and confirm scheduling resumes
+   on the original task. In a separate pass choose Cancel and confirm wakes
+   retire without recording cancellation as a fire.
 5. Disconnect the TUI during a wait and reconnect. `/agent wakes` must show
    the same registrations, next fire, last fire and last receipt. A future
    timer alone must not count as active managed work.

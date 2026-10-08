@@ -323,9 +323,9 @@ impl KernelRuntimeState {
                 .collect(),
         );
         for wake in lost {
-            let mut orphans = match stopped.get(&wake.id) {
-                Some(count) => format!("; {count} process(es) it left running were stopped"),
-                None => String::new(),
+            let mut orphans = match &stopped {
+                Ok(stopped) => stopped.get(&wake.id).map(|count| format!("; {count} process(es) it left running were stopped and their exits confirmed")).unwrap_or_default(),
+                Err(_) => "; escaped subtree settlement is unconfirmed after bounded cleanup; survivors may still be running and require operator cleanup".into(),
             };
             // Without the managed PID namespace, survivors are found only by
             // their inherited wake marker.
