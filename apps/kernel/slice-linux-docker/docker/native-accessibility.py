@@ -205,6 +205,33 @@ def tree_digest(tree):
     return hashlib.sha256(json.dumps(tree,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
+def input_target(processes, expected=None):
+    """MP-08 / MP-11: ordinary text requires a proved, public native focus.
+
+    AT-SPI cannot prove a Browser DOM leaf's Vault/private attributes. Browser
+    web input uses the existing document-bound Browser path instead; this
+    native fallback refuses it, including nested frame/shadow descendants.
+    """
+    tree=snapshot(processes)
+    active=tree.get('active_window')
+    if not tree['available'] or not tree['complete'] or not active:
+        raise ValueError('native focus protection unavailable')
+    belongs=lambda node: (node['pid']==active['pid'] and node['started']==active['started'] and
+                          node['path'][:len(active['path'])]==active['path'])
+    focused=[node for node in tree['nodes'] if belongs(node) and 'focused' in node['states']]
+    if not focused:raise ValueError('native focused leaf unavailable')
+    depth=max(len(node['path']) for node in focused)
+    leaves=[node for node in focused if len(node['path'])==depth]
+    if len(leaves)!=1:raise ValueError('native focus ambiguous')
+    leaf=leaves[0]
+    ancestors=[node for node in tree['nodes'] if belongs(node) and leaf['path'][:len(node['path'])]==node['path']]
+    if any(node['protected'] or node['role'] in ('document web','password text') for node in ancestors):
+        raise ValueError('protected target requires Browser or Vault input')
+    identity={key:leaf[key] for key in ('pid','started','path','bounds')}
+    if expected is not None and identity!=expected:raise ValueError('native focus changed during input')
+    return identity
+
+
 def act(request):
     tree=snapshot(request['processes'])
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')

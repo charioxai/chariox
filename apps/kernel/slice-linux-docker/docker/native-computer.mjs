@@ -109,6 +109,11 @@ export class NativeComputer {
       const observer=command.observed_by??'adapter';
       if(this.heldOwner && this.heldOwner!==observer)throw new Error('MP-11: native key owner conflict');
       if(command._agent_input && input.kind==='keycode')throw new Error('MP-11: persistent physical keys require human input; agents use bounded key/hold');
+      // MP-11: native repeats and clipboard/middle-button paste cannot fence
+      // every text-producing event. Agents use focused text or a single chord.
+      if(command._agent_input && (['hold','clipboard_write'].includes(input.kind) || input.button===2))throw new Error('MP-11: native paste/repeat requires human or Vault input');
+      if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new Error('MP-11: protected target requires Vault input');
+      const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}
         else if(!this.held.has(input.keycode)) throw new Error('MP-11: key release without owned press');
@@ -116,7 +121,7 @@ export class NativeComputer {
       try {
         let physical;
         if(input.kind==='keycode' && this.execute===executeNative){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input},signal);}
-        const result=input.kind==='keycode' && this.execute===executeNative ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',input:input.kind==='composition'?{kind:'text',text:input.text}:input},binding.environment,signal);
+        const result=input.kind==='keycode' && this.execute===executeNative ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:input.kind==='composition'?{kind:'text',text:input.text}:input},binding.environment,signal);
         if(input.kind==='keycode' && input.state==='up') {this.held.delete(input.keycode);if(!this.held.size)this.heldOwner=null;}
         // Display PR5 consumes this event to wake XDamage capture immediately.
         this.wakeCapture({surface_id:binding.surface_id,generation:binding.generation,exact:true,reason:input.kind});

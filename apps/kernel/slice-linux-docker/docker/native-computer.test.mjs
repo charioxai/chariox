@@ -49,3 +49,23 @@ test('MP-08 provider shortcut casing resolves to physical base keys', () => {
     assert.equal(nativeInput({kind:'key',key},binding).key,expected);
   assert.equal(nativeInput({kind:'hold',key:'CTRL+A',duration_ms:5},binding).key,'ctrl+a');
 });
+
+test('MP-11 finding 1 agents cannot lend native clipboard, repeats or middle-button paste', async () => {
+  let calls=0;
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
+  for(const input of [{kind:'clipboard_write',text:'ordinary'}, {kind:'hold',key:'a',duration_ms:500},
+    {kind:'click',button:2,x:10,y:10}, {kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}]) {
+    await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{}));
+  }
+  assert.equal(calls,0);
+});
+
+test('MP-11 finding 1 each agent text/composition/chord dispatch carries live focus admission', async () => {
+  const sent=[];
+  const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
+  const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{sent.push(request);return {};}});
+  for(const input of [{kind:'text',text:'public'},{kind:'composition',text:'public'},{kind:'key',key:'CTRL+V'}]) {
+    await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+  }
+  assert(sent.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});

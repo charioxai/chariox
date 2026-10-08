@@ -44,14 +44,21 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action):
+def input_action(action, processes=None):
     kind = action['kind']
-    if kind == 'text': keyboard.type_text(action['text']); return
+    guard=None
+    if processes is not None and kind in ('text','key','hold'):
+        accessibility=load('native-accessibility')
+        expected=accessibility.input_target(processes)
+        guard=lambda: accessibility.input_target(processes,expected)
+    if processes is not None and (kind in ('hold','clipboard_write','keycode') or action.get('button')==2):
+        raise ValueError('native paste/repeat requires human or Vault input')
+    if kind == 'text': keyboard.type_text(action['text'],before_press=guard); return
     if kind=='pointer_hold':
         keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):
         key = action['key'].replace('Enter', 'Return')
-        keyboard.hold_input('key', key, action.get('duration_ms', 1)); return
+        keyboard.hold_input('key', key, action.get('duration_ms', 1),before_press=guard); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
     connection = display.Display()
     try:
@@ -90,7 +97,7 @@ def main(request):
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
         return accessibility.snapshot(request['processes']) if op=='accessibility' else accessibility.act(request)
-    if op == 'input': input_action(request['input']); return {'applied':True}
+    if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None); return {'applied':True}
     if op == 'release':
         connection=display.Display()
         try:

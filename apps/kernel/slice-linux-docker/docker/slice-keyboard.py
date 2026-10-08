@@ -148,12 +148,15 @@ def assert_secret_target(connection, expected_target):
         raise SecretTargetChanged()
 
 
-def type_text(text, expected_target=None):
+def type_text(text, expected_target=None, before_press=None):
     connection = display.Display()
     keyboard = ComputerTextKeyboard(connection)
     lifted = []
     active_keysym = None
     try:
+        if before_press is not None:
+            expected_target=focused_target(connection)
+            before_press()
         if expected_target is not None:
             assert_secret_target(connection, expected_target)
         keysyms = []
@@ -182,6 +185,9 @@ def type_text(text, expected_target=None):
         connection.sync()
 
         for keysym in keysyms:
+            # MP-11: inspect native leaf protection outside the server grab;
+            # fence its X focus inside the grab before each physical batch.
+            if before_press is not None:before_press()
             # MP-08 / MP-11: one keystroke batch under the X server grab.
             # Other display clients cannot change native focus between the
             # target check and physical input delivery. Never refocus a target.
@@ -217,7 +223,7 @@ def type_text(text, expected_target=None):
         connection.close()
 
 
-def hold_input(kind, value, duration_ms, x=None, y=None):
+def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
     """MP-08/MP-10/MP-11: press/hold/release within one owned Action.
 
     Hold only existing base-layout keys; text overlays stay in type_text.
@@ -228,6 +234,11 @@ def hold_input(kind, value, duration_ms, x=None, y=None):
     connection = display.Display()
     pressed = []
     try:
+        expected_target=None
+        if before_press is not None:
+            if duration_ms!=1:raise ValueError('agent native repeats unavailable')
+            expected_target=focused_target(connection)
+            before_press()
         if kind == "key":
             if not value or len(value.encode("utf-8")) > 128 or not value.isascii():
                 raise ValueError("invalid chord")
@@ -266,6 +277,7 @@ def hold_input(kind, value, duration_ms, x=None, y=None):
             raise ValueError("invalid hold kind")
         connection.grab_server()
         try:
+            if expected_target is not None:assert_secret_target(connection,expected_target)
             if any(connection.query_keymap()) or connection.screen().root.query_pointer().mask & 7936:
                 raise ValueError("native input already held")
             if kind == "button":

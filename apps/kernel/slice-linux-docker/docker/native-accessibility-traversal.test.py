@@ -261,5 +261,20 @@ class TraversalTest(unittest.TestCase):
             tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
             self.assertFalse(tree['complete'])
 
+    def test_mp11_finding1_native_text_focus_is_owned_complete_and_not_protected_or_web(self):
+        from unittest.mock import patch
+        frame={'pid':200,'started':'1','path':[0],'role':'frame','protected':False,'states':['showing'],'bounds':[0,0,640,480]}
+        leaf={**frame,'path':[0,0],'role':'text','states':['showing','focused','editable']}
+        tree={'available':True,'complete':True,'protected':False,'active_window':{key:frame[key] for key in ('pid','started','path')},'nodes':[frame,leaf],'uncovered':[]}
+        with patch.object(self.driver,'snapshot',return_value=tree):
+            expected=self.driver.input_target([])
+            self.assertEqual(expected['path'],[0,0])
+            for changed in [{**tree,'complete':False},{**tree,'active_window':None},
+                {**tree,'nodes':[frame,{**leaf,'protected':True}]},
+                {**tree,'nodes':[frame,{**leaf,'role':'document web'}]},
+                {**tree,'nodes':[frame,{**leaf,'path':[0,1]}]}]:
+                with patch.object(self.driver,'snapshot',return_value=changed):
+                    with self.assertRaises(ValueError):self.driver.input_target([],expected)
+
 
 if __name__ == '__main__': unittest.main()
