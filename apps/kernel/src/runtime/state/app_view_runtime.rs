@@ -998,7 +998,7 @@ mod tests {
         };
         let caller = view_caller(&binding, Some("session-1"));
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
-        assert_eq!(caller.room_id, "session-1");
+        assert_eq!(caller.room_id.as_deref(), Some("session-1"));
         assert!(caller.task_id.is_none() && caller.turn_id.is_none());
     }
 

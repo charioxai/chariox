@@ -50,7 +50,7 @@ impl KernelRuntimeState {
     /// when the hand-off is gone; a restored hand-off whose responder was lost
     /// is re-armed for its remaining window (its target is revalidated before
     /// any action), or expires.
-    pub(super) async fn reconcile_handoff(
+    pub(in crate::runtime::state) async fn reconcile_handoff(
         &self,
         session: &crate::session::RuntimeSession,
         handoff_id: &str,
@@ -188,7 +188,7 @@ impl KernelRuntimeState {
 
     /// Cancelling the task withdraws its pending hand-off; false when none
     /// was pending.
-    pub(super) fn withdraw_handoff(&self, room: &str, handoff_id: &str) -> bool {
+    pub(in crate::runtime::state) fn withdraw_handoff(&self, room: &str, handoff_id: &str) -> bool {
         // A claimed browser operation has a current-task cancellation fence.
         // Its own settlement reports the physical result; do not invent a lost source.
         if self

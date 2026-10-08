@@ -1,5 +1,8 @@
 //! MP-08 / MP-10 / MP-11 A07: local 477 protected owner hand-off shapes.
 use super::*;
+use crate::local::{
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue, RespondToHandoffRequest,
+};
 use crate::session::{
     HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionChoice,

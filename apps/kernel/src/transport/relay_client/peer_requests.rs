@@ -261,6 +261,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(identity) => identity,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 }
@@ -268,6 +269,7 @@ pub(super) async fn handle_daemon_peer_request(
         };
         let Some(sender) = canonical_peer_daemon_id(from_daemon_id) else {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -282,6 +284,7 @@ pub(super) async fn handle_daemon_peer_request(
                 && identity.subject != sender)
         {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -292,6 +295,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         let Some(owner) = router.notification_peer_owner(identity) else {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -312,6 +316,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(response) => response,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 }
