@@ -46,31 +46,50 @@ pub(crate) struct ProviderAccountCopyExpectation {
 }
 
 impl ProviderAccountCopyExpectation {
-    pub(crate) fn from_materialization(materialization: &ProviderAccountMaterialization) -> Result<Self, DaemonError> {
+    pub(crate) fn from_materialization(
+        materialization: &ProviderAccountMaterialization,
+    ) -> Result<Self, DaemonError> {
         Ok(Self {
             provider: normalize_provider(&materialization.profile.provider)?.into(),
-            source: materialization.copy_source.clone().ok_or_else(|| registry_error("record account copy", "copy source identity is absent"))?,
+            source: materialization.copy_source.clone().ok_or_else(|| {
+                registry_error("record account copy", "copy source identity is absent")
+            })?,
             source_account_id: materialization.profile.profile_id.clone(),
             renewable_services: renewable_services(materialization),
             generated_at_ms: materialization.generated_at_ms,
         })
     }
     fn matches(&self, copy: &ProviderAccountCopyMetadata) -> bool {
-        copy.source_machine_id == self.source.machine_id && copy.source_kernel_id == self.source.kernel_id
-            && copy.source_account_id == self.source_account_id && copy.copied_at_ms == self.generated_at_ms
+        copy.source_machine_id == self.source.machine_id
+            && copy.source_kernel_id == self.source.kernel_id
+            && copy.source_account_id == self.source_account_id
+            && copy.copied_at_ms == self.generated_at_ms
             && copy.renewable_services == self.renewable_services
     }
 }
 
-pub(crate) fn validate_copy_source_kernel(materialization: &ProviderAccountMaterialization, authenticated_kernel: &str) -> Result<(), DaemonError> {
+pub(crate) fn validate_copy_source_kernel(
+    materialization: &ProviderAccountMaterialization,
+    authenticated_kernel: &str,
+) -> Result<(), DaemonError> {
     match materialization.copy_source.as_ref() {
-        Some(source) if source.kernel_id == authenticated_kernel && !source.machine_id.trim().is_empty() => Ok(()),
+        Some(source)
+            if source.kernel_id == authenticated_kernel && !source.machine_id.trim().is_empty() =>
+        {
+            Ok(())
+        }
         None if materialization.files.is_empty() => Ok(()), // Separate metadata-only Vault launch path.
-        _ => Err(registry_error("materialize account copy", "copy provenance does not match the authenticated source kernel")),
+        _ => Err(registry_error(
+            "materialize account copy",
+            "copy provenance does not match the authenticated source kernel",
+        )),
     }
 }
 
-fn same_copy_generation(left: &ProviderAccountCopyMetadata, right: &ProviderAccountCopyMetadata) -> bool {
+fn same_copy_generation(
+    left: &ProviderAccountCopyMetadata,
+    right: &ProviderAccountCopyMetadata,
+) -> bool {
     let mut left = left.clone();
     left.auth_state = right.auth_state.clone();
     left.warning_seen = right.warning_seen;
@@ -80,15 +99,30 @@ fn same_copy_generation(left: &ProviderAccountCopyMetadata, right: &ProviderAcco
 fn renewable_services(materialization: &ProviderAccountMaterialization) -> Vec<String> {
     let mut services = BTreeSet::new();
     for file in &materialization.files {
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&file.contents_base64) else { continue; };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue; };
-        let provider = crate::provider::canonical_provider_family(&materialization.profile.provider).unwrap_or_default();
-        if !renewable_login(provider, &value) { continue; }
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&file.contents_base64)
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let provider =
+            crate::provider::canonical_provider_family(&materialization.profile.provider)
+                .unwrap_or_default();
+        if !renewable_login(provider, &value) {
+            continue;
+        }
         if provider == "opencode" {
             for (service, auth) in value.as_object().into_iter().flatten() {
-                if auth.get("type").and_then(serde_json::Value::as_str) == Some("oauth") && nonempty(auth.get("refresh")) { services.insert(service.clone()); }
+                if auth.get("type").and_then(serde_json::Value::as_str) == Some("oauth")
+                    && nonempty(auth.get("refresh"))
+                {
+                    services.insert(service.clone());
+                }
             }
-        } else { services.insert(provider.into()); }
+        } else {
+            services.insert(provider.into());
+        }
     }
     services.into_iter().collect()
 }
@@ -98,89 +132,207 @@ impl ProviderAccountProfileRegistry {
     /// including requests that preserve an existing receiving login. The journal
     /// is private, credential-free local state and outlives profile removal.
     pub(crate) fn admit_slice_copy_generation(
-        &self, owner: &str, materialization: &ProviderAccountMaterialization,
+        &self,
+        owner: &str,
+        materialization: &ProviderAccountMaterialization,
     ) -> Result<(), DaemonError> {
         let provider = normalize_provider(&materialization.profile.provider)?;
-        let source = materialization.copy_source.as_ref().ok_or_else(|| registry_error("admit account copy", "copy source identity is absent"))?;
-        let target = self.copy_identity.as_ref().ok_or_else(|| registry_error("admit account copy", "receiving machine identity is absent"))?;
+        let source = materialization.copy_source.as_ref().ok_or_else(|| {
+            registry_error("admit account copy", "copy source identity is absent")
+        })?;
+        let target = self.copy_identity.as_ref().ok_or_else(|| {
+            registry_error("admit account copy", "receiving machine identity is absent")
+        })?;
         let document = self.write_document()?;
         let matches_source = |copy: &ProviderAccountCopyMetadata| {
-            copy.source_kernel_id == source.kernel_id && copy.source_machine_id == source.machine_id
+            copy.source_kernel_id == source.kernel_id
+                && copy.source_machine_id == source.machine_id
                 && copy.source_account_id == materialization.profile.profile_id
-                && copy.target_kernel_id == target.kernel_id && copy.target_machine_id == target.machine_id
+                && copy.target_kernel_id == target.kernel_id
+                && copy.target_machine_id == target.machine_id
         };
         // Seed the high-water mark from existing copies/tombstones on upgrade.
-        let recorded = document.profiles.iter().filter(|profile| profile.public.owner_user_id == owner && profile.public.provider == provider)
-            .flat_map(|profile| profile.public.materializations.iter().filter_map(|status| status.copy.as_ref()))
-            .chain(document.retired_account_copies.iter().filter(|entry| entry.owner_user_id == owner && entry.observation.provider == provider).filter_map(|entry| entry.observation.status.copy.as_ref()))
-            .filter(|copy| matches_source(copy)).map(|copy| copy.copied_at_ms).max().unwrap_or(0);
-        let scope = serde_json::to_vec(&("slice-account-copy", owner, provider, &source.machine_id, &source.kernel_id, &materialization.profile.profile_id, &target.machine_id, &target.kernel_id))
-            .map_err(|error| registry_error("admit account copy", error.to_string()))?;
+        let recorded = document
+            .profiles
+            .iter()
+            .filter(|profile| {
+                profile.public.owner_user_id == owner && profile.public.provider == provider
+            })
+            .flat_map(|profile| {
+                profile
+                    .public
+                    .materializations
+                    .iter()
+                    .filter_map(|status| status.copy.as_ref())
+            })
+            .chain(
+                document
+                    .retired_account_copies
+                    .iter()
+                    .filter(|entry| {
+                        entry.owner_user_id == owner && entry.observation.provider == provider
+                    })
+                    .filter_map(|entry| entry.observation.status.copy.as_ref()),
+            )
+            .filter(|copy| matches_source(copy))
+            .map(|copy| copy.copied_at_ms)
+            .max()
+            .unwrap_or(0);
+        let scope = serde_json::to_vec(&(
+            "slice-account-copy",
+            owner,
+            provider,
+            &source.machine_id,
+            &source.kernel_id,
+            &materialization.profile.profile_id,
+            &target.machine_id,
+            &target.kernel_id,
+        ))
+        .map_err(|error| registry_error("admit account copy", error.to_string()))?;
         let directory = self.path.with_extension("copy-import-generations");
-        if path_entry_exists(&directory)? { validate_managed_directory(&directory, "admit account copy")?; }
+        if path_entry_exists(&directory)? {
+            validate_managed_directory(&directory, "admit account copy")?;
+        }
         fs::create_dir_all(&directory).map_err(registry_io("admit account copy"))?;
         set_private_dir_permissions(&directory)?;
         let path = directory.join(format!("{:x}", Sha256::digest(scope)));
         let consumed = read_bounded_regular_file_no_follow(&path, 32, "copy import generation")?
-            .map(|bytes| std::str::from_utf8(&bytes).ok().and_then(|text| text.trim().parse::<u64>().ok())
-                .ok_or_else(|| registry_error("admit account copy", "invalid copy import generation journal")))
-            .transpose()?.unwrap_or(0);
+            .map(|bytes| {
+                std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u64>().ok())
+                    .ok_or_else(|| {
+                        registry_error(
+                            "admit account copy",
+                            "invalid copy import generation journal",
+                        )
+                    })
+            })
+            .transpose()?
+            .unwrap_or(0);
         if materialization.generated_at_ms <= recorded.max(consumed) {
             return Err(registry_error("admit account copy", "stale account copy import; request a new owner import or log in on the receiving machine"));
         }
-        atomic_write_private(&path, format!("{}\n", materialization.generated_at_ms).as_bytes())
+        atomic_write_private(
+            &path,
+            format!("{}\n", materialization.generated_at_ms).as_bytes(),
+        )
     }
 
     pub(crate) fn record_confirmed_account_copy(
-        &self, owner: &str, expected: &ProviderAccountCopyExpectation,
+        &self,
+        owner: &str,
+        expected: &ProviderAccountCopyExpectation,
         target_kind: ProviderAccountMaterializationTargetKind,
-        target_machine: &str, target_kernel: &str, target_account: &str,
+        target_machine: &str,
+        target_kernel: &str,
+        target_account: &str,
         mut status: ProviderAccountMaterializationStatus,
     ) -> Result<(), DaemonError> {
         let profile = self.get(owner, &expected.provider, &expected.source_account_id)?;
-        let previous = profile.materializations.iter().find(|entry| entry.target_kind == target_kind && entry.target_ref == target_kernel).and_then(|entry| entry.copy.as_ref());
-        let valid = self.copy_identity.as_ref().zip(status.copy.as_ref()).is_some_and(|(identity, copy)| {
-            expected.source.machine_id == identity.machine_id && expected.source.kernel_id == identity.kernel_id
-                && copy.source_machine_id == identity.machine_id && copy.source_kernel_id == identity.kernel_id
-                && copy.source_account_id == expected.source_account_id
-                && copy.target_machine_id == target_machine && copy.target_kernel_id == target_kernel
-                && copy.target_account_id == target_account && status.target_ref == target_kernel && status.target_kind == target_kind
-                && (expected.matches(copy) || previous.is_some_and(|issued| same_copy_generation(issued, copy)))
-        });
-        if !valid { return Err(registry_error("record account copy", "copy receipt does not match the home-issued account, generation and receiving placement")); }
+        let previous = profile
+            .materializations
+            .iter()
+            .find(|entry| entry.target_kind == target_kind && entry.target_ref == target_kernel)
+            .and_then(|entry| entry.copy.as_ref());
+        let valid = self
+            .copy_identity
+            .as_ref()
+            .zip(status.copy.as_ref())
+            .is_some_and(|(identity, copy)| {
+                expected.source.machine_id == identity.machine_id
+                    && expected.source.kernel_id == identity.kernel_id
+                    && copy.source_machine_id == identity.machine_id
+                    && copy.source_kernel_id == identity.kernel_id
+                    && copy.source_account_id == expected.source_account_id
+                    && copy.target_machine_id == target_machine
+                    && copy.target_kernel_id == target_kernel
+                    && copy.target_account_id == target_account
+                    && status.target_ref == target_kernel
+                    && status.target_kind == target_kind
+                    && (expected.matches(copy)
+                        || previous.is_some_and(|issued| same_copy_generation(issued, copy)))
+            });
+        if !valid {
+            return Err(registry_error("record account copy", "copy receipt does not match the home-issued account, generation and receiving placement"));
+        }
         let copy = status.copy.as_mut().unwrap();
         copy.warning_seen = previous.is_some_and(|copy| copy.warning_seen);
         status.observed_at_ms = crate::session::unix_epoch_ms();
-        status.state = if copy.auth_state == ProviderAccountCopyAuthState::Authenticated { ProviderAccountMaterializationState::Materialized } else { ProviderAccountMaterializationState::Stale };
+        status.state = if copy.auth_state == ProviderAccountCopyAuthState::Authenticated {
+            ProviderAccountMaterializationState::Materialized
+        } else {
+            ProviderAccountMaterializationState::Stale
+        };
         status.last_error = None;
-        self.update_materialization_status(owner, &expected.provider, &expected.source_account_id, status)?;
+        self.update_materialization_status(
+            owner,
+            &expected.provider,
+            &expected.source_account_id,
+            status,
+        )?;
         Ok(())
     }
 
     pub(crate) fn apply_remote_account_copy_observation(
-        &self, owner: &str, provider: &str, source_account: &str,
+        &self,
+        owner: &str,
+        provider: &str,
+        source_account: &str,
         target_kind: ProviderAccountMaterializationTargetKind,
-        target_machine: &str, target_kernel: &str,
+        target_machine: &str,
+        target_kernel: &str,
         observation: &ProviderAccountCopyObservation,
     ) -> Result<(), DaemonError> {
-        let Some(copy) = &observation.status.copy else { return Ok(()); };
-        if observation.status.target_kind != target_kind || observation.status.target_ref != target_kernel
-            || copy.target_kernel_id != target_kernel || copy.target_machine_id != target_machine
-            || !self.copy_identity.as_ref().is_some_and(|identity| copy.source_kernel_id == identity.kernel_id && copy.source_machine_id == identity.machine_id)
-        { return Ok(()); }
+        let Some(copy) = &observation.status.copy else {
+            return Ok(());
+        };
+        if observation.status.target_kind != target_kind
+            || observation.status.target_ref != target_kernel
+            || copy.target_kernel_id != target_kernel
+            || copy.target_machine_id != target_machine
+            || !self.copy_identity.as_ref().is_some_and(|identity| {
+                copy.source_kernel_id == identity.kernel_id
+                    && copy.source_machine_id == identity.machine_id
+            })
+        {
+            return Ok(());
+        }
         let provider = normalize_provider(provider)?;
-        if observation.provider != provider { return Ok(()); }
+        if observation.provider != provider {
+            return Ok(());
+        }
         let mut document = self.write_document()?;
-        let Ok(profile) = resolve_stored_profile_mut(&mut document, owner, provider, source_account) else { return Ok(()); };
-        if copy.source_account_id != profile.public.profile_id { return Ok(()); }
-        let Some(issued) = profile.public.materializations.iter_mut().find(|entry| entry.target_kind == target_kind && entry.target_ref == target_kernel) else { return Ok(()); };
-        let Some(issued_copy) = &mut issued.copy else { return Ok(()); };
-        if !same_copy_generation(issued_copy, copy) || issued_copy.auth_state == copy.auth_state { return Ok(()); }
+        let Ok(profile) =
+            resolve_stored_profile_mut(&mut document, owner, provider, source_account)
+        else {
+            return Ok(());
+        };
+        if copy.source_account_id != profile.public.profile_id {
+            return Ok(());
+        }
+        let Some(issued) =
+            profile.public.materializations.iter_mut().find(|entry| {
+                entry.target_kind == target_kind && entry.target_ref == target_kernel
+            })
+        else {
+            return Ok(());
+        };
+        let Some(issued_copy) = &mut issued.copy else {
+            return Ok(());
+        };
+        if !same_copy_generation(issued_copy, copy) || issued_copy.auth_state == copy.auth_state {
+            return Ok(());
+        }
         // Only observation fields can change. Placement/provenance, warning policy
         // and generation remain the home-issued values.
         issued_copy.auth_state = copy.auth_state.clone();
         issued.observed_at_ms = crate::session::unix_epoch_ms();
-        issued.state = if copy.auth_state == ProviderAccountCopyAuthState::Authenticated { ProviderAccountMaterializationState::Materialized } else { ProviderAccountMaterializationState::Stale };
+        issued.state = if copy.auth_state == ProviderAccountCopyAuthState::Authenticated {
+            ProviderAccountMaterializationState::Materialized
+        } else {
+            ProviderAccountMaterializationState::Stale
+        };
         self.persist_locked(&document)
     }
 
@@ -621,16 +773,33 @@ mod tests {
     #[test]
     fn secrev_f3_copy_observations_cannot_retarget_or_replace_issued_inventory() {
         let root = crate::test_support::TestWorktree::new("copy-observation-authority");
-        let registry = ProviderAccountProfileRegistry::open(root.path().join("registry.json")).unwrap()
+        let registry = ProviderAccountProfileRegistry::open(root.path().join("registry.json"))
+            .unwrap()
             .with_machine_identity("home-machine", "home-kernel");
         let source = registry.create_managed("owner", "codex", "Source").unwrap();
         let other = registry.create_managed("owner", "codex", "Other").unwrap();
         let issued = ProviderAccountMaterializationStatus {
-            target_kind: ProviderAccountMaterializationTargetKind::Worker, target_ref: "worker-a".into(),
-            state: ProviderAccountMaterializationState::Materialized, observed_at_ms: 1, last_error: None,
-            copy: Some(ProviderAccountCopyMetadata { source_machine_id: "home-machine".into(), source_kernel_id: "home-kernel".into(), source_account_id: source.profile_id.clone(), target_machine_id: "machine-a".into(), target_kernel_id: "worker-a".into(), target_account_id: "receiver-account".into(), renewable_services: vec!["codex".into()], auth_state: ProviderAccountCopyAuthState::Authenticated, copied_at_ms: 1, warning_seen: false }),
+            target_kind: ProviderAccountMaterializationTargetKind::Worker,
+            target_ref: "worker-a".into(),
+            state: ProviderAccountMaterializationState::Materialized,
+            observed_at_ms: 1,
+            last_error: None,
+            copy: Some(ProviderAccountCopyMetadata {
+                source_machine_id: "home-machine".into(),
+                source_kernel_id: "home-kernel".into(),
+                source_account_id: source.profile_id.clone(),
+                target_machine_id: "machine-a".into(),
+                target_kernel_id: "worker-a".into(),
+                target_account_id: "receiver-account".into(),
+                renewable_services: vec!["codex".into()],
+                auth_state: ProviderAccountCopyAuthState::Authenticated,
+                copied_at_ms: 1,
+                warning_seen: false,
+            }),
         };
-        registry.update_materialization_status("owner", "codex", &source.profile_id, issued.clone()).unwrap();
+        registry
+            .update_materialization_status("owner", "codex", &source.profile_id, issued.clone())
+            .unwrap();
         for attack in 0..6 {
             let mut status = issued.clone();
             status.copy.as_mut().unwrap().auth_state = ProviderAccountCopyAuthState::NeedsLogin;
@@ -642,16 +811,85 @@ mod tests {
                 4 => status.copy.as_mut().unwrap().renewable_services = vec!["attacker".into()],
                 _ => status.copy.as_mut().unwrap().target_account_id = "other-receiver".into(),
             }
-            let expected = ProviderAccountCopyExpectation {provider: "codex".into(), source: ProviderAccountCopySource {machine_id: "home-machine".into(), kernel_id: "home-kernel".into()}, source_account_id: source.profile_id.clone(), renewable_services: vec!["codex".into()], generated_at_ms: 1};
-            assert!(registry.record_confirmed_account_copy("owner", &expected, ProviderAccountMaterializationTargetKind::Worker, "machine-a", "worker-a", "receiver-account", status.clone()).is_err(), "forged receipt {attack} was accepted");
-            registry.apply_remote_account_copy_observation("owner", "codex", &source.profile_id, ProviderAccountMaterializationTargetKind::Worker, "machine-a", "worker-a", &ProviderAccountCopyObservation {provider: "codex".into(), status}).unwrap();
-            assert_eq!(registry.get("owner", "codex", &source.profile_id).unwrap().materializations, vec![issued.clone()], "attack {attack} changed the issued copy");
-            assert!(registry.get("owner", "codex", &other.profile_id).unwrap().materializations.is_empty());
+            let expected = ProviderAccountCopyExpectation {
+                provider: "codex".into(),
+                source: ProviderAccountCopySource {
+                    machine_id: "home-machine".into(),
+                    kernel_id: "home-kernel".into(),
+                },
+                source_account_id: source.profile_id.clone(),
+                renewable_services: vec!["codex".into()],
+                generated_at_ms: 1,
+            };
+            assert!(
+                registry
+                    .record_confirmed_account_copy(
+                        "owner",
+                        &expected,
+                        ProviderAccountMaterializationTargetKind::Worker,
+                        "machine-a",
+                        "worker-a",
+                        "receiver-account",
+                        status.clone()
+                    )
+                    .is_err(),
+                "forged receipt {attack} was accepted"
+            );
+            registry
+                .apply_remote_account_copy_observation(
+                    "owner",
+                    "codex",
+                    &source.profile_id,
+                    ProviderAccountMaterializationTargetKind::Worker,
+                    "machine-a",
+                    "worker-a",
+                    &ProviderAccountCopyObservation {
+                        provider: "codex".into(),
+                        status,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                registry
+                    .get("owner", "codex", &source.profile_id)
+                    .unwrap()
+                    .materializations,
+                vec![issued.clone()],
+                "attack {attack} changed the issued copy"
+            );
+            assert!(registry
+                .get("owner", "codex", &other.profile_id)
+                .unwrap()
+                .materializations
+                .is_empty());
         }
         let mut observed = issued.clone();
         observed.copy.as_mut().unwrap().auth_state = ProviderAccountCopyAuthState::NeedsLogin;
-        registry.apply_remote_account_copy_observation("owner", "codex", &source.profile_id, ProviderAccountMaterializationTargetKind::Worker, "machine-a", "worker-a", &ProviderAccountCopyObservation {provider: "codex".into(), status: observed}).unwrap();
-        assert_eq!(registry.get("owner", "codex", &source.profile_id).unwrap().materializations[0].copy.as_ref().unwrap().auth_state, ProviderAccountCopyAuthState::NeedsLogin);
+        registry
+            .apply_remote_account_copy_observation(
+                "owner",
+                "codex",
+                &source.profile_id,
+                ProviderAccountMaterializationTargetKind::Worker,
+                "machine-a",
+                "worker-a",
+                &ProviderAccountCopyObservation {
+                    provider: "codex".into(),
+                    status: observed,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("owner", "codex", &source.profile_id)
+                .unwrap()
+                .materializations[0]
+                .copy
+                .as_ref()
+                .unwrap()
+                .auth_state,
+            ProviderAccountCopyAuthState::NeedsLogin
+        );
     }
 
     #[test]

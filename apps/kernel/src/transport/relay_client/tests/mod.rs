@@ -1,9 +1,9 @@
 mod browser_peer_version;
 mod client_requests;
+mod managed_copy_security;
 mod ordinary_lease_caller;
 mod peer_events;
 mod peer_transport;
-mod managed_copy_security;
 mod project_environment_setup_status_latency;
 mod registration;
 mod remote_agents;

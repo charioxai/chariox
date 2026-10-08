@@ -151,14 +151,21 @@ pub(super) fn drain_claude_transcript_raw_since(
         }
         let mut chunks = claude_transcript_chunks(&value);
         for chunk in &mut chunks {
-            if let Some(failure) = crate::provider::classify_provider_terminal_failure_output_text("claude", &chunk.text) {
+            if let Some(failure) = crate::provider::classify_provider_terminal_failure_output_text(
+                "claude",
+                &chunk.text,
+            ) {
                 // The official harness marks synthetic API errors outside message
                 // content. Model/tool text cannot supply that authentication authority.
                 if crate::provider::renewal_failure::renewal_failed("claude", &failure)
                     && value.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true)
-                { continue; }
+                {
+                    continue;
+                }
                 chunk.kind = TerminalOutputKind::ProviderError;
-                if drain.terminal_failure.is_none() { drain.terminal_failure = Some(failure); }
+                if drain.terminal_failure.is_none() {
+                    drain.terminal_failure = Some(failure);
+                }
             }
         }
         drain.chunks.extend(chunks);

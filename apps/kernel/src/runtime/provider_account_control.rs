@@ -647,7 +647,9 @@ fn import_managed_account_copy_with_registry(
     // One receiving authority serializes admission and installation. Recording a
     // request only after installation would leave a replay window on failure.
     static IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _import = IMPORT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _import = IMPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::account_profile::validate_managed_context_materialization_shape(
         &materialization.profile.provider,
         &materialization,

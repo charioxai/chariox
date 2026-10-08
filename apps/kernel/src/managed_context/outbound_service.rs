@@ -684,7 +684,12 @@ pub(crate) fn start_managed_context_outbound_operation(
                 );
                 for receipt in &result.receipt.provider_accounts {
                     if let Some(status) = &receipt.copy {
-                        let copy = status.copy.as_ref().ok_or_else(|| outbound_service_error("target account receipt has no copy identity", false))?;
+                        let copy = status.copy.as_ref().ok_or_else(|| {
+                            outbound_service_error(
+                                "target account receipt has no copy identity",
+                                false,
+                            )
+                        })?;
                         let expected = prepared.account_copy_expectations.iter().find(|expected| expected.provider == receipt.provider && expected.source_account_id == copy.source_account_id)
                             .ok_or_else(|| outbound_service_error("target account receipt does not match an issued provider account", false))?;
                         provider_account_profiles.record_confirmed_account_copy(
@@ -1055,7 +1060,10 @@ fn prepare_managed_context_package_with_environment(
     )?;
     cleanup.keep();
     Ok(PreparedOutboundArtifact {
-        package, capability, artifact_root, account_copy_expectations,
+        package,
+        capability,
+        artifact_root,
+        account_copy_expectations,
     })
 }
 
@@ -1393,11 +1401,15 @@ fn retire_artifact_root(root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn account_copy_expectations(accounts: &ManagedContextPackageProviderAccounts) -> Result<Vec<crate::account_profile::ProviderAccountCopyExpectation>, DaemonError> {
+fn account_copy_expectations(
+    accounts: &ManagedContextPackageProviderAccounts,
+) -> Result<Vec<crate::account_profile::ProviderAccountCopyExpectation>, DaemonError> {
     match accounts {
         ManagedContextPackageProviderAccounts::None => Ok(Vec::new()),
-        ManagedContextPackageProviderAccounts::Selected { materializations } => materializations.iter()
-            .map(crate::account_profile::ProviderAccountCopyExpectation::from_materialization).collect(),
+        ManagedContextPackageProviderAccounts::Selected { materializations } => materializations
+            .iter()
+            .map(crate::account_profile::ProviderAccountCopyExpectation::from_materialization)
+            .collect(),
     }
 }
 
@@ -1456,12 +1468,32 @@ fn restore_prepared_artifact(
             false,
         ));
     }
-    let account_copy_expectations = if matches!(plan.provider_accounts, ManagedContextProviderAccountSelection::None) { Vec::new() } else {
-        let source = ticket.context_plan.source_binding().ok_or_else(|| outbound_service_error("retained package has no authenticated source binding", false))?;
-        let extracted = crate::managed_context::package::extract_managed_context_package(crate::managed_context::package::ManagedContextPackageImportRequest {
-            package_path: package_path.clone(), expected_package_sha256: persisted.package_sha256.clone(),
-            expected_binding: crate::managed_context::package::ManagedContextPackageBinding {plan: plan.clone(), target_environment_id: ticket.environment_id.clone(), source_kernel_id: source.kernel_id.into(), source_key_thumbprint: source.key_thumbprint.into(), target_kernel_id: ticket.target.kernel_id.clone(), target_key_thumbprint: ticket.target.key_thumbprint.clone()},
+    let account_copy_expectations = if matches!(
+        plan.provider_accounts,
+        ManagedContextProviderAccountSelection::None
+    ) {
+        Vec::new()
+    } else {
+        let source = ticket.context_plan.source_binding().ok_or_else(|| {
+            outbound_service_error(
+                "retained package has no authenticated source binding",
+                false,
+            )
         })?;
+        let extracted = crate::managed_context::package::extract_managed_context_package(
+            crate::managed_context::package::ManagedContextPackageImportRequest {
+                package_path: package_path.clone(),
+                expected_package_sha256: persisted.package_sha256.clone(),
+                expected_binding: crate::managed_context::package::ManagedContextPackageBinding {
+                    plan: plan.clone(),
+                    target_environment_id: ticket.environment_id.clone(),
+                    source_kernel_id: source.kernel_id.into(),
+                    source_key_thumbprint: source.key_thumbprint.into(),
+                    target_kernel_id: ticket.target.kernel_id.clone(),
+                    target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                },
+            },
+        )?;
         account_copy_expectations(&extracted.provider_accounts)?
     };
     Ok(PreparedOutboundArtifact {
@@ -1476,7 +1508,8 @@ fn restore_prepared_artifact(
             git_credentials_sha256: persisted.git_credentials_sha256,
         },
         capability: persisted.capability,
-        artifact_root, account_copy_expectations,
+        artifact_root,
+        account_copy_expectations,
     })
 }
 
@@ -1818,10 +1851,22 @@ mod tests {
         let root = crate::test_support::TestWorktree::new("committed-package-cleanup");
         let artifact = root.path().join("outbound");
         create_private_directory(&artifact).unwrap();
-        fs::write(artifact.join("managed-context.pkg"), b"synthetic-credential-package").unwrap();
-        let result = finish_committed_account_package(&artifact, || Err(outbound_service_error("source profile removed after commit", false)));
+        fs::write(
+            artifact.join("managed-context.pkg"),
+            b"synthetic-credential-package",
+        )
+        .unwrap();
+        let result = finish_committed_account_package(&artifact, || {
+            Err(outbound_service_error(
+                "source profile removed after commit",
+                false,
+            ))
+        });
         assert!(result.is_err());
-        assert!(!artifact.exists(), "completed credential package outlived failed bookkeeping");
+        assert!(
+            !artifact.exists(),
+            "completed credential package outlived failed bookkeeping"
+        );
     }
 
     fn git_enrollment_test_ticket(
