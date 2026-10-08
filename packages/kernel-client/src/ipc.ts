@@ -615,8 +615,12 @@ export class LocalIpcClient {
       } catch (error) {
         lifetime.throwIfAborted()
         if (!replayAfterWrite && error instanceof LocalIpcError
-          && (error.code === "connection_closed" || error.code === "request_timeout")) {
-          const lost = error.code === "request_timeout" ? "no answer in time" : "the connection closed before the answer"
+          && (error.code === "connection_closed" || error.code === "request_timeout" || error.code === "write_failed")) {
+          // MP-11 A07: a send error can follow a partial write. Protected input
+          // and other unreceipted effects must never retry that uncertain write.
+          const lost = error.code === "request_timeout" ? "no answer in time"
+            : error.code === "write_failed" ? "the write outcome was not confirmed"
+              : "the connection closed before the answer"
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
