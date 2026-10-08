@@ -185,6 +185,10 @@ export class KernelBrowserHost {
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
+    // MP-11: a refused attestation (animated page, caret) costs a lease and two
+    // protected captures. Retry it per document/policy after a doubling backoff.
+    const refusals=entry?.document===tab.document_id&&entry.policy===this.protection?entry.refusals??0:0;
+    if(refusals&&performance.now()<entry.retryAt)return null;
     if(entry&&(entry.document!==tab.document_id||entry.source?.closed)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
@@ -197,7 +201,9 @@ export class KernelBrowserHost {
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
-      entry={source,document:tab.document_id,ready:source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>null)};this.compositors.set(tab.tab_id,entry);
+      const created={source,document:tab.document_id,policy};
+      created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
+      entry=created;this.compositors.set(tab.tab_id,entry);
     }
     return await entry.ready;
   }
