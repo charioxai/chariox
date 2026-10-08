@@ -191,6 +191,21 @@ const ASSETS: &[(&str, &str)] = &[
     ),
 ];
 struct Scratch(PathBuf);
+fn install_failure(status: Option<i32>, install_id: Option<&str>) -> DaemonError {
+    if let Some(id) = install_id.filter(|id| {
+        !id.is_empty()
+            && id.len() <= 48
+            && id.as_bytes()[0].is_ascii_lowercase()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    }) {
+        if status == Some(75) {
+            return error(&format!("Another install operation owns this install ID. On the SSH target, check ~/.local/share/chariox/ssh-machines/.{id}.lock. Wait for the operation to finish; if interrupted, confirm no installer for this ID is running, remove only that empty lock directory, then retry the same command."));
+        }
+    }
+    error("SSH install failed; check access, signed release, enrollment and user service prerequisites")
+}
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -235,7 +250,10 @@ async fn deploy(state: &Path, input: Value) -> Result<Value, DaemonError> {
     .map_err(|_| error("SSH install timed out"))?
     .map_err(|_| error("SSH install subprocess failed"))?;
     if !output.status.success() || output.stdout.len() > 8192 {
-        return Err(error("SSH install failed; check access, signed release, enrollment and user service prerequisites"));
+        return Err(install_failure(
+            output.status.code(),
+            input.pointer("/request/installId").and_then(Value::as_str),
+        ));
     }
     serde_json::from_slice(&output.stdout).map_err(|_| error("invalid SSH install result"))
 }
@@ -418,6 +436,20 @@ pub(crate) async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn byom_mp07_mp11_lock_exit_maps_only_a_validated_install_id_to_recovery() {
+        let message = install_failure(Some(75), Some("byom-one")).to_string();
+        assert!(message.contains("~/.local/share/chariox/ssh-machines/.byom-one.lock"));
+        assert!(message.contains("confirm no installer"));
+        for id in [None, Some(""), Some("../private"), Some("a\nsecret")] {
+            assert!(!install_failure(Some(75), id).to_string().contains(".lock"));
+        }
+        for status in [None, Some(1), Some(255)] {
+            assert!(!install_failure(status, Some("byom-one"))
+                .to_string()
+                .contains(".lock"));
+        }
+    }
     #[tokio::test]
     async fn byom_mp08_mp11_issue_revoke_contract_uses_kernel_header_and_no_human_session() {
         use std::io::{Read, Write};

@@ -46,7 +46,7 @@ async function ssh(host, command, input, { signal, timeoutMs = 300_000 } = {}) {
   signal?.addEventListener("abort", cancel, { once: true })
   const closed = new Promise((resolve, reject) => {
     child.once("error", reject)
-    child.once("close", (code) => code === 0 && !failed ? resolve(output) : reject(failed ?? new Error("SSH deployment failed; check SSH access, target prerequisites and install ownership")))
+    child.once("close", (code) => code === 0 && !failed ? resolve(output) : reject(failed ?? Object.assign(new Error("SSH deployment failed; check SSH access, target prerequisites and install ownership"), { exitCode: code === 75 ? 75 : 1 })))
   })
   // Attach immediately: close can arrive while the upload is still producing.
   closed.catch(() => {})

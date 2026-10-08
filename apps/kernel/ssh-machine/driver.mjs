@@ -12,7 +12,7 @@ try {
   const request = { ...input.request, action: input.request.action === "install" ? "start" : input.request.action }
   const result = await runSshMachine(input.host, request, undefined, { enrollment: input.enrollment })
   process.stdout.write(JSON.stringify(result))
-} catch {
+} catch (error) {
   process.stderr.write("MP-07/MP-08/MP-11: SSH deployment failed; check access, signed release, enrollment and user service prerequisites\n")
-  process.exitCode = 1
+  process.exitCode = error?.exitCode === 75 ? 75 : 1
 } finally { if (input?.enrollment) input.enrollment.ticket = "" }

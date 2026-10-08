@@ -20,6 +20,9 @@ export function validateRequest(r) {
 function installLockDiagnostic(lock) {
   return `another install operation owns this install ID: ${lock}; wait for it to finish. If interrupted, first confirm no installer for this install ID is running, then remove only this empty lock directory and retry the same Setup or SSH command.`
 }
+function installLocked(lock) {
+  throw Object.assign(new Error(installLockDiagnostic(lock)), { exitCode: 75 })
+}
 async function metadata(path) {
   return lstat(path).catch(e => e.code === "ENOENT" ? null : Promise.reject(e))
 }
@@ -121,7 +124,7 @@ async function pendingRemoval(root, marker, serviceManager) {
 // MP-08 / MP-11: absence is a read-only target fact, never inferred from an SSH failure.
 async function inspectMachine(r, home, stage, serviceManager) {
   const parent = await existingTree(home, ".local/share/chariox/ssh-machines")
-  if (parent && await metadata(join(parent, `.${r.installId}.lock`))) fail(installLockDiagnostic(join(parent, `.${r.installId}.lock`)))
+  if (parent && await metadata(join(parent, `.${r.installId}.lock`))) installLocked(join(parent, `.${r.installId}.lock`))
   const unitDir = await existingTree(home, ".config/systemd/user")
   const root = parent ? join(parent, r.installId) : null
   const service = `chariox-ssh-${r.installId}.service`, unit = unitDir ? join(unitDir, service) : null
@@ -167,7 +170,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
   const lock = join(installParent, `.${r.installId}.lock`)
   await mkdir(lock, { mode: 0o700 }).catch(error => {
     if (error.code !== "EEXIST") throw error
-    fail(installLockDiagnostic(lock))
+    installLocked(lock)
   })
   let scratch
   try {
@@ -286,9 +289,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } else r = JSON.parse(await regular(process.argv[2], 4096))
     try { process.stdout.write(`${JSON.stringify(await runMachine(r, { enrollment }))}\n`) }
     finally { if (enrollment) enrollment.ticket = "" }
-  } catch {
+  } catch (error) {
     // Target errors can contain paths/profile output. The home exposes only a bounded generic failure.
     process.stderr.write("MP-07/MP-08/MP-11: SSH machine installation refused\n")
-    process.exitCode = 1
+    process.exitCode = error?.exitCode === 75 ? 75 : 1
   }
 }
