@@ -51,6 +51,9 @@ pub(crate) struct KernelBrowserAdmission {
 }
 
 impl KernelBrowserAdmission {
+    pub(crate) fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
     /// Focus epochs have no authority callback. While holding the actor model,
     /// check only atomic revocation: callbacks may acquire the host lock, whose
     /// retirement path takes host then model. Full authority is checked outside.

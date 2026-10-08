@@ -442,6 +442,39 @@ async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_pending_source_regran
     );
 }
 
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_models_cannot_bypass_pending_owner_step()
+{
+    let (state, room) = fixture();
+    let h = handoff();
+    register(&state, &room, &h).await;
+    let host = &state.owned.kernel_browser_host;
+    host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
+    host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+    let admission = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+    let error = state
+        .kernel_browser_operation_admitted(
+            DEFAULT_LOCAL_USER_ID,
+            Some(admission),
+            "host.browser",
+            json!({"op":"input","tab_id":h.target.tab_id,"generation":1,
+            "document_id":"doc","input":{"kind":"click","x":1,"y":1}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("owner_step_pending"), "{error}");
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn mp08_mp10_mp11_a07_publishes_approved_shared_request_contract() {
     let spec = handoff_spec();

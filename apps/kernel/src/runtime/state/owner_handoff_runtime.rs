@@ -38,6 +38,57 @@ mod claim;
 mod lifecycle;
 
 impl KernelRuntimeState {
+    /// MP-11 A07: a pending or in-flight owner step reserves its tab against
+    /// every model mutation. Observation and authenticated owner input stay live.
+    pub(super) fn handoff_model_write_blocked(&self, user: &str, tab: Option<&str>) -> bool {
+        let matches = |h: &RuntimeHandoff| tab.is_none_or(|tab| h.target.tab_id == tab);
+        if self
+            .owned
+            .session_store
+            .list_all_sessions()
+            .iter()
+            .any(|session| {
+                self.provider_account_authority_owner_user_id(session.owner_user_id()) == user
+                    && session
+                        .active_interactions()
+                        .iter()
+                        .filter_map(RuntimeInteraction::handoff)
+                        .any(&matches)
+            })
+        {
+            return true;
+        }
+        let claims = self
+            .owned
+            .handoff_claims
+            .lock()
+            .map(|claims| claims.clone());
+        let Ok(claims) = claims else {
+            return true;
+        };
+        claims.iter().any(|id| {
+            self.owned
+                .durable_state_store
+                .load_subject_events_by_kind(id, "handoff.claimed", 1)
+                .ok()
+                .and_then(|events| events.last().cloned())
+                .is_none_or(|event| {
+                    let Some(room) = event.payload["room"].as_str() else {
+                        return true;
+                    };
+                    let Ok(session) = self.owned.session_store.get_session(room) else {
+                        return true;
+                    };
+                    self.provider_account_authority_owner_user_id(session.owner_user_id()) == user
+                        && serde_json::from_value::<RuntimeHandoff>(
+                            event.payload["handoff"].clone(),
+                        )
+                        .map(|handoff| matches(&handoff))
+                        .unwrap_or(true)
+                })
+        })
+    }
+
     pub(super) fn owner_handoff_tool_spec(&self) -> Option<RuntimeToolSpec> {
         self.room_agent_tools_enabled().then(handoff_spec)
     }
