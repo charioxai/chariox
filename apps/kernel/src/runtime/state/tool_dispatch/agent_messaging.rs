@@ -534,26 +534,15 @@ fn resolve_session_agent<'a>(
     if reference.is_empty() {
         return Err("agent must be a unique alias, agent ref, or agent id".to_string());
     }
-    agents
-        .iter()
-        .find(|agent| {
-            agent.id() == reference
-                || agent.agent_ref() == reference
-                || agent
-                    .alias()
-                    .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
-        })
-        .ok_or_else(|| {
-            let mut available = agents
-                .iter()
-                .map(agent_message_target_label)
-                .collect::<Vec<_>>();
-            available.sort();
-            format!(
-                "agent `{reference}` does not exist in this session; available agents: {}",
-                available.join(", ")
-            )
-        })
+    let mut matches = agents.iter().filter(|agent| {
+        agent.id() == reference || agent.agent_ref() == reference
+            || agent.alias().is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
+    });
+    let target = matches.next().ok_or_else(|| format!("agent `{reference}` does not exist in this session"))?;
+    if matches.next().is_some() {
+        return Err(format!("ambiguous room agent reference `{reference}`"));
+    }
+    Ok(target)
 }
 
 fn session_agent_description(

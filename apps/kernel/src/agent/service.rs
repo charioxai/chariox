@@ -1113,6 +1113,10 @@ impl AgentService {
 
     fn is_alias_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
         let normalized = normalized_agent_alias_key(alias);
+        // Reserve current and legacy ID forms even before an identity exists.
+        if normalized.starts_with("agent-") {
+            return true;
+        }
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized
