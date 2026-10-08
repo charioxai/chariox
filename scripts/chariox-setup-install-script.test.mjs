@@ -17,7 +17,7 @@ async function harness(t, { platform = "Linux", stockLibreSSL = false } = {}) {
   const bytes = Buffer.from('#!/bin/sh\nprintf "%s\\n" "$*" > "$SETUP_FIXTURE_LOG"\nif [ "${3:-}" = "--enroll" ]; then IFS= read -r code; unset code; fi\n')
   await writeFile(payload, bytes); await writeFile(sig, sign(null, bytes, keys.privateKey).toString("hex"))
   await writeFile(script, renderInstallScript(source, { version: "0.3.0", publicKeyHex, releaseBase: "https://releases.example.test" }))
-  await writeFile(join(bin, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "$SETUP_FIXTURE_DOWNLOAD_LOG"\noutput=\nsource="$SETUP_FIXTURE_PAYLOAD"\nfor arg do\n  if [ "$previous" = -o ]; then output=$arg; fi\n  case "$arg" in *.sig) source="$SETUP_FIXTURE_SIG" ;; esac\n  previous=$arg\ndone\ncp "$source" "$output"\n`, { mode: 0o755 })
+  await writeFile(join(bin, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "$SETUP_FIXTURE_DOWNLOAD_LOG"\noutput=\nsource="$SETUP_FIXTURE_PAYLOAD"\nfor arg do\n  if [ "$previous" = -o ]; then output=$arg; fi\n  case "$arg" in *.sig) source="$SETUP_FIXTURE_SIG" ;; esac\n  previous=$arg\ndone\nif [ -z "$output" ]; then cat "$SETUP_FIXTURE_SCRIPT"; else cp "$source" "$output"; fi\n`, { mode: 0o755 })
   await writeFile(join(bin, "uname"), `#!/bin/sh\ncase "$1" in -s) echo ${platform};; -m) echo ${platform === "Darwin" ? "arm64" : "x86_64"};; *) exit 1;; esac\n`, { mode: 0o755 })
   if (stockLibreSSL) {
     // MP-11: model the stock macOS version and upstream pkeyutl parser's -rawin refusal.
@@ -33,7 +33,7 @@ esac
 exit 1
 `, { mode: 0o755 })
   }
-  const env = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TMPDIR: root, SETUP_FIXTURE_LOG: log, SETUP_FIXTURE_PAYLOAD: payload, SETUP_FIXTURE_SIG: sig, SETUP_FIXTURE_DOWNLOAD_LOG: downloads, SETUP_FIXTURE_VERIFIER_LOG: verifier }
+  const env = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TMPDIR: root, SETUP_FIXTURE_SCRIPT: script, SETUP_FIXTURE_LOG: log, SETUP_FIXTURE_PAYLOAD: payload, SETUP_FIXTURE_SIG: sig, SETUP_FIXTURE_DOWNLOAD_LOG: downloads, SETUP_FIXTURE_VERIFIER_LOG: verifier }
   const run = async (args = [], input) => {
     const child = execFile("sh", [script, ...args], { env, timeout: 15_000 })
     if (input) { child.stdin.on("error", () => {}); child.stdin.end(input) }
@@ -95,4 +95,15 @@ test("MP-07 corrupted Setup or signature never executes the payload", async t =>
 })
 test("MP-07 public build inputs reject shell syntax and missing release authority", () => {
   for (const patch of [{ version: "1;id" }, { publicKeyHex: "" }, { releaseBase: "https://x/'$(id)" }]) assert.throws(() => renderInstallScript(source, { version: "0.3.0", publicKeyHex: "a".repeat(64), releaseBase: "https://releases.example", ...patch }))
+})
+
+test("unaltered Cloud command enrolls in one paste with code on stdin and public API selection only", { skip: !process.env.CHARIOX_WEB_SETUP_CONFIG }, async t => {
+  const { enrollmentCommand } = await import(process.env.CHARIOX_WEB_SETUP_CONFIG)
+  const h = await harness(t)
+  const copied = enrollmentCommand("https://downloads.example.test/install.sh", "synthetic-one-use-code", "https://cloud.example.test")
+  const child = execFile("sh", ["-s"], { env: h.env, timeout: 15_000 })
+  child.stdin.on("error", () => {}); child.stdin.end(copied + "\n")
+  const code = await new Promise((yes, no) => { child.once("error", no); child.once("close", yes) })
+  assert.equal(code, 0)
+  assert.equal(await readFile(h.log, "utf8"), "--install-only --login --enroll --api-url https://cloud.example.test\n")
 })
