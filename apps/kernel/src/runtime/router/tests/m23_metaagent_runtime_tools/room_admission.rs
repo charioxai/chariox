@@ -183,8 +183,12 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         validation
             .payload
             .pointer("/WorkflowCodeValidated/result/validation/ok"),
-        Some(&serde_json::json!(true))
+        Some(&serde_json::json!(false))
     );
+    assert!(validation
+        .payload
+        .to_string()
+        .contains("unauthorized_existing_agent_binding"));
     assert_eq!(
         validation
             .payload
