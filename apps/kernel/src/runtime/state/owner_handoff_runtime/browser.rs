@@ -23,28 +23,6 @@ impl KernelRuntimeState {
             );
         };
         let _barrier = barrier.write_owned().await;
-        let task_authority = self.owned.clone();
-        let binding = handoff.clone();
-        let admission = admission.with_authority(move || {
-            task_authority
-                .durable_state_store
-                .agent_tasks(None, Some(&binding.agent_id))
-                .ok()
-                .is_some_and(|tasks| {
-                    tasks.iter().any(|task| {
-                        task.task_id == binding.task_id
-                            && !matches!(
-                                task.state,
-                                crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
-                                    | crate::durable_state::agent_lifecycle::ExecutionState::Done
-                            )
-                            && task
-                                .obligations
-                                .iter()
-                                .any(|o| o.id == binding.obligation_id && o.status == "open")
-                    })
-                })
-        });
         let target = &handoff.target;
         if crate::session::unix_epoch_ms() >= handoff.expires_at_ms {
             return outcome(id, HandoffStatus::Expired, kind, Some("timeout"));
@@ -56,6 +34,7 @@ impl KernelRuntimeState {
         else {
             return outcome(id, HandoffStatus::Cancelled, kind, Some("source_revoked"));
         };
+        let admission = self.handoff_action_admission(admission, source_admission.clone(), handoff);
         let fresh = self
             .kernel_browser_bound_operation(
                 user,
@@ -150,6 +129,40 @@ impl KernelRuntimeState {
             // Dispatch may have reached the page: report, never replay.
             Err(_) => outcome(id, HandoffStatus::Uncertain, kind, Some("input_uncertain")),
         }
+    }
+
+    /// MP-11: preserve task, expiry and source grant authority through physical dispatch.
+    pub(super) fn handoff_action_admission(
+        &self,
+        admission: KernelBrowserAdmission,
+        source_admission: KernelBrowserAdmission,
+        handoff: &RuntimeHandoff,
+    ) -> KernelBrowserAdmission {
+        let task_authority = self.owned.clone();
+        let binding = handoff.clone();
+        let source_fence = source_admission.clone();
+        let browser_host = self.owned.kernel_browser_host.clone();
+        admission.with_authority(move || {
+            crate::session::unix_epoch_ms() < binding.expires_at_ms
+                && browser_host.check_admission(Some(&source_fence)).is_ok()
+                && task_authority
+                    .durable_state_store
+                    .agent_tasks(None, Some(&binding.agent_id))
+                    .ok()
+                    .is_some_and(|tasks| {
+                        tasks.iter().any(|task| {
+                            task.task_id == binding.task_id
+                                && !matches!(
+                                task.state,
+                                crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                                    | crate::durable_state::agent_lifecycle::ExecutionState::Done
+                            ) && task
+                                .obligations
+                                .iter()
+                                .any(|o| o.id == binding.obligation_id && o.status == "open")
+                        })
+                    })
+        })
     }
 
     pub(super) async fn save_handoff_secret(

@@ -307,3 +307,76 @@ fn mp08_mp10_mp11_a07_s02_query_only_navigation_changes_private_target_binding()
     );
     assert_eq!(first.len(), 64);
 }
+
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_source_regrant() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    for fault in ["cancel", "expiry", "regrant"] {
+        let (state, room) = fixture();
+        let mut h = handoff();
+        h.task_id = "task-fence".into();
+        let store = &state.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: room.clone(),
+                agent: h.agent_id.clone(),
+                prompt: h.task_id.clone(),
+                run: Some("run".into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::RegisterObligation {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: room.clone(),
+                agent: h.agent_id.clone(),
+                prompt: h.task_id.clone(),
+                run: Some("run".into()),
+                id: h.obligation_id.clone(),
+                kind: "hand_off".into(),
+                resource: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let host = &state.owned.kernel_browser_host;
+        host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
+        host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+        let source = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+        let terminal = host.admit_terminal(DEFAULT_LOCAL_USER_ID, Default::default());
+        if fault == "expiry" {
+            h.expires_at_ms = crate::session::unix_epoch_ms() + 100;
+        }
+        let admission = state.handoff_action_admission(terminal, source, &h);
+        assert!(host.check_admission(Some(&admission)).is_ok());
+        match fault {
+            "cancel" => {
+                let task = store
+                    .agent_tasks(Some(&room), Some(&h.agent_id))
+                    .unwrap()
+                    .remove(0);
+                store
+                    .agent_lifecycle(Operation::CancelTask {
+                        task: h.task_id.clone(),
+                        owner: DEFAULT_LOCAL_USER_ID.into(),
+                        revision: task.revision,
+                    })
+                    .unwrap();
+            }
+            "expiry" => tokio::time::sleep(std::time::Duration::from_millis(120)).await,
+            _ => {
+                host.revoke_grants(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
+                host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
+                host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+                assert!(
+                    host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).is_ok(),
+                    "new authority is valid"
+                );
+            }
+        }
+        assert!(
+            host.check_admission(Some(&admission)).is_err(),
+            "old queued owner action must deny: {fault}"
+        );
+    }
+}
