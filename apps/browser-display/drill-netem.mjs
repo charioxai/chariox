@@ -4,6 +4,8 @@ import { readlink } from 'node:fs/promises';
 import { createServer, connect } from 'node:net';
 export const profiles = {
  local: {rtt:0,jitter:0,loss:0,mbps:0},
+ // MP-08/MP-10: supplementary owned-namespace 8Mbps link, not hosted acceptance.
+ wan8: {rtt:80,jitter:5,loss:0,mbps:8},
  wan40: {rtt:40,jitter:2,loss:1,mbps:5},
  wan80: {rtt:80,jitter:5,loss:1,mbps:2},
  wan150: {rtt:150,jitter:10,loss:1,mbps:1},
