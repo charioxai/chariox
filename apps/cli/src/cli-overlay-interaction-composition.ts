@@ -207,7 +207,6 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     scheduleTimer: deps.scheduleTimer,
     isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
     copySelection,
-    hasSelection: () => Boolean(deps.renderer.hasSelection),
     retainPromptFocus: deps.retainPromptFocus,
   })
 

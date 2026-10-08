@@ -1024,7 +1024,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !renderer.hasSelection) retainPromptFocus() }}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
