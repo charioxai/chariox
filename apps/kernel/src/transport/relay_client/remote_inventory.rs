@@ -211,7 +211,9 @@ fn cloud_directory_discovery_targets(
         // The owner directory retains revoked rows for account history, but
         // Cloud rejects discovery grants containing any revoked target. An
         // unlinked sibling must not prevent the remaining kernels renewing.
-        .filter(|target| target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED"))
+        .filter(|target| {
+            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
+        })
         .filter_map(|target| {
             target
                 .get("daemonId")
