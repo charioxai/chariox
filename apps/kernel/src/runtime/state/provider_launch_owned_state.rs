@@ -565,8 +565,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // The available native login remains usable without Vault access.
-        // The native TUI still receives an explicitly registered token.
+        // Once a token is registered, every interface selects it. Native
+        // credential presence cannot override a setup-token repair.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -595,7 +595,7 @@ mod tests {
             )
             .expect("vault use should resolve")
         };
-        assert!(!uses_vault(
+        assert!(uses_vault(
             crate::provider::ProviderClientInterface::Chariox
         ));
         assert!(uses_vault(

@@ -340,5 +340,6 @@ test("MP-08/MP-10/MP-11 Claude login starts scoped OAuth without logout or a ter
   assert.equal(result.ok, true)
   assert.deepEqual(requests, [{ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: "", overwrite: true, session_id: context.sessionId, agent_id: context.agentId, run: true } }])
   assert.match(result.message ?? "", /authorization link/)
-  assert.doesNotMatch(result.message ?? "", /login-status|login-input/)
+  assert.match(result.message ?? "", /provider login-status official-login/)
+  assert.match(result.message ?? "", /provider login-input official-login/)
 })

@@ -66,9 +66,9 @@ pub(crate) fn resolve_provider_account_credentials(
 
 /// One sign-in per account: the account's own Claude login runs every agent of
 /// that account, interactive or not, on Linux (its credential file) and macOS
-/// (its login Keychain) alike. A verified Vault token authenticates the account
-/// without proving native login availability; check the native credential
-/// source independently before skipping Vault delivery.
+/// (its login Keychain) alike. A registered account credential takes precedence:
+/// setup-token repair does not remove a rejected native credential, and file or
+/// Keychain availability does not establish that it still authenticates.
 pub(crate) fn resolve_provider_account_credentials_for_launch(
     config: &DaemonConfig,
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -97,13 +97,17 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     })
 }
 
-/// The account's own Claude login is usable by a background launch: a portable
-/// credential file on Linux, a verified login-Keychain sign-in on macOS.
+/// Fall back to native Claude credentials only without a registered account
+/// credential. A successful setup-token repair must remain selected even when
+/// an older native file or Keychain item is still present.
 fn claude_login_runs_agents(
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     profile_id: &str,
 ) -> Result<bool, DaemonError> {
+    if provider_account_credential_registered(owner_user_id, "claude", profile_id)? {
+        return Ok(false);
+    }
     match std::env::consts::OS {
         "linux" => profiles.has_portable_claude_credentials(owner_user_id, profile_id),
         "macos" => {
@@ -263,6 +267,97 @@ mod tests {
         assert!(!claude_macos_login_runs_agents(true, false));
         assert!(claude_macos_login_runs_agents(true, true));
         assert!(!claude_macos_login_runs_agents(false, true));
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_repaired_vault_token_overrides_rejected_native_credentials() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-repaired-claude-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::env::set_var("CHARIOX_HOME", &root);
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("profile registry");
+        let profile = profiles
+            .create_managed("local", "claude", "Repaired account")
+            .expect("profile");
+        let env = profiles
+            .resolve_environment("local", "claude", &profile.profile_id)
+            .expect("profile environment");
+        let native_path = std::path::Path::new(&env["CLAUDE_CONFIG_DIR"]).join(".credentials.json");
+        // A revoked token still passes the file-presence/refresh-token check.
+        // Repair must not select it again just because it remains on disk.
+        std::fs::write(&native_path,
+            br#"{"claudeAiOauth":{"accessToken":"rejected-native","refreshToken":"revoked-refresh"}}"#)
+            .expect("rejected native fixture");
+        assert!(profiles
+            .has_native_claude_credentials("local", &profile.profile_id)
+            .unwrap());
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &profile.profile_id,
+            "verified-replacement",
+            true,
+        )
+        .expect("verified setup-token repair storage");
+        profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("verified repair observation");
+        let mut outcomes = Vec::new();
+        for provider in ["claude-p", "claude-headless"] {
+            let uses_vault = launch_uses_vault_credential(
+                &profiles,
+                "local",
+                provider,
+                &profile.profile_id,
+                crate::provider::ProviderClientInterface::Chariox,
+            )
+            .expect("repaired launch Vault requirement");
+            let launch = resolve_provider_account_credentials_for_launch(
+                &config,
+                &profiles,
+                "local",
+                provider,
+                &profile.profile_id,
+                crate::provider::ProviderClientInterface::Chariox,
+            )
+            .expect("repaired launch resolves");
+            let repaired = launch.iter().any(|(name, value)| {
+                name == CLAUDE_OAUTH_TOKEN_ENV && value == "verified-replacement"
+            });
+            outcomes.push((provider, uses_vault, repaired));
+        }
+        assert!(
+            native_path.exists(),
+            "repair preserves provider-owned native state"
+        );
+        std::env::remove_var("CHARIOX_HOME");
+        std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+        assert_eq!(
+            outcomes,
+            vec![("claude-p", true, true), ("claude-headless", true, true)]
+        );
     }
 
     #[test]
