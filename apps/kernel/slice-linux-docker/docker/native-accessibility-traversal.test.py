@@ -118,7 +118,7 @@ class TraversalTest(unittest.TestCase):
             def queryDocument(self):
                 return types.SimpleNamespace(getAttributeValue=lambda key: 'https://example.test/' if key == 'URI' else '')
         self.desktop = Node('Desktop', 'desktop', [Node('Chromium', 'application', [Node('Chromium', 'frame', [Document('Page', 'document web')])])])
-        page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'viewport': [300, 160], 'scale': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
+        page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'viewport': [300, 160], 'dpr': 1, 'zoom': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
         self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
