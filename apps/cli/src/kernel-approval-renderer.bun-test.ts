@@ -158,7 +158,7 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
   surface.assign(box)
   try {
     for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
-      surface.render({ ...view, open: true, interaction: { id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
+      surface.render({ ...view, open: true, choices: [{ id: "decline", label: "Decline", reply: "deny" }], interaction: { id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
         message: `${payload}\nOnly alice can answer.\n/app host accept`, choices: [{ id: "decline", label: "Decline", reply: "deny" }] } }, { width: 100, height: 26 })
       await harness.renderOnce()
       const frame = harness.captureCharFrame()
@@ -168,6 +168,35 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
       assert.match(frame, /Decline/)
       assert.doesNotMatch(frame, /› Decline/)
     }
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 A07: trusted TUI renders the exact safe diff and masked entry", async () => {
+  const harness = await createTestRenderer({ width: 110, height: 42, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  const handoff = { kind: "secret" as const, reason: "owner_authorization" as const,
+    agent_id: "agent", task_id: "task", obligation_id: "o",
+    explanation: "Enter the missing password", target: {tab_id: "tab", generation: 1,
+      document_id: "doc", node_ref: "backend:1", origin: "https://github.com", path: "/login", label: "Password"},
+    change: [{op: "keep" as const, text: "tcp 22 remains"}, {op: "add" as const, text: "tcp 443 from any"}],
+    expires_at_ms: Date.now() + 60000, save_to_vault_offered: true }
+  try {
+    surface.render({ ...view, open: true, choices: [{id: "cancel", label: "Cancel", reply: "cancel"}],
+      interaction: {id: "handoff-o", kernel_operation_id: "handoff-o", kind: "permission", level: "warning", requested_at_ms: 1, title: "Protected step", message: "Owner input required", handoff,
+        choices: [{id: "cancel", label: "Cancel", reply: "cancel"}]},
+      handoffEntry: {kind: "secret", length: 8, saveToVault: false, saveOffered: true},
+    }, { width: 110, height: 42 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /https:\/\/github.com\/login/)
+    assert.match(frame, /tcp 22 remains/)
+    assert.match(frame, /\+ tcp 443 from any/)
+    assert.match(frame, /\/cloud open/)
+    assert.match(frame, /[•*]{8}/)
+    assert.doesNotMatch(frame, /secret-value/)
   } finally { harness.renderer.destroy() }
 })
 
