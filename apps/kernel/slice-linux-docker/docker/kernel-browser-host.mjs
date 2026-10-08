@@ -163,7 +163,10 @@ export class KernelBrowserHost {
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
-    if(entry&&(entry.document!==tab.document_id||entry.source?.closed)){await this.closeCompositors(tab.tab_id);entry=null;}
+    // MP-08/MP-10: a CDP fallback after a refused native start retries native
+    // with backoff (5 s doubling to 60 s) for the same document.
+    const retry=this.nativeRetryAt?.get(tab.tab_id),retryNative=entry&&!(entry.source instanceof LinuxCapture)&&retry?.document===tab.document_id&&performance.now()>=retry.at;
+    if(entry&&(entry.document!==tab.document_id||entry.source?.closed||retryNative)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
@@ -174,7 +177,10 @@ export class KernelBrowserHost {
         this.nativeScope(null);
         const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
-        catch(error){(this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,at:performance.now()+5000});throw error;}
+        catch(error){
+          const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
+          (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+Math.min(60000,5000*2**(attempts-1))});throw error;
+        }
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});

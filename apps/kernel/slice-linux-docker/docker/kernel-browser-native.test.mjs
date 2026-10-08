@@ -59,7 +59,8 @@ test('MP-11 marker insertion retires native pixels even while attestation is pen
   source.latest={raw:{release:()=>released++}};source.pending={release:()=>released++};
   source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});assert.equal(source.closed,false);
   source.onCdp({sessionId:'session',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
-  assert.equal(source.closed,true);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(released,2);await source.close();
+  // MP-08/MP-10: the source stays open; attestation needs a fresh, refenced readback.
+  assert.equal(source.closed,false);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(source.pending,null);assert.equal(released,2);assert.equal(source.regionRevision,1);await source.close();
  }
 });
 

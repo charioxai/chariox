@@ -47,11 +47,11 @@ export class LinuxCapture {
  onCdp(m){
   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
-  // MP-11: attribute-only protection changes produce no XDamage. Fence even
+  // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
   if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){
-   if(!this.attested){this.fence();return;}
-   // MP-08/MP-10/MP-11: the owned window/document binding stays intact.
+   // MP-08/MP-10/MP-11: the owned window/document binding stays intact,
+   // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
    this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
