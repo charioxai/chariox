@@ -84,6 +84,8 @@ function defaultActiveKernelRegistryDir(): string {
   if (explicit) {
     return explicit
   }
+  const charioxHome = process.env.CHARIOX_HOME?.trim()
+  if (charioxHome) return join(charioxHome, "kernels", "active")
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim()
   return xdgConfigHome
     ? join(xdgConfigHome, "chariox", "kernels", "active")
