@@ -1,5 +1,37 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+Client grants retain the existing 30-minute lifetime, including keyed issuance
+and renewal. Initial `/relay cloud client-token` commands issued by a local
+account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
+The shared client authenticates that local endpoint from the same private CLI
+profile, checks the issuing kernel ID and renewal capability, and renews the
+admitted subject, key, session and target through that kernel. Runtime requests
+and events still travel directly to the target over the encrypted relay lanes.
+A machine-only managed target must never replace the account issuer.
+
+If the original issuer is unavailable, the client displays a notice and retries
+within the existing grant lifetime without changing authority or dropping the
+admission. Recovery resumes renewal; reaching the original expiry ends the
+session with an issuer-unavailable message. Authorization refusal still ends
+admission promptly. The issuer route is public endpoint/ID metadata, not a
+credential, and accepts only local Unix or loopback WebSocket endpoints. Moving
+the launch command to another machine does not transfer the issuing profile or
+make its local endpoint reachable. Legacy launch commands without issuer metadata
+cannot automatically discover an account issuer from a machine-only target;
+they retain their original lifetime with the existing warning/until-expiry path.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,
