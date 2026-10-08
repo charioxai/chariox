@@ -3,6 +3,13 @@ import { observationProtectedVariants } from "./browser-controller-snapshot.mjs"
 // MD-N2 / MP-08 / MP-11: runs ONLY in the #607 controller isolated world.
 // No DOM overlay, main-world binding, postMessage, or page-visible note data.
 export const NOTE_OBSERVER_EXPRESSION = `(${installNoteObserver.toString()})()`;
+// Runs on a frame owner resolved into the parent's isolated world.
+const OWNER_PROTECTED_FUNCTION = `function() {
+  for (let current=this;current;current=current.getRootNode?.()?.host) {
+    if (current.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
+  }
+  return false;
+}`;
 
 function installNoteObserver() {
   if (globalThis.__charioxNotes) return true;
@@ -147,9 +154,28 @@ export async function observeBrowserNote(browser, request) {
     }
     // OOPIF entries replace a parent's placeholder with the owning session.
     for (const item of frames.values()) if (item.frame.parentId) item.parent=frames.get(item.frame.parentId);
+    // A frame inherits protection from its owner element, the owner's
+    // ancestors and shadow hosts, and every enclosing frame. Unknown ownership
+    // is protected.
+    const exposed=new Map();
+    const frameExposed=item=>{
+      if (!item.frame.parentId) return Promise.resolve(item.frame.id===frame.id);
+      if (!exposed.has(item)) exposed.set(item,(async()=>{
+        if (!item.parent || !await frameExposed(item.parent)) return false;
+        const {sessionId}=item.parent;
+        const owner=await connection.send('DOM.getFrameOwner',{frameId:item.frame.id},sessionId);
+        const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:item.parent.frame.id,worldName:'chariox-controller-focus',grantUniveralAccess:false},sessionId);
+        const {object}=await connection.send('DOM.resolveNode',{backendNodeId:owner.backendNodeId,executionContextId},sessionId);
+        try {
+          const result=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:OWNER_PROTECTED_FUNCTION,returnByValue:true},sessionId);
+          return !result.exceptionDetails && result.result?.value===false;
+        } finally { await connection.send('Runtime.releaseObject',{objectId:object.objectId},sessionId).catch(()=>{}); }
+      })().catch(()=>false));
+      return exposed.get(item);
+    };
     const worlds=[];
     for (const item of frames.values()) {
-      if (!item.frame.loaderId) continue;
+      if (!item.frame.loaderId || !await frameExposed(item)) continue;
       const world=item.frame.id===frame.id
         ? await browser.ensureFocusWorld(connection,session,request.target_id,frame)
         : {contextId:(await connection.send('Page.createIsolatedWorld',{frameId:item.frame.id,worldName:'chariox-controller-focus',grantUniveralAccess:false},item.sessionId)).executionContextId};

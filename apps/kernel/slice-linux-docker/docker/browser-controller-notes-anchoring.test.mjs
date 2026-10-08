@@ -64,6 +64,9 @@ function fixture(frameTexts, { oopif = false, navigateOnFallback = false } = {})
     if (method === 'Page.getFrameTree') return { frameTree: structuredClone(session === 'top' ? tree : children.find(c => c.frame.id === session)) };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: Number(params.frameId.split('-')[1]) + 42 };
     if (method === 'DOM.getFrameOwner') return { backendNodeId: 1 };
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'owner' } };
+    if (method === 'Runtime.callFunctionOn') return { result: { value: false } };
+    if (method === 'Runtime.releaseObject') return {};
     if (method === 'DOM.getBoxModel') return { model: { content: [200, 300, 300, 300, 300, 400, 200, 400] } };
     if (method === 'Runtime.evaluate') {
       assert.ok(Number.isSafeInteger(params.contextId) && params.contextId >= 42);
