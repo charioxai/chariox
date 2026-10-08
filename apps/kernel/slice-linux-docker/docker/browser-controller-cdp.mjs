@@ -516,6 +516,11 @@ export class BrowserCdpClient {
       );
     } catch (error) {
       this.focusWorldsByTarget.delete(targetId);
+      // MP-08/MP-10: a navigation (e.g. a native viewer click) destroyed the
+      // world between the frame read and this poll; callers retry stale reads.
+      if (/Cannot find context with specified id|Execution context was destroyed/.test(error?.message ?? "")) {
+        throw new BrowserSnapshotError("stale_document_reference", "browser document changed during focus read");
+      }
       throw error;
     }
     // This read may have begun just before input enabled emulation.
