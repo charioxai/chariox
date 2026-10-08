@@ -406,7 +406,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Attempt { .. }
         | Operation::Expire { .. }
         | Operation::Defer { .. }
-        | Operation::BindAttempt { .. }
+        | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }

@@ -1915,12 +1915,15 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         run: Some("run".into()),
         now: attempted_at,
     });
-    f.apply(Operation::BindAttempt {
+    f.apply(Operation::BindSubmission {
         room: "room".into(),
         agent: "child".into(),
         sequence: e.sequence,
+        prompt: "steer".into(),
+        target: Some("ending-turn".into()),
         run: "run".into(),
         submit_epoch: 7,
+        now: attempted_at,
     });
     if timed_out {
         f.apply(Operation::Sweep {

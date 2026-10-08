@@ -1,5 +1,6 @@
 use super::*;
 
+mod inbox_recovery;
 mod workflow_claim_release;
 
 #[tokio::test]

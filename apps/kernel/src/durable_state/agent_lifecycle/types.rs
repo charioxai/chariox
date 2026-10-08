@@ -179,12 +179,16 @@ pub(crate) enum Operation {
         sequence: u64,
         now: u64,
     },
-    BindAttempt {
+    // Internal writer command, not a serialized client protocol shape.
+    BindSubmission {
         room: String,
         agent: String,
         sequence: u64,
+        prompt: String,
+        target: Option<String>,
         run: String,
         submit_epoch: u64,
+        now: u64,
     },
     Receipt {
         room: String,

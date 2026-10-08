@@ -583,6 +583,8 @@ pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
 pub(crate) struct EventSubmitReceipt {
     /// The event steered an existing turn; the normal prompt settlement is skipped.
     pub steered: bool,
+    /// Superseded run/epoch: discard this result before normal prompt settlement.
+    pub stale: bool,
     /// Client-visible receipt, present only when this job recorded it.
     pub notice: Option<String>,
 }
@@ -603,14 +605,17 @@ pub(crate) fn finish_provider_event_submit(
     if event.provider_run_id.as_deref() != Some(&finished.provider_run_id)
         || event.submit_epoch != Some(epoch)
     {
-        return Err(error(
-            "provider event receipt has a stale run or submit epoch",
-        ));
+        return Ok(Some(EventSubmitReceipt {
+            steered: event.target_prompt_id.is_some(),
+            stale: true,
+            notice: None,
+        }));
     }
     let steered = event.target_prompt_id.is_some();
     if !matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
         return Ok(Some(EventSubmitReceipt {
             steered,
+            stale: false,
             notice: None,
         }));
     }
@@ -628,6 +633,7 @@ pub(crate) fn finish_provider_event_submit(
     })? {
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
+            stale: false,
             notice: Some(receipt_notice(&settled)),
         })),
         _ => Err(error("receipt outcome mismatch")),
