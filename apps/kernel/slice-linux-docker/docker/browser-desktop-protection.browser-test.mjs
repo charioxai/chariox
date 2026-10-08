@@ -108,13 +108,14 @@ test(`DPR ${dpr}: a window moved or resized after measurement is withheld`, () =
   }
 }));
 
-test(`DPR ${dpr}: page scrolled between measurement and capture re-captures fail-closed`, () => withDesktop(async ({ browser, connection, sessionId, pid }) => {
+test(`DPR ${dpr}: page scrolling during every capture is captured fail-closed`, () => withDesktop(async ({ browser, connection, sessionId, pid }) => {
   let calls = 0;
   const result = await fenceBrowserCapture(browser, policy, async protection => {
-    if (++calls === 1) await connection.send('Runtime.evaluate', { expression: 'scrollBy(0, 160)' }, sessionId);
+    calls++;
+    if (protection) await connection.send('Runtime.evaluate', { expression: 'scrollBy(0, 160)' }, sessionId);
     return { protection, ...(await census(pid, protection)) };
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
   assert.equal(result.protection, null);
   assert.deepEqual(result.bound, [false]);
   assert.equal(result.after[0], 0);
