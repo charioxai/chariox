@@ -54,14 +54,36 @@ class Node:
     def __init__(self, role, children=(), rect=(0, 0, 0, 0), uri=''):
         self.role, self.children, self.childCount, self.uri = role, list(children), len(children), uri
         self.rect = types.SimpleNamespace(x=rect[0], y=rect[1], width=rect[2], height=rect[3])
+        self.parent = None
+        for child in self.children:
+            child.parent = self
+    def queryCollection(self): raise NotImplementedError
     def getRoleName(self): return self.role
     def getChildAtIndex(self, index): return self.children[index]
     def queryComponent(self): return types.SimpleNamespace(getExtents=lambda coords: self.rect)
     def queryDocument(self): return types.SimpleNamespace(getAttributeValue=lambda key: self.uri if key == 'URI' else '')
 
 
+class Collected(Node):
+    # Chromium's in-process collection: every document web, including frame documents.
+    def queryCollection(self):
+        def walk(node):
+            return ([node] if node.role == 'document web' else []) + [match for child in node.children for match in walk(child)]
+        return types.SimpleNamespace(MATCH_NONE=0, MATCH_ANY=1, SORT_ORDER_CANONICAL=0,
+            createMatchRule=lambda *args: None, getMatches=lambda rule, order, count, traverse: walk(self)[:count])
+
+
 class DocumentRects(unittest.TestCase):
-    atspi = types.SimpleNamespace(DESKTOP_COORDS=0)
+    atspi = types.SimpleNamespace(DESKTOP_COORDS=0, ROLE_DOCUMENT_WEB=95, StateSet=lambda: None)
+
+    def test_collection_returns_outermost_documents_only(self):
+        frame_document = Node('document web', [], (60, 200, 100, 50), 'https://frame.test/')
+        web = Node('document web', [Node('panel', [Node('internal frame', [frame_document])])], (44, 173, 892, 553), 'https://example.test/a')
+        app = Collected('application', [Node('frame', [Node('panel', [web, Node('document web', rect=(159, 71, 0, 0))])])])
+        self.assertEqual(protection.document_rects(app, self.atspi), [{'uri': 'https://example.test/a', 'rect': [44, 173, 892, 553]}])
+        many = Collected('application', [Node('document web', rect=(0, 0, 1, 1)) for _ in range(protection.MAX_DOCUMENTS+1)])
+        with self.assertRaises(ValueError):
+            protection.document_rects(many, self.atspi)
 
     def test_collects_sized_documents_without_entering_web_content(self):
         web = Node('document web', [Node('entry')], (44, 173, 892, 553), 'https://example.test/a')
