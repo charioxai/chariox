@@ -3,7 +3,7 @@
 // pairing and drives the real TUI's detached attach action, never a mock client.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LocalIpcClient } from '../dist/ipc.js'
@@ -50,5 +50,6 @@ try {
 } finally {
   await bootstrap?.close(); await local.close()
   for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete env[key]; else env[key] = value }
+  await rm(root, { recursive: true, force: true }); result.runtimeRootRemoved = true
   await writeFile(evidence + '/terminal-drill.json', JSON.stringify(result, null, 2) + '\n')
 }

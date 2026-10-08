@@ -484,7 +484,13 @@ Current implementation notes:
 MP-08 / MP-11: at protocol 473, relay-addressed detached/native TUI launches
 and waiting-room kernel switches automatically use the shared authenticated
 terminal direct lease described below when fresh same-machine discovery exists.
-Older and alias-only targets retain their authenticated relay transport.
+Older and alias-only targets retain their authenticated relay transport. Terminal clients
+refresh their bound relay identity before expiry through the existing
+`IssueCloudRelayClientToken` request over the authenticated relay. Refresh
+preserves the realm, account, user, key binding and target/session scope, and
+updates future relay connects without retiring a healthy local carrier. The
+local lease remains capped at 30 seconds; direct sockets cannot renew themselves.
+An already expired bearer identity never authorizes a refresh.
 Local presence and a matching `RelayStatus.daemon_id` do not authenticate a
 loopback TCP listener or authorize disclosure of a local bearer credential.
 

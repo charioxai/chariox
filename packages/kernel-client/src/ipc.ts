@@ -241,7 +241,7 @@ export class LocalIpcClient {
   private readonly localAuthEnvironment: NodeJS.ProcessEnv
   private readonly localAuthEndpoint: string | null
   private readonly localAuthToken: string | null
-  private readonly relayAuthToken: string | null
+  private relayAuthToken: string | null
   private readonly relayTarget: RelayTarget | null
   private readonly relayIdentity: RelayClientIdentity | null
   private readonly terminalLocalDirect: TerminalLocalDirect | null
@@ -344,6 +344,7 @@ export class LocalIpcClient {
       : null
     this.terminalLocalDirect = this.relayAuthToken && this.relayTarget && this.relayIdentity
       ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: this.relayAuthToken, target: this.relayTarget,
+        onTokenRefreshed: token => { this.relayAuthToken = token },
         identity: this.relayIdentity, eligible: () => this.localDirectEligible(this.relayTarget!),
         retryCarrier: () => {
           for (const lane of ["control", "event"] as const) {
