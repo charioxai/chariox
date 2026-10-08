@@ -23,8 +23,11 @@ and rechecks authority before execution and result delivery. Compiler work, incl
 registry compilation and summary generation, runs outside the global app mutex with
 bounded admission; authorization and target validation are repeated after the wait.
 Linux adds `workflow_code/compiler_seccomp.rs`: Node threads remain allowed, process
-and namespace creation are refused, and a process-count limit supplies an additional
-bound. The private scratch mount is non-writable; no generated executable can be
+and namespace creation are refused, and root-launched compilers drop host UID/GID and supplementary groups before
+exec so a process-count limit of 64 is effective. Nonroot kernels retain the
+operator user's inherited process limit; seccomp, memory, time and concurrency
+bounds apply to both. An unreadable private Node path fails closed after the
+privilege drop, with no root fallback. The private scratch mount is non-writable; no generated executable can be
 placed there. Trusted runtime mounts remain read-only. These are shared kernel
 policies, with no managed provider launch restriction or client-specific behavior.
 

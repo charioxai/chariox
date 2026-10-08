@@ -337,6 +337,7 @@ pub(super) fn compiler_command(
         .script_memory_bytes
         .saturating_add(1024 * 1024 * 1024);
     let cpu_seconds = limits.script_timeout_ms.div_ceil(1000).max(1);
+    let drop_root_privileges = unsafe { libc::getuid() == 0 || libc::geteuid() == 0 };
     unsafe {
         command.pre_exec(move || {
             // Mark every non-stdio descriptor close-on-exec, including a descriptor
@@ -349,13 +350,29 @@ pub(super) fn compiler_command(
                 (libc::RLIMIT_AS, address_limit),
                 (libc::RLIMIT_CPU, cpu_seconds),
                 (libc::RLIMIT_CORE, 0),
-                (libc::RLIMIT_NPROC, 64),
             ] {
                 let limit = libc::rlimit {
                     rlim_cur: value as libc::rlim_t,
                     rlim_max: value as libc::rlim_t,
                 };
                 if libc::setrlimit(resource, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if drop_root_privileges {
+                // NPROC counts the host UID. A namespace UID change alone
+                // retains host root's exemption. Use an unprivileged host UID.
+                // Ordinary users retain their existing per-user process limit;
+                // the syscall, address-space and time bounds still apply.
+                let limit = libc::rlimit {
+                    rlim_cur: 64,
+                    rlim_max: 64,
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0
+                    || libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(65534) != 0
+                    || libc::setuid(65534) != 0
+                {
                     return Err(std::io::Error::last_os_error());
                 }
             }
