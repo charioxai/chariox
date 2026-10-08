@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::auth::{DEFAULT_RELAY_REALM_ID, RelayAction};
+use crate::auth::{RelayAction, DEFAULT_RELAY_REALM_ID};
 use crate::protocol::{
     DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayDisplayTunnelHeader,
     RelayError, RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,

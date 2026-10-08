@@ -131,7 +131,10 @@ impl ManagedContextOutboundOperationStore {
         self.owner_redemptions
             .lock()
             .expect("owner redemption lock")
-            .insert(ticket.context_plan.package_binding().context_id, Some(selection));
+            .insert(
+                ticket.context_plan.package_binding().context_id,
+                Some(selection),
+            );
     }
 
     /// MP-11: the unredeemed Cloud owner-copy capability, or `None` once this
@@ -172,7 +175,10 @@ impl ManagedContextOutboundOperationStore {
         context_id: &str,
         redeemed: bool,
     ) -> Result<(), DaemonError> {
-        let mut redemptions = self.owner_redemptions.lock().expect("owner redemption lock");
+        let mut redemptions = self
+            .owner_redemptions
+            .lock()
+            .expect("owner redemption lock");
         if !redeemed {
             redemptions.remove(context_id);
             return Ok(());

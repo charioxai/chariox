@@ -12,10 +12,12 @@ fn params(command: KernelComputerCommand) -> Result<serde_json::Value, DaemonErr
         .map_err(|_| host_error("MP-08: invalid Computer command".into()))?;
     // MP-08 / MP-11: the shared helper sleeps 40 ms per character. Bound text
     // before any desktop action so valid input fits the existing 20 s RPC.
-    if matches!(value["input"]["kind"].as_str(), Some("text" | "composition"))
-        && value["input"]["text"]
-            .as_str()
-            .is_some_and(|text| text.chars().count() > 128)
+    if matches!(
+        value["input"]["kind"].as_str(),
+        Some("text" | "composition")
+    ) && value["input"]["text"]
+        .as_str()
+        .is_some_and(|text| text.chars().count() > 128)
     {
         return Err(host_error(
             "MP-08: native text exceeds the execution budget; split into blocks of at most 128 characters".into(),
@@ -183,10 +185,13 @@ mod tests {
     #[test]
     fn mp08_native_text_budget_is_checked_before_backend_dispatch() {
         for kind in ["text", "composition"] {
-            let command = |length| serde_json::from_value::<KernelComputerCommand>(serde_json::json!({
-                "op":"input", "target":{"surface_id":"s", "generation":"g"},
-                "input":{"kind":kind,"text":"😀".repeat(length)}
-            })).unwrap();
+            let command = |length| {
+                serde_json::from_value::<KernelComputerCommand>(serde_json::json!({
+                    "op":"input", "target":{"surface_id":"s", "generation":"g"},
+                    "input":{"kind":kind,"text":"😀".repeat(length)}
+                }))
+                .unwrap()
+            };
             assert!(params(command(128)).is_ok());
             assert!(params(command(129)).is_err());
             assert!(params(command(600)).is_err());

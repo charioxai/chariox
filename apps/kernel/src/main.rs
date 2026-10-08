@@ -17,7 +17,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     #[cfg(all(feature = "native-display", target_os = "linux"))]
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--display-native-worker") {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--display-native-worker")
+    {
         if chariox_kernel::display_native::run().is_err() {
             eprintln!("MP-08/MP-10/MP-11: native display worker failed");
             std::process::exit(1);

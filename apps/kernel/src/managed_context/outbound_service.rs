@@ -260,7 +260,9 @@ pub(crate) struct ManagedContextOutboundOperationStore {
     /// MP-11: unredeemed owner-copy capabilities by context ID, memory only;
     /// `None` records a redemption for stores without durable state.
     owner_redemptions: Arc<
-        Mutex<BTreeMap<String, Option<crate::managed_context::owner_managed::OwnerManagedTransfer>>>,
+        Mutex<
+            BTreeMap<String, Option<crate::managed_context::owner_managed::OwnerManagedTransfer>>,
+        >,
     >,
     transfer_slots: Arc<Semaphore>,
     artifact_lock: Arc<Mutex<()>>,
@@ -887,7 +889,9 @@ async fn redeem_owner_ticket(
         .kernel_credential
         .as_deref()
         .filter(|credential| !credential.is_empty())
-        .ok_or_else(|| outbound_service_error("source kernel Cloud credential is unavailable", true))?;
+        .ok_or_else(|| {
+            outbound_service_error("source kernel Cloud credential is unavailable", true)
+        })?;
     if selection.target != requested.target {
         return Err(admission_error("owner copy ticket target changed"));
     }
@@ -2348,7 +2352,12 @@ mod tests {
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
                         if owner_managed {
-                            let fields = body.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+                            let fields = body
+                                .as_object()
+                                .unwrap()
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>();
                             assert_eq!(fields, ["kernelCredential", "ownerManaged"]);
                             assert_eq!(body["ownerManaged"], expected_owner);
                         }

@@ -1086,9 +1086,16 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         &serde_json::to_vec(&request).unwrap(),
                     )
                     .unwrap();
-                    let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(1), None, encrypted, &cache, &Default::default(), None)
-                            .await;
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(1),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");
                     let create = LocalDaemonRequest::CreateTerminalPairingLink(
                         crate::local::CreateTerminalPairingLinkRequest {
@@ -1120,9 +1127,16 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     let encrypted =
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
-                    let joined =
-                        handle_daemon_request(&router, &AtomicU64::new(2), None, encrypted, &cache, &Default::default(), None)
-                            .await;
+                    let joined = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(2),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert!(joined.error.is_none(), "Cloud-free join must be admitted");
                     let reply = relay_crypto::decrypt_payload_for_private_key(
                         &sender,
@@ -1141,18 +1155,32 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         &serde_json::to_vec(&request).unwrap(),
                     )
                     .unwrap();
-                    let allowed =
-                        handle_daemon_request(&router, &AtomicU64::new(3), None, encrypted, &cache, &Default::default(), None)
-                            .await;
+                    let allowed = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(3),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert!(allowed.error.is_none());
                     assert!(allowed.encrypted_response.is_some());
                     let foreign = relay_crypto::generate_private_key_base64();
                     let encrypted =
                         relay_crypto::encrypt_payload_for_peer(&foreign, &receiver, &join_bytes)
                             .unwrap();
-                    let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(4), None, encrypted, &cache, &Default::default(), None)
-                            .await;
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(4),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert_eq!(refused.error.unwrap().code, "unauthorized");
                     crate::runtime::self_host_terminal_grants::revoke(
                         &config,
@@ -1163,9 +1191,16 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                     let replay =
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
-                    let replayed =
-                        handle_daemon_request(&router, &AtomicU64::new(99), None, replay, &cache, &Default::default(), None)
-                            .await;
+                    let replayed = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(99),
+                        None,
+                        replay,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert!(
                         replayed.error.is_some(),
                         "cached pairing approval must recheck current revocation"
@@ -1177,9 +1212,16 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         &serde_json::to_vec(&request).unwrap(),
                     )
                     .unwrap();
-                    let refused =
-                        handle_daemon_request(&router, &AtomicU64::new(5), None, encrypted, &cache, &Default::default(), None)
-                            .await;
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(5),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");
                 });
         })

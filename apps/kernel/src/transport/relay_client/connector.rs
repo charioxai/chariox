@@ -862,13 +862,12 @@ async fn run_daemon_relay_connector_inner(
                     // small-event priority threshold even for one typed key.
                     // Keep its bounded event lane and control priority, but
                     // don't add a whole33ms frame after capture/encoding.
-                    let event_delay = if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref()
-                        == Ok("1")
-                    {
-                        0
-                    } else {
-                        RELAY_EVENT_WRITE_COALESCE_MS
-                    };
+                    let event_delay =
+                        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1") {
+                            0
+                        } else {
+                            RELAY_EVENT_WRITE_COALESCE_MS
+                        };
                     let mut event_write_coalescer = RelayEventWriteCoalescer::new(event_delay);
                     'writer_loop: while priority_open
                         || event_open

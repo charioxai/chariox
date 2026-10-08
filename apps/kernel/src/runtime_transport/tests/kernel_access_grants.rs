@@ -584,7 +584,10 @@ impl Kernel {
             .request(serde_json::json!({"GetSessionState":{"session_id":session}}))
             .await;
         assert!(response["error"].is_null(), "{response}");
-        assert_eq!(response["response"]["SessionState"]["session"]["id"], session);
+        assert_eq!(
+            response["response"]["SessionState"]["session"]["id"],
+            session
+        );
         response["response"]["SessionState"]["session"]["active_interactions"]
             .as_array()
             .cloned()
@@ -1003,7 +1006,10 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     holder.send(request);
     kernel.control("sudo-timeout").await;
     let expired = holder.result();
-    assert_eq!(expired["error"]["code"], "owner_request_expired", "{expired}");
+    assert_eq!(
+        expired["error"]["code"], "owner_request_expired",
+        "{expired}"
+    );
 }
 
 #[tokio::test]

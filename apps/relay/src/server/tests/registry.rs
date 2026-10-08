@@ -320,26 +320,18 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
                 .map(|identity| identity.subject.clone())
         })
         .collect::<Vec<_>>();
-    assert!(
-        !connected_subjects
-            .iter()
-            .any(|subject| subject == "kernel-old")
-    );
-    assert!(
-        !connected_subjects
-            .iter()
-            .any(|subject| subject == "old-machine-client")
-    );
-    assert!(
-        connected_subjects
-            .iter()
-            .any(|subject| subject == "kernel-replacement")
-    );
-    assert!(
-        connected_subjects
-            .iter()
-            .any(|subject| subject == "controller-client")
-    );
+    assert!(!connected_subjects
+        .iter()
+        .any(|subject| subject == "kernel-old"));
+    assert!(!connected_subjects
+        .iter()
+        .any(|subject| subject == "old-machine-client"));
+    assert!(connected_subjects
+        .iter()
+        .any(|subject| subject == "kernel-replacement"));
+    assert!(connected_subjects
+        .iter()
+        .any(|subject| subject == "controller-client"));
     for (label, socket) in [
         ("replacement kernel", &mut replacement_socket),
         ("controller", &mut controller_socket),
@@ -568,9 +560,7 @@ fn metadata_scope_counts_and_provider_metadata_include_only_permitted_targets() 
         .collect();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].kernel_id, "kernel-one");
-    assert!(
-        registry
-            .live_machines_in_realm_with_targets("realm-a", Some(&[]))
-            .is_empty()
-    );
+    assert!(registry
+        .live_machines_in_realm_with_targets("realm-a", Some(&[]))
+        .is_empty());
 }

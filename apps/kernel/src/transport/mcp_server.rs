@@ -245,7 +245,11 @@ async fn handle_proxy_json_rpc_request(
         .await
     {
         Ok(response) => Ok(json_response(StatusCode::OK, response)),
-        Err(error) => Ok(json_rpc_error_response(id, -32000, &tool_errors::message(&error))),
+        Err(error) => Ok(json_rpc_error_response(
+            id,
+            -32000,
+            &tool_errors::message(&error),
+        )),
     }
 }
 
@@ -455,7 +459,11 @@ async fn handle_json_rpc_value(
                         }),
                     ))
                 }
-                Err(error) => Ok(json_rpc_error_response(id, -32000, &tool_errors::message(&error))),
+                Err(error) => Ok(json_rpc_error_response(
+                    id,
+                    -32000,
+                    &tool_errors::message(&error),
+                )),
             }
         }
         _ => Ok(json_rpc_error_response(id, -32601, "method not found")),

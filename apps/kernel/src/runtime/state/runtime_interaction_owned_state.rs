@@ -358,9 +358,7 @@ impl KernelRuntimeOwnedState {
                 "approving this critical action needs your Chariox passkey",
             ));
         }
-        if super::owner_context_review::is_owner_context_review(&interaction)
-            && !terminal_answer
-        {
+        if super::owner_context_review::is_owner_context_review(&interaction) && !terminal_answer {
             return Err(interaction_error(
                 "Only the owner's Chariox terminal can answer this review",
             ));

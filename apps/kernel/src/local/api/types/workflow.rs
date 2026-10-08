@@ -1098,7 +1098,11 @@ pub struct ControlRoomWorkflowRunsRequest {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RoomWorkflowRunAction { Pause, Resume, Stop }
+pub enum RoomWorkflowRunAction {
+    Pause,
+    Resume,
+    Stop,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomWorkflowRunControlResult {
     pub run_id: String,
@@ -1108,4 +1112,8 @@ pub struct RoomWorkflowRunControlResult {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RoomWorkflowRunControlOutcome { Applied, Unchanged, Failed }
+pub enum RoomWorkflowRunControlOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}

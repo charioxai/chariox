@@ -2010,11 +2010,7 @@ impl ProviderAccountProfileRegistry {
             }
         }
         let removed = document.profiles.remove(index);
-        copy_notice::retire_received_copies(
-            document,
-            &removed.public,
-            self.copy_identity.as_ref(),
-        );
+        copy_notice::retire_received_copies(document, &removed.public, self.copy_identity.as_ref());
         if removed.public.is_default {
             if let Some(next) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider

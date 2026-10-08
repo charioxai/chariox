@@ -47,12 +47,17 @@ pub(super) fn require_bound_client_sender<'a>(
 ) -> Result<&'a RelayCallerIdentity, RelayError> {
     let identity = caller_identity
         .filter(|identity| identity.subject_kind == RelaySubjectKind::Client)
-        .ok_or_else(|| unauthorized(&format!("{purpose} requires an authenticated client identity")))?;
+        .ok_or_else(|| {
+            unauthorized(&format!(
+                "{purpose} requires an authenticated client identity"
+            ))
+        })?;
     validate_identity_expiry(identity, "client")?;
-    let thumbprint = identity
-        .public_key_thumbprint
-        .as_deref()
-        .ok_or_else(|| unauthorized(&format!("{purpose} requires a sender-bound client identity")))?;
+    let thumbprint = identity.public_key_thumbprint.as_deref().ok_or_else(|| {
+        unauthorized(&format!(
+            "{purpose} requires a sender-bound client identity"
+        ))
+    })?;
     validate_sender_key(thumbprint, encrypted_request, "client")?;
     Ok(identity)
 }

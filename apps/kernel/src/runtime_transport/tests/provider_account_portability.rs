@@ -14,9 +14,14 @@ fn provider_account_portability_websocket_drill() {
     std::fs::create_dir(&root).unwrap();
     // Keep the listener short without making a shared directory its private parent.
     let socket_dir = PathBuf::from("/tmp").join(format!(
-        "cx-kp-{}-{:x}", std::process::id(), rand::random::<u64>()
+        "cx-kp-{}-{:x}",
+        std::process::id(),
+        rand::random::<u64>()
     ));
-    std::fs::DirBuilder::new().mode(0o700).create(&socket_dir).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&socket_dir)
+        .unwrap();
     let socket_metadata = std::fs::symlink_metadata(&socket_dir).unwrap();
     let socket_path = socket_dir.join("k.sock");
     struct Cleanup {
@@ -29,14 +34,19 @@ fn provider_account_portability_websocket_drill() {
         fn drop(&mut self) {
             let metadata = std::fs::symlink_metadata(&self.socket_dir).unwrap();
             assert!(metadata.is_dir());
-            assert_eq!((metadata.dev(), metadata.ino()), (self.socket_device, self.socket_inode));
+            assert_eq!(
+                (metadata.dev(), metadata.ino()),
+                (self.socket_device, self.socket_inode)
+            );
             std::fs::remove_dir_all(&self.socket_dir).unwrap();
             std::fs::remove_dir_all(&self.root).unwrap();
         }
     }
     let _cleanup = Cleanup {
-        root: root.clone(), socket_dir: socket_dir.clone(),
-        socket_device: socket_metadata.dev(), socket_inode: socket_metadata.ino(),
+        root: root.clone(),
+        socket_dir: socket_dir.clone(),
+        socket_device: socket_metadata.dev(),
+        socket_inode: socket_metadata.ino(),
     };
     std::env::set_var("CHARIOX_HOME", &root);
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 * 1024 * 1024).build().unwrap().block_on(async {
@@ -113,5 +123,9 @@ fn provider_account_portability_websocket_drill() {
         timeout(Duration::from_secs(5), server).await.unwrap().unwrap().unwrap();
         result
     });
-    assert_eq!(std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777, shared_tmp_mode, "complete portability drill must preserve shared temporary-directory permissions");
+    assert_eq!(
+        std::fs::metadata("/tmp").unwrap().permissions().mode() & 0o7777,
+        shared_tmp_mode,
+        "complete portability drill must preserve shared temporary-directory permissions"
+    );
 }

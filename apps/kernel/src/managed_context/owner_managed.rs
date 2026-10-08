@@ -409,7 +409,10 @@ pub(crate) async fn authorize_import_ticket(
         .is_none_or(str::is_empty)
         || !valid_identity(source_kernel_id)
         || source_kernel_id == config.daemon_id
-        || source.public_key_thumbprint.as_deref().is_none_or(str::is_empty)
+        || source
+            .public_key_thumbprint
+            .as_deref()
+            .is_none_or(str::is_empty)
     {
         return Err(admission_error(
             "owner-managed source or destination enrollment is incomplete",
