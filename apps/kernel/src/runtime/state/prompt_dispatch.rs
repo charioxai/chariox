@@ -698,28 +698,7 @@ impl KernelRuntimeState {
                 .await?;
             authorize()?;
             let admitted = self.owned.admit_agent_task(&prepared)?;
-            // Correlation is captured at the authorized admission boundary.
-            // The receipt below binds only this parent's exact submitted task.
-            let delegated_parent = if self.owned.config_projection.snapshot().room_agent_tools {
-                if let Some((actor, run)) = &self.room_provider_origin {
-                    let active = owned
-                        .prompt_state_owner
-                        .active_prompt_for_agent(&session, actor);
-                    owned
-                        .durable_state_store
-                        .agent_tasks(Some(&prepared.session_id), Some(actor))?
-                        .into_iter()
-                        .find(|t| {
-                            active.as_ref().is_some_and(|p| t.prompt_id == p.id())
-                                && t.provider_run_id.as_deref() == Some(run.as_str())
-                        })
-                        .map(|t| t.task_id)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
                 if let Some(mut submission) =
@@ -815,14 +794,7 @@ impl KernelRuntimeState {
                 self.owned.withdraw_agent_task(prepared.prompt.id())?;
             }
             if submission.is_ok() {
-                if let Some(parent_task) = delegated_parent {
-                    owned.durable_state_store.agent_lifecycle(
-                        crate::durable_state::agent_lifecycle::Operation::BindDelegate {
-                            parent_task,
-                            child_task: prepared.prompt.id().into(),
-                        },
-                    )?;
-                }
+                self.reconcile_delegated_prompt(delegated_parent, &prepared);
             }
             submission
         }

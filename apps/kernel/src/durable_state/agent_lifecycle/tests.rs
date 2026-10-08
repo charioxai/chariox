@@ -2617,3 +2617,35 @@ fn a02_security_f4_accepted_parent_message_binds_exact_task() {
         Some("child-message-task")
     );
 }
+
+// MP-08/MP-10/MP-11 F4: cancellation after admission cannot reject an accepted prompt.
+#[test]
+fn a02_security_f4_cancelled_parent_does_not_bind_or_reject_accepted_child() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "child".into(),
+        prompt: "child-task".into(),
+        run: None,
+        now: 2,
+    });
+    f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+    });
+    f.apply(Operation::BindDelegate {
+        parent_task: "p".into(),
+        child_task: "child-task".into(),
+    });
+    assert_eq!(f.task().state, ExecutionState::Cancelled);
+    assert!(f.task().obligations[0].completion_task_id.is_none());
+}

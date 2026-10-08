@@ -10,12 +10,15 @@ pub(super) fn bind(
     if parent.room_id != child.room_id
         || parent.owner_user_id.is_empty()
         || parent.owner_user_id != child.owner_user_id
-        || !matches!(
-            parent.state,
-            ExecutionState::Working | ExecutionState::Waiting
-        )
     {
         return Err(error("delegation task binding is foreign or closed"));
+    }
+    // Cancellation after admission cannot turn an accepted provider prompt into an error.
+    if !matches!(
+        parent.state,
+        ExecutionState::Working | ExecutionState::Waiting
+    ) {
+        return Ok(());
     }
     if parent
         .obligations
