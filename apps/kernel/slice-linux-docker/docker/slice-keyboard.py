@@ -243,7 +243,8 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
         expected_target=None
         if before_press is not None:
             if duration_ms!=1:raise ValueError('agent native repeats unavailable')
-            expected_target=focused_target(connection)
+            # MP-11: keys bind to the focused control; clicks choose their own target.
+            if kind=="key":expected_target=focused_target(connection)
             before_press()
         if kind == "key":
             if not value or len(value.encode("utf-8")) > 128 or not value.isascii():
@@ -394,7 +395,8 @@ def main(args, stream):
     elif len(args) == 5 and args[0] == 'hold-button':
         hold_input('button', args[1], int(args[2]), int(args[3]), int(args[4]))
     elif len(args) == 5 and args[0] == 'pointer-click' and agent:
-        # MP-11 review R1: every native click can activate a Paste control.
+        # MP-11: every native click can activate a Paste control. Admit the
+        # clipboard owner once per click action; each press only fences it.
         if args[1] not in ('left','right') or args[2] not in ('1','2'):
             raise ValueError('invalid admitted pointer click')
         admit_clipboard=room_clipboard_guard()
