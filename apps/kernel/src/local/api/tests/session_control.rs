@@ -1742,3 +1742,26 @@ fn envp02b_first_save_records_legacy_digests_without_rewriting_recipe_or_values(
         .unwrap()
         .contains("private-source-only"));
 }
+
+// MP-08 / MP-10 / MP-11: a newer Detect must never authorize an unseen proposal.
+#[test]
+fn envp02b_stale_proposal_review_is_rejected_without_a_new_protocol_field() {
+    use crate::project_environment::*;
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let store = ProjectEnvironmentStore::new(&root);
+    let mut cache:EnvironmentDetectionCache=serde_json::from_value(serde_json::json!({
+        "project_id":"edit-project","evidence_digest":"a".repeat(64),"proposals":(["accept","exclude"].iter().map(|id|serde_json::json!({"proposal_id":format!("proposal-{id}"),"requirement":{"requirement_id":id,"title":id,"scope":{"kind":"folder","folder_id":before.folders[0].folder_id},"origins":[{"kind":"detected_metadata","source":"test-metadata","reference":"safe"}],"spec":{"kind":"software","identity":id,"version_constraint":null,"platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":false,"legacy_entry":null}})).collect::<Vec<_>>()),
+        "operation":{"operation_id":"detect-test","attempt":1,"local_project_id":"edit-project","revision_digest":before.content_digest,"target":{"machine_id":"machine","target_instance_generation":"generation","slice_ref":null},"kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}}})).unwrap();
+    store.save_detection(&cache).unwrap();
+    let viewed = envp02b_read(&harness);
+    let viewed_id = viewed.proposals[0].proposal_id.clone();
+    cache.proposals[0].requirement.title = "New unseen detection".into();
+    cache.evidence_digest = "c".repeat(64);
+    store.save_detection(&cache).unwrap();
+    let current = envp02b_read(&harness);
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":viewed.revision,"expectedContentDigest":viewed.content_digest,"draft":environment_draft_for_test(&viewed),"acceptedProposalIds":[viewed_id],"excludedProposalIds":[]}})).unwrap();
+    assert!(harness.dispatch(request).is_err(),"must reject unseen changed proposal");
+    assert_eq!(current,envp02b_read(&harness));
+}
