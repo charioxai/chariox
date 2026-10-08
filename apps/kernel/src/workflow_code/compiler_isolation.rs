@@ -310,6 +310,10 @@ pub(super) fn compiler_command(
             "--unshare-all",
             "--die-with-parent",
             "--new-session",
+            "--uid",
+            "65534",
+            "--gid",
+            "65534",
             "--cap-drop",
             "ALL",
             "--clearenv",
@@ -404,6 +408,7 @@ import net from 'node:net';
 import {spawnSync} from 'node:child_process';
 // Bubblewrap creates this PWD after clearing the inherited environment.
 if (Object.keys(process.env).some(key => key !== 'PWD') || process.env.PWD !== '/tmp') throw new Error('inherited environment');
+if (process.getuid() === 0 || process.getgid() === 0) throw new Error('privileged compiler identity');
 if (process.cwd() !== '/tmp' || fs.readdirSync('/tmp').length) throw new Error('scratch not empty');
 let readonly = false;
 try {fs.writeFileSync('/marker', 'x')} catch (error) {readonly = error.code === 'EROFS'}
