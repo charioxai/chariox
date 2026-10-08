@@ -1204,6 +1204,15 @@ mod workflow_copy_alias_tests {
             service.get_agent(source.id()).unwrap().alias(),
             Some("child")
         );
+        assert!(service
+            .alias_agent(
+                source.id(),
+                Some("agent-0123456789abcdef0123456789abcdef".into())
+            )
+            .is_err());
+        assert!(service
+            .alias_agent(source.id(), Some("agent-helper".into()))
+            .is_ok());
     }
 
     #[test]

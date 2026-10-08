@@ -541,9 +541,17 @@ fn resolve_session_agent<'a>(
                 .alias()
                 .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
     });
-    let target = matches
-        .next()
-        .ok_or_else(|| format!("agent `{reference}` does not exist in this session"))?;
+    let target = matches.next().ok_or_else(|| {
+        let mut available = agents
+            .iter()
+            .map(agent_message_target_label)
+            .collect::<Vec<_>>();
+        available.sort();
+        format!(
+            "agent `{reference}` does not exist in this session; available agents: {}",
+            available.join(", ")
+        )
+    })?;
     if matches.next().is_some() {
         return Err(format!("ambiguous room agent reference `{reference}`"));
     }
