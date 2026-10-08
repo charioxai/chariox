@@ -86,6 +86,12 @@ impl PromptStateOwner {
                 message: "the agent already has a profile change in progress".to_string(),
             });
         }
+        if state.queue_promotions.contains(&key) {
+            return Err(DaemonError::LocalTransport {
+                operation: "update agent profile",
+                message: format!("agent `{agent_id}` is preparing queued work; retry the profile change after preparation finishes"),
+            });
+        }
         if state
             .ensure_agent_state(session, agent_id)
             .active_prompt

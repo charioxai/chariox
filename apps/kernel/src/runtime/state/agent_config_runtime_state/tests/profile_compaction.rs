@@ -134,6 +134,162 @@ async fn compact_fixture_with_lease(
     (root, app, runtime, session, agent, run, lease)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn profile_queue_claims_reject_downshift_during_preparation() {
+    crate::test_support::isolated_env_test!();
+    assert_profile_queue_claims_keep_app_available(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn profile_queue_claims_defer_reserved_queue_without_holding_app_lock() {
+    crate::test_support::isolated_env_test!();
+    assert_profile_queue_claims_keep_app_available(false).await;
+}
+
+async fn assert_profile_queue_claims_keep_app_available(preparation_first: bool) {
+    let (root, app, runtime, session, agent, run) = compact_fixture().await;
+    // Only the fixture's isolated account is marked authenticated. Otherwise
+    // provider admission would stop before reaching the queue activation seam.
+    let account = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent)
+        .unwrap()
+        .provider_account_profile()
+        .to_string();
+    crate::test_support::authenticate_provider_account(
+        &runtime.owned.provider_account_profiles,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        &account,
+    )
+    .unwrap();
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt(
+            &snapshot,
+            crate::session::PromptQueueItem::new(
+                "older",
+                "fixture",
+                &agent,
+                "older queued request",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .unwrap();
+    // Hold the actual preparation claim across a gate, just as Project/Vault
+    // preparation does, then use normal app queue activation after release.
+    let preparation = preparation_first.then(|| {
+        runtime
+            .owned
+            .prompt_state_owner
+            .try_claim_idle_queue_promotion(&snapshot, &agent)
+            .unwrap()
+    });
+    let (release_preparation, preparation_gate) = tokio::sync::oneshot::channel();
+    let (entered_app, app_entry) = tokio::sync::oneshot::channel();
+    let promoter_state = runtime.clone();
+    let promoter_session = session.clone();
+    let promoter_agent = agent.clone();
+    let promotion = tokio::spawn(async move {
+        let _preparation = preparation;
+        preparation_gate.await.unwrap();
+        promoter_state
+            .with_app_side_effect(|app| {
+                let _ = entered_app.send(());
+                app.advance_next_queued_prompt(&promoter_session, &promoter_agent)
+            })
+            .await
+    });
+    let update_state = runtime.clone();
+    let update_session = session.clone();
+    let update_agent = agent.clone();
+    let update = tokio::spawn(async move {
+        update_state
+            .update_agent_profile(
+                &update_session,
+                &update_agent,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                None,
+                None,
+                Some("haiku".into()),
+                None,
+            )
+            .await
+    });
+    for _ in 0..100 {
+        if root.path().join("started").exists() || update.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let compaction_started = root.path().join("started").exists();
+    release_preparation.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), app_entry)
+        .await
+        .unwrap()
+        .unwrap();
+    // The queue closure has the app mutex before this unrelated read begins.
+    // On RED it spins on the profile-reserved head while /compact remains gated.
+    let available = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        runtime.with_app_side_effect(|app| {
+            crate::app::KernelSessionReadService::new(app).session_snapshot(&session)
+        }),
+    )
+    .await;
+    let compaction_still_gated = !root.path().join("release").exists();
+    // Always unblock the fixture and drop the profile claim before asserting,
+    // including RED: cancellation lets the synchronous queue loop finish.
+    std::fs::write(root.path().join("release"), "").unwrap();
+    update.abort();
+    let updated = update.await;
+    let promoted = tokio::time::timeout(std::time::Duration::from_secs(5), promotion)
+        .await
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session, run.id())
+        .unwrap();
+    assert!(compaction_still_gated);
+    assert!(
+        available.is_ok(),
+        "profile-reserved queue held the app mutex during gated compaction"
+    );
+    assert!(available.unwrap().is_ok());
+    if preparation_first {
+        assert!(
+            !compaction_started,
+            "profile downshift must reject the already-held preparation claim"
+        );
+        assert!(updated.unwrap().is_err());
+    } else {
+        assert!(
+            compaction_started,
+            "fixture must reach /compact before queue activation"
+        );
+        assert!(
+            promoted.unwrap().is_none(),
+            "profile-reserved work must defer without consuming its head"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(&snapshot, &agent)
+                .unwrap()
+                .prompt(),
+            "older queued request"
+        );
+    }
+    drop(app);
+}
+
 #[tokio::test]
 async fn profile_compaction_reserves_local_agent_until_the_profile_is_committed() {
     let (root, app, runtime, session, agent, run) = compact_fixture().await;

@@ -86,8 +86,21 @@ mod tests {
             .clone()
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_none());
+        assert!(
+            owner
+                .claim_idle_agent_profile_transition(&session, "agent")
+                .is_err(),
+            "profile reservation must exclude an already-held preparation claim"
+        );
         // Failure/cancellation releases only the ephemeral guard; the queue survives.
         drop(preparing);
+        let transition = owner
+            .claim_idle_agent_profile_transition(&session, "agent")
+            .unwrap();
+        assert!(owner
+            .try_claim_idle_queue_promotion(&session, "agent")
+            .is_none());
+        drop(transition);
         let retry = owner
             .try_claim_idle_queue_promotion(&session, "agent")
             .unwrap();
