@@ -26,6 +26,8 @@ pub(crate) fn prompt_claims_provider_run(
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
     sudo_entry_id: Option<String>,
+    // MP-08/MP-10/MP-11 F5: captured at each running sudo prompt binding.
+    sudo_process_cutoff: Option<u64>,
     // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
     // kernel-correlated prompts may start; others stay queued (causal fence).
     sudo_work: Option<SudoWorkHold>,
@@ -56,12 +58,17 @@ impl OwnedAgentPromptState {
             .as_ref()
             .filter(|hold| hold.prompts.contains(active.id()))
         {
+            if self.sudo_entry_id.as_deref() != Some(hold.entry_id.as_str()) {
+                self.sudo_process_cutoff =
+                    crate::runtime::kernel_access::process::birth_cutoff().ok();
+            }
             self.sudo_entry_id = Some(hold.entry_id.clone());
         }
     }
 
     fn take_active_prompt(&mut self) -> Option<PromptQueueItem> {
         self.sudo_entry_id = None;
+        self.sudo_process_cutoff = None;
         self.active_prompt.take()
     }
 
@@ -70,6 +77,7 @@ impl OwnedAgentPromptState {
             != prompt.as_ref().map(PromptQueueItem::id)
         {
             self.sudo_entry_id = None;
+            self.sudo_process_cutoff = None;
         }
         self.active_prompt = prompt;
     }
@@ -80,6 +88,7 @@ impl OwnedAgentPromptState {
             .get(agent_id)
             .map(|state| Self {
                 sudo_entry_id: None,
+                sudo_process_cutoff: None,
                 sudo_work: None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
@@ -252,6 +261,7 @@ impl PromptStateOwner {
         }
         if next_status == PromptStatus::Cancelling {
             state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
         }
         active.set_status(next_status);
         active.set_durable_delivery_failure_pending(next_status == PromptStatus::Cancelling);
@@ -646,6 +656,9 @@ impl PromptStateOwner {
         {
             return false;
         }
+        if state.sudo_entry_id.as_deref() != Some(entry) {
+            state.sudo_process_cutoff = crate::runtime::kernel_access::process::birth_cutoff().ok();
+        }
         state.sudo_entry_id = Some(entry.into());
         true
     }
@@ -685,6 +698,29 @@ impl PromptStateOwner {
             .as_ref()
             .filter(|active| active.status() == PromptStatus::Running)
             .map(|active| (entry, active.id().to_owned()))
+    }
+
+    /// Returns the cutoff only for the exact running prompt/window binding.
+    pub(crate) fn sudo_bound_process_cutoff(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) -> Option<u64> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent);
+        if state.sudo_entry_id.as_deref() != Some(entry)
+            || !state.active_prompt.as_ref().is_some_and(|active| {
+                active.id() == prompt && active.status() == PromptStatus::Running
+            })
+        {
+            return None;
+        }
+        state.sudo_process_cutoff
     }
 
     /// Hold `agent` for one sudo window's work; `prompt` is its first turn.
@@ -753,6 +789,7 @@ impl PromptStateOwner {
         }
         if state.sudo_entry_id.as_deref() == Some(entry) {
             state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
         }
     }
 
@@ -780,6 +817,7 @@ impl PromptStateOwner {
             return None;
         }
         state.sudo_entry_id = None;
+        state.sudo_process_cutoff = None;
         active.set_status(PromptStatus::Cancelling);
         Some(active.clone())
     }
@@ -1481,6 +1519,7 @@ impl PromptStateOwner {
             }
             // Keep only an idle agent's sudo hold; the mirror has no prompts.
             state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
             state.active_prompt = None;
             state.queued_prompts.clear();
             state.sudo_work.is_some()
@@ -1497,6 +1536,7 @@ impl PromptStateOwner {
                     == restored.active_prompt.as_ref().map(PromptQueueItem::id)
                 {
                     restored.sudo_entry_id = previous.sudo_entry_id.clone();
+                    restored.sudo_process_cutoff = previous.sudo_process_cutoff;
                 }
             }
             if restored.active_prompt.is_none()
@@ -2843,6 +2883,7 @@ mod tests {
                 PromptStateKey::new(session.id(), "agent-1"),
                 OwnedAgentPromptState {
                     sudo_entry_id: None,
+                    sudo_process_cutoff: None,
                     sudo_work: None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),

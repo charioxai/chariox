@@ -21,10 +21,14 @@ mod scope;
 mod window;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
-pub(crate) use policy::is_sudo_prompt;
+pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use window::sudo_window_minutes;
+#[cfg(test)]
+mod catalog_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
+#[cfg(test)]
+mod relaunch_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -56,6 +60,8 @@ impl SudoWindowProjection {
 /// Ratified owner constants: default window, selectable durations (maximum
 /// eight hours per fresh passkey verification) and the expiry warning.
 pub(crate) const SUDO_DEFAULT_MINUTES: u32 = 60;
+/// Listed to the agent only while its window is live.
+pub(crate) const SUDO_TOOL: &str = "chariox_kernel_request";
 pub(crate) const SUDO_WINDOW_MINUTES: [u32; 4] = [60, 120, 240, 480];
 const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 /// A due warning/expiry handled later than this by the sweep means its

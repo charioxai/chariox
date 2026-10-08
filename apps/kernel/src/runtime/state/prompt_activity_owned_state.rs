@@ -82,7 +82,7 @@ impl KernelRuntimeOwnedState {
                             notice,
                         );
                     }
-                    if receipt.steered {
+                    if receipt.steered || receipt.stale {
                         continue;
                     }
                 }

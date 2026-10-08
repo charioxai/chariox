@@ -21,6 +21,24 @@ elevated context: they stay queued with a visible "Deferred" notice and run as
 distinct regular turns once the work ends, the window expires or it is revoked.
 Spawned, forked and workflow agents never inherit the window.
 
+If a warm provider must relaunch to discover the sudo tool, it has 60 seconds
+from reload to become ready, including its launch delay. A failed or stalled
+relaunch returns a typed kernel-access error saying "provider relaunch failed",
+ends the window as `refused_or_cancelled` and releases the held work. Retry
+`/sudo` after the provider is available; the failed request leaves no elevation.
+
+A native provider may be idle while its catalog operation lane is still busy.
+The first sudo turn waits for the refresh to complete, keeping its work hold.
+The 60-second budget counts only idle refresh attempts, including deferred
+retries. Ordinary work resets it. A locked Chariox vault is unlocked before
+the budget starts, so its passphrase and duration popups never count; they
+keep their own expiry, and a window revoked meanwhile closes them. Each retry
+re-checks the vault, so a relock between retries prompts again and pauses
+the budget until answered. Budget
+exhaustion, a refresh failure or an unanswered vault popup returns a typed
+kernel-access error saying "provider catalog refresh failed", ends the window
+as `refused_or_cancelled` and releases the held work.
+
 The initial window permits owner session inventory. Additional typed operations
 require a fresh owner passkey in an operation-scope popup showing their exact
 parameters. That approval binds a digest to the original work and window;
@@ -85,8 +103,13 @@ agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it; the external client never sends or receives the
 passkey. TCP, relay, ungranted peers and targets outside the granted session
 are refused, and the window ends when the requester's grant ends. Shell CLI
-calls use the tracked provider's OS process tree; descendants that existed
-before the window are excluded.
+calls use the tracked provider's OS process tree. For a spawn launcher, the
+kernel also records the unique OS-verified endpoint server in that tree before
+prompt dispatch. Only descendants born after the current elevated turn binds
+are admitted below that server; other pre-turn children receive no exemption.
+A descendant retained from an
+earlier turn has no authority in a later turn. Unix terminal subscriptions are
+limited to the window session and owner attachments.
 
 A leased agent (running on a worker kernel) is elevated by its home kernel only
 (MP-08/MP-09/MP-10/MP-11 A10). The window is bound to the agent's execution

@@ -268,7 +268,8 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
-        if identity.subject.trim().is_empty()
+        if sender.starts_with("slice:")
+            || identity.subject.trim().is_empty()
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && identity.subject != sender)
         {

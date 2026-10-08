@@ -167,7 +167,7 @@ impl KernelRuntimeState {
         }
         if self.sudo_window_open_for_auth_token(auth_token) {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
-                name: "chariox_kernel_request".into(),
+                name: sudo::SUDO_TOOL.into(),
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });

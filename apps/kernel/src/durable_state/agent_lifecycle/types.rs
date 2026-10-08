@@ -44,6 +44,9 @@ pub struct AgentObligation {
     pub dispatch_state: String,
 }
 impl AgentObligation {
+    pub(crate) fn tracks_workflow_run(&self) -> bool {
+        matches!(self.kind.as_str(), "workflow" | "workflow_run")
+    }
     pub(crate) fn completion_source(&self) -> Option<&str> {
         self.completion_task_id
             .as_deref()
@@ -132,6 +135,10 @@ pub(crate) enum Operation {
         run: Option<String>,
         now: u64,
     },
+    BindDelegate {
+        parent_task: String,
+        child_task: String,
+    },
     RegisterObligation {
         owner: String,
         room: String,
@@ -209,12 +216,16 @@ pub(crate) enum Operation {
         sequence: u64,
         now: u64,
     },
-    BindAttempt {
+    // Internal writer command, not a serialized client protocol shape.
+    BindSubmission {
         room: String,
         agent: String,
         sequence: u64,
+        prompt: String,
+        target: Option<String>,
         run: String,
         submit_epoch: u64,
+        now: u64,
     },
     Receipt {
         room: String,

@@ -146,7 +146,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");
-        assert_eq!(started.id(), "started");
+        // MP-08/MP-10/MP-11: profile changes retain the durable admission ID.
+        assert_eq!(started.id(), "first");
         assert_eq!(started.workflow_run_id(), Some("run-first"));
         assert_eq!(started.workflow_node_run_id(), Some("node-first"));
         assert_eq!(started.source_client_id(), Some("caller-client"));

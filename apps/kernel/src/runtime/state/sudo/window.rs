@@ -294,11 +294,6 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.spawn_leased_sudo_update(turn, true);
         self.owned
-            .sudo_process_cutoffs
-            .lock()
-            .expect("sudo process cutoffs poisoned")
-            .remove(&turn.entry_id);
-        self.owned
             .sudo_timers
             .lock()
             .expect("sudo timers poisoned")

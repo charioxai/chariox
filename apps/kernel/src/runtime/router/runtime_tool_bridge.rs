@@ -198,6 +198,13 @@ impl CommandRouter {
             .runtime_tool_specs_for_auth_token(auth_token)
     }
 
+    pub(crate) fn runtime_catalog_signature(
+        &self,
+        auth_token: &str,
+    ) -> Vec<(String, String, serde_json::Value)> {
+        self.runtime_state.runtime_catalog_signature(auth_token)
+    }
+
     pub(crate) async fn runtime_tool_specs_for_auth_token_async(
         &self,
         auth_token: String,

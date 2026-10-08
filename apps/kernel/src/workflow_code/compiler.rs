@@ -1,5 +1,9 @@
 use super::*;
 
+/// MP-08/MP-11: amaro 1.1.5, byte-identical to official Node 22.22.1's type
+/// stripper. It runs inside the isolated compiler for every Node build.
+pub(super) const TYPESCRIPT_STRIPPER: &str = include_str!("../../vendor/amaro/index.js");
+
 pub fn compile_workflow_code_javascript(
     node_path: impl AsRef<Path>,
     source: &str,
@@ -70,6 +74,8 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
     parameters: &BTreeMap<String, Value>,
     schema_import_root: Option<&Path>,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    #[cfg(test)]
+    compile_gate_for_test::pause(source);
     let mut imports = super::compiler_isolation::SchemaImports::new(schema_import_root)?;
     let started = std::time::Instant::now();
     let total_timeout = Duration::from_millis(limits.script_timeout_ms);
@@ -107,6 +113,8 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
             parameters,
             schema_files: imports.files.as_ref(),
             schema_errors: &imports.errors,
+            typescript_stripper: (language == WorkflowCodeLanguage::TypeScript)
+                .then_some(TYPESCRIPT_STRIPPER),
         })
         .map_err(|error| crate::DaemonError::LocalTransport {
             operation: "workflow_code.compile",
@@ -180,9 +188,51 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
     })
 }
 
+/// Holds a compilation whose source contains an installed marker until the test
+/// releases it, so authority rechecks after a compiler wait are deterministic.
+#[cfg(test)]
+pub(crate) mod compile_gate_for_test {
+    use std::sync::{mpsc, Mutex};
+    use tokio::sync::oneshot;
+
+    type Gate = (String, oneshot::Sender<()>, mpsc::Receiver<()>);
+    static GATES: Mutex<Vec<Gate>> = Mutex::new(Vec::new());
+
+    /// Returns a started signal and the release handle (dropping it also releases).
+    pub(crate) fn install(marker: &str) -> (oneshot::Receiver<()>, mpsc::Sender<()>) {
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = mpsc::channel();
+        GATES
+            .lock()
+            .unwrap()
+            .push((marker.to_string(), started, release_rx));
+        (started_rx, release)
+    }
+
+    pub(super) fn pause(source: &str) {
+        let gate = {
+            let mut gates = GATES.lock().unwrap();
+            let index = gates
+                .iter()
+                .position(|(marker, ..)| source.contains(marker.as_str()));
+            index.map(|index| gates.remove(index))
+        };
+        if let Some((_, started, release)) = gate {
+            let _ = started.send(());
+            let _ = release.recv();
+        }
+    }
+}
+
 pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
+    discover_node_path(env::var_os("NODE"))
+}
+
+fn discover_node_path(
+    configured: Option<std::ffi::OsString>,
+) -> Result<PathBuf, crate::DaemonError> {
     let mut candidates = Vec::new();
-    if let Some(path) = env::var_os("NODE") {
+    if let Some(path) = configured {
         candidates.push(PathBuf::from(path));
     }
     candidates.extend([
@@ -197,33 +247,46 @@ pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError>
     }
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.clone()));
-    candidates
-        .into_iter()
-        .find(|candidate| {
-            Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        })
-        .ok_or_else(|| crate::DaemonError::LocalTransport {
-            operation: "workflow_code.compile",
-            message:
-                "could not find Node.js for workflow-code compilation; set the kernel NODE environment variable"
-                    .to_string(),
-        })
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    for candidate in candidates {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(mut child) = Command::new(&candidate)
+            .env_clear()
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if child
+            .wait_timeout(remaining.min(Duration::from_millis(500)))
+            .is_ok_and(|status| status.is_some_and(|status| status.success()))
+        {
+            return Ok(candidate);
+        }
+        if child.id() > 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    Err(crate::DaemonError::LocalTransport {
+        operation: "workflow_code.compile",
+        message: "could not find responsive Node.js for workflow-code compilation; set the kernel NODE environment variable".into(),
+    })
 }
 
 #[cfg(unix)]
 #[test]
 fn node_discovery_preserves_the_explicit_runtime_override() {
     use std::os::unix::fs::PermissionsExt;
-    let _environment = crate::env_lock::lock();
+    // Never set the process-wide NODE: parallel compiler tests discover Node too.
     let worktree = crate::test_support::TestWorktree::new("node-discovery-override");
     let node = worktree.path().join("configured-node");
     std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::env::set_var("NODE", &node);
-    assert_eq!(discover_workflow_code_node_path().unwrap(), node);
+    assert_eq!(discover_node_path(Some(node.clone().into())).unwrap(), node);
 }

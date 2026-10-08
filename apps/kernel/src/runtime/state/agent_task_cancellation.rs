@@ -143,7 +143,7 @@ impl KernelRuntimeState {
                             )?;
                         }
                     }
-                    "workflow" => {
+                    _ if obligation.tracks_workflow_run() => {
                         if let Some(run) =
                             session.workflow_runs().iter().find(|r| r.id() == resource)
                         {

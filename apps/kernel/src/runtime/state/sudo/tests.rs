@@ -24,6 +24,31 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
 }
 
 pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fixture {
+    fixture_with_run_profile(script, room_tools, "dev-stub", "dev-stub")
+}
+
+// MP-08/MP-10/MP-11: metadata-only warm catalog-caching run. Its agent
+// remains dev-stub; no real provider credentials or processes are used.
+pub(super) fn fixture_with_catalog_reload() -> Fixture {
+    fixture_with_run_profile(None, true, "codex", "sudo-relaunch-fixture")
+}
+
+pub(super) fn fixture_with_run_profile(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+) -> Fixture {
+    fixture_with_run_endpoint(script, room_tools, adapter, provider, None)
+}
+
+pub(super) fn fixture_with_run_endpoint(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+    endpoint: Option<String>,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -43,9 +68,8 @@ pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fi
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    let launch =
-        LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "default")
-            .with_agent_id(agent.id());
+    let launch = LaunchProviderRequest::new(session.id(), adapter, provider, "default", "default")
+        .with_agent_id(agent.id());
     let mut run = RuntimeProviderRun::new(
         "sudo-fixture-run",
         &launch,
@@ -64,10 +88,12 @@ pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fi
             pty_env: Default::default(),
             pty_env_remove: vec![],
             working_directory: Some(worktree.path().to_owned()),
-            structured_endpoint: None,
+            structured_endpoint: endpoint.clone(),
         },
     );
-    run.mark_running();
+    if endpoint.is_none() {
+        run.mark_running();
+    }
     run.set_runtime_mcp_auth_token(Some("sudo-fixture-bearer".into()));
     // The kernel must admit the current run before its process can launch.
     app.providers_mut().insert_run_for_test(run.clone());
@@ -268,10 +294,6 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         "sudo-exact-turn",
         &turn.entry_id
     ));
-    f.state.owned.sudo_process_cutoffs.lock().unwrap().insert(
-        turn.entry_id.clone(),
-        crate::runtime::kernel_access::process::birth_cutoff().unwrap(),
-    );
     f.state
         .owned
         .sudo_turns
@@ -1466,13 +1488,6 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         "the caller must see a failed durable receipt"
     );
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
-    assert!(f
-        .state
-        .owned
-        .sudo_process_cutoffs
-        .lock()
-        .unwrap()
-        .is_empty());
     assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
     database
         .execute_batch("DROP TRIGGER reject_sudo_end;")
@@ -1485,4 +1500,114 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         .load_subject_events_by_kind(&turn.entry_id, "kernel_access.sudo", 10)
         .unwrap();
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
+}
+
+// MP-08/MP-10/MP-11 F4: executable labels stay on one kernel-authored line.
+#[tokio::test]
+async fn sudo_review_requester_path_has_no_control_characters() {
+    let f = fixture();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let path = "/workspace/provider\nlabel\tend";
+    f.state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get_mut(&grant_id)
+        .unwrap()
+        .summary
+        .holder_executable = path.into();
+    let state = f.state.clone();
+    let request = external_request(&f);
+    let task = tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });
+    let prompt = popup(&f.state).await;
+    let prelude = prompt
+        .message
+        .split("Requester-supplied prompt:\n")
+        .next()
+        .unwrap();
+    let clean =
+        !prelude.contains(['\n', '\r', '\t']) && prelude.contains(&path.escape_debug().to_string());
+    f.state
+        .revoke_sudo(Some("local"), None, "fixture_cleanup")
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert!(clean, "requester executable must be escaped in the prelude");
+}
+
+// MP-08/MP-10/MP-11 F6: auth and enrollment never reach scope approval.
+#[test]
+fn sudo_review_auth_and_credential_enrollment_are_forbidden() {
+    for value in [
+        serde_json::json!({"StartProviderLogin":{"provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"SendProviderLoginInput":{"login_id":"fixture","data_base64":""}}),
+        serde_json::json!({"StartSliceProviderLogin":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"ImportSliceProviderAuth":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"RequestCredentialEnrollmentInteraction":{"session_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1,"provider_authorization_url":"https://example.com"}}),
+        serde_json::json!({"ArmDeploymentCredentialEnrollment":{"session_id":"fixture","attachment_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1}}),
+        serde_json::json!({"PrepareManagedEnvironmentGitCredentialEnrollment":{"environmentId":"fixture","sourceTargetId":"fixture","gitCredentials":{"kind":"none"}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(
+            super::policy::sudo_request_forbidden(&request),
+            "credential operation must be forbidden"
+        );
+    }
+}
+
+// MP-08/MP-10/MP-11 F7: controls cannot open an authorization window.
+#[tokio::test]
+async fn sudo_review_controls_are_not_elevation_prompts() {
+    for text in [
+        "/sudo status",
+        "/sudo extend",
+        "/sudo revoke",
+        "/sudo status sudo:00af",
+        " /sudo\trevoke sudo:00af",
+    ] {
+        let f = fixture();
+        let mut request = f.request.clone();
+        request.prompt = text.into();
+        assert!(
+            !is_sudo_prompt(text),
+            "control classified as prompt: {text}"
+        );
+        assert!(f
+            .state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+            .is_err());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+    }
+    assert!(is_sudo_prompt("/sudo deploy the app"));
+    assert!(!is_sudo_prompt("/sudoers"));
+}
+
+// MP-08/MP-10/MP-11 P2: control verbs inside task text still require approval.
+#[tokio::test]
+async fn sudo_review_control_verbs_in_tasks_reach_authorization() {
+    for text in [
+        "/sudo extend the database schema",
+        "/sudo status of prod please",
+        "/sudo revoke the obsolete deployment",
+        "/sudo status all",
+        "/sudo extend sudo:00af extra task text",
+        "/sudo status sudo:NOT_HEX",
+    ] {
+        assert!(is_sudo_prompt(text), "task classified as control: {text}");
+        let f = fixture();
+        let mut request = f.request.clone();
+        request.prompt = text.into();
+        let state = f.state.clone();
+        let task = tokio::spawn(async move {
+            state
+                .submit_sudo_prompt(request, "local", "sudo-terminal")
+                .await
+        });
+        let approval = popup(&f.state).await;
+        assert!(approval.message.contains(text.trim_start_matches("/sudo ")));
+        f.state.end_session(&f.request.session_id).await.unwrap();
+        assert!(task.await.unwrap().is_err());
+    }
 }

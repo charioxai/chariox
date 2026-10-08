@@ -117,12 +117,6 @@ fn local_request_api_creates_typescript_workflow_code_artifact() {
         eprintln!("skipping workflow-code TypeScript artifact test because node is not available");
         return;
     };
-    if !node_supports_workflow_code_typescript(&node_path) {
-        eprintln!(
-            "skipping workflow-code TypeScript artifact test because Node.js cannot strip TypeScript"
-        );
-        return;
-    }
 
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -195,12 +189,6 @@ fn local_request_api_applies_inline_typescript_workflow_code() {
         eprintln!("skipping inline workflow-code TypeScript test because node is not available");
         return;
     };
-    if !node_supports_workflow_code_typescript(&node_path) {
-        eprintln!(
-            "skipping inline workflow-code TypeScript test because Node.js cannot strip TypeScript"
-        );
-        return;
-    }
 
     let harness = LocalRouterTestHarness::new();
     let session = match harness

@@ -21,6 +21,7 @@ mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 mod provider_activation;
+mod provider_endpoint_identity;
 mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
