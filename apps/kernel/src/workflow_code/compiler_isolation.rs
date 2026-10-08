@@ -369,6 +369,17 @@ mod macos_tests;
 mod tests {
     use super::*;
 
+    // MP-11 F14: a realm escape cannot turn the compiler into a process launcher.
+    #[test]
+    fn security_f14_linux_compiler_cannot_spawn_its_own_node() {
+        let node = discover_workflow_code_node_path().unwrap();
+        let mut command = compiler_command(&node, &WorkflowCodeLimitsConfig::default()).unwrap();
+        let output = command.args(["--disable-wasm-trap-handler", "-e",
+            "const {spawnSync}=require('node:child_process'); const r=spawnSync(process.execPath,['--disable-wasm-trap-handler','-e','process.exit(0)']); if(!r.error || !['EPERM','EAGAIN'].includes(r.error.code)) process.exit(1);"
+        ]).output().unwrap();
+        assert!(output.status.success(), "MP-11 F14: sandbox allowed a child Node: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
     #[test]
     fn compiler_isolation_denies_host_files_commands_environment_and_network() {
         let node = discover_workflow_code_node_path().expect("real Node required");
