@@ -1,15 +1,15 @@
 # Lane status
 
-2026-10-08 — `cred/managed-login-copies`, PR #913 reviewed published head `d05118c56`.
+2026-10-08 — `cred/managed-login-copies`, PR #913 reviewed published head `65a4c8c35`.
 
-Both new P2 findings are fixed in local [skip ci] commits: receiving-account mapping `ae3c2cb3c`; receipt validation before installation caching `4d75b0e3b`. `c9074f8bc` records four fail-first regressions, now green. PUSH_READY.md records this round and the earlier MP-11 finding dispositions.
+Both P2 findings are fixed in local [skip ci] commits: home Claude cold dispatch `5eb73ab98` (fail-first `07b0be92d`); lost-ack reconciliation `1b5fc6f31` (fail-first `b20e15a41`). Both fail-first failures reproduce the review errors, and all four new regressions now pass. PUSH_READY.md records the mapping and earlier review history.
 
-Validation: four explicit regressions and 15 focused suites pass (393 test executions across overlapping filters). The real linked Codex import/local-removal/encrypted-replay drill passes, including preserved-login replay after receiving-kernel restart; no credential is restored. Kernel test build, workspace fmt and diff checks pass. Kernel clippy --all-targets passes with existing warnings.
+Validation: 20 focused suites plus four explicit regressions pass (438 test executions across overlapping filters). Kernel test build, clippy --all-targets (existing warnings), workspace fmt and diff checks pass. Real linked Codex import/retry/local-removal/encrypted-replay cells pass, including receiving-kernel restart. Home reconciles an unconfirmed G1 receipt on a G2 retry and observes local removal; replay does not restore the credential. The production receiver regression separately drops the first successful response and returns a timeout. Evidence: `/Users/miguel/.codex/evidence/credcopies-review-ack/`.
 
-Protocol: local 455 / relay peer 74 unchanged; no serialized contract changes and no number request needed.
+Protocol: local 455 / relay peer 74 unchanged; no serialized client/relay contract change or number request.
 
-HARD RULE: never official logout, revoke or re-login a shared login or its copy. No such action ran this round. Official logout/new-login/queued-resume acceptance remains `BLOCKED(Miguel: disposable login)`. Claude live acceptance remains `BLOCKED(owner)` without a linked account. Cloud G9 remains a follow-up.
+HARD RULE: no official logout, revocation or re-login ran on any shared login or its receiving copy. Those steps and live new-login/queued-resume acceptance remain `BLOCKED(Miguel: disposable login)`. Claude live cold-launch acceptance is `BLOCKED(owner)`; read-only official status reports no linked login. The synthetic Claude home regression reaches transport; it does not certify a real provider run. Cloud G9 remains a follow-up.
 
-Cleanup completes before handoff: receiving copy removed locally by the kernel, owned test/relay processes ended, and this round's compiler tree removed; protected runtime identities and source linked profiles retained.
+Cleanup completed: receiving copy locally removed by the kernel, owned test/relay processes ended, dedicated compiler output removed; protected runtime identities and source linked profiles retained.
 
-No push or GitHub CI. Ready for coordinator review; this lane stops after the final local validation commit.
+No push and NO GitHub CI. Ready for coordinator review; stop after the final local handoff commit.

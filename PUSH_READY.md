@@ -1,4 +1,33 @@
-# Managed login copies: P2 follow-up
+# Managed login copies: cold Claude dispatch and lost acknowledgements
+
+2026-10-08. Branch `cred/managed-login-copies`; reviewed PR #913 head `65a4c8c35`. New commits are local only; no push or GitHub CI.
+
+| Review finding | Fix commit | Fail-first commit | Result |
+| --- | --- | --- | --- |
+| P2 home-side cold Claude launch | `5eb73ab98` | `07b0be92d` | Ordinary/workflow home dispatch uses the confirmed receiving official-login profile before requiring a Vault setup token. Typed worker credential requests retain the setup-token fallback, including cold native TUI launches. |
+| P2 lost first copy acknowledgement | `1b5fc6f31` | `b20e15a41` | A private credential-free journal records issued generations before transfer, bound to source account and receiving machine/kernel. A preserved G1 receipt can reconcile a G2 retry; confirmed receipts retire pending attempts while retaining concurrent requests. Removed copies cannot satisfy installation reuse. |
+
+Both regressions failed at the reviewed behavior before their fixes: the exact home Vault-token error, and the exact home receipt-generation rejection after the production receiver installed G1 and its response was dropped. The final lost-ack regression uses production receiving installation, preserved-login reuse and leased profile update. The home Claude regression exercises ordinary/workflow dispatch through the transport boundary with a synthetic official login and no setup-token registry entry; it does not certify a live Claude provider run.
+
+## Validation for this round
+
+Four explicit new regressions and 20 focused suites pass: 438 passing test executions across overlapping filters, plus one real-login safe drill. Coverage includes the previous security and remap/cache suites, production lost-ack retry, generation scope/restart/concurrency, cold Claude home dispatch, native setup-token fallback, launch/Vault state, protocol snapshots and synthetic queued-work recovery.
+
+Kernel test build, kernel clippy `--all-targets`, workspace fmt and diff checks pass. Clippy reports existing warnings (445 lib-test warnings, including 324 duplicates).
+
+**Real linked Codex safe cells: PASS.** The rebuilt kernel test executable drove production account services and encrypted peer dispatch through a real websocket relay, using an existing official linked Codex login. Home deliberately left G1's successful receipt unconfirmed, issued G2, then reconciled the production receiver's preserved G1 receipt. The official receiving CLI confirmed login before kernel-managed local profile deletion. Home observed the removal and stopped treating the copy as installed. Exact initial import replay and preserved-login import replay after receiver restart were rejected without restoring credentials. This live cell leaves the first receipt unconfirmed; the regression separately exercises a timed-out acknowledgement. The receiver is a pinned home-managed kernel on this host, not Docker.
+
+No official logout, revocation or re-login ran. Read-only `claude auth status` reported no logged-in Claude account. Live Claude cold-launch acceptance remains **BLOCKED(owner)**. Official logout/new-login and subsequent real queued-work resumption remain **BLOCKED(Miguel: disposable login)**; shared logins and all their receiving copies are excluded from those steps. Synthetic queued-work recovery tests do not fulfill that live acceptance.
+
+Credential-free evidence is outside Git at `/Users/miguel/.codex/evidence/credcopies-review-ack/`: valid fail-first logs, green regressions, focused suite/build/clippy/fmt logs, validation manifest, read-only Claude availability and `live-codex-local-removal-replay.json`.
+
+Local protocol stays 455 and relay peer 74. No serialized CLI/app/relay contract changed; the pending-generation journal is private local metadata. Cloud G9 copy inventory, warning and receiving-machine login action remain the owner follow-up.
+
+Cleanup completed: the receiving copy was removed locally through the kernel, owned test/relay processes ended, and this round's dedicated compiler output was removed after a protected-path inventory. Runtime identities, source linked profiles, generation/replay journals and shared reviewer infrastructure remain protected.
+
+The previous rounds remain recorded below for continuity.
+
+# Previous P2 round (reviewed d05118c56)
 
 2026-10-08. Branch `cred/managed-login-copies`; reviewed published head PR #913 `d05118c56`. New commits are local only; no push or GitHub CI.
 
