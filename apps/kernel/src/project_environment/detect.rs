@@ -84,7 +84,7 @@ impl EnvironmentDetection {
         project_id: &str,
         folders: &[EnvironmentFolder],
         model_folders: &BTreeSet<String>,
-    ) -> ProjectEnvironmentDiscoveryInput {
+    ) -> (ProjectEnvironmentDiscoveryInput, bool) {
         let mut paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut references: BTreeMap<(String, String), ProjectEnvironmentEntry> = BTreeMap::new();
         for proposal in &self.proposals {
@@ -134,7 +134,7 @@ impl EnvironmentDetection {
                 }
             }
         }
-        ProjectEnvironmentDiscoveryInput {
+        super::detect_metadata::bound_detect_metadata(ProjectEnvironmentDiscoveryInput {
             project_id: project_id.into(),
             evidence_digest: self.evidence_digest.clone(),
             changed_paths: paths
@@ -145,7 +145,7 @@ impl EnvironmentDetection {
             references: references.into_values().collect(),
             private_files: vec![],
             revision: None,
-        }
+        })
     }
 }
 

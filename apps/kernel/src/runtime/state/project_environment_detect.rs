@@ -132,7 +132,17 @@ impl KernelRuntimeState {
                 receipt_ids: vec![],
             });
         } else {
-            let input = detection.discovery_input(project.id(), &folders, &model_folders);
+            let (input, metadata_limited) =
+                detection.discovery_input(project.id(), &folders, &model_folders);
+            if metadata_limited {
+                results.push(EnvironmentItemResult {
+                    requirement_id: "detect:model-metadata".into(),
+                    status: EnvironmentObservationStatus::NeedsYourInput,
+                    reason_code: "utility_metadata_bounded".into(),
+                    safe_summary: "Utility metadata limited to 8 file names per folder, 32 reference names and one existing use site per name (32 KiB total). Full deterministic proposals and provenance are retained.".into(),
+                    receipt_ids: vec![],
+                });
+            }
             let primary = folders
                 .iter()
                 .find(|f| model_folders.contains(&f.folder_id))

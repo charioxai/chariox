@@ -20,12 +20,21 @@ fn write(root: &TestWorktree, name: &str, content: &str) {
 fn envp02a_utility_metadata_is_bounded_without_losing_deterministic_origins() {
     let root = TestWorktree::new("envp02a-utility-budget");
     write(&root, "package.json", "{\"name\":\"code\"}");
-    let source = (0..64).map(|i| format!("process.env.ENV_NAME_{i};\n")).collect::<String>();
-    for i in 0..40 { write(&root, &format!("src/file-{i}.ts"), &source); }
+    let source = (0..64)
+        .map(|i| format!("process.env.ENV_NAME_{i};\n"))
+        .collect::<String>();
+    for i in 0..40 {
+        write(&root, &format!("src/file-{i}.ts"), &source);
+    }
     let folders = vec![folder(&root)];
     let detection = detect_environment(&folders, "environment").unwrap();
     let before = detection.proposals.clone();
-    let input = detection.discovery_input("project", &folders, &std::collections::BTreeSet::from(["folder".into()]));
+    let (input, limited) = detection.discovery_input(
+        "project",
+        &folders,
+        &std::collections::BTreeSet::from(["folder".into()]),
+    );
+    assert!(limited);
     assert!(input.references.len() <= 32);
     assert!(input.references.iter().all(|r| r.uses.len() <= 1));
     assert!(serde_json::to_vec(&input).unwrap().len() <= 32 * 1024);
