@@ -154,8 +154,11 @@ impl<'a> ProviderProcessTracker<'a> {
         Ok(())
     }
 
-    pub(crate) fn bind_endpoint_identity(&mut self, run: &RuntimeProviderRun) {
-        let mut tracking = self.app.provider_process_tracking.write();
+    pub(crate) fn bind_endpoint_identity(
+        tracking_store: &crate::app::ProviderProcessTrackingStore,
+        run: &RuntimeProviderRun,
+    ) {
+        let mut tracking = tracking_store.write();
         let Some(key) = tracking.run_processes.get(run.id()).cloned() else {
             return;
         };

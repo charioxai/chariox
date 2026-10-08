@@ -760,7 +760,7 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
 // MP-08/MP-10/MP-11: a spawn launcher is not the endpoint-serving provider.
 #[tokio::test]
 async fn sudo_shell_wrapper_native_endpoint_preserves_turn_fence() {
-    for mode in ["spawn", "exec"] {
+    for (mode, runtime_completion) in [("spawn", true), ("spawn", false), ("exec", true)] {
         let scratch = ShellDrillScratch::new();
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -824,17 +824,19 @@ idle()
             .parse::<u32>()
             .unwrap();
         let mut children = SiblingCleanup::new(vec![native, old]);
-        {
-            let mut app = f.app.lock().await;
-            app.finish_provider_launch(
-                &crate::app::StartedProviderLaunch {
-                    run: f.run.clone(),
-                    previous_active_run_id: None,
-                    provider_credential_env: Default::default(),
-                },
-                None,
-            )
-            .unwrap();
+        let started = crate::app::StartedProviderLaunch {
+            run: f.run.clone(),
+            previous_active_run_id: None,
+            provider_credential_env: Default::default(),
+        };
+        if runtime_completion {
+            f.state.finish_provider_launch(&started, None).await;
+        } else {
+            f.app
+                .lock()
+                .await
+                .finish_provider_launch(&started, None)
+                .unwrap();
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
         let turn = running(&f);

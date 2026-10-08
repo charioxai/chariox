@@ -209,7 +209,10 @@ impl DaemonApp {
             self.providers
                 .apply_runtime_binding(started.run.id(), binding)?;
         }
-        ProviderProcessTracker::new(self).bind_endpoint_identity(&started.run);
+        ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &started.run,
+        );
         self.finish_provider_launch_success(&started.run)
     }
 
