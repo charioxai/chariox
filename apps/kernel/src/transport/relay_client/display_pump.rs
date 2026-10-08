@@ -224,9 +224,17 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 failures = 0;
                 serde_json::json!({"KernelBrowser":{"result":result}})
             }
+            // A navigation between capture and commit refuses one credit as
+            // a stale document; the next credit binds the new document.
+            Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::StaleReference,
+            }) => {
+                sleep(Duration::from_millis(10)).await;
+                continue;
+            }
             Err(error) => {
-                // Refusals (stale generation, revoked grant) are final; other
-                // host failures retry on an independent frame with backoff.
+                // A gone subscription (stale generation, revoked grant) is
+                // final; other host failures retry on an independent frame.
                 failures += 1;
                 if matches!(error, DaemonError::UserDomainRefused { .. })
                     || failures >= FAILURE_LIMIT
