@@ -24,6 +24,30 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    pub(super) fn spawn_project_queued_prompt_after_profile_transition(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_some()
+        {
+            let state = self.clone();
+            let session_id = session_id.to_string();
+            let agent_id = agent_id.to_string();
+            tokio::spawn(async move {
+                state
+                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+                    .await;
+            });
+        }
+        Ok(())
+    }
+
     pub(super) async fn complete_local_prompt_with_queued_advance_if_matches(
         &self,
         session_id: &str,
@@ -68,6 +92,15 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Option<crate::session::PromptQueueItem> {
+        let session = self.owned.session_store.get_session(session_id).ok()?;
+        if self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_none()
+        {
+            return None;
+        }
         let result = self
             .with_project_prompt_environment(session_id, agent_id, |app| {
                 // The existing queue boundary resolves/compares revisions before activation,

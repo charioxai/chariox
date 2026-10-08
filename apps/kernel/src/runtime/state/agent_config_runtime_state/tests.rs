@@ -1193,3 +1193,6 @@ fn same_execution_profile(
         && a.model() == b.model()
         && a.effort() == b.effort()
 }
+
+#[path = "tests/profile_compaction.rs"]
+mod profile_compaction;

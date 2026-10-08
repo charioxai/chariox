@@ -288,6 +288,10 @@ impl KernelRuntimeState {
         };
         self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &self.owned)
             .await
+            .map(|acceptance| {
+                acceptance
+                    != super::local_prompt_dispatch_runtime::PromptDispatchAcceptance::Dropped
+            })
     }
 
     async fn restart_provider_after_login(

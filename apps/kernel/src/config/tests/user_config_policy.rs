@@ -499,3 +499,26 @@ fn workspace_live_sync_policy_rejects_per_provider_setter_keys() {
     ));
     assert!(!config.provider_requires_workspace_live_sync("codex"));
 }
+
+#[test]
+fn handoff_brief_models_set_unset_persist_and_are_discoverable() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-brief-config-{:016x}.toml",
+        rand::random::<u64>()
+    ));
+    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+    config.user_config_path = path.clone();
+    let schema = DaemonConfig::user_config_schema();
+    for (family, model) in [("codex", "gpt-6-luna"), ("claude", "haiku")] {
+        let key = format!("history.handoff.{family}_brief_model");
+        let entry = schema.iter().find(|entry| entry.path == key).unwrap();
+        assert!(entry.settable && entry.unsettable);
+        config.set_user_config_value(&key, model).unwrap();
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(loaded.history.handoff.brief_model(family), Some(model));
+        config.unset_user_config_value(&key).unwrap();
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(loaded.history.handoff.brief_model(family), None);
+    }
+    std::fs::remove_file(path).unwrap();
+}

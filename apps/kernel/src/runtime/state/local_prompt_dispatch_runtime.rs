@@ -5,6 +5,13 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptDispatchAcceptance {
+    Submitted,
+    PreparingBrief,
+    Dropped,
+}
+
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
@@ -100,7 +107,7 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
     }
 
-    fn ensure_prompt_dispatch_matches_active_prompt(
+    pub(super) fn ensure_prompt_dispatch_matches_active_prompt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {
@@ -1266,6 +1273,20 @@ pub(in crate::runtime::state) mod tests {
         String,
         String,
     ) {
+        runtime_with_active_prompt_and_history(None).await
+    }
+
+    async fn runtime_with_active_prompt_and_history(
+        prior: Option<&str>,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -1298,6 +1319,23 @@ pub(in crate::runtime::state) mod tests {
             "active prompt",
             PromptStatus::Queued,
         );
+        if let Some(prior) = prior {
+            app.operational_history_store()
+                .append(&crate::history::HistoryEvent::transcript(
+                    100,
+                    &crate::history::SessionHistoryEntry::user_prompt(
+                        session.id(),
+                        "prior",
+                        agent.id(),
+                        prior,
+                    ),
+                    crate::history::HistoryEventTurnContext {
+                        prompt_id: Some("prior".into()),
+                        ..Default::default()
+                    },
+                ))
+                .unwrap();
+        }
         let PromptSubmissionOutcome::Started { prompt } = app
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
             .expect("active prompt should submit")
@@ -1799,6 +1837,195 @@ pub(in crate::runtime::state) mod tests {
             }),
             "steering prompt should be recorded as provider input: {input_records:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_during_handoff_brief_never_submits_or_saves_the_cancelled_fold() {
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some(&format!(
+                "remember amber {}",
+                "notes ".repeat(2_000)
+            )))
+            .await;
+        let started = root.path().join("brief-started");
+        let release = root.path().join("brief-release");
+        let finished = root.path().join("brief-finished");
+        let submitted = root.path().join("cancelled-submit");
+        let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
+        let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
+        let script = format!(
+            "while IFS= read -r line; do case \"$line\" in *'Update the handoff brief'*) touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 200 ]; do sleep .01; n=$((n+1)); done; printf '%s\\n' '{}'; touch '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done",
+            started.display(), release.display(), answer, finished.display(), submitted.display()
+        );
+        let executable = root.path().join("brief-cli-fixture");
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "cancel-brief-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            run.id(),
+            &prompt_id,
+            "cancelled request",
+            None,
+            false,
+        );
+        runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
+        for _ in 0..200 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            started.exists(),
+            "fixture must reach the real brief utility"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, &agent_id, Some(&prompt_id))
+            .unwrap();
+        std::fs::write(&release, "").unwrap();
+        for _ in 0..200 {
+            if finished.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(finished.exists(), "fixture utility must finish");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let submitted = submitted.exists();
+        let stored = runtime
+            .owned
+            .operational_history_store
+            .load_agent_handoff_brief(&session_id, &agent_id)
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session_id, run.id())
+            .unwrap();
+        assert!(
+            !submitted,
+            "a cancelled request reached the provider actor after the brief"
+        );
+        assert!(
+            stored.is_none(),
+            "a cancelled fold must not overwrite the shared stored brief"
+        );
+    }
+
+    #[tokio::test]
+    async fn handoff_dispatch_returns_to_the_pump_before_preparing_the_brief() {
+        let (_worktree, runtime, session_id, agent_id, observer_id, _run_id, mut dispatch) =
+            runtime_with_admitted_prompt().await;
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "brief-target-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "claude".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        dispatch.provider_run_id = run.id().to_string();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let entry = crate::history::SessionHistoryEntry::user_prompt(
+            &session_id,
+            "prior",
+            &agent_id,
+            &format!("remember amber-kestrel {}", "notes ".repeat(2_000)),
+        );
+        runtime
+            .owned
+            .operational_history_store
+            .append(&crate::history::HistoryEvent::transcript(
+                100,
+                &entry,
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some("prior".into()),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        // A current-thread executor cannot run the continuation until this test yields.
+        // The missing Claude actor makes a synchronous dispatch fail immediately.
+        assert_eq!(
+            runtime
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
+                .await
+                .unwrap(),
+            PromptDispatchAcceptance::PreparingBrief
+        );
+        let records = runtime
+            .owned
+            .terminal_stream
+            .drain_notice_records(&session_id, &observer_id);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.message.contains("Preparing handoff")),
+            "{records:?}"
+        );
+        assert!(runtime
+            .owned
+            .prompt_dispatch_matches_active_prompt(&dispatch)
+            .unwrap());
     }
 
     #[tokio::test]
@@ -2374,6 +2601,120 @@ pub(in crate::runtime::state) mod tests {
     #[tokio::test]
     async fn app_async_rejection_preserves_successor_prompt() {
         assert_async_rejection_settlement(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn claude_native_cancel_before_acknowledgement_settles_as_cancelled() {
+        crate::test_support::isolated_env_test!();
+        let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        // The retirement fixture normally creates metadata only. This test
+        // needs a live fake PTY for the native dispatch and abort paths.
+        runtime
+            .with_app_side_effect(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+            })
+            .await
+            .unwrap();
+        let prompt_id = dispatch.prompt_id.clone();
+        let marker = std::path::Path::new(&run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"])
+            .with_file_name("active-prompt-id");
+        // Seed the state after PTY injection, before UserPromptSubmit. This
+        // fixture exercises acknowledgement/cancellation, not cold-start UI.
+        std::fs::write(&marker, format!("injected:{prompt_id}")).unwrap();
+        let origin = std::path::PathBuf::from(format!(
+            "{}.approval-origin",
+            run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"]
+        ));
+        runtime.spawn_prompt_dispatch(dispatch, runtime.provider_runtime_lanes.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&origin).ok().as_deref() == Some(prompt_id.as_str()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "dispatch must reach the native acknowledgement wait; failed={:?}",
+                failed_requests(&runtime, &agent_id)
+            )
+        });
+        let cancellation = runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &source_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cancellation.cancellation.prompt.status(),
+            PromptStatus::Cancelling
+        );
+        runtime.spawn_prompt_abort(
+            cancellation.dispatch.unwrap(),
+            runtime.provider_runtime_lanes.clone(),
+        );
+        // Let the native dispatch retry while cancellation owns the prompt,
+        // before simulating Claude's delayed UserPromptSubmit acknowledgement.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        std::fs::write(&marker, format!("accepted:{prompt_id}")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap();
+                if runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the cancellation must settle after acknowledgement");
+        runtime
+            .retire_owned_provider_run_after_terminal_failure(&session_id, run.id())
+            .await;
+        assert!(
+            failed_requests(&runtime, &agent_id).is_empty(),
+            "a cancelled native request must not be remembered as failed"
+        );
+        assert_ne!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .state(),
+            crate::agent::AgentState::Error
+        );
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            settlement.metadata[crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY],
+            "cancelled"
+        );
+        let history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap();
+        assert!(!history.iter().any(|event| event
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Provider prompt dispatch failed")
+                || text.contains("Request not carried out"))));
     }
 
     #[tokio::test]
@@ -3467,14 +3808,17 @@ impl KernelRuntimeState {
             let result = self
                 .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
                 .await;
-            if result.as_ref().is_ok_and(|accepted| *accepted) {
+            if result
+                .as_ref()
+                .is_ok_and(|accepted| *accepted == PromptDispatchAcceptance::Submitted)
+            {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
                     crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                     None,
                 );
             }
-            result
+            result.map(|acceptance| acceptance != PromptDispatchAcceptance::Dropped)
         }
     }
 
@@ -3541,9 +3885,9 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<PromptDispatchAcceptance, DaemonError> {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-            return Ok(false);
+            return Ok(PromptDispatchAcceptance::Dropped);
         }
         if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
             return Box::pin(
@@ -3626,51 +3970,40 @@ impl KernelRuntimeState {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
-            let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+            let handoff = owned.context_handoff_for_dispatch(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &dispatch.source_attachment_id,
                 &provider_run,
-                &dispatch.prompt,
-            );
-            let granted_skill_context = owned.granted_skill_hidden_context(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &prompt_with_handoff,
-            )?;
-            let hidden_system_context =
-                join_hidden_context(&hidden_system_context, &granted_skill_context);
-            let (source_client_id, _source_user_id) =
-                owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
-            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
-                &dispatch.agent_id,
-                owned
-                    .agent_store
-                    .get_agent(&dispatch.agent_id)?
-                    .is_metaagent(),
-                source_client_id.as_deref(),
-                &hidden_system_context,
-            );
-            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(false);
-            }
-            let result = owned.provider_store.enqueue_structured_prompt_submit(
-                dispatch.session_id.clone(),
-                dispatch.provider_run_id.clone(),
-                dispatch.agent_id.clone(),
-                dispatch.prompt_id.clone(),
-                dispatch
-                    .target_active_prompt_id
-                    .as_deref()
-                    .unwrap_or(&dispatch.prompt_id),
-                &provider_run,
-                &prompt_with_handoff,
-                &hidden_system_context,
-                &dispatch.attachments,
-                mode,
+                &dispatch.prompt_id,
                 dispatch.steering,
             );
-            return result.map(|()| true);
+            if handoff
+                .as_ref()
+                .is_some_and(|handoff| handoff.needs_brief())
+                && super::context_handoff::brief_refresh::writes_handoff_briefs(&provider_run)
+            {
+                self.spawn_handoff_brief_dispatch(
+                    dispatch.clone(),
+                    provider_run,
+                    handoff.unwrap(),
+                    hidden_system_context,
+                );
+                return Ok(PromptDispatchAcceptance::PreparingBrief);
+            }
+            return self
+                .submit_structured_prompt_with_handoff(
+                    dispatch,
+                    &provider_run,
+                    handoff,
+                    &hidden_system_context,
+                )
+                .map(|submitted| {
+                    if submitted {
+                        PromptDispatchAcceptance::Submitted
+                    } else {
+                        PromptDispatchAcceptance::Dropped
+                    }
+                });
         }
         if !internal_recovery
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(
@@ -3691,13 +4024,23 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+        let uses_claude_native_bridge =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
+        let context_handoff = owned.context_handoff_for_dispatch(
             &dispatch.session_id,
             &dispatch.agent_id,
-            &dispatch.source_attachment_id,
             &provider_run,
-            &dispatch.prompt,
+            &dispatch.prompt_id,
+            dispatch.steering,
         );
+        // Claude native turns carry the handoff as hidden context, sized to
+        // the room the turn's other hidden context leaves.
+        let prompt_with_handoff = match &context_handoff {
+            Some(handoff) if !uses_claude_native_bridge => {
+                super::context_handoff::inject_context_handoff(&dispatch.prompt, handoff)
+            }
+            _ => dispatch.prompt.clone(),
+        };
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
         let provider_prompt = owned.apply_granted_skill_summary(
@@ -3705,8 +4048,6 @@ impl KernelRuntimeState {
             &dispatch.agent_id,
             &prompt_with_hidden_context,
         )?;
-        let uses_claude_native_bridge =
-            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         if !internal_recovery {
@@ -3753,7 +4094,7 @@ impl KernelRuntimeState {
         }
         if !has_managed_process {
             if dispatch.steering {
-                return Ok(false);
+                return Ok(PromptDispatchAcceptance::Dropped);
             }
             if !dispatch.steering {
                 let session = owned.session_store.get_session(&dispatch.session_id)?;
@@ -3766,7 +4107,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(false);
+                    return Ok(PromptDispatchAcceptance::Dropped);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3779,10 +4120,10 @@ impl KernelRuntimeState {
                 )?;
                 owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
             }
-            return Ok(true);
+            return Ok(PromptDispatchAcceptance::Submitted);
         }
         if uses_claude_native_bridge {
-            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
+            let native_dispatch = crate::app::KernelPromptDispatch {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: dispatch.provider_run_id.clone(),
                 agent_id: dispatch.agent_id.clone(),
@@ -3790,12 +4131,7 @@ impl KernelRuntimeState {
                 target_active_prompt_id: dispatch.target_active_prompt_id.clone(),
                 source_attachment_id: dispatch.source_attachment_id.clone(),
                 prompt: dispatch.prompt.clone(),
-                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                    &hidden_system_context,
-                ),
+                hidden_system_context: hidden_system_context.clone(),
                 attachments: dispatch.attachments.clone(),
                 prompt_origin: dispatch.prompt_origin,
                 external_provider: dispatch.external_provider.clone(),
@@ -3826,7 +4162,13 @@ impl KernelRuntimeState {
                             &dispatch.session_id,
                             &dispatch.provider_run_id,
                             &provider_run,
-                            &dispatch_with_handoff,
+                            &native_dispatch,
+                            &|room| {
+                                context_handoff
+                                    .as_ref()
+                                    .map(|handoff| handoff.render_hidden(room))
+                                    .unwrap_or_default()
+                            },
                         )
                     })
                     .await?;
@@ -3873,7 +4215,7 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                     )
                 else {
-                    return Ok(false);
+                    return Ok(PromptDispatchAcceptance::Dropped);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
@@ -3885,7 +4227,7 @@ impl KernelRuntimeState {
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
             }
-            return Ok(true);
+            return Ok(PromptDispatchAcceptance::Submitted);
         }
         let provider_run_id = dispatch.provider_run_id.clone();
         let writer = self
@@ -3932,7 +4274,7 @@ impl KernelRuntimeState {
                     &dispatch.provider_run_id,
                 )
             else {
-                return Ok(false);
+                return Ok(PromptDispatchAcceptance::Dropped);
             };
             owned.note_prompt_started(&dispatch.provider_run_id);
             owned.mark_active_prompt_delivery(
@@ -3944,7 +4286,7 @@ impl KernelRuntimeState {
                 provider_run.provider_session_id().map(str::to_string),
             )?;
         }
-        Ok(true)
+        Ok(PromptDispatchAcceptance::Submitted)
     }
 
     pub(super) async fn fail_prompt_dispatch(
@@ -4790,7 +5132,7 @@ impl KernelRuntimeState {
     }
 }
 
-fn join_hidden_context(first: &str, second: &str) -> String {
+pub(super) fn join_hidden_context(first: &str, second: &str) -> String {
     match (first.trim(), second.trim()) {
         ("", "") => String::new(),
         (first, "") => first.to_string(),

@@ -103,6 +103,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             settings_file,
             usage_file,
             last_usage_file_contents: None,
+            last_context_tokens: None,
             mcp_config_file,
             process_identity: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::runtime::kernel_access::process::inspect(child.id())
@@ -194,6 +195,7 @@ pub(crate) fn submit_claude_prompt(
         }
     });
     write_json_line(&mut state.stdin, &message)?;
+    state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
@@ -352,6 +354,7 @@ fn retry_stalled_claude_turn(
     write_json_line(&mut state.stdin, &message)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
+    state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.record_restart(Instant::now());
@@ -642,6 +645,7 @@ mod tests {
                 settings_file: None,
                 usage_file: None,
                 last_usage_file_contents: None,
+                last_context_tokens: None,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
@@ -1560,6 +1564,69 @@ done
         snapshot(&mut state, &mut repeated, "OK, done.");
         snapshot(&mut state, &mut repeated, "OK");
         assert!(repeated.chunks.is_empty());
+    }
+
+    #[test]
+    fn claude_context_uses_the_last_api_call_across_batches() {
+        let (mut state, mut batch) = parser_state();
+        for context in [371_000, 372_000] {
+            batch = ProviderPromptSignalBatch::default();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type":"assistant", "message":{
+                    "usage":{"input_tokens":2_000,"cache_read_input_tokens":context-2_000,"output_tokens":10},"content":[]
+                }}),
+                &mut batch,
+            );
+        }
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event", "event":{
+                "type":"message_delta","usage":{"output_tokens":20}
+            }}),
+            &mut batch,
+        );
+        assert_eq!(
+            batch.resolved_usage.as_ref().unwrap().context_tokens,
+            Some(372_000)
+        );
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"result","subtype":"success",
+                "usage":{"input_tokens":4_000,"cache_read_input_tokens":740_000,"output_tokens":30}
+            }),
+            &mut batch,
+        );
+        let usage = batch.resolved_usage.unwrap();
+        assert_eq!(usage.context_tokens, Some(372_000));
+        assert_eq!(usage.total_tokens, Some(744_030));
+    }
+
+    #[test]
+    fn claude_stream_start_carries_input_context_and_result_only_is_unknown() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type":"result","subtype":"success","usage":{"input_tokens":744_000}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, None);
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type":"stream_event","event":{"type":"message_start","message":{
+                "usage":{"input_tokens":2_000,"cache_creation_input_tokens":3_000,"cache_read_input_tokens":35_000}
+            }}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, Some(40_000));
     }
 
     #[test]

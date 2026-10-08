@@ -79,6 +79,8 @@ struct ClaudeNativePromptInjection<'a> {
     prompt: &'a str,
     hidden_system_context: &'a str,
     attachments: &'a [PromptAttachment],
+    /// Renders the provider-switch handoff within the given byte room.
+    context_handoff: &'a dyn Fn(usize) -> String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1181,6 +1183,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         dispatch: &KernelPromptDispatch,
+        context_handoff: &dyn Fn(usize) -> String,
     ) -> Result<ClaudeNativeDispatchAttempt, DaemonError> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
@@ -1227,6 +1230,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             prompt: &dispatch.prompt,
             hidden_system_context: &dispatch.hidden_system_context,
             attachments: &dispatch.attachments,
+            context_handoff,
         };
         self.inject_prompt(
             session_id,
@@ -1374,6 +1378,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             prompt: prompt.prompt(),
             hidden_system_context: &hidden_system_context,
             attachments: prompt.attachments(),
+            context_handoff: &|_| String::new(),
         };
         self.inject_prompt(
             session_id,
@@ -1657,6 +1662,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 attachment_context,
             ])
         };
+        let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
+        let hidden_context =
+            join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
         crate::provider::ensure_claude_native_hidden_context_fits(
             provider_run_id,
             &hidden_context,

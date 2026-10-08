@@ -10,6 +10,8 @@ pub struct UserHistoryConfig {
     pub operational: UserOperationalHistoryConfig,
     #[serde(default)]
     pub archive: UserArchiveHistoryConfig,
+    #[serde(default, skip_serializing_if = "UserHandoffHistoryConfig::is_default")]
+    pub handoff: UserHandoffHistoryConfig,
 }
 
 impl Default for UserHistoryConfig {
@@ -17,6 +19,33 @@ impl Default for UserHistoryConfig {
         Self {
             operational: UserOperationalHistoryConfig::default(),
             archive: UserArchiveHistoryConfig::default(),
+            handoff: UserHandoffHistoryConfig::default(),
+        }
+    }
+}
+
+/// The models that write provider-switch handoff briefs, per target harness.
+/// Unset, a Codex brief uses a fast default, and a Claude brief the source
+/// model when the harness can run it and the target model otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserHandoffHistoryConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_brief_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_brief_model: Option<String>,
+}
+
+impl UserHandoffHistoryConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The configured brief model for a provider family.
+    pub fn brief_model(&self, family: &str) -> Option<&str> {
+        match family {
+            "codex" => self.codex_brief_model.as_deref(),
+            "claude" => self.claude_brief_model.as_deref(),
+            _ => None,
         }
     }
 }

@@ -920,6 +920,8 @@ impl KernelRuntimeState {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 };
+                let response_timeout = super::leased_profile_transition_runtime::worker_profile_response_timeout(
+                    crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, agent.provider());
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -953,7 +955,7 @@ impl KernelRuntimeState {
                             &relay_state,
                             target,
                             request,
-                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                            response_timeout,
                         )
                         .await?;
                         #[cfg(test)]
@@ -981,7 +983,7 @@ impl KernelRuntimeState {
                             &config,
                             target,
                             request,
-                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                            response_timeout,
                         )
                         .await?;
                         #[cfg(test)]

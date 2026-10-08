@@ -240,6 +240,26 @@ impl ProviderResumeState {
         }
     }
 
+    /// The resume state an agent keeps across a profile change. Every official
+    /// harness resumes its native session under another model or effort, so the
+    /// provider keeps the whole conversation; a different provider or account
+    /// cannot read that session, so the kernel transfers the conversation instead.
+    pub fn after_profile_change(
+        &self,
+        from_provider: &str,
+        from_account_profile: &str,
+        to_provider: &str,
+        to_account_profile: &str,
+    ) -> Self {
+        let same_provider = super::canonical_provider_family(from_provider)
+            .is_some_and(|family| super::canonical_provider_family(to_provider) == Some(family));
+        if same_provider && from_account_profile == to_account_profile {
+            return self.clone();
+        }
+        self.without_provider_session_id(from_provider)
+            .without_provider_session_id(to_provider)
+    }
+
     pub fn replacement_after_provider_resume_failure(
         &self,
         provider: &str,
@@ -1013,6 +1033,22 @@ mod tests {
                 .provider_session_id("codex"),
             Some("codex-thread")
         );
+    }
+
+    #[test]
+    fn provider_resume_state_keeps_the_native_session_across_a_model_change() {
+        let mut state = ProviderResumeState::from_codex_thread_id("thread-1");
+        state.set_claude_session_id("claude-1");
+
+        let model_change = state.after_profile_change("codex", "work", "codex", "work");
+        let account_change = state.after_profile_change("codex", "work", "codex", "personal");
+        let provider_change = state.after_profile_change("codex", "work", "claude", "work");
+
+        assert_eq!(model_change.codex_thread_id(), Some("thread-1"));
+        assert_eq!(account_change.codex_thread_id(), None);
+        assert_eq!(account_change.claude_session_id(), Some("claude-1"));
+        assert_eq!(provider_change.codex_thread_id(), None);
+        assert_eq!(provider_change.claude_session_id(), None);
     }
 
     #[test]

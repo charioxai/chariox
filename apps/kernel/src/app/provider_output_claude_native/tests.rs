@@ -583,6 +583,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
                 prompt: "do the work",
                 hidden_system_context: "",
                 attachments: &attachments,
+                context_handoff: &no_context_handoff,
             },
         )
         .expect("pending permission must not reinject the active prompt");
@@ -1175,7 +1176,13 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     };
 
     let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("injected prompt should remain pending");
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
 
@@ -1196,7 +1203,13 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     )
     .expect("hook events should be written");
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("hook-acknowledged prompt should complete dispatch");
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
     assert!(
@@ -1269,7 +1282,13 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
         "injected:pending-steering-1",
     );
     let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("injected steering should remain pending");
 
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
@@ -1279,7 +1298,13 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
         "accepted:pending-steering-1",
     );
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("acknowledged steering should complete dispatch");
 
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
@@ -1600,7 +1625,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         .is_empty());
 
     let pending = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("unapproved startup trust should remain pending");
     assert_eq!(pending, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert!(claude_native_marker(&context_file)
@@ -1618,7 +1649,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
-            .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+            .process_prompt_dispatch_attempt(
+                session.id(),
+                run.id(),
+                &run,
+                &dispatch,
+                &no_context_handoff,
+            )
             .expect("approval should be consumed through dispatch");
         if claude_native_marker(&context_file)
             .as_deref()
@@ -1661,7 +1698,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     )
     .expect("composer fixture should be written");
     let typed = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("approved task should be typed through dispatch");
     assert_eq!(typed, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert!(claude_native_marker(&context_file)
@@ -1670,7 +1713,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     let submitted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("approved task should submit exactly once");
     assert_eq!(submitted, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert_eq!(
@@ -1690,7 +1739,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     )
     .expect("provider acknowledgement should be written");
     let completed = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("provider acknowledgement should complete dispatch");
     assert_eq!(completed, ClaudeNativeDispatchAttempt::Completed);
     assert_eq!(
@@ -1698,7 +1753,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         Some(format!("accepted:{}", prompt.id()).as_str())
     );
     let repeated = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("completed dispatch should remain idempotent");
     assert_eq!(repeated, ClaudeNativeDispatchAttempt::Completed);
 
@@ -1716,6 +1777,107 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         1,
         "the real PTY dispatch must contain the task exactly once: {captured:?}"
     );
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
+}
+
+fn no_context_handoff(_room: usize) -> String {
+    String::new()
+}
+
+#[test]
+fn claude_native_handoff_takes_only_the_room_its_turn_leaves() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-handoff-room-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let capture_file = root.join("pty-input.log");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-handoff-room",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "provider-run-handoff-room-process".to_string(),
+            pty_target: Some("provider-run-handoff-room".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                format!("tee {} >/dev/null", capture_file.display()),
+            ],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    let context_file = context_file.display().to_string();
+    let workflow_context = "w".repeat(30_000);
+    let rooms = std::cell::RefCell::new(Vec::new());
+    // The worst case: a handoff that fills the room with two-byte scalars.
+    let handoff = |room: usize| {
+        rooms.borrow_mut().push(room);
+        "é".repeat(room / 2)
+    };
+    let attachments = Vec::new();
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            &context_file,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "continue",
+                hidden_system_context: &workflow_context,
+                attachments: &attachments,
+                context_handoff: &handoff,
+            },
+        )
+        .expect("a handoff within the remaining room should dispatch");
+
+    let room = rooms.borrow()[0];
+    assert!(room > 10_000 && room < 18_000, "{room}");
+    let hidden = fs::read_to_string(&context_file).expect("hidden context should be written");
+    assert!(hidden.starts_with(&workflow_context));
+    assert!(hidden.ends_with(&"é".repeat(room / 2)));
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &hidden)
+        .expect("the written context should fit the hook delivery");
     app.pty
         .remove_process(run.id())
         .expect("test provider PTY should stop");
@@ -1779,7 +1941,13 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
         steering: false,
     };
     let error = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect_err("an exited provider must fail before native dispatch");
     assert!(error
         .to_string()
@@ -2109,7 +2277,13 @@ fn claude_headless_dispatch_observes_ask_user_question_queue_acknowledgement() {
     };
 
     let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("AskUserQuestion queue acknowledgement should be processed");
 
     assert_eq!(outcome, ClaudeNativeDispatchAttempt::Completed);

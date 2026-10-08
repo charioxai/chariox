@@ -374,6 +374,7 @@ struct SlicePrivateRelayConnector {
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
@@ -400,6 +401,7 @@ use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
+mod structured_prompt_dispatch;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
@@ -439,6 +441,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
+mod leased_profile_transition_runtime;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]
