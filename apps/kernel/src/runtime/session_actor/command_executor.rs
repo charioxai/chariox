@@ -34,6 +34,22 @@ impl SessionRuntimeCommandExecutor {
         executor
     }
 
+    pub(super) fn with_room_request_origin(
+        &self,
+        actor: Option<&str>,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_room_request_origin(actor, request);
+        executor
+    }
+
+    pub(super) fn with_room_provider_origin(&self, actor: Option<&str>, run: Option<&str>) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_room_provider_origin(actor, run);
+        executor
+    }
+
     pub(super) fn new(
         store: SessionRuntimeStore,
         focus_projection: FocusedAgentProjection,
@@ -60,6 +76,9 @@ impl SessionRuntimeCommandExecutor {
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(actor) = caller_metaagent_id.as_deref() {
+            self.store.authorize_room_agent_request(actor, &request)?;
+        }
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
             &self.terminal_stream,

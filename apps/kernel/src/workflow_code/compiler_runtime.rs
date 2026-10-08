@@ -1,6 +1,4 @@
 pub(super) const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
-import fs from "node:fs"
-import path from "node:path"
 import vm from "node:vm"
 
 const chunks = []
@@ -156,39 +154,22 @@ function createBuilder() {
     if (typeof schemaPath !== "string" || schemaPath.trim() === "") {
       throw new Error("schemaFromFile path must be a non-empty string")
     }
-    if (!input.schema_import_root) {
+    if (!input.schema_files) {
       throw new Error("schemaFromFile requires an approved schema import root")
     }
-    if (path.isAbsolute(schemaPath)) {
-      throw new Error("schemaFromFile path must be relative to the approved import root")
-    }
-    const normalized = path.normalize(schemaPath)
-    if (normalized === "." || normalized.startsWith("..") || path.isAbsolute(normalized)) {
+    if (schemaPath.startsWith("/") || schemaPath.split(/[\\/]/).includes("..")) {
       throw new Error("schemaFromFile path must stay inside the approved import root")
     }
-    const root = fs.realpathSync(String(input.schema_import_root))
-    const candidate = path.resolve(root, normalized)
-    const resolved = fs.realpathSync(candidate)
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-      throw new Error("schemaFromFile path resolves outside the approved import root")
+    if (!schemaPath.endsWith(".json")) throw new Error("schemaFromFile path must end in .json")
+    const key = schemaPath.replace(/\\/g, "/").split("/").filter(part => part !== "." && part !== "").join("/")
+    if (!Object.prototype.hasOwnProperty.call(input.schema_files, key)) {
+      if (Object.prototype.hasOwnProperty.call(input.schema_errors || {}, key)) throw new Error(input.schema_errors[key])
+      schemaRequests.add(key)
+      throw new Error("schemaFromFile is pending approved data")
     }
-    const stat = fs.statSync(resolved)
-    if (!stat.isFile()) {
-      throw new Error("schemaFromFile path must point to a JSON schema file")
-    }
-    if (path.extname(resolved) !== ".json") {
-      throw new Error("schemaFromFile path must end in .json")
-    }
-    const maxBytes = Math.max(1, Number(input.max_schema_bytes || 1048576))
-    if (stat.size > maxBytes) {
-      throw new Error(`schemaFromFile ${schemaPath} exceeds configured schema byte limit of ${maxBytes}`)
-    }
-    try {
-      return JSON.parse(fs.readFileSync(resolved, "utf8"))
-    } catch (error) {
-      throw new Error(`schemaFromFile failed to parse ${schemaPath}: ${error && error.message ? error.message : error}`)
-    }
+    return JSON.parse(input.schema_files[key])
   }
+
   function ref(value, expected) {
     if (typeof value === "string") return value
     if (value && value.__workflowCodeHandle === expected) return value.handle
@@ -365,25 +346,52 @@ function createBuilder() {
 
 try {
   let source = String(input.source || "")
+  const stripper = input.typescript_stripper
+  delete input.typescript_stripper
   if (input.language === "typescript") {
-    const mod = await import("node:module")
-    if (typeof mod.stripTypeScriptTypes !== "function") {
-      throw new Error("TypeScript workflow-code requires Node.js with node:module stripTypeScriptTypes support")
-    }
-    source = mod.stripTypeScriptTypes(source, { mode: "transform" })
+    // Same stripper and options as official Node's
+    // stripTypeScriptTypes(source, {mode: "transform"}), independent of
+    // whether this Node build ships it. Only the source text crosses in.
+    const amaro = {exports: {}}
+    const builtins = {util: await import("node:util"), "node:buffer": await import("node:buffer")}
+    vm.compileFunction(String(stripper), ["module", "exports", "require"], {filename: "amaro.js"})(
+      amaro, amaro.exports, name => builtins[name])
+    source = amaro.exports.transformSync(source, {mode: "transform", sourceMap: false, filename: ""}).code
   }
-  const workflow = createBuilder()
-  const context = vm.createContext({
-    workflow,
-    console: {
-      log: () => {},
-      error: () => {}
-    }
+  // MP-08/MP-11: create all objects/functions in the evaluated realm. The
+  // boundary consists solely of JSON strings; never inject a host callback.
+  if (vm.constants?.DONT_CONTEXTIFY === undefined) {
+    throw new Error("isolated workflow-code compilation requires Node.js with isolated realm support")
+  }
+  const context = vm.createContext(vm.constants.DONT_CONTEXTIFY, {
+    codeGeneration: { strings: false, wasm: false },
+    microtaskMode: "afterEvaluate"
   })
-  const wrapped = `(async () => {\n${source}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
-  const script = new vm.Script(wrapped, { filename: "workflow-code.js" })
-  const definition = await script.runInContext(context, { timeout: Math.max(1, Number(input.timeout_ms || 30000)) })
-  console.log(JSON.stringify({ ok: true, definition, source_spans: workflow.__sourceSpans(), logs: "" }))
+  const bootstrap = `const input = JSON.parse(${JSON.stringify(JSON.stringify(input))});
+    const schemaRequests = new Set();
+    const createBuilder = ${createBuilder.toString()};
+    const workflow = createBuilder();
+    const console = {log() {}, error() {}};
+    globalThis.workflow = workflow; globalThis.console = console;`
+  new vm.Script(bootstrap).runInContext(context, {timeout: input.timeout_ms})
+  const wrapped = `(async () => {\n${source}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nif (schemaRequests.size) return JSON.stringify({ok: false, schema_requests: Array.from(schemaRequests)})\nreturn JSON.stringify({ok: true, definition: workflow.export(), source_spans: workflow.__sourceSpans(), logs: ""})\n})()`
+  // Promise settlement stays in the realm too: awaiting a realm thenable in
+  // the host would pass host resolve/reject functions back to user code.
+  const script = new vm.Script(`${wrapped}.then(
+    value => {globalThis.compilerResult = value},
+    error => {globalThis.compilerResult = JSON.stringify({ok: false, schema_requests: Array.from(schemaRequests), error: String(error && error.message ? error.message : error), logs: ""})}
+  ); void 0`, { filename: "workflow-code.js" })
+  const timeout = Math.max(1, Number(input.timeout_ms || 30000))
+  script.runInContext(context, { timeout })
+  const readResult = new vm.Script('typeof compilerResult === "string" ? compilerResult : undefined')
+  const deadline = Date.now() + timeout
+  let result
+  while ((result = readResult.runInContext(context, {timeout})) === undefined) {
+    if (Date.now() >= deadline) throw new Error("workflow-code script exceeded configured timeout")
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  process.stdout.write(result)
+
 } catch (error) {
   console.log(JSON.stringify({
     ok: false,

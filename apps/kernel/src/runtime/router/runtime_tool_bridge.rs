@@ -85,6 +85,13 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if crate::transport::runtime_tools::canonical_room_tool_name(tool_name).is_some()
+            && !self.runtime_state.room_agent_tools_enabled()
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "room agent tools are disabled",
+            ));
+        }
         // A Claude run is silent while it waits on a runtime tool call, and a
         // person's decision (a permission prompt, a popup, an App binding
         // approval, also through Meta `run_command`) can take minutes: its turn
@@ -92,6 +99,19 @@ impl CommandRouter {
         let _claude_waits = self
             .runtime_state
             .begin_claude_runtime_tool_waits(auth_token);
+        if let Some(canonical) =
+            crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+        {
+            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                if let Some(result) = self
+                    .runtime_state
+                    .try_dispatch_remote_meta_runtime_tool_call(&run, canonical, arguments.clone())
+                    .await?
+                {
+                    return Ok(result);
+                }
+            }
+        }
         if tool_name == "chariox_kernel_request" {
             let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
             let request: crate::local::LocalDaemonRequest =
@@ -113,6 +133,9 @@ impl CommandRouter {
             .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
             command.caller.caller_id = turn.entry_id;
             command.caller.user_id = Some(turn.owner_user_id);
+            // MP-08 / MP-11: the exact live sudo turn is the authority here.
+            // Ordinary room-agent restrictions must not narrow this host grant;
+            // dispatch still rechecks its forbidden operations and revocation.
             let response = Box::pin(self.dispatch(command, request)).await?;
             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
@@ -124,7 +147,15 @@ impl CommandRouter {
         if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {
-            return self.dispatch_meta_run_command(auth_token, arguments).await;
+            let mut router = self.clone();
+            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                router.runtime_state = self
+                    .runtime_state
+                    .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
+            }
+            return router
+                .dispatch_meta_run_command(auth_token, arguments)
+                .await;
         }
         self.runtime_state
             .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)

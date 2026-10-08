@@ -185,9 +185,14 @@ impl KernelRuntimeState {
         if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
             prompt = prompt.with_durable_operation(operation_id, fingerprint);
         }
-        if let Some(dispatch) =
-            self.prepare_local_active_agent_message_dispatch(session.id(), &prompt)?
-        {
+        let obligation =
+            self.register_room_dispatch_obligation(sender, "message", Some(target.id()))?;
+        let prepared = crate::runtime::room_dispatch_registration::reject_if_failed(
+            &self.owned.durable_state_store,
+            obligation.as_deref(),
+            self.prepare_local_active_agent_message_dispatch(session.id(), &prompt),
+        )?;
+        if let Some(dispatch) = prepared {
             let _permit = self
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
@@ -197,11 +202,21 @@ impl KernelRuntimeState {
                 sender.id(),
                 &sender_prompt_id,
             )? {
+                self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
                 return Ok(agent_message_failure(
                     "sender turn is no longer running; agent message was not sent",
                 ));
             }
-            self.enqueue_prompt_dispatch(&dispatch).await?;
+            self.enqueue_prompt_dispatch(&dispatch)
+                .await
+                .map_err(|error| {
+                    crate::runtime::room_dispatch_registration::dispatch_error(
+                        obligation.as_deref(),
+                        None,
+                        Some(&prompt_id),
+                        error,
+                    )
+                })?;
             if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
                 if let Err(error) = self.owned.append_steering_prompt_history(
                     &dispatch.session_id,
@@ -258,6 +273,7 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
+            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -265,13 +281,22 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
+            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
         }
         if let Some(provider_run_id) = self
             .steer_remote_agent_message(session.id(), &prompt)
-            .await?
+            .await
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    None,
+                    Some(&prompt_id),
+                    error,
+                )
+            })?
         {
             let result = crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
@@ -291,6 +316,7 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
+            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -298,6 +324,7 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
+            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
@@ -312,7 +339,15 @@ impl KernelRuntimeState {
                 },
                 false,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation.as_deref(),
+                    None,
+                    Some(&prompt_id),
+                    error,
+                )
+            })?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {
@@ -332,12 +367,6 @@ impl KernelRuntimeState {
             .dispatch
             .as_ref()
             .map(|dispatch| dispatch.provider_run_id.clone());
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
         let result = crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -356,6 +385,14 @@ impl KernelRuntimeState {
         {
             store.record(operation_id, fingerprint, result.clone());
         }
+        self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
+            if let Some(dispatch) = submission.dispatch.take() {
+                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            }
+            if let Some(dispatch) = submission.remote_dispatch.take() {
+                self.spawn_remote_prompt_dispatch(dispatch);
+            }
+        })?;
         Ok(result)
     }
 
@@ -497,26 +534,28 @@ fn resolve_session_agent<'a>(
     if reference.is_empty() {
         return Err("agent must be a unique alias, agent ref, or agent id".to_string());
     }
-    agents
-        .iter()
-        .find(|agent| {
-            agent.id() == reference
-                || agent.agent_ref() == reference
-                || agent
-                    .alias()
-                    .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
-        })
-        .ok_or_else(|| {
-            let mut available = agents
-                .iter()
-                .map(agent_message_target_label)
-                .collect::<Vec<_>>();
-            available.sort();
-            format!(
-                "agent `{reference}` does not exist in this session; available agents: {}",
-                available.join(", ")
-            )
-        })
+    let mut matches = agents.iter().filter(|agent| {
+        agent.id() == reference
+            || agent.agent_ref() == reference
+            || agent
+                .alias()
+                .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
+    });
+    let target = matches.next().ok_or_else(|| {
+        let mut available = agents
+            .iter()
+            .map(agent_message_target_label)
+            .collect::<Vec<_>>();
+        available.sort();
+        format!(
+            "agent `{reference}` does not exist in this session; available agents: {}",
+            available.join(", ")
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(format!("ambiguous room agent reference `{reference}`"));
+    }
+    Ok(target)
 }
 
 fn session_agent_description(
@@ -599,4 +638,38 @@ fn agent_message_target_label(agent: &crate::agent::AgentInstance) -> String {
         .filter(|alias| !alias.is_empty())
         .map(|alias| format!("@{alias}"))
         .unwrap_or_else(|| agent.agent_ref().to_string())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn security_f6_messages_reject_restored_reference_collisions() {
+        let agent = |id: &str, alias: &str| {
+            crate::agent::AgentInstance::new(
+                id,
+                format!("ref-{id}"),
+                "room",
+                Some(alias.into()),
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        // Legacy snapshots may already contain an alias that is another ID.
+        let mut agents = vec![agent("agent-1", "agent-2"), agent("agent-2", "peer")];
+        for _ in 0..2 {
+            assert!(resolve_session_agent(&agents, "agent-2")
+                .unwrap_err()
+                .contains("ambiguous"));
+            assert_eq!(
+                resolve_session_agent(&agents, "@PEER").unwrap().id(),
+                "agent-2"
+            );
+            agents.reverse();
+        }
+    }
 }
