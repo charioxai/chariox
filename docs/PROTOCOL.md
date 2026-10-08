@@ -30,7 +30,10 @@ N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md
 
 The owner-approved multidomain access contract is specified in
 [MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
-Focus grants resource-scoped authority; changing focus does not revoke prior
+MP-11: authenticated human-terminal focus grants resource-scoped authority.
+Agent-originated focus, attach, cycle and alias-routed prompts preserve session
+orchestration without creating or refreshing browser/Notes grants. Changing
+human focus does not revoke prior
 holders. Existing kernel turn/wake state retains grants until fully idle expiry,
 session/agent end or explicit revocation. Authenticated owner terminals use
 `KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;

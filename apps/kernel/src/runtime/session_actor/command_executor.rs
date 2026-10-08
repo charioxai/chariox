@@ -201,23 +201,29 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::RestoreProject(request) => {
                 Box::pin(async move { self.store.restore_project(request, caller_user_id).await })
             }
-            LocalDaemonRequest::AttachToSession(request) => {
-                Box::pin(async move { self.store.attach_to_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::AttachToSession(request) => Box::pin(async move {
+                self.store
+                    .attach_to_session(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::DetachFromSession(request) => {
                 Box::pin(async move { self.store.detach_from_session(request).await })
             }
-            LocalDaemonRequest::FocusAgent(request) => {
-                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
+                self.store
+                    .focus_agent(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CycleAgentFocus(request) => {
-                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CycleAgentFocus(request) => Box::pin(async move {
+                self.store
+                    .cycle_agent_focus(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::ResizeTerminal(request) => {
                 Box::pin(async move { self.store.resize_terminal(request).await })
             }

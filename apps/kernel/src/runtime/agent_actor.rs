@@ -135,7 +135,12 @@ impl AgentRuntime {
                 .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
                 .await?;
             self.store
-                .focus_agent(&request.session_id, &agent_id, &caller_user_id)
+                .focus_agent(
+                    &request.session_id,
+                    &agent_id,
+                    &caller_user_id,
+                    command.is_terminal_caller(),
+                )
                 .await?;
             self.focus_projection
                 .update(&request.session_id, Some(&agent_id))
@@ -586,9 +591,10 @@ impl AgentRuntimeStore {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
-            .focus_agent(session_id, agent_id, caller_user_id)
+            .focus_agent(session_id, agent_id, caller_user_id, terminal_caller)
             .await
     }
 
