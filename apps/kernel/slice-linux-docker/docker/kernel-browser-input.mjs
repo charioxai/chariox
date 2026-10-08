@@ -6,9 +6,12 @@ const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
-// MP-08/MP-10: mouse-wheel notches (multiples of 120) animate like a native
-// wheel through the owned display; precise trackpad deltas stay on CDP.
-const notches = delta => delta % 120 === 0 ? delta / 120 : null;
+// MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
+// owned display (Selkies forwards every wheel event as X button notches).
+// Viewers report a notch as 120 (wheelDelta), 100 (Chrome on Windows,
+// automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
+// stay precise on CDP.
+export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);

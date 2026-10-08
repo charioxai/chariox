@@ -133,3 +133,10 @@ test('MP-08/MP-10 notch wheel input routes to the owned display after the docume
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native input falls back to CDP');
 });
+
+// MP-08/MP-10: line-sized wheel deltas from real viewers animate natively.
+test('MP-08/MP-10 viewer wheel deltas map to native notches; fine trackpad deltas stay precise',async()=>{
+ const {notches}=await import('./kernel-browser-input.mjs');
+ assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,1,-1,2,1,-1,0]);
+ for(const delta of [1,-12,37,49])assert.equal(notches(delta),null,String(delta));
+});

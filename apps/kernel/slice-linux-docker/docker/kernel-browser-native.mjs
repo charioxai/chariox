@@ -60,7 +60,10 @@ export class LinuxCapture {
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
    await this.screenshot();
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId);await this.regions.refresh();
+   // A DOM mutation may retire the first fence while it is measured (busy
+   // real pages); retry a bounded number of times instead of refusing.
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId);
+   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
