@@ -146,7 +146,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");
-        assert_eq!(started.id(), "started");
+        // A02: a durable prompt keeps its identity through promotion.
+        assert_eq!(started.id(), "first");
         assert_eq!(started.workflow_run_id(), Some("run-first"));
         assert_eq!(started.workflow_node_run_id(), Some("node-first"));
         assert_eq!(started.source_client_id(), Some("caller-client"));

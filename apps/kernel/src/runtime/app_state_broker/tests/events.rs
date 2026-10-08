@@ -381,7 +381,7 @@ async fn automations_report_own_state_and_latest_receipt_without_targets() {
     // receipt, stay invisible.
     let db = Connection::open(store.path()).unwrap();
     for (owner, installation) in [("bob", "installed"), ("alice", "other")] {
-        db.execute("INSERT INTO app_automations SELECT ?1,?2,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,'broken',scheduled
+        db.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled) SELECT ?1,?2,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,'broken',scheduled
             FROM app_automations WHERE owner_id='alice' AND installation_id='installed' AND automation_id='auto-a'",
             rusqlite::params![owner, installation]).unwrap();
         let columns = "automation_id,event_version,occurrence_id,occurred_at_ms,schedule_revision,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,invocation_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms";
