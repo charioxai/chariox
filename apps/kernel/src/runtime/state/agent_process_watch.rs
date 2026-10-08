@@ -36,6 +36,8 @@ struct OwnedChild {
     wake: String,
     /// Set once the leader is reaped after every session member settled.
     status: Option<std::process::ExitStatus>,
+    settle_failures: u8,
+    lost: bool,
 }
 
 impl OwnedChild {
@@ -46,6 +48,8 @@ impl OwnedChild {
                 birth,
                 wake: wake.into(),
                 status: None,
+                settle_failures: 0,
+                lost: false,
             }),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
@@ -58,12 +62,29 @@ impl OwnedChild {
             }
         }
     }
+    fn fail_settlement(&mut self) {
+        self.settle_failures = self.settle_failures.saturating_add(1);
+        self.lost = self.settle_failures >= 50;
+    }
     fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if self.lost {
+            return Err(std::io::Error::other(
+                "process_lost: physical settlement remains unconfirmed after bounded retries",
+            ));
+        }
         if self.status.is_none() {
-            self.status = super::agent_process_group::poll_exit(&mut self.child, self.birth)?;
+            self.status = match super::agent_process_group::poll_exit(&mut self.child, self.birth) {
+                Ok(status) => status,
+                Err(error) => {
+                    self.fail_settlement();
+                    return Err(error);
+                }
+            };
             if self.status.is_some() {
                 // Descendants that left the session still carry the wake marker.
-                super::agent_process_group::reap_orphans(&[self.wake.clone()].into());
+                if let Some(launch) = super::agent_process_group::start_time_ms(self.birth) {
+                    super::agent_process_group::reap_orphans(&[(self.wake.clone(), launch)].into());
+                }
             }
         }
         Ok(self.status)
@@ -139,7 +160,7 @@ impl WatchedProcesses {
 }
 
 fn settled(child: &Owned) -> bool {
-    child.lock().map_or(true, |c| c.status.is_some())
+    child.lock().map_or(true, |c| c.status.is_some() || c.lost)
 }
 
 /// Reaps a settled session so shutdown does not wait on the supervisor thread.
@@ -150,10 +171,17 @@ fn settled_now(child: &Owned) -> bool {
 }
 
 fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
-    let Ok(child) = child.lock() else {
+    let Ok(mut child) = child.lock() else {
         return false;
     };
-    child.status.is_none() && signal_session(child.child.id(), child.birth, signal)
+    if child.status.is_some() || child.lost {
+        return false;
+    }
+    let signalled = signal_session(child.child.id(), child.birth, signal);
+    if !signalled {
+        child.fail_settlement();
+    }
+    signalled
 }
 
 /// Builds the launch through the same managed isolation every other
@@ -262,6 +290,32 @@ impl KernelRuntimeState {
                 )));
             }
         };
+        // Nonblocking pipes let bounded supervision loss stop its readers too.
+        use std::os::fd::AsRawFd;
+        for fd in [
+            child.stdout.as_ref().map(AsRawFd::as_raw_fd),
+            child.stderr.as_ref().map(AsRawFd::as_raw_fd),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                // Only the direct child just spawned by this call is eligible.
+                if child.id() > 1 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                self.settle_failed_process_launch(
+                    &wake,
+                    "nonblocking output setup failed; launch stopped".into(),
+                );
+                return Err(crate::durable_state::agent_lifecycle::error(
+                    "watched process output setup failed",
+                ));
+            }
+        }
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let output = Arc::new(Output::default());
         let protection = self.owned.room_secret_observations.clone();
@@ -319,15 +373,27 @@ impl KernelRuntimeState {
             let code = loop {
                 match owned.lock().map(|mut c| c.poll()) {
                     Ok(Ok(Some(status))) => {
-                        break status
-                            .code()
-                            .or_else(|| status.signal().map(|s| 128 + s))
-                            .unwrap_or(-1);
+                        break Some(
+                            status
+                                .code()
+                                .or_else(|| status.signal().map(|s| 128 + s))
+                                .unwrap_or(-1),
+                        );
                     }
                     Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
                     // A failed ownership check cannot establish physical
                     // settlement. Keep supervision and the obligation live.
                     _ => {
+                        if owned.lock().map_or(true, |mut c| {
+                            if c.lost {
+                                let _ = c.child.try_wait();
+                                true
+                            } else {
+                                false
+                            }
+                        }) {
+                            break None;
+                        }
                         if !alerted {
                             let _ = sender.send(Signal::SupervisionFailed);
                             alerted = true;
@@ -338,12 +404,19 @@ impl KernelRuntimeState {
             };
             // A detached grandchild may keep a pipe open; bound the drain.
             let deadline = Instant::now() + Duration::from_secs(1);
-            for reader in readers {
+            for reader in &readers {
                 while !reader.is_finished() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
-            let _ = sender.send(Signal::Exited(code, output.text()));
+            output.stop();
+            for reader in readers {
+                let _ = reader.join();
+            }
+            let _ = sender.send(match code {
+                Some(code) => Signal::Exited(code, output.text()),
+                None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
+            });
         });
         let state = self.clone();
         let id = wake.id.clone();
@@ -379,8 +452,24 @@ impl KernelRuntimeState {
                         },
                         true,
                     ),
+                    Signal::Lost(tail) => (
+                        Operation::ProcessExited {
+                            id: id.clone(),
+                            exit_code: None,
+                            tail,
+                            now,
+                        },
+                        true,
+                    ),
                     Signal::SupervisionFailed => unreachable!(),
                 };
+                if exited {
+                    let activity = state.owned.begin_managed_activity_mutation();
+                    if let Ok(mut live) = state.owned.agent_wakes.processes.live.lock() {
+                        live.remove(&id);
+                    }
+                    activity.record_prompt_finish_at(None);
+                }
                 let outcome = state
                     .retain_process_outcome(op, &notice_room, &notice_agent)
                     .await;
@@ -392,6 +481,7 @@ impl KernelRuntimeState {
                                     "Watched process '{}' exited with code {code}",
                                     wake.label
                                 ),
+                                (true, None) => format!("Wake alert: watched process '{}' is lost/unsettled; survivors may still be running and require operator cleanup", wake.label),
                                 _ => format!("Watched process '{}' printed its match", wake.label),
                             };
                             state.wake_notice(&wake, text);
@@ -401,11 +491,6 @@ impl KernelRuntimeState {
                     _ => {}
                 }
                 if exited {
-                    let activity = state.owned.begin_managed_activity_mutation();
-                    if let Ok(mut live) = state.owned.agent_wakes.processes.live.lock() {
-                        live.remove(&id);
-                    }
-                    activity.record_prompt_finish_at(None);
                     break;
                 }
             }
@@ -647,8 +732,8 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(reap_orphans(&BTreeSet::from(["other-wake".to_string()])).is_empty());
-        let stopped = reap_orphans(&BTreeSet::from([wake.clone()]));
+        assert!(reap_orphans(&BTreeMap::from([("other-wake".to_string(), 0)])).is_empty());
+        let stopped = reap_orphans(&BTreeMap::from([(wake.clone(), 0)]));
         while marked_count_for_test(&wake) != 0 {
             assert!(Instant::now() < deadline, "restart must stop the orphan");
             std::thread::sleep(Duration::from_millis(20));
@@ -848,6 +933,140 @@ mod tests {
         assert!(
             status.is_some() && settled,
             "leader exit is not settlement while an owned descendant still executes"
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn security_f11_inherited_marker_does_not_authorize_an_unrelated_child() {
+        use super::super::agent_process_group::reap_orphans;
+        let wake = format!("security-unrelated-{:032x}", rand::random::<u128>());
+        // An unrelated server starts a new session with an inherited marker.
+        // Its live parent is this test, not the watched session or PID 1.
+        let mut child = spawn(
+            &wake,
+            &["sleep".into(), "30".into()],
+            &std::env::temp_dir(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let stopped = reap_orphans(&BTreeMap::from([(wake, 0)]));
+        std::thread::sleep(Duration::from_millis(50));
+        let survived = child.try_wait().unwrap().is_none();
+        if survived {
+            assert!(child.id() > 1);
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        assert!(
+            stopped.is_empty() && survived,
+            "a marker alone must not authorize killing a live unrelated server's child"
+        );
+    }
+
+    #[test]
+    fn security_f11_failed_ownership_has_a_bounded_lost_outcome() {
+        let wake = format!("security-unsettled-{:032x}", rand::random::<u128>());
+        let child = spawn(
+            &wake,
+            &["sleep".into(), "30".into()],
+            &std::env::temp_dir(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut owned = OwnedChild::new(child, &wake).unwrap();
+        owned.birth += 1;
+        let mut last = String::new();
+        for _ in 0..60 {
+            if let Err(error) = owned.poll() {
+                last = error.to_string();
+            }
+        }
+        assert!(owned.child.id() > 1);
+        let _ = owned.child.kill();
+        let _ = owned.child.wait();
+        assert!(
+            last.contains("process_lost"),
+            "supervision must leave endless retry after a bound: {last}"
+        );
+    }
+
+    #[test]
+    fn security_f11_signal_failure_does_not_skip_later_members() {
+        crate::test_support::isolated_env_test!();
+        use std::os::fd::AsRawFd;
+        let wake = format!("security-signal-{:032x}", rand::random::<u128>());
+        let child = spawn(
+            &wake,
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "sleep 30 & echo ready; wait".into(),
+            ],
+            &std::env::temp_dir(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let mut owned = OwnedChild::new(child, &wake).unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(owned.child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let fd = std::fs::File::open("/dev/null").unwrap();
+        let first_pin = fd.as_raw_fd();
+        drop(fd);
+        // Only deny SIGUSR1 on the first pinned fd, in this isolated test
+        // process. Cleanup SIGKILL and every other syscall remain allowed.
+        let ins = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
+        let mut filter = [
+            ins(0x20, 0, 0, 0),
+            ins(0x15, 0, 5, libc::SYS_pidfd_send_signal as u32),
+            ins(0x20, 0, 0, 16),
+            ins(0x15, 0, 3, first_pin as u32),
+            ins(0x20, 0, 0, 24),
+            ins(0x15, 0, 1, libc::SIGUSR1 as u32),
+            ins(0x06, 0, 0, libc::SECCOMP_RET_ERRNO | libc::EPERM as u32),
+            ins(0x06, 0, 0, libc::SECCOMP_RET_ALLOW),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_mut_ptr(),
+        };
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) },
+            0
+        );
+        let before = super::super::agent_process_group::marked_count_for_test(&wake);
+        let complete = signal_session(owned.child.id(), owned.birth, libc::SIGUSR1);
+        std::thread::sleep(Duration::from_millis(100));
+        let after = super::super::agent_process_group::marked_count_for_test(&wake);
+        signal_session(owned.child.id(), owned.birth, libc::SIGKILL);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while owned.poll().ok().flatten().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if owned.status.is_none() {
+            assert!(owned.child.id() > 1);
+            let _ = owned.child.kill();
+            let _ = owned.child.wait();
+        }
+        assert!(!complete, "the aggregate result must retain the EPERM");
+        assert!(
+            after < before,
+            "later pinned members must still receive their signal ({before}->{after})"
         );
     }
 }

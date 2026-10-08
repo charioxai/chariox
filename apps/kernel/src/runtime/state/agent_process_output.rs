@@ -46,6 +46,7 @@ pub(super) fn sanitize(raw: &[u8]) -> String {
 pub(super) enum Signal {
     Matched(String),
     Exited(i32, String),
+    Lost(String),
     SupervisionFailed,
 }
 
@@ -53,9 +54,14 @@ pub(super) enum Signal {
 pub(super) struct Output {
     tail: std::sync::Mutex<std::collections::VecDeque<String>>,
     matched: std::sync::atomic::AtomicBool,
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Output {
+    pub(super) fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     fn push(&self, line: String) {
         let Ok(mut tail) = self.tail.lock() else {
             return;
@@ -115,10 +121,16 @@ pub(super) fn drain(
         }
         output.push(text);
     };
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
+    while !output.stopped.load(std::sync::atomic::Ordering::Acquire) {
+        let n = match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            Err(_) => break,
+        };
         for byte in &buffer[..n] {
             if *byte == b'\n' {
                 emit(&mut line, &mut truncated);

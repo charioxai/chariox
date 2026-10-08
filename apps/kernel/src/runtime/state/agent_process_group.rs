@@ -5,6 +5,7 @@ use std::io;
 struct Member {
     pid: u32,
     group: u32,
+    parent: u32,
     session: u32,
     start: u64,
     exited: bool,
@@ -28,6 +29,7 @@ fn member(pid: u32) -> io::Result<Member> {
     Ok(Member {
         pid,
         group: u32::try_from(number(2)?).map_err(io::Error::other)?,
+        parent: u32::try_from(number(1)?).map_err(io::Error::other)?,
         session: u32::try_from(number(3)?).map_err(io::Error::other)?,
         start: number(19)?,
         exited: matches!(fields.first().copied(), Some("Z" | "X")),
@@ -137,6 +139,7 @@ pub(super) fn signal_session(pid: u32, birth: u64, signal: libc::c_int) -> bool 
                 Err(_) => return false,
             }
         }
+        let mut complete = true;
         for fd in pins {
             if unsafe {
                 libc::syscall(
@@ -149,10 +152,10 @@ pub(super) fn signal_session(pid: u32, birth: u64, signal: libc::c_int) -> bool 
             } < 0
                 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
             {
-                return false;
+                complete = false;
             }
         }
-        return true;
+        return complete;
     }
     #[cfg(not(target_os = "linux"))]
     false
@@ -215,13 +218,54 @@ fn wake_marker(pid: u32) -> Option<String> {
     })
 }
 
-/// Stops executing processes still carrying the marker of one of `wakes`
-/// (descendants orphaned by an earlier kernel). Each target is pinned by a
-/// pidfd and its identity and marker are re-read before SIGKILL. Returns the
-/// number of processes stopped per wake.
+/// Approximate a boot-relative process birth in the current realtime epoch.
+/// Fail closed when either clock is unavailable. One tick covers quantization.
+#[cfg(target_os = "linux")]
+pub(super) fn start_time_ms(start: u64) -> Option<u64> {
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks <= 0 {
+        return None;
+    }
+    let mut boot = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut boot) } != 0 || boot.tv_sec < 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let uptime = boot.tv_sec as u128 * 1000 + boot.tv_nsec as u128 / 1_000_000;
+    u64::try_from(
+        now.checked_sub(uptime)?
+            .checked_add(start as u128 * 1000 / ticks as u128)?,
+    )
+    .ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn start_time_ms(_start: u64) -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn born_after(current: &Member, launch_ms: u64) -> bool {
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks <= 0 {
+        return false;
+    }
+    let tolerance = 1000u64.div_ceil(ticks as u64);
+    start_time_ms(current.start).is_some_and(|birth| birth.saturating_add(tolerance) >= launch_ms)
+}
+
+/// Stops actual orphans still carrying a wake marker, born after its launch.
+/// A live unrelated parent's descendants are ambiguous and never signalled.
+/// Each target is pinned and identity, parent and marker rechecked before kill.
 #[cfg(target_os = "linux")]
 pub(super) fn reap_orphans(
-    wakes: &std::collections::BTreeSet<String>,
+    wakes: &std::collections::BTreeMap<String, u64>,
 ) -> std::collections::BTreeMap<String, usize> {
     use std::os::fd::AsRawFd;
     let mut stopped = std::collections::BTreeMap::new();
@@ -229,17 +273,25 @@ pub(super) fn reap_orphans(
         return stopped;
     };
     for pid in ids.filter(|pid| *pid > 1 && *pid != std::process::id()) {
-        let Some(wake) = wake_marker(pid).filter(|w| wakes.contains(w)) else {
+        let Some(wake) = wake_marker(pid).filter(|w| wakes.contains_key(w)) else {
             continue;
         };
         let Ok(current) = member(pid) else { continue };
-        if current.exited {
+        // A marker is inheritable, so it cannot authorize a live unrelated
+        // server's children. Only true orphans born after launch are eligible.
+        if current.exited || current.parent != 1 || !born_after(&current, wakes[&wake]) {
             continue;
         }
         let Ok(Some(fd)) = pin_member(&current) else {
             continue;
         };
-        if wake_marker(pid).as_ref() != Some(&wake) {
+        if wake_marker(pid).as_ref() != Some(&wake)
+            || !member(pid).is_ok_and(|verified| {
+                verified.start == current.start
+                    && verified.parent == 1
+                    && born_after(&verified, wakes[&wake])
+            })
+        {
             continue;
         }
         if unsafe {
@@ -260,7 +312,7 @@ pub(super) fn reap_orphans(
 
 #[cfg(not(target_os = "linux"))]
 pub(super) fn reap_orphans(
-    _wakes: &std::collections::BTreeSet<String>,
+    _wakes: &std::collections::BTreeMap<String, u64>,
 ) -> std::collections::BTreeMap<String, usize> {
     Default::default()
 }
