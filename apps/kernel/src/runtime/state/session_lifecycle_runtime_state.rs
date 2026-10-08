@@ -418,11 +418,19 @@ impl KernelRuntimeState {
         request: crate::attachment::AttachRequest,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
-        if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
-            self.owned.kernel_browser_host.set_focus(
-                &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
-                session.focused_agent_id(),
-            );
+        // MP-11 SB-01: only the server-admitted human terminal role restores
+        // focus on reconnect. Automation preserves revoke/delegation state.
+        if matches!(
+            attachment.capability_level(),
+            crate::attachment::ClientCapabilityLevel::FullTerminal
+                | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+        ) {
+            if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
+                self.owned.kernel_browser_host.set_focus(
+                    &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
+                    session.focused_agent_id(),
+                );
+            }
         }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);

@@ -4,12 +4,13 @@
 // 462 grant shape over the real client transport) and the live expiry wake.
 // Full S01–S04 acceptance requires the production App adapter, owning user
 // browser and hosted conditions separately.
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createConnection, createServer } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 import * as requests from '../../../packages/kernel-client/dist/ipc-requests.js'
+import { runCapabilityReviewCase } from './lib/capability-grants-review-cases.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const options = {}
@@ -48,6 +49,50 @@ async function exitOwned(child, name) {
     await child.exited
   }
 }
+const privateInputs = []
+const safeScreen = () => privateInputs.reduce((text, secret) => text.replaceAll(secret, '[redacted]'), screen)
+// MP-10/MP-11: retain only OS process identities, never command lines or env.
+const ownedProcesses = new Map()
+async function processIdentity(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return null
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8'), close = stat.lastIndexOf(')')
+    const fields = stat.slice(close + 2).split(' ')
+    return { pid, name: stat.slice(stat.indexOf('(') + 1, close), state: fields[0], ppid: Number(fields[1]), start: fields[19] }
+  } catch { return null }
+}
+async function trackOwnedProcesses() {
+  if (process.platform !== 'linux' || !kernel) return
+  const records = (await Promise.all((await readdir('/proc')).filter(name => /^\d+$/.test(name)).map(name => processIdentity(Number(name))))).filter(Boolean)
+  const parents = new Set([kernel.pid, tui?.pid].filter(pid => Number.isInteger(pid) && pid > 1))
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const record of records) {
+      if ((parents.has(record.ppid) || parents.has(record.pid)) && !ownedProcesses.has(record.pid)) {
+        ownedProcesses.set(record.pid, record); parents.add(record.pid); changed = true
+      } else if (ownedProcesses.get(record.pid)?.start === record.start) parents.add(record.pid)
+    }
+  }
+}
+async function settleOwnedProcesses() {
+  for (const record of ownedProcesses.values()) {
+    const current = await processIdentity(record.pid)
+    if (!current || current.start !== record.start || current.state === 'Z') continue
+    if (!Number.isInteger(record.pid) || record.pid <= 1) throw new Error('invalid owned descendant PID')
+    try { process.kill(record.pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
+  }
+  await Bun.sleep(1_000)
+  const survivors = []
+  for (const record of ownedProcesses.values()) {
+    const current = await processIdentity(record.pid)
+    if (!current || current.start !== record.start || current.state === 'Z') continue
+    if (!Number.isInteger(record.pid) || record.pid <= 1) throw new Error('invalid owned descendant PID')
+    try { process.kill(record.pid, 'SIGKILL'); survivors.push(record.pid) } catch (error) { if (error.code !== 'ESRCH') throw error }
+  }
+  report.ownedProcessIdentities = [...ownedProcesses.values()]
+  report.forcedDescendantExits = survivors
+}
 const visibleScreen = () => screen.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
 async function press(key) {
   tui.terminal.write(key)
@@ -63,6 +108,7 @@ async function freePort() {
 async function until(check, timeout = 90_000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
+    await trackOwnedProcesses()
     if (/\b401\b|unauthorized/i.test(screen)) {
       report.providerUnauthorized = true
       console.error('MP-08/MP-10/MP-11 official provider returned unauthorized; coordinator action required')
@@ -108,11 +154,11 @@ try {
   report.sourceCommit = (await new Response(Bun.spawn(["git", "rev-parse", "HEAD"], {cwd: repo, stdout: "pipe"}).stdout).text()).trim()
   report.kernelSourceCommit = options['kernel-source-commit'] ?? report.sourceCommit
   workspace = await mkdtemp(path.join(options['workspace-parent'], 'capability-grant-drill-'))
-  socketPath = `/tmp/chariox-capability-${process.pid}.sock`
+  socketPath = path.join(process.env.TMPDIR ?? options.home, `chariox-capability-${process.pid}.sock`)
   const port = await freePort(), mcpPort = await freePort(), codexPort = await freePort(), opencodePort = await freePort()
   const url = `ws://127.0.0.1:${port}`
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CHARIOX_')))
-  const env = { ...inherited, CHARIOX_HOME: options.home, CHARIOX_LOG_DIR: path.join(options.home, 'logs'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_CODEX_PORT: String(codexPort), CHARIOX_OPENCODE_PORT: String(opencodePort), CHARIOX_ROOM_AGENT_TOOLS: '1', CHARIOX_USER_DOMAIN_GRANT_LIFETIME_SECONDS: String(GRANT_LIFETIME_SECONDS), CHARIOX_TEST_TUI: '1', CHARIOX_DAEMON_SOCKET: path.join(options.home, 'daemon.sock'), CHARIOX_KERNEL_BROWSER_SCRIPT: path.join(repo, 'apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs') }
+  const env = { ...inherited, ...(options['review-case'] ? { HOME: options.home, CODEX_HOME: path.join(options.home, 'bootstrap-codex'), CLAUDE_CONFIG_DIR: path.join(options.home, 'bootstrap-claude'), OPENCODE_CONFIG_DIR: path.join(options.home, 'bootstrap-opencode'), XDG_CONFIG_HOME: path.join(options.home, 'xdg-config'), XDG_STATE_HOME: path.join(options.home, 'xdg-state') } : {}), CHARIOX_HOME: options.home, CHARIOX_LOG_DIR: path.join(options.home, 'logs'), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_CODEX_PORT: String(codexPort), CHARIOX_OPENCODE_PORT: String(opencodePort), CHARIOX_ROOM_AGENT_TOOLS: '1', CHARIOX_USER_DOMAIN_GRANT_LIFETIME_SECONDS: String(GRANT_LIFETIME_SECONDS), CHARIOX_TEST_TUI: '1', CHARIOX_DAEMON_SOCKET: path.join(options.home, 'daemon.sock'), CHARIOX_KERNEL_BROWSER_SCRIPT: path.join(repo, 'apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs') }
   step('built-kernel-ready')
   kernel = Bun.spawn([options.kernel], { cwd: repo, env, stdout: 'ignore', stderr: 'ignore' })
   report.kernelPid = kernel.pid
@@ -141,7 +187,7 @@ try {
   await client.send(requests.setDefaultProviderAccountProfileRequest('codex', profileId))
   passed(stage)
   step('room-created')
-  const created = await client.send(requests.createSessionRequest(workspace, workspace, 'capability-live', {provider: 'codex', model: 'default'}))
+  const created = await client.send(requests.createSessionRequest(workspace, workspace, 'capability-live', {provider: 'codex', model: options['review-case'] ? 'gpt-6.1-sol' : 'default', ...(options['review-case'] ? { effort: 'low' } : {})}))
   sessionId = created.SessionCreated.session.id
   report.sessionId = sessionId
   passed(stage)
@@ -180,6 +226,14 @@ try {
     await writeFile(path.join(options.evidence, evidence), screen)
     return pending
   }
+  if (options['review-case']) {
+    await runCapabilityReviewCase(options['review-case'], {
+      client, requests, LocalIpcClient, automation, sessionId, profileId, options, report,
+      step, passed, requireValue, until, press, visibleScreen, requestBrowser,
+      capture: (name) => writeFile(path.join(options.evidence, name), safeScreen()),
+      registerPrivateInput: (secret) => privateInputs.push(secret),
+    })
+  } else {
   step('official-codex-requests-browser-tools-through-tui')
   let approval = await requestBrowser('resource-approval-tui.ansi')
   passed(stage, {newAuthorityBeforeOwnerReply: false})
@@ -228,10 +282,11 @@ try {
     'S04/hosted acceptance: authorized isolated hosted wss enrollment and leased worker topology are required; existing relay and Apps machines are off-limits.',
     'Full acceptance still requires every fixed public site at DPR 1/2, shaped real relay network and multi-hour stability.'
   ]
+  }
 } catch (error) {
   if (screen) {
     await Bun.sleep(250)
-    await writeFile(path.join(options.evidence, 'failed-tui.ansi'), screen)
+    await writeFile(path.join(options.evidence, 'failed-tui.ansi'), safeScreen())
   }
   report.providerUnauthorized = report.providerUnauthorized || /401|unauthorized/i.test(String(error))
   report.status = 'failed'; report.failedStage = stage
@@ -239,6 +294,7 @@ try {
   process.exitCode = 1
 } finally {
   step('cleanup-owned-processes')
+  await trackOwnedProcesses()
   if (sessionId) await client?.send(requests.endSessionRequest(sessionId)).catch(() => {})
   if (tui?.exitCode == null) tui?.terminal?.write('\x05')
   automation?.close()
@@ -248,6 +304,7 @@ try {
   await exitOwned(tui, 'Tui')
   tui?.terminal?.close()
   await exitOwned(kernel, 'Kernel')
+  await settleOwnedProcesses()
   if (socketPath) await rm(socketPath, {force: true})
   // Linux uses a new disposable home. Preserve macOS kernel homes under the
   // existing operator key-retention contract.

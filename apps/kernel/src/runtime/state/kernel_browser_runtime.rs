@@ -483,7 +483,11 @@ impl KernelRuntimeState {
         };
         let host = self.owned.kernel_browser_host.clone();
         if name == LOADER {
-            return self.kernel_browser_loader(run, arguments).await;
+            // MP-08/MP-11 R2: keep the authenticated caller across the owner wait.
+            return self
+                .with_room_provider_origin(run.agent_instance_id(), Some(run.id()))
+                .kernel_browser_loader(run, arguments)
+                .await;
         }
         let agent = self.user_domain_tool_agent(run).await?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -589,6 +593,7 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let arguments: LoaderArguments = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-3: loader accepts only lifetime_hours".into()))?;
+        self.authorize_current_external_command()?;
         self.refuse_leased_user_domain_run(run).await?;
         self.refresh_user_domain_grants();
         let agent = self.user_domain_agent_placement(run)?;
@@ -602,10 +607,20 @@ impl KernelRuntimeState {
                 arguments.lifetime_hours,
             )
             .map_err(host_error)?;
+            let delivery = self.app_prompt_delivery(&agent);
+            if delivery
+                .as_ref()
+                .is_none_or(|delivery| !delivery.belongs_to(run.id()))
+            {
+                return Err(super::capability_grant_runtime::refused(
+                    crate::error::UserDomainRefusalReason::NotGranted,
+                ));
+            }
             let fence = host.acquisition_fence(&user, agent.id());
             if self
                 .confirm_capability_request(&agent, "new tabs in your kernel browser", || {
                     host.acquisition_fence(&user, agent.id()) == fence
+                        && self.app_prompt_delivery(&agent) == delivery
                 })
                 .await?
                 != prompt
@@ -614,6 +629,7 @@ impl KernelRuntimeState {
                     crate::error::UserDomainRefusalReason::NotRequested,
                 ));
             }
+            self.authorize_current_external_command()?;
             self.user_domain_agent_placement(run)?;
             if host.acquisition_fence(&user, agent.id()) != fence {
                 return Err(super::capability_grant_runtime::refused(

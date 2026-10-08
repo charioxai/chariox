@@ -1,6 +1,6 @@
 use super::*;
 use crate::extension::{AppCapabilityGrant, ExtensionGrant, ExtensionKind};
-use crate::runtime::state::capability_grant_runtime::AppBindingPermit;
+use crate::runtime::state::capability_grant_runtime::{AppBindingPermit, AppPromptDelivery};
 
 impl KernelRuntimeState {
     pub(crate) async fn grant_agent_app(
@@ -106,7 +106,7 @@ impl KernelRuntimeState {
                 "agent App acquisition needs owner approval or an explicit held subset",
             ));
         }
-        self.authorize_current_forwarded_binding()?;
+        self.authorize_current_external_command()?;
         grant.validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
             agent_ref,
@@ -136,9 +136,11 @@ impl KernelRuntimeState {
         let control = self.app_control().clone();
         let state = self.clone();
         let checked = tokio::task::spawn_blocking(move || {
-            state.authorize_current_forwarded_binding()?;
+            state.authorize_current_external_command()?;
             let _permit = permit;
             let binding = store.check_app_binding(&owner, &installation_id);
+            // MP-11 SB-03: writer completion cannot revive a stale provider.
+            state.authorize_current_external_command()?;
             // Under the same slot: its tools are listed at once, even before
             // the App's first start. The dormant catalog is the owner's, and
             // only agents bound to the App list it.
@@ -155,14 +157,16 @@ impl KernelRuntimeState {
         }
         // Ownership is checked again after the writer wait. A binding does not
         // retain invocation authority if the App is subsequently retired/revoked.
-        self.authorize_current_forwarded_binding()?;
+        self.authorize_current_external_command()?;
         if let Some(permit) = &binding_permit {
             if permit.target_id != agent.id() || permit.installation != grant.name {
                 return Err(app_binding_error("App grant scope changed"));
             }
             if let Some(prompt) = &permit.prompt_id {
                 let current = self.owned.agent_store.get_agent(permit.actor.id())?;
-                if self.owner_requested_prompt(&current).as_deref() != Some(prompt.as_str()) {
+                if self.owner_requested_prompt(&current).as_deref() != Some(prompt.as_str())
+                    || self.app_prompt_delivery(&current) != permit.prompt_delivery
+                {
                     return Err(app_binding_error("App request's owner turn changed"));
                 }
             }
@@ -197,6 +201,17 @@ impl KernelRuntimeState {
             if self.room_agent_tools_enabled() {
                 self.require_app_grant_wake()?;
             }
+            let acquisition_session = binding_permit
+                .as_ref()
+                .filter(|permit| permit.prompt_id.is_some())
+                .map(|permit| {
+                    self.owned
+                        .session_store
+                        .get_session(permit.actor.session_id())
+                })
+                .transpose()?;
+            // MP-11 SB-03: hold run replacement/termination through mutation.
+            let providers = self.owned.provider_store.read();
             let mut epochs = self
                 .owned
                 .app_grant_epochs
@@ -223,6 +238,17 @@ impl KernelRuntimeState {
                     || current_actor.remote_execution().is_some()
                 {
                     return Err(app_binding_error("App acquisition caller changed"));
+                }
+                if let Some(run) = &permit.provider_run_id {
+                    if !providers
+                        .get_run_for_agent(current_actor.session_id(), current_actor.id())
+                        .is_some_and(|current_run| {
+                            current_run.id() == run
+                                && current_run.owner_user_id() == current_actor.owner_user_id()
+                        })
+                    {
+                        return Err(app_binding_error("App acquisition provider run changed"));
+                    }
                 }
                 if *epochs.get(&key).unwrap_or(&0) != permit.target_revision {
                     return Err(app_binding_error(
@@ -253,7 +279,31 @@ impl KernelRuntimeState {
                 // descendants by silently replacing their source generation.
                 return Ok(Ok(current));
             }
-            let agent = agents.grant_extension(agent.id(), grant.clone())?;
+            let mut commit = || agents.grant_extension(agent.id(), grant.clone());
+            let agent = if let Some(permit) = binding_permit
+                .as_ref()
+                .filter(|permit| permit.prompt_id.is_some())
+            {
+                let session = acquisition_session
+                    .as_ref()
+                    .expect("App prompt permit has a session");
+                self.owned.prompt_state_owner.with_active_prompt(
+                    session,
+                    permit.actor.id(),
+                    |prompt| {
+                        if prompt.is_none_or(|prompt| {
+                            prompt.status() != crate::session::PromptStatus::Running
+                                || Some(AppPromptDelivery::from_prompt(prompt))
+                                    != permit.prompt_delivery
+                        }) {
+                            return Err(app_binding_error("App request's prompt delivery changed"));
+                        }
+                        commit()
+                    },
+                )?
+            } else {
+                commit()?
+            };
             *epochs.entry(key).or_default() += 1;
             agent
         };
@@ -527,7 +577,13 @@ impl KernelRuntimeState {
             target_revision: self.app_binding_revision(target.id(), installation_id),
             prompt_id: None,
             parent: None,
+            provider_run_id: self
+                .room_provider_origin
+                .as_ref()
+                .map(|(_, run)| run.clone()),
+            prompt_delivery: None,
         };
+        self.authorize_current_external_command()?;
         if self.room_agent_tools_enabled() {
             if agent.remote_execution().is_some()
                 || target.remote_execution().is_some()
@@ -559,6 +615,18 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .check_app_binding(agent.owner_user_id(), installation_id)
                 .map_err(|_| app_binding_error("App installation is not trusted and available"))?;
+            permit.prompt_delivery = self.app_prompt_delivery(&agent);
+            if let Some(run) = &permit.provider_run_id {
+                if permit
+                    .prompt_delivery
+                    .as_ref()
+                    .is_none_or(|delivery| !delivery.belongs_to(run))
+                {
+                    return Err(app_binding_error(
+                        "App request's prompt was not delivered to this provider",
+                    ));
+                }
+            }
             permit.prompt_id = Some(
                 self.confirm_capability_request(
                     &agent,
@@ -566,6 +634,7 @@ impl KernelRuntimeState {
                     || {
                         self.app_binding_revision(target.id(), installation_id)
                             == permit.target_revision
+                            && self.app_prompt_delivery(&agent) == permit.prompt_delivery
                     },
                 )
                 .await?,

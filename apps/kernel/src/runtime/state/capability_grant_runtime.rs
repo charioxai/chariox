@@ -227,6 +227,61 @@ pub(crate) struct AppBindingPermit {
     pub(super) target_revision: u64,
     pub(super) prompt_id: Option<String>,
     pub(super) parent: Option<crate::extension::ExtensionGrant>,
+    pub(super) provider_run_id: Option<String>,
+    pub(super) prompt_delivery: Option<AppPromptDelivery>,
+}
+
+/// MP-11 SB-03: process-local admission witness, never client-supplied authority.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct AppPromptDelivery {
+    prompt_id: String,
+    phase: Option<crate::session::DurablePromptDeliveryPhase>,
+    provider_run_id: Option<String>,
+    owner_request: bool,
+    source_user_id: Option<String>,
+}
+
+impl KernelRuntimeState {
+    pub(super) fn app_prompt_delivery(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Option<AppPromptDelivery> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(agent.session_id())
+            .ok()?;
+        let prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent.id())?;
+        (prompt.status() == crate::session::PromptStatus::Running)
+            .then(|| AppPromptDelivery::from_prompt(&prompt))
+    }
+}
+
+impl AppPromptDelivery {
+    pub(super) fn from_prompt(prompt: &crate::session::PromptQueueItem) -> Self {
+        Self {
+            prompt_id: prompt.id().into(),
+            phase: prompt.durable_delivery_phase(),
+            provider_run_id: prompt
+                .durable_delivery_provider_run_id()
+                .map(str::to_string),
+            owner_request: prompt.owner_request(),
+            source_user_id: prompt.source_user_id().map(str::to_string),
+        }
+    }
+    pub(super) fn belongs_to(&self, run: &str) -> bool {
+        use crate::session::DurablePromptDeliveryPhase::{Accepted, Delivered, Dispatching};
+        // Native/legacy turns may lack a delivery run ID. Preserve their exact
+        // witness while separately fencing the authenticated current run.
+        match self.phase {
+            Some(Delivered) => self.provider_run_id.as_deref().is_none_or(|id| id == run),
+            Some(Dispatching) => false,
+            Some(Accepted) | None => self.provider_run_id.is_none(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
