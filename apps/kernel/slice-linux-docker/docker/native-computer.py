@@ -124,10 +124,11 @@ def main(request):
         value=load('native-clipboard').public_clipboard(request.get('processes',[]),accessibility,request['mask'],request.get('browser_processes'))
         return {'text':'[protected]' if value is None else value[0]}
     accessibility=load('native-accessibility')
-    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
+    browser_protection=request.get('browser_protection')
+    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
-    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
+    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
     if before!=after:
         image.close()
         raise ValueError('native protection changed during capture')
