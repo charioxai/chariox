@@ -636,7 +636,7 @@ async fn capability_agents_cannot_supply_app_authority_or_safety_overrides() {
 
 // MP-08/MP-11 SB-03: retain the same owner prompt while replacing its provider.
 async fn replace_calling_run(room: &Room, agent: &str) {
-    let mut app = room.app.lock().await;
+    let app = room.app.lock().await;
     let run = app
         .providers()
         .get_run_for_agent(&room.session, agent)
