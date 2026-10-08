@@ -932,3 +932,49 @@ done
         }
     }
 }
+
+#[test]
+fn mirror_reads_and_cleanup_never_start_a_stopped_controller() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mirror-no-start-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+printf 'started' > "$1/started"
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    let outcomes: Vec<_> = ["mirror_subscribe", "mirror_next", "mirror_close"]
+        .into_iter()
+        .map(|op| {
+            let params = json!({"op":op,"tab_id":"a","subscription_id":"s","generation":1});
+            let outcome = host.protected_request(
+                "owner",
+                None,
+                "host.browser",
+                params,
+                json!({"values":[],"targets":[],"unknown":false}),
+            );
+            (op, outcome, root.join("started").exists())
+        })
+        .collect();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    for (op, outcome, started) in outcomes {
+        assert!(!started, "MP-11: {op} started the browser controller");
+        assert!(
+            outcome.unwrap_err().contains("browser_unavailable"),
+            "MP-11: {op} must refuse while stopped"
+        );
+    }
+}

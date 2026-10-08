@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: real renderer events and live source admission regressions.
 import assert from 'node:assert/strict';
 export async function rendererInputReview({source,viewer,originUrl,viewerUrl,receipt,mode,resource}) {
-  for(const seam of mode==='input'?['caret','fallback','coordinate','tab','native-keys','controls']:[mode]) {
+  for(const seam of mode==='input'?['caret','fallback','coordinate','tab','shift-tab','native-keys','controls']:[mode]) {
     const opened=await source.request({op:'open',url:`${originUrl}/forms`,observed_by:'drill'});
     const tab=source.tabs.get(opened.tab_id),connection=await source.browser.ensureConnection();
     const sessionId=await source.browser.ensureTargetSession(connection,tab.target_id);
@@ -14,6 +14,7 @@ export async function rendererInputReview({source,viewer,originUrl,viewerUrl,rec
       if(seam==='coordinate')await evaluate(`(()=>{document.querySelector('main').innerHTML='<button id="one" style="width:160px;height:50px">One</button><button id="two" style="width:160px;height:50px">Two</button>';window.clicked=[0,0];document.querySelector('#one').onclick=()=>window.clicked[0]++;document.querySelector('#two').onclick=()=>window.clicked[1]++;})()`);
       if(seam==='tab')await evaluate(`(()=>{document.querySelector('main').innerHTML='<input placeholder="A"><input placeholder="B">';const a=document.querySelector('input');a.onkeydown=e=>{if(e.key==='Enter')document.querySelectorAll('input')[1].focus()};a.focus();})()`);
       if(seam==='native-keys')await evaluate(`(()=>{document.querySelector('main').innerHTML='<input placeholder="A"><input placeholder="B" value="abc"><button>Commit</button>';window.keyClicks=0;document.querySelector('button').onclick=()=>window.keyClicks++;document.querySelector('input').focus();})()`);
+      if(seam==='shift-tab')await evaluate(`document.querySelector('main').innerHTML='<input placeholder="A"><input placeholder="B"><input placeholder="C">'`);
       if(seam==='controls')await evaluate(`document.querySelector('main').innerHTML='<input style="box-sizing:content-box;width:200px;height:30px;padding:5px;border:3px solid">'`);
       await viewer.goto(viewerUrl);await viewer.waitForFunction(()=>typeof window.start==='function');
       await viewer.evaluate(binding=>window.start(binding),{tab_id:tab.tab_id,generation:opened.generation,device_scale_factor:1});
@@ -55,6 +56,26 @@ export async function rendererInputReview({source,viewer,originUrl,viewerUrl,rec
         await source.request({op:'navigate',tab_id:tab.tab_id,generation:opened.generation,url:`${originUrl}/forms`,observed_by:'drill'});await next();
         assert.equal(await viewer.evaluate(()=>window.mirror.renderer.nativeFocus),null,'MP-11: navigation/reset drops native focus mode');
         receipt.security.push({check:'MP-08/MP-11 post-key protected focus refuses without generation change; nested focus types into B; navigation clears mode',passed:true});
+      }
+      if(seam==='shift-tab')for(const dpr of [1,2]) {
+        // MP-08/MP-11: backward focus from both the painted-focus and native-focus
+        // branches. Mirror geometry is fixed per tab, so each DPR opens its own.
+        const current=dpr===1?opened:await source.request({op:'open',url:`${originUrl}/forms`,observed_by:'drill'});
+        const target=source.tabs.get(current.tab_id),targetSession=await source.browser.ensureTargetSession(connection,target.target_id);
+        const evaluate=async expression=>(await connection.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},targetSession)).result.value;
+        if(dpr!==1)await evaluate(`document.querySelector('main').innerHTML='<input placeholder="A"><input placeholder="B"><input placeholder="C">'`);
+        const cdp=await viewer.context().newCDPSession(viewer);
+        await cdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false});
+        await viewer.goto(viewerUrl);await viewer.waitForFunction(()=>typeof window.start==='function');
+        await viewer.evaluate(binding=>window.start(binding),{tab_id:current.tab_id,generation:current.generation,device_scale_factor:dpr});await next();
+        await evaluate(`(()=>{const fields=document.querySelectorAll('input');for(const e of fields)e.value='';fields[2].focus();})()`);await next();await next();
+        await viewer.keyboard.press('Shift+Tab');await viewer.keyboard.type('S');await drain();
+        assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('input'),e=>e.value)`),['','S',''],`MP-08: painted-focus Shift+Tab moves C to B at DPR ${dpr}`);
+        await viewer.keyboard.press('Shift+Tab');await viewer.keyboard.type('T');await drain();
+        assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('input'),e=>e.value)`),['T','S',''],`MP-08: native-focus Shift+Tab moves B to A at DPR ${dpr}`);
+        await next();await viewer.screenshot({path:`evidence/shift-tab-dpr${dpr}.png`});
+        await cdp.detach();
+        receipt.security.push({check:`MP-08/MP-11 Shift+Tab backward focus in ordinary and native branches, DPR ${dpr}`,passed:true});
       }
       if(seam==='native-keys') {
         for(const key of ['Backspace','ArrowLeft','Tab']) {

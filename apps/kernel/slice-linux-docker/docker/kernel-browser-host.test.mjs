@@ -651,6 +651,29 @@ test("MP-11: state reads never start or recover Chromium; explicit retained star
   }
 }));
 
+test("MP-11: mirror reads and cleanup never start or recover Chromium", () => using(async ({ host, chromium, sent }) => {
+  const previous = process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR = "1";
+  try {
+    let launches = 0;
+    const start = chromium.start;
+    chromium.start = async () => { launches++; return start(); };
+    const opened = await host.request({ op:'open', url:'https://example.com' });
+    for (const stopped of [false, true]) {
+      if (stopped) await host.stop(); else chromium.child.exitCode = 1;
+      const generation = host.generation, requests = sent.length, before = launches;
+      for (const op of ['mirror_subscribe', 'mirror_next', 'mirror_close']) {
+        const reply = await host.handle({ id:op, method:'host.browser', params:{ op, tab_id:opened.tabs[0].tab_id, subscription_id:'s', generation } });
+        assert.equal(reply.ok, false, op); assert.equal(reply.error.code, 'browser_unavailable', op);
+        assert.equal(launches, before, op); assert.equal(host.generation, generation, op);
+        assert.equal(sent.length, requests, `${op} must not restore tabs`);
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = previous;
+  }
+}));
+
 test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitization', () => using(async ({host,sent}) => {
   const opened=await host.request({op:'open',url:'about:blank'});
   const tab=host.tabs.get(opened.tab_id),scope='epoch-test';

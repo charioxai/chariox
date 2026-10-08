@@ -372,6 +372,9 @@ impl KernelBrowserHost {
                             | "display_attach"
                             | "note_selection"
                             | "note_reanchor"
+                            | "mirror_subscribe"
+                            | "mirror_next"
+                            | "mirror_close"
                     )
                 )
             {

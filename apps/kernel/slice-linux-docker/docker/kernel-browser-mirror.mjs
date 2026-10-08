@@ -297,9 +297,32 @@ export class MirrorService {
       return {input:action.input,guard};
     }
     const point=await call('locate');
-    if(action.kind==='click')return {input:{kind:'click',...point},guard:assertEpoch};
+    // MP-11: bind addressed actions to the observed target and ancestry, then
+    // revalidate in one live evaluation after native preparation/preflights.
+    const expected=[];
+    if(['click','text','composition'].includes(action.kind))for(let node=records.get(action.node_id);node;node=records.get(node.parent))if(['element','frame','tile','mask'].includes(node.kind)) {
+      if(!unchanged(node.id))throw new Error('MP-11: changed mirror input ancestor');
+      const old=JSON.parse(epoch.nodes.get(node.id));expected.push({id:old.id,kind:old.kind,box:old.box,attributes:old.attributes});
+    }
+    if(action.kind==='click') {
+      let checked=false;
+      const guard=async()=>{
+        assertEpoch();assertNotCancelled(signal);if(checked)return;
+        const id=await this.evaluate(world,`globalThis.__charioxMirror.coordinateTarget(${JSON.stringify(point)},[],${JSON.stringify(expected)},true)`);
+        assertEpoch();assertNotCancelled(signal);
+        if(id!==action.node_id)throw new Error('MP-11: changed live mirror click target');
+        // A press can change the page; release must remain paired.
+        checked=true;
+      };
+      return {input:{kind:'click',...point},guard};
+    }
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};
-    if(action.kind==='text'||action.kind==='composition')return {observedFrameInput:true,perform:async (send,mark)=>{
+    if(action.kind==='text'||action.kind==='composition')return {observedFrameInput:true,guard:async()=>{
+      assertEpoch();assertNotCancelled(signal);
+      const focused=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget(${JSON.stringify(expected)})`);
+      assertEpoch();assertNotCancelled(signal);
+      if(focused!==action.node_id)throw new Error('MP-11: changed live mirror text focus');
+    },perform:async (send,mark)=>{
       mark?.();await call('focus');assertNotCancelled(signal);assertEpoch();
       if(action.kind==='text')return send('Input.insertText',{text:action.text});
       return send('Input.imeSetComposition',{text:action.text,selectionStart:action.selection_start,selectionEnd:action.selection_end});
