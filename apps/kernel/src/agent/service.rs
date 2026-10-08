@@ -1184,6 +1184,15 @@ mod workflow_copy_alias_tests {
         service.store.insert(agent)
     }
 
+    // MP-11 F6: reserve the whole ID namespace before the target exists.
+    #[test]
+    fn security_f6_alias_cannot_squat_on_future_agent_id() {
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "room", "child");
+        assert!(service.alias_agent(source.id(), Some("agent-999999".into())).is_err());
+        assert_eq!(service.get_agent(source.id()).unwrap().alias(), Some("child"));
+    }
+
     #[test]
     fn sequential_copies_receive_incrementing_numeric_suffixes() {
         let mut service = AgentService::new();
