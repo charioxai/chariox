@@ -57,9 +57,10 @@ export function createProjectEnvironmentReadController(deps: {
         lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
       } finally { if (detectionGeneration === requestGeneration) detectionGeneration = null; if (requestGeneration === generation) deps.render() }
     },
-    handleKey(event: { name: string; eventType?: string }) {
+    handleKey(event: { name: string; eventType?: string; ctrl?: boolean }) {
       if (!open) return false
       if (event.eventType === "release") return true
+      if (event.ctrl && (event.name === "c" || event.name === "e")) return false
       if (event.name === "d") { void controller.detect(); return true }
       if (event.name === "escape") { controller.close(); return true }
       const amount = event.name === "down" ? 1 : event.name === "up" ? -1 : event.name === "pagedown" ? deps.pageSize() : event.name === "pageup" ? -deps.pageSize() : 0
