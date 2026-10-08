@@ -172,7 +172,7 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
     let reset = root.join("reset");
     std::fs::write(
         &script,
-        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-drag)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
+        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-click)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
     )
     .expect("screen helper should be written");
     #[cfg(unix)]
@@ -237,11 +237,10 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
                 .execute_computer_input_as_agent(
                     &action_room,
                     &agent_id,
-                    crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
-                        from_x: 120,
-                        from_y: 160,
-                        to_x: 720,
-                        to_y: 560,
+                    crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
+                        x: 120,
+                        y: 160,
+                        click_count: 1,
                         button: crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
                     },
                 )
@@ -293,7 +292,7 @@ async fn cancels_worker_computer_input_over_the_relay_before_takeover() {
         let environment = &state["RoomEnvironmentState"]["environment"];
         assert!(environment["actions"].as_array().is_some_and(|actions| {
             actions.iter().any(|action| {
-                action["kind"] == "pointer_drag" && action["state"] == "cancelled"
+                action["kind"] == "pointer_click" && action["state"] == "cancelled"
             })
         }));
         assert!(environment["input_ownership"]

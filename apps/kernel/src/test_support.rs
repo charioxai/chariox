@@ -63,7 +63,12 @@ impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        // MP-10: disk-backed TMPDIR may be protected service state. Provider
+        // fixture source directories need a separate operator-owned root.
+        let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let path = root.join(format!(
             "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));

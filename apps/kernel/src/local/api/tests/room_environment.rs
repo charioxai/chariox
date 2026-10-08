@@ -1218,7 +1218,7 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
     let reset = root.join("reset");
     std::fs::write(
         &script,
-        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-drag)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
+        "#!/bin/sh\ncase \"${1:-}\" in\n  pointer-drag|pointer-click)\n    : > \"$CHARIOX_COMPUTER_INPUT_STARTED\"\n    while :; do sleep 1; done\n    ;;\n  computer-input-reset)\n    : > \"$CHARIOX_COMPUTER_INPUT_RESET\"\n    ;;\nesac\n",
     )
     .expect("screen helper should be written");
     #[cfg(unix)]
@@ -1409,11 +1409,10 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
             .execute_computer_input_as_agent(
                 &agent_session_id,
                 &agent_id,
-                crate::transport::room_browser_controller::RoomComputerInputAction::PointerDrag {
-                    from_x: 120,
-                    from_y: 160,
-                    to_x: 720,
-                    to_y: 560,
+                crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick {
+                    x: 120,
+                    y: 160,
+                    click_count: 1,
                     button:
                         crate::transport::room_browser_controller::RoomComputerPointerButton::Left,
                 },
@@ -1430,7 +1429,7 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
                 if started.exists() {
                     if let Some(action) = snapshot.actions.iter().find(|action| {
                         action.actor_id == agent_actor_id
-                            && action.kind == "pointer_drag"
+                            && action.kind == "pointer_click"
                             && action.state == crate::session::EnvironmentActionState::Running
                     }) {
                         return action.action_id.clone();
