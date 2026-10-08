@@ -107,30 +107,44 @@ pub(crate) fn isolate_environment_test() -> bool {
     true
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn verified_isolated_group(pid: i32) -> Option<i32> {
     if pid <= 1 || unsafe { libc::getpgid(pid) } != pid {
         return None;
     }
-    let processes = sysinfo::System::new_all();
-    let root = sysinfo::Pid::from_u32(pid as u32);
-    if processes.process(root)?.parent() != Some(sysinfo::Pid::from_u32(std::process::id())) {
-        return None;
+    // Read only process ancestry/group metadata; no new dependency or command
+    // line/environment inspection is needed for this Linux builder guard.
+    let mut parents = std::collections::HashMap::new();
+    let mut members = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(member) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let _state = fields.next();
+        let Some(parent) = fields.next().and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(group) = fields.next().and_then(|field| field.parse::<i32>().ok()) else {
+            continue;
+        };
+        parents.insert(member, Some(parent));
+        if group == pid {
+            members.push(member);
+        }
     }
-    let parents = processes
-        .processes()
-        .iter()
-        .map(|(id, process)| (id.as_u32(), process.parent().map(|parent| parent.as_u32())))
-        .collect::<std::collections::HashMap<_, _>>();
-    let members = processes
-        .processes()
-        .keys()
-        .filter_map(|id| {
-            let member = i32::try_from(id.as_u32()).ok()?;
-            (member > 1 && unsafe { libc::getpgid(member) } == pid).then_some(member as u32)
-        })
-        .collect::<Vec<_>>();
-    if !members.contains(&(pid as u32))
+    if parents.get(&(pid as u32)).copied().flatten() != Some(std::process::id())
+        || !members.contains(&(pid as u32))
         || members
             .iter()
             .any(|member| !owned_descendant(*member, pid as u32, &parents))
@@ -138,6 +152,12 @@ fn verified_isolated_group(pid: i32) -> Option<i32> {
         return None;
     }
     (unsafe { libc::getpgid(pid) } == pid).then_some(pid)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn verified_isolated_group(_pid: i32) -> Option<i32> {
+    // Without a process-ancestry snapshot, never send a group signal.
+    None
 }
 
 #[cfg(unix)]

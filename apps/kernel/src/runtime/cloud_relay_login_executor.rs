@@ -5,8 +5,8 @@ use crate::local::{
     LogoutCloudRelayRequest, PollCloudRelayLoginRequest, StartCloudRelayLoginRequest,
 };
 use crate::runtime::cloud_api_client::{
-    CloudDevicePollResponse, CloudDeviceStartResponse, cloud_profile_from_persisted,
-    normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
+    cloud_profile_from_persisted, normalize_cloud_api_url, post_cloud_acknowledged,
+    post_cloud_json, CloudDevicePollResponse, CloudDeviceStartResponse,
 };
 use crate::runtime::cloud_relay_logout::request_cloud_logout;
 use crate::runtime::cloud_relay_profile_store::{clear_cloud_profile, persist_cloud_profile};
@@ -173,17 +173,27 @@ pub(crate) async fn execute_logout_cloud_relay_request(
     Ok(LocalDaemonResponse::CloudRelayLoggedOut)
 }
 
-
-fn kernel_device_enrollment_body(config: &crate::config::DaemonConfig, request: &StartCloudRelayLoginRequest) -> serde_json::Value {
+fn kernel_device_enrollment_body(
+    config: &crate::config::DaemonConfig,
+    request: &StartCloudRelayLoginRequest,
+) -> serde_json::Value {
     let mut body = serde_json::json!({
         "enrollmentKind": "KERNEL", "kernelId": config.daemon_id, "machineId": config.host_machine_id,
         "publicKeyThumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
     });
     for (field, alias) in [
-        ("machineAlias", request.machine_alias.as_ref().or(config.host_machine_alias.as_ref())),
+        (
+            "machineAlias",
+            request
+                .machine_alias
+                .as_ref()
+                .or(config.host_machine_alias.as_ref()),
+        ),
         ("kernelAlias", config.daemon_alias.as_ref()),
     ] {
-        if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) { body[field] = serde_json::json!(alias); }
+        if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
+            body[field] = serde_json::json!(alias);
+        }
     }
     body
 }
@@ -194,7 +204,9 @@ mod enrollment_display_tests {
     #[test]
     fn enrollment_display_aliases_are_optional_and_kernel_alias_is_authoritative() {
         let mut config = crate::config::DaemonConfig::for_tests();
-        let request: StartCloudRelayLoginRequest = serde_json::from_value(serde_json::json!({"api_url": "https://cloud.example.test"})).unwrap();
+        let request: StartCloudRelayLoginRequest =
+            serde_json::from_value(serde_json::json!({"api_url": "https://cloud.example.test"}))
+                .unwrap();
         let body = kernel_device_enrollment_body(&config, &request);
         assert!(body.get("machineAlias").is_none());
         assert!(body.get("kernelAlias").is_none());
