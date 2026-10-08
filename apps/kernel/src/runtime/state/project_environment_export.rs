@@ -301,11 +301,10 @@ impl KernelRuntimeState {
                 )
                 .with_owner_user_id(project.owner_user_id())
                 .with_hidden(true)
-                .with_agent_defaults(
-                    crate::session::SessionAgentDefaults::new(provider)
-                        .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
-                        .with_permission_level(crate::provider::AgentPermissionLevel::Required),
-                ),
+                .with_agent_defaults(detection_utility_agent_defaults(
+                    self.owned.configured_session_agent_defaults(),
+                    provider,
+                )),
             )
             .await?;
         let LocalDaemonResponse::SessionCreated { session, agent } = response else {
@@ -478,5 +477,45 @@ impl Drop for EnvironmentUtilityCleanup {
                 }
             });
         }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: utility model selection follows the normal provider defaults.
+fn detection_utility_agent_defaults(
+    _configured: Option<crate::session::SessionAgentDefaults>,
+    provider: &str,
+) -> crate::session::SessionAgentDefaults {
+    crate::session::SessionAgentDefaults::new(provider)
+        .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+}
+
+#[cfg(test)]
+mod detection_utility_tests {
+    use super::*;
+    #[test]
+    fn detection_utility_inherits_configured_model_without_escalating_permissions() {
+        let configured = crate::session::SessionAgentDefaults::new("codex")
+            .with_model("codex/gpt-6.1-sol")
+            .with_effort("low")
+            .with_execution_mode(crate::provider::AgentExecutionMode::Build)
+            .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+        for provider in ["default", "codex"] {
+            let selected = detection_utility_agent_defaults(Some(configured.clone()), provider);
+            assert_eq!(selected.provider, "codex");
+            assert_eq!(selected.model.as_deref(), Some("codex/gpt-6.1-sol"));
+            assert_eq!(selected.effort.as_deref(), Some("low"));
+            assert_eq!(
+                selected.execution_mode,
+                Some(crate::provider::AgentExecutionMode::Plan)
+            );
+            assert_eq!(
+                selected.permission_level,
+                Some(crate::provider::AgentPermissionLevel::Required)
+            );
+        }
+        let selected = detection_utility_agent_defaults(Some(configured), "opencode");
+        assert_eq!(selected.provider, "opencode");
+        assert_eq!(selected.model, None);
     }
 }
