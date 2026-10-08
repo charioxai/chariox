@@ -518,11 +518,29 @@ mod tests {
             .expect("native Claude TUI must remain available for interactive sign-in");
         assert!(foreground.provider_credential_env.is_empty());
 
+        assert!(!app
+            .lock()
+            .await
+            .provider_account_profile_registry()
+            .has_native_claude_credentials(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &profile.profile_id
+            )
+            .unwrap());
         std::fs::write(
             claude_config_dir.join(".credentials.json"),
             br#"{"claudeAiOauth":{"refreshToken":"portable-refresh-token"}}"#,
         )
         .expect("portable Claude credential fixture should write");
+        assert!(app
+            .lock()
+            .await
+            .provider_account_profile_registry()
+            .has_native_claude_credentials(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &profile.profile_id
+            )
+            .unwrap());
         // One sign-in: the account's own login runs background agents on Linux
         // (its credential file) and macOS (its verified Keychain login) alike.
         app.lock()
@@ -547,8 +565,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // A setup token left in the vault from before is not read either, so
-        // the launch asks for no vault unlock; the native Claude TUI still may.
+        // The available native login remains usable without Vault access.
+        // The native TUI still receives an explicitly registered token.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",

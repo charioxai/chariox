@@ -165,6 +165,24 @@ async fn start_terminal_provider_auth(
         &profile.profile_id,
         environment.get("CLAUDE_CONFIG_DIR").map(String::as_str),
     );
+    // MP-08/MP-10/MP-11: recovery and first use share the account's
+    // ordinary login process instead of racing the credential-scope fence.
+    let lanes = runtime_state.provider_login_operation_lanes();
+    let _start = lanes
+        .acquire(&format!(
+            "provider-login-start:{provider}:{credential_scope}"
+        ))
+        .await;
+    if provider == "claude"
+        && operation == crate::runtime::state::ProviderAuthProcessOperation::Login
+    {
+        if let Some(login) = runtime_state
+            .provider_login_process_store()
+            .running_start_for_profile(owner_user_id, provider, &profile.profile_id)
+        {
+            return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
+        }
+    }
     let (program, args) = match (provider, operation) {
         ("claude", crate::runtime::state::ProviderAuthProcessOperation::Login) => (
             crate::provider::resolve_claude_executable()?,

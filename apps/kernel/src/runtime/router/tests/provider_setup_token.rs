@@ -582,28 +582,6 @@ exit 90
         );
     }
 
-    for mode in ["claude", "claude-p", "claude-headless"] {
-        assert!(
-            crate::provider::provider_account_credential_registered(
-                "local",
-                mode,
-                &profile.profile_id
-            )
-            .unwrap(),
-            "the credential must be registered for {mode}"
-        );
-        let environment = crate::provider::resolve_provider_account_credentials(
-            &config,
-            "local",
-            mode,
-            &profile.profile_id,
-        )
-        .unwrap();
-        assert!(
-            !environment.is_empty(),
-            "{mode} must resolve the account token"
-        );
-    }
     for (value, message) in [
         (expired.as_str(), "rejected the setup token"),
         (unavailable.as_str(), "Check the network and the Claude CLI"),
@@ -661,6 +639,39 @@ exit 90
             crate::account_profile::ProviderAccountAuthState::Authenticated,
             "status checks must not downgrade a setup-token account (restart {restart})"
         );
+        // Exercise the actual launch/unlock selector in the live runtime and
+        // after the old owner exited. Direct resolution bypasses that selector.
+        let (launch_session, launch_agent) = {
+            let mut app = router.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                ))
+                .unwrap()
+        };
+        for provider in ["claude-p", "claude-headless"] {
+            let request = crate::provider::LaunchProviderRequest::new(
+                launch_session.id(),
+                "claude",
+                provider,
+                &profile.profile_id,
+                "claude-sonnet",
+            )
+            .with_agent_id(launch_agent.id());
+            let prepared = router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(
+                    request,
+                    "verified launch after restart",
+                )
+                .await
+                .unwrap();
+            assert!(
+                !prepared.provider_credential_env.is_empty(),
+                "verified Vault token must reach {provider} (restart={restart})"
+            );
+        }
     }
 }
 
@@ -693,6 +704,21 @@ async fn setup_token_expired_observation_overrides_cached_first_use_success() {
 #[tokio::test]
 async fn setup_token_account_enrollment_projects_the_shared_oauth_interaction() {
     first_use_fixture("enrollment").await;
+}
+
+#[tokio::test]
+async fn setup_token_enrollment_verification_failure_publishes_retry_notice() {
+    first_use_fixture("enrollment-failed").await;
+}
+
+#[tokio::test]
+async fn setup_token_enrollment_busy_subject_publishes_retry_notice() {
+    first_use_fixture("enrollment-busy").await;
+}
+
+#[tokio::test]
+async fn setup_token_two_login_callers_share_login_and_reload_repaired_account() {
+    first_use_fixture("enrollment-two").await;
 }
 
 async fn first_use_fixture(mode: &str) {
@@ -729,6 +755,9 @@ async fn first_use_fixture(mode: &str) {
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
   echo check >> '{root}/checks'
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && [ '{mode}' = enrollment-two ]; then
+    echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
+  fi
   [ '{mode}' = network ] && exit 3
   if [ '{mode}' = expired-cached ] && [ ! -f '{root}/expired' ]; then
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
@@ -741,8 +770,11 @@ echo login >> '{root}/logins'
 printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
 printf 'Paste code here if prompted > '
 IFS= read -r response
+if [ '{mode}' = enrollment-failed ] || [ '{mode}' = enrollment-two ]; then
+  printf '%s\n' 'sk-ant-oat01-{replacement}'; exit 0
+fi
 exit 1
-"#, root = root.display())).unwrap();
+"#, root = root.display(), replacement = "B".repeat(96))).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
@@ -843,7 +875,7 @@ exit 1
         assert!(!root.join("logins").exists());
         return;
     }
-    if mode != "enrollment" {
+    if !mode.starts_with("enrollment") {
         router
             .provider_account_profiles
             .require_authenticated(
@@ -857,18 +889,62 @@ exit 1
                 "MP-08/MP-10/MP-11 token observations must reach kernel first-use verification",
             );
     }
+    let busy_receiver = if mode == "enrollment-busy" {
+        Some(
+            router
+                .runtime_state
+                .create_runtime_interaction(
+                    session.id(),
+                    crate::session::RuntimeInteraction::new(
+                        "existing-permission",
+                        agent.id(),
+                        crate::session::RuntimeInteractionKind::Choice,
+                        crate::session::RuntimeInteractionLevel::Warning,
+                        Some("Existing permission".into()),
+                        "A permission is pending",
+                        Vec::new(),
+                        None,
+                        Some(60),
+                        None,
+                    ),
+                )
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     let mut prepared = Box::pin(async {
-        if mode == "enrollment" {
-            let start =
-                LocalDaemonRequest::StartProviderLogin(crate::local::StartProviderLoginRequest {
+        if mode.starts_with("enrollment") {
+            let start = LocalDaemonRequest::SetProviderAccountCredential(
+                crate::local::SetProviderAccountCredentialRequest {
                     provider: "claude".into(),
                     account_profile: profile.profile_id.clone(),
-                    method: Some("setup_token".into()),
-                });
-            let mut command = KernelCommand::from_local_request("enroll", None, None, &start);
-            command.session_id = Some(session.id().into());
-            command.agent_id = Some(agent.id().into());
-            router.dispatch(command, start).await?;
+                    value: String::new(),
+                    run: true,
+                    overwrite: true,
+                    session_id: Some(session.id().into()),
+                    agent_id: Some(agent.id().into()),
+                },
+            );
+            let command = KernelCommand::from_local_request("enroll", None, None, &start);
+            let response = router.dispatch(command, start.clone()).await?;
+            if mode == "enrollment-two" {
+                let second = router
+                    .dispatch(
+                        KernelCommand::from_local_request("enroll-second", None, None, &start),
+                        start,
+                    )
+                    .await
+                    .expect("another recovery must join the account login instead of failing busy");
+                let LocalDaemonResponse::ProviderLoginStarted { login: first } = response else {
+                    panic!("first login missing")
+                };
+                let LocalDaemonResponse::ProviderLoginStarted { login: second } = second else {
+                    panic!("second login missing")
+                };
+                assert_eq!(first.login_id, second.login_id, "one login per account");
+            }
             // The dispatched account workflow owns the interaction and cancellation.
             while router
                 .runtime_state
@@ -876,6 +952,12 @@ exit 1
                 .has_running_for_profile("local", "claude", &profile.profile_id)
             {
                 tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if mode == "enrollment-two" {
+                return router
+                    .runtime_state
+                    .prepare_provider_launch_request_with_vault(request, "repaired account")
+                    .await;
             }
             Err(DaemonError::InvalidConfig {
                 field: "test cancellation",
@@ -888,6 +970,36 @@ exit 1
                 .await
         }
     });
+    if mode == "enrollment-busy" {
+        assert!(tokio::time::timeout(Duration::from_secs(8), &mut prepared)
+            .await
+            .unwrap()
+            .is_err());
+        wait_for_enrollment_notice(
+            &router,
+            &session,
+            agent.id(),
+            "another interaction is pending",
+        )
+        .await;
+        let current = router
+            .app
+            .lock()
+            .await
+            .sessions()
+            .get_session(session.id())
+            .unwrap();
+        assert_eq!(
+            current
+                .active_interaction_for_agent(agent.id())
+                .unwrap()
+                .id(),
+            "existing-permission"
+        );
+        drop(busy_receiver);
+        router.app.lock().await.shutdown_cleanup().unwrap();
+        return;
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let interaction = loop {
         tokio::select! {
@@ -952,6 +1064,61 @@ exit 1
     assert!(interaction.message().contains("authorization link"));
     assert!(!interaction.message().contains("--replace"));
     assert!(!interaction.message().contains("claude setup-token"));
+    if mode == "enrollment-failed" || mode == "enrollment-two" {
+        let choice = interaction.custom_choice().unwrap().id();
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                choice,
+                Some("synthetic-secret-code"),
+            )
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), &mut prepared)
+            .await
+            .unwrap();
+        if mode == "enrollment-failed" {
+            assert!(result.is_err());
+            wait_for_enrollment_notice(&router, &session, agent.id(), "verification failed").await;
+        } else {
+            let prepared = result.expect("repaired account must prepare a launch");
+            let replacement = format!("sk-ant-oat01-{}", "B".repeat(96));
+            assert!(prepared
+                .provider_credential_env
+                .iter()
+                .any(|(_, value)| value == replacement));
+            for provider in ["claude-p", "claude-headless"] {
+                let request = crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "claude",
+                    provider,
+                    &profile.profile_id,
+                    "claude-sonnet",
+                )
+                .with_agent_id(agent.id());
+                let prepared = router
+                    .runtime_state
+                    .prepare_provider_launch_request_with_vault(request, "second repaired launch")
+                    .await
+                    .unwrap();
+                assert!(prepared
+                    .provider_credential_env
+                    .iter()
+                    .any(|(_, value)| value == replacement));
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("logins"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        router.app.lock().await.shutdown_cleanup().unwrap();
+        return;
+    }
     router
         .runtime_state
         .resolve_runtime_interaction(session.id(), interaction.id(), "cancel", None)
@@ -979,4 +1146,33 @@ exit 1
         .runtime_state
         .provider_login_process_store()
         .has_running_for_profile("local", "claude", &profile.profile_id));
+}
+
+async fn wait_for_enrollment_notice(
+    router: &CommandRouter,
+    session: &crate::session::RuntimeSession,
+    agent_id: &str,
+    reason: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let entries = router
+                .app
+                .lock()
+                .await
+                .load_session_history_entries(session, Some(agent_id))
+                .unwrap();
+            if entries.iter().any(|entry| {
+                entry.text.contains(reason) && entry.text.contains("Provider Accounts")
+            }) {
+                assert!(!entries
+                    .iter()
+                    .any(|entry| entry.text.contains("synthetic-secret-code")));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("automatic enrollment must publish a sanitized failure and retry notice");
 }

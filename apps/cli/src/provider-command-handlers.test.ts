@@ -1,3 +1,4 @@
+import type { ProviderAccountProfile } from "./cli-types.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -761,4 +762,21 @@ test("MP-08/MP-10/MP-11 Claude reauth opens OAuth without logging out", async ()
     runProviderSetupToken: async (profile, replace) => { calls.push(`oauth:${profile}:${replace}`); return {provider: "claude", account_profile: profile, login_kind: "terminal_setup_token", login_id: "login-1", auth_url: null, verification_url: null, user_code: null} },
   }, {kind: "provider", raw: "/provider reauth claude", value: "reauth claude"})
   assert.deepEqual(calls, ["oauth:default:true"])
+})
+
+
+test("MP-08/MP-10/MP-11 accounts add Claude setup_token uses the scoped login adapter", async () => {
+  const calls: Array<[string, boolean]> = []
+  const profile = { provider: "claude", profile_id: "new-work-profile", label: "Work" } as ProviderAccountProfile
+  await handleProviderSlashCommand({
+    currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: () => {},
+    createProviderAccountProfile: async () => profile,
+    listProviderAccountProfiles: async () => [profile],
+    runProviderSetupToken: async (id, replace) => {
+      calls.push([id, replace])
+      return { provider: "claude", account_profile: id, login_kind: "terminal_setup_token", login_id: "enrollment", auth_url: null, verification_url: null, user_code: null }
+    },
+    startProviderLogin: async () => { throw new Error("unscoped login bypasses session interaction") },
+  }, { kind: "provider", raw: "/provider accounts add claude Work --method setup_token", value: "accounts add claude Work --method setup_token" })
+  assert.deepEqual(calls, [["new-work-profile", false]])
 })

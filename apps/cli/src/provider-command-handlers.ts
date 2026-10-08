@@ -374,11 +374,14 @@ async function handleProviderAccountsCommand(
       addOperands.filter(Boolean).join(" "),
     )
     if (result && addMethod) {
-      if (!deps.startProviderLogin) {
+      const scopedClaude = provider.startsWith("claude") && addMethod === "setup_token"
+      if (scopedClaude ? !deps.runProviderSetupToken : !deps.startProviderLogin) {
         deps.flashFooter("provider login is not available in this daemon", "error")
         return
       }
-      const login = await deps.startProviderLogin(provider, result.profile_id, addMethod)
+      const login = scopedClaude
+        ? await deps.runProviderSetupToken!(result.profile_id, false)
+        : await deps.startProviderLogin!(provider, result.profile_id, addMethod)
       const message = formatProviderLoginNotice(
         login,
         "enrollment started",

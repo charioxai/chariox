@@ -66,8 +66,9 @@ pub(crate) fn resolve_provider_account_credentials(
 
 /// One sign-in per account: the account's own Claude login runs every agent of
 /// that account, interactive or not, on Linux (its credential file) and macOS
-/// (its login Keychain) alike. A Chariox-vault setup token is only the fallback
-/// for an account without a usable login, such as a headless server.
+/// (its login Keychain) alike. A verified Vault token authenticates the account
+/// without proving native login availability; check the native credential
+/// source independently before skipping Vault delivery.
 pub(crate) fn resolve_provider_account_credentials_for_launch(
     config: &DaemonConfig,
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -105,12 +106,24 @@ fn claude_login_runs_agents(
 ) -> Result<bool, DaemonError> {
     match std::env::consts::OS {
         "linux" => profiles.has_portable_claude_credentials(owner_user_id, profile_id),
-        "macos" => Ok(profiles
-            .get(owner_user_id, "claude", profile_id)?
-            .auth_state
-            == crate::account_profile::ProviderAccountAuthState::Authenticated),
+        "macos" => {
+            let authenticated = profiles
+                .get(owner_user_id, "claude", profile_id)?
+                .auth_state
+                == crate::account_profile::ProviderAccountAuthState::Authenticated;
+            Ok(claude_macos_login_runs_agents(
+                authenticated,
+                authenticated
+                    && profiles.has_native_claude_credentials(owner_user_id, profile_id)?,
+            ))
+        }
         _ => Ok(false),
     }
+}
+
+// A Vault verification authenticates an account without proving native login.
+fn claude_macos_login_runs_agents(authenticated: bool, native_credentials_available: bool) -> bool {
+    authenticated && native_credentials_available
 }
 
 /// Whether a launch reads the account's Chariox-vault credential, by the same
@@ -244,6 +257,13 @@ fn canonical_label(provider: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_mp10_mp11_vault_authentication_does_not_prove_a_macos_native_login() {
+        assert!(!claude_macos_login_runs_agents(true, false));
+        assert!(claude_macos_login_runs_agents(true, true));
+        assert!(!claude_macos_login_runs_agents(false, true));
+    }
 
     #[test]
     fn credential_handle_is_stable_and_registry_safe() {

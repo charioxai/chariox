@@ -450,3 +450,6 @@ fn provider_label(provider: &str) -> &str {
 fn choice(id: &str, label: &str, style: RuntimeInteractionChoiceStyle) -> RuntimeInteractionChoice {
     RuntimeInteractionChoice::new(id, label, id, Some(style))
 }
+
+#[cfg(test)]
+mod setup_token_tests;

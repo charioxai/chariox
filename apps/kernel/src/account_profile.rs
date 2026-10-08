@@ -1580,6 +1580,29 @@ impl ProviderAccountProfileRegistry {
         Ok(environment)
     }
 
+    /// Native credential availability is independent of the public account
+    /// observation: a verified Vault token also authenticates that account.
+    pub(crate) fn has_native_claude_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let locator = {
+            let document = self.read_document()?;
+            resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?
+                .locator
+                .clone()
+        };
+        // Reuse the exact profile-scoped file/Keychain reader and refreshable
+        // credential validation used by ordinary credential materialization.
+        let mut files = materialization_files(&locator)?;
+        let available = materialization_has_file(&files, ".credentials.json");
+        for file in &mut files {
+            zeroize::Zeroize::zeroize(&mut file.contents_base64);
+        }
+        Ok(available)
+    }
+
     pub(crate) fn has_portable_claude_credentials(
         &self,
         owner_user_id: &str,

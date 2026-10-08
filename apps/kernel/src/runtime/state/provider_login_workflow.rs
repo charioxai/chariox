@@ -5,6 +5,12 @@ use crate::local::{LocalDaemonResponse, ProviderLoginProcessState};
 use crate::session::{RuntimeInteraction, RuntimeProviderLogin};
 
 impl KernelRuntimeState {
+    pub(in crate::runtime) fn provider_login_operation_lanes(
+        &self,
+    ) -> crate::provider::ProviderRunOperationLanes {
+        self.provider_runtime_lanes.clone()
+    }
+
     pub(in crate::runtime) fn spawn_provider_login_workflow(
         &self,
         session_id: &str,
@@ -35,6 +41,15 @@ impl KernelRuntimeState {
         id: &str,
         login: &crate::provider::ProviderLoginStart,
     ) -> Result<bool, DaemonError> {
+        // All callers of an account login join one driver. Only that driver
+        // owns the human challenge and input; other affected runs await it.
+        let _workflow = self
+            .provider_runtime_lanes
+            .acquire(&format!(
+                "provider-login-workflow:{}",
+                login.login_id.as_deref().unwrap_or(id)
+            ))
+            .await;
         let result = self
             .drive_account_login(session_id, agent_id, owner, id, login)
             .await;
@@ -51,6 +66,37 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
+        }
+        let outcome = match &result {
+            Ok(true) => None,
+            Ok(false) => {
+                let cancelled = login.login_id.as_deref().and_then(|id| self.provider_login_process_store().record_for_owner(owner, id).ok())
+                    .is_some_and(|record| record.state == ProviderLoginProcessState::Cancelled);
+                Some(if cancelled {
+                    "Provider sign-in cancelled. Choose Log in in Provider Accounts to try again."
+                } else {
+                    "Provider authorization or credential verification failed. Choose Log in in Provider Accounts to try again."
+                })
+            }
+            Err(error) if super::runtime_interaction_owned_state::interaction_waits(error) => Some(
+                "Provider authorization could not open because another interaction is pending. Resolve it, then choose Log in in Provider Accounts to try again."
+            ),
+            Err(_) => Some(
+                "Provider authorization could not complete on this machine. Choose Log in in Provider Accounts to try again."
+            ),
+        };
+        if let Some(message) = outcome {
+            // Never put raw provider output, OAuth codes or transport errors
+            // in durable notices. These fixed reasons are safe for all clients.
+            self.owned.record_notice_for_agent(
+                session_id,
+                None,
+                Some(agent_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                message,
+            );
         }
         result
     }
