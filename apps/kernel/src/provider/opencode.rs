@@ -137,6 +137,17 @@ fn managed_launch(
     pty_env: BTreeMap<String, String>,
     pty_env_remove: Vec<String>,
 ) -> ProviderLaunchResult {
+    // MP-08 / MP-10 / MP-11: OpenCode's Linux native watcher can synchronously
+    // block its server before the upstream subscription timeout can run.
+    #[cfg(target_os = "linux")]
+    let pty_env = {
+        let mut env = pty_env;
+        env.insert(
+            "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER".into(),
+            "true".into(),
+        );
+        env
+    };
     ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
         process_label: "opencode:serve".to_string(),
