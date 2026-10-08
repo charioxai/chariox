@@ -77,6 +77,7 @@ export type KernelComputerInput =
   | { kind: "scroll"; x: number; y: number; steps: number }
   | { kind: "clipboard_write"; text: string }
 export type KernelComputerCommand =
+  | { op: "display_subscribe"; target: KernelDesktopTarget; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
   | { op: "start" | "state" | "actors" }
   | { op: "snapshot" | "screenshot" | "clipboard_read" | "takeover" | "release"; target: KernelDesktopTarget }
   | { op: "ocr"; target: KernelDesktopTarget; query: string | null }

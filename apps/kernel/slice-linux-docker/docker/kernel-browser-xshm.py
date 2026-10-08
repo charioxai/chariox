@@ -1,5 +1,6 @@
 """MD-DISPLAY-02/04: XDamage-triggered XShm browser-window readback.
-Private binary pipe, no root-window capture. Caller proves display ownership.
+Private binary pipe. Caller proves display ownership; owned desktop mode masks
+before pixels cross the pipe or enter hashing, damage, or codec state.
 """
 import ctypes as c
 import ctypes.util
@@ -52,7 +53,7 @@ def dims(d,w):
 
 d=None;image=None;shm=Shm(shmid=-1);attached=False;dam=0;pixmap=0;window=0
 pool=[];free_slots=set();leased={}
-stage='start'
+stage='start';config={}
 try:
     config=json.loads(sys.stdin.buffer.readline());owner=config['pid'];width=config['width'];height=config['height']
     if not isinstance(owner,int) or owner<=1 or not raster_damage.capture_geometry_allowed(width,height):raise ValueError('admission')
@@ -67,12 +68,21 @@ try:
     event_base=I();error_base=I()
     if not query_damage(d,c.byref(event_base),c.byref(error_base)):raise ValueError('XDamage unavailable')
     stage='window'
+    desktop=config.get('desktop') is True
+    if desktop:
+        spec=importlib.util.spec_from_file_location('native_accessibility',Path(__file__).with_name('native-accessibility.py'))
+        accessibility=importlib.util.module_from_spec(spec);spec.loader.exec_module(accessibility)
     windows=[w for w in children(d,root_window(d)) if pid_of(d,w)==owner and dims(d,w)[0]==width and dims(d,w)[1]>=height]
+    if desktop:windows=[root_window(d)]
     if len(windows)!=1:raise ValueError('owned browser window ambiguous')
     window=windows[0];ww,hh=dims(d,window);offset=hh-height
     # Bottom-aligned viewport is independently attested against CDP before use.
     if offset>400:raise ValueError('viewport crop bound')
-    redirect(d,window,0);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
+    if desktop:
+        if dims(d,window)!=(width,height):raise ValueError('owned desktop geometry')
+        pixmap=window
+    else:
+        redirect(d,window,0);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
     if not pixmap:raise ValueError('window backing unavailable')
     stage='image'
     image=create_image(d,visual(d,0),depth(d,0),2,None,c.byref(shm),width,height)
@@ -104,6 +114,11 @@ try:
                 if release == {'wake':True}:
                     urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
+                if desktop and set(release)=={'refresh','processes','browser_processes'} and release['refresh'] is True:
+                    for field in ('processes','browser_processes'):
+                        if not isinstance(release[field],list) or len(release[field])>256:raise ValueError('desktop process scope')
+                        config[field]=release[field]
+                    release={'refresh':True}
                 if release == {'refresh':True}:
                     # MP-11: trusted protection changes can be paint-free.
                     # One complete readback per coalesced refresh, no polling.
@@ -128,13 +143,27 @@ try:
         # Adding their cost to16ms misses the next60Hz damage notification.
         input_wake_ms=wake_ms if time.monotonic()<urgent_until else None
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
-        if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
+        if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
+        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
-        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
+        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
+        protected_regions=[]
+        if desktop:
+            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]))
+            if config.get('mask') or before!=after or not before.get('available') or not before.get('complete') or before.get('protected'):
+                protected_regions=[[0,0,width,height]]
+            else:protected_regions=before.get('masks',before.get('uncovered',[]))
+            protected=bytearray(raw)
+            for rx,ry,rw,rh in protected_regions:
+                if any(type(v) is not int for v in [rx,ry,rw,rh]) or rx<0 or ry<0 or rw<1 or rh<1 or rx+rw>width or ry+rh>height:
+                    protected_regions=[[0,0,width,height]];protected=bytearray(size);break
+                for row in range(ry,ry+rh):protected[(row*width+rx)*4:(row*width+rx+rw)*4]=bytes(rw*4)
+            raw=bytes(protected)
+        sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
         if not fingerprint.changed_bands and not refresh:continue
         refresh=False
         signature=sig;serial+=1
@@ -148,12 +177,12 @@ try:
         if pool:
             slot=min(free_slots);free_slots.remove(slot);leased[slot]=serial
             pool[slot][:]=raw;payload=b"\0";patch=None
-        header=json.dumps(dict(input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
+        header=json.dumps(dict(protected_regions=protected_regions,input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
         sys.stdout.buffer.write(struct.pack('!I',len(header))+header+payload);sys.stdout.buffer.flush()
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)
 finally:
-    if d and pixmap:free_pixmap(d,pixmap);unredirect(d,window,0)
+    if d and pixmap and not config.get('desktop'):free_pixmap(d,pixmap);unredirect(d,window,0)
     if d and dam:destroy_damage(d,dam)
     if d and attached:detach(d,c.byref(shm));sync(d,0)
     if image:image.contents.data=None;destroy_image(image)

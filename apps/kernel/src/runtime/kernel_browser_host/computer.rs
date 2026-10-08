@@ -9,6 +9,9 @@ impl KernelBrowserHost {
         policy: Value,
     ) -> Result<Value, crate::error::HostFailure> {
         self.check_admission(admission)?;
+        if params["op"] == "display_subscribe" && admission.is_some_and(|a| a.agent.is_some()) {
+            return Err("MP-11: not_granted: desktop video requires a human terminal".into());
+        }
         if admission.is_some_and(|a| {
             a.user != user
                 || (a.agent.is_some() && a.capability != KernelBrowserCapability::Computer)

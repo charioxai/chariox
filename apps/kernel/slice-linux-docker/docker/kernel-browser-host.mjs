@@ -1,3 +1,4 @@
+import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
@@ -74,6 +75,8 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    this.desktopDisplay = new DesktopDisplay(this);
+    this.onNativeInput = () => this.desktopDisplay.wake();
     this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
     this.nativeComputer = new NativeComputer({ placement: 'host',
       binding: () => this.chromium.desktop?.binding(),
@@ -84,6 +87,7 @@ export class KernelBrowserHost {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    await this.desktopDisplay.retireSource();
     this.nativeAccessibility.clear();
     this.mirror.invalidate();
     await this.closeCompositors();
@@ -113,6 +117,7 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    await this.desktopDisplay.close();
     await this.closeCompositors();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
@@ -192,6 +197,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop() {
+    await this.desktopDisplay.close();
     await this.closeCompositors();
     this.sampleLanes.clear();
 
@@ -376,6 +382,7 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => {
       if (this.displays.get(stream.subscription_id) !== stream) return;
+      if(stream.source_kind==='desktop'){void this.desktopDisplay.remove(stream).catch(()=>{});return;}
       this.displays.delete(stream.subscription_id);
       void stream.close().then(() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))return this.closeCompositors(stream.tab_id)}).catch(() => {});
     }, Math.max(1, stream.expires - Date.now()));
@@ -415,7 +422,7 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
-    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
+    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { if(stream.source_kind==='desktop')await this.desktopDisplay.remove(stream);else {await stream.close();this.displays.delete(id);} }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);return {closed:true};}
@@ -423,6 +430,7 @@ export class KernelBrowserHost {
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
+      if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
       if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))await this.closeCompositors(stream.tab_id); return { generation: this.generation, unsubscribed: true }; }
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
@@ -694,6 +702,10 @@ export class KernelBrowserHost {
         const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
         if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
         const nativeParams={...request.params,observed_by:observer};
+        if (request.params.op === 'display_subscribe') {
+          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
+          return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
+        }
         if (request.params.op === 'snapshot') {
           const binding=this.chromium.desktop?.binding();
           if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');
@@ -712,6 +724,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: await this.nativeComputer.request(nativeParams, this.protection, {signal}) };
       }
       if (request.method === 'host.computer.retire') {
+        await this.desktopDisplay.retire(request.params.observer);
         await this.nativeComputer.retire(request.params.observer);
         this.nativeAccessibility.retire(request.params.observer);
         return {id:request.id,ok:true,result:{retired:true}};

@@ -2,15 +2,50 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
-    ("kernel-browser-codec-protection.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py")),
-    ("kernel-browser-native-worker.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-worker.mjs")),
-    ("kernel-browser-native-credit.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs")),
-    ("kernel-browser-openh264.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py")),
-    ("browser-controller-image.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs")),
-    ("browser-controller-artifacts.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs")),
-    ("kernel-browser-stripes.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py")),
-    ("kernel-browser-shared-raster.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-shared-raster.mjs")),
-    ("kernel-browser-geometry.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-geometry.mjs")),
+    (
+        "kernel-desktop-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-display.mjs"),
+    ),
+    (
+        "kernel-desktop-source.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-source.mjs"),
+    ),
+    (
+        "kernel-browser-codec-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py"),
+    ),
+    (
+        "kernel-browser-native-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-worker.mjs"),
+    ),
+    (
+        "kernel-browser-native-credit.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs"),
+    ),
+    (
+        "kernel-browser-openh264.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py"),
+    ),
+    (
+        "browser-controller-image.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
+    ),
+    (
+        "browser-controller-artifacts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
+    ),
+    (
+        "kernel-browser-stripes.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py"),
+    ),
+    (
+        "kernel-browser-shared-raster.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-shared-raster.mjs"),
+    ),
+    (
+        "kernel-browser-geometry.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-geometry.mjs"),
+    ),
     (
         "kernel-browser-native-pipe.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-pipe.mjs"),

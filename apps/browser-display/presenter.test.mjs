@@ -180,3 +180,34 @@ test('MP-08/MP-10 lossless scroll frame copies a snapshot then draws WebP residu
   assert.equal(presenter.sequence,5);
  }finally{presenter.close();Object.assign(globalThis,prior)}
 });
+
+test('MP-08/MP-11 desktop subscription binds native identity and DPR geometry in the shared viewer',async()=>{
+ const commands=[],target={surface_id:'desktop-one',generation:'native-one'};
+ const transport={kernelProtocolVersion:474,relayProtocolVersion:96,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{
+  commands.push(command);return {KernelBrowser:{result:{subscription_id:'s',generation:4,device_scale_factor:2,source:{kind:'desktop',...target,width:1280,height:800}}}};
+ }};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,target,{desktop:true,codec:'avc1.420033',deviceScaleFactor:2});
+ try{
+  assert.equal(commands[0].op,'computer');assert.equal(commands[0].command.op,'display_subscribe');
+  assert.deepEqual(commands[0].command.target,target);assert.equal(stream.binding.tab_id,target.surface_id);
+  stream.presenter.documentId=target.generation;
+  assert.deepEqual(stream.presenter.input({kind:'click',x:12,y:23}),{op:'computer',command:{op:'input',target,input:{kind:'click',x:24,y:46,button:1}}});
+  await stream.takeover();assert.equal(commands.at(-1).command.op,'takeover');
+ }finally{await stream.close()}
+});
+
+test('MP-11 desktop frame geometry is exact to the admitted physical surface at DPR 2',async()=>{
+ const {BrowserDisplayPresenter}=await import('./presenter.mjs');
+ const oldCanvas=globalThis.OffscreenCanvas,oldBitmap=globalThis.createImageBitmap;
+ const context={drawImage(){}};globalThis.OffscreenCanvas=class{getContext(){return context}};
+ globalThis.createImageBitmap=async()=>({width:1280,height:800,close(){}});
+ const source={kind:'desktop',surface_id:'desk',generation:'native-one',width:1280,height:800};
+ const binding={subscription_id:'s',generation:4,tab_id:'desk',device_scale_factor:2,source};
+ const presenter=new BrowserDisplayPresenter({width:1,height:1,getContext:()=>context},binding);
+ const frame={subscription_id:'s',generation:4,tab_id:'desk',sequence:1,document_id:'native-one',kind:'png',data:new Uint8Array([1]),width:1280,height:800,css_width:640,css_height:400,device_scale_factor:2};
+ try{
+  assert.equal(await presenter.present(frame),true);
+  await assert.rejects(presenter.present({...frame,sequence:2,document_id:'stale'}),/geometry\/binding/);
+  await assert.rejects(presenter.present({...frame,sequence:2,width:2560,height:1600,css_width:1280,css_height:800}),/geometry\/binding/);
+ }finally{presenter.close();globalThis.OffscreenCanvas=oldCanvas;globalThis.createImageBitmap=oldBitmap}
+});

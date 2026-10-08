@@ -4,6 +4,7 @@ import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // MD-DISPLAY-04: protocol 419 presentation only. Cloud supplies its existing
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 466;
+export const desktopMinimumProtocolVersion = 474;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -46,6 +47,12 @@ export async function supportedCodecs() {
   if(globalThis.VideoDecoder)for(const codec of [...videoCodecs].reverse())if((await VideoDecoder.isConfigSupported({codec})).supported)codecs.unshift(codec);
   return [...codecs,'chariox-video-dependencies-v1',...(codecs.some(c=>c==='avc1.420033'||c==='vp8')?['chariox-stripes-v1']:[])];
 }
+// MP-08/MP-11: desktop geometry comes from the kernel-owned surface binding.
+function validGeometry(frame,binding) {
+  const source=binding.source;
+  if(source?.kind==='desktop')return frame.document_id===source.generation&&frame.device_scale_factor===binding.device_scale_factor&&frame.width===source.width&&frame.height===source.height&&frame.css_width===source.width/frame.device_scale_factor&&frame.css_height===source.height/frame.device_scale_factor;
+  return (frame.css_width===1280&&frame.css_height===800)||(frame.css_width===1920&&frame.css_height===1080&&frame.device_scale_factor===1);
+}
 export class BrowserDisplayPresenter {
   constructor(canvas, binding, onTiming = () => {}) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
@@ -56,7 +63,7 @@ export class BrowserDisplayPresenter {
     if (this.closed) return false;
     if (this.busy) throw new Error('MD-DISPLAY: await presentation before granting next credit');
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= this.sequence) return false;
-    if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !((frame.css_width===1280 && frame.css_height===800) || (frame.css_width===1920 && frame.css_height===1080 && frame.device_scale_factor===1)) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
+    if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !validGeometry(frame,this.binding) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
     if (['tiles','stripes'].includes(frame.kind) && !independentStripeCover(frame) && (frame.base_sequence !== this.sequence || frame.document_id !== this.documentId)) throw new Error('MD-DISPLAY: repair base lost; subscribe afresh');
     if (!validMoves(frame)) throw new Error('MD-DISPLAY: move geometry');
     this.prediction?.restore();
@@ -144,6 +151,22 @@ export class BrowserDisplayPresenter {
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
+    if(this.binding.source?.kind==='desktop') {
+      const source=this.binding.source,dpr=this.binding.device_scale_factor;
+      if(this.documentId!==source.generation)throw Error('MP-11: stale desktop document');
+      const submitted={...input};
+      if(['click','move','scroll'].includes(input.kind)){
+        if(!Number.isFinite(input.x)||!Number.isFinite(input.y)||input.x<0||input.y<0||input.x>=source.width/dpr||input.y>=source.height/dpr)throw Error('MP-11: desktop input geometry');
+        submitted.x=Math.floor(input.x*dpr);submitted.y=Math.floor(input.y*dpr);
+        if(input.kind==='click')submitted.button=input.button??1;
+        if(input.kind==='scroll'){
+          if(!Number.isFinite(input.delta_y)||input.delta_x!==0)throw Error('MP-08: desktop wheel unsupported');
+          submitted.steps=Math.max(-20,Math.min(20,Math.sign(input.delta_y)*Math.ceil(Math.abs(input.delta_y)/120)));
+          delete submitted.delta_x;delete submitted.delta_y;
+        }
+      }else if(!['key','text','composition'].includes(input.kind))throw Error('MP-08: desktop input unsupported');
+      return {op:'computer',command:{op:'input',target:{surface_id:source.surface_id,generation:source.generation},input:submitted}};
+    }
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
   close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
@@ -153,7 +176,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // MP-08/MP-10/MP-11: the app adapter must decode authenticated CXD1
   // events before enabling this experimental display. Refuse before opening
   // a stream so an old JSON-only adapter cannot receive unusable pixels.
-  if (!Number.isSafeInteger(transport.kernelProtocolVersion) || transport.kernelProtocolVersion < minimumProtocolVersion || transport.displayEventEncoding !== 'CXD1')
+  if (!Number.isSafeInteger(transport.kernelProtocolVersion) || transport.kernelProtocolVersion < (options.desktop?desktopMinimumProtocolVersion:minimumProtocolVersion) || transport.displayEventEncoding !== 'CXD1')
     throw Error('MP-08/MP-10: protocol466 binary display adapter required');
   const request = async command => {
     const reply = await transport.request({ KernelBrowser: { command } });
@@ -167,7 +190,14 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (codecs.length === 8) codecs.splice(codecs.indexOf('png') - 1, 1);
     codecs.push('chariox-relay-binary-v96');
   }
-  const binding = { ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }), ...tab };
+  const offer={codecs:options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs,bitrate:options.bitrate??2_000_000,device_scale_factor:options.deviceScaleFactor??1};
+  const subscribed=await request(options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...offer});
+  const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...subscribed,...tab};
+  if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
+    await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
+    throw Error('MP-11: invalid desktop subscription binding');
+  }
+  const actorCommand=op=>options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,...tab};
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion);
@@ -288,9 +318,9 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     get running() { return running; },
     get error() { return failure; },
     input: async input => {presenter.prediction?.restore();idle.wake();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!stopped){idle.wake();if(epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1)}return reply;},
-    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', ...tab });},
-    release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', ...tab });},
-    actors: () => request({ op: 'display_actors' }),
+    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
+    release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
+    actors: () => request(options.desktop?{op:'computer',command:{op:'actors'}}:{op:'display_actors'}),
     async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

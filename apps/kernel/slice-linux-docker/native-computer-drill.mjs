@@ -23,11 +23,11 @@ if(prefix) {
   const services=path.join(root,'.local/share/dbus-1/services');await mkdir(services,{recursive:true});
   await writeFile(path.join(services,'org.a11y.Bus.service'),'[D-BUS Service]\nName=org.a11y.Bus\nExec='+prefix+'/bin/at-spi-bus-launcher\n');
 }
-let native;let keyboardProcess;
+let native;let keyboardProcess;let desktopSource;
 const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:(prefix?prefix+'/bin:':'')+'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
 if(prefix){const launch=desktop.launch.bind(desktop);desktop.launch=(name,args,env,stdio=['ignore','ignore','ignore'])=>launch(name,args,env,[stdio[0],'inherit','inherit',...stdio.slice(3)]);}
 let cleaning;
-const cleanup=()=>cleaning??=(async()=>{console.error('MP-11 cleanup native begin');try{await native?.close();console.error('MP-11 cleanup native settled');if(keyboardProcess){assert(keyboardProcess.exitCode!==null || keyboardProcess.signalCode!==null,'warm keyboard must be reaped');}}finally{const processes=await desktop.ownedProcesses();await desktop.stop();for(const item of processes)assert.equal(await isOwnedAlive(item),false,'owned desktop process must be settled');console.error('MP-11 cleanup desktop settled');await rm(root,{recursive:true,force:true});console.error('MP-11 cleanup scratch removed');}})();
+const cleanup=()=>cleaning??=(async()=>{console.error('MP-11 cleanup native begin');try{await desktopSource?.close();await native?.close();console.error('MP-11 cleanup native settled');if(keyboardProcess){assert(keyboardProcess.exitCode!==null || keyboardProcess.signalCode!==null,'warm keyboard must be reaped');}}finally{const processes=await desktop.ownedProcesses();await desktop.stop();for(const item of processes)assert.equal(await isOwnedAlive(item),false,'owned desktop process must be settled');console.error('MP-11 cleanup desktop settled');await rm(root,{recursive:true,force:true});console.error('MP-11 cleanup scratch removed');}})();
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void cleanup().finally(()=>process.exit(143));});
 try {
   const binding=await desktop.start();
@@ -56,6 +56,20 @@ try {
   const screenshot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   assert.equal(screenshot.mime_type,'image/png');assert.equal(screenshot.width,1280);
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-public-editor.png'),Buffer.from(screenshot.data_base64,'base64'));
+  if(process.env.CULINUX_DESKTOP_CAPTURE==='1') {
+    const {DesktopSource}=await import('./docker/kernel-desktop-source.mjs');
+    const {encodePng}=await import('./docker/kernel-browser-pixels.mjs');
+    desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:false}).start();
+    const raster=desktopSource.sample().raw,pixels=Buffer.from(raster.pixels);
+    assert(pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 protected desktop must show proved public editor');
+    for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
+    await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'desktop-public-editor.png'),Buffer.from(encodePng(raster.width,raster.height,pixels),'base64'));
+    await desktopSource.close();
+    desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:true}).start();
+    assert(desktopSource.sample().raw.pixels.every(v=>v===0),'MP-11 unknown registry must export no pixels');
+    await desktopSource.close();desktopSource=null;
+    console.log('MP-08 MP-11 shared desktop source public capture and unknown-policy mask PASS');
+  }
   const ocr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{});
   assert(ocr.targets.length>0);
   const masked=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},{values:['synthetic-private-value']});
@@ -84,6 +98,30 @@ try {
   assert(!observed.text.includes('private-source-canary'),'MP-11 refused Paste canary must not enter OCR');
   const proof=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-paste-refused.png'),Buffer.from(proof.data_base64,'base64'));
+  if(process.env.CULINUX_DESKTOP_CAPTURE==='1') {
+    const {DesktopSource}=await import('./docker/kernel-desktop-source.mjs');
+    const {encodePng}=await import('./docker/kernel-browser-pixels.mjs');
+    const capture=async(name,policy={values:[],targets:[],unknown:false})=>{
+      desktopSource=await new DesktopSource(binding,policy).start();
+      const raw=desktopSource.sample().raw,pixels=Buffer.from(raw.pixels);
+      for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
+      const file=path.join(process.env.CULINUX_CAPTURE_ROOT,name+'.png');
+      await writeFile(file,Buffer.from(encodePng(raw.width,raw.height,pixels),'base64'));
+      await desktopSource.close();desktopSource=null;return {raw,file};
+    };
+    const clipboardCapture=await capture('desktop-paste-refused');
+    const text=spawnSync('tesseract',[clipboardCapture.file,'stdout'],{env:binding.environment,encoding:'utf8'});
+    assert.equal(text.status,0);assert(!text.stdout.includes('private-source-canary'),'MP-11 no refused clipboard canary in desktop source OCR');
+    await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
+    await delay(500);
+    const password=await capture('desktop-password-protected');
+    assert(password.raw.pixels.every(v=>v===0),'MP-11 password window must export no desktop pixels');
+    const browser=await desktop.launch('/usr/bin/google-chrome',['--no-sandbox','--disable-dev-shm-usage','--user-data-dir='+path.join(root,'browser'),'--new-window','https://en.wikipedia.org/wiki/Linux'],binding.environment);
+    await desktop.recordOwned(browser,true);await delay(2000);
+    const opaque=await capture('desktop-opaque-browser-protected');
+    assert(opaque.raw.pixels.every(v=>v===0),'MP-11 opaque browser must export no desktop pixels');
+    console.log('MP-08 MP-11 desktop source clipboard OCR, password and opaque Chromium masking PASS (supplementary)');
+  }
   const cancellation=new AbortController();
   const hold=native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'hold',key:'Right',duration_ms:10000}}, {}, {signal:cancellation.signal});
   await delay(300);cancellation.abort();await assert.rejects(hold,/cancelled/);
