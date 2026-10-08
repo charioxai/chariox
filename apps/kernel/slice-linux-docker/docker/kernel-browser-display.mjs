@@ -83,7 +83,9 @@ export class PortableEncoder {
             const spans=reply.timings.filter(span=>Array.isArray(span)&&span.length===3&&stages.has(span[0])&&Number.isFinite(span[1])&&Number.isFinite(span[2])&&span[2]>=span[1]);
             if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
           }
-          if(reply.error)return fail();
+          // MP-11: a refused protected frame fails that request only; the
+          // helper starts a fresh codec, and the caller retires its references.
+          if(reply.error){const pending=this.pending;this.pending=null;return pending?.reject(Object.assign(Error('MD-DISPLAY: protected frame encode refused'),{refused:true}));}
           if(reply.dropped===true){
             this.backend=({libx264:'x264',libopenh264:'openh264',libvpx:'vp8'})[reply.backend]??reply.backend;
             this.converter=['libyuv','swscale'].includes(reply.converter)?reply.converter:null;
@@ -137,7 +139,7 @@ export class PortableEncoder {
           }else{this.child.stdin.write(JSON.stringify({...request,raw})+'\n');this.child.stdin.write(pixels)}
         }else this.child.stdin.write(JSON.stringify(request) + '\n');
       });
-    } catch (error) { await this.close(); throw error; }
+    } catch (error) { if(!error?.refused)await this.close(); throw error; }
   }
   // MP-08/MP-10/MP-11: native scroll residual packets share this owner set.
   adoptPacket(packet){if(!packetName(packet))throw Error('MP-11: native packet bounds');this.packets.add(packet.name);}
