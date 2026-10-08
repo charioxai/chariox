@@ -883,7 +883,7 @@ fn a03_wake_history_and_receipts_are_bounded() {
         let id = format!("finished-{n}");
         f.create(&id, "process", None, None);
         f.apply(Operation::ProcessExited {
-            id,
+            id: id.clone(),
             exit_code: None,
             tail: String::new(),
             now: 50,
@@ -892,7 +892,7 @@ fn a03_wake_history_and_receipts_are_bounded() {
         f.apply(Operation::Ack {
             room: "room".into(),
             agent: "agent".into(),
-            sequence: f.inbox().last().unwrap().sequence,
+            sequence: f.wake(&id).last_sequence.unwrap(),
             handled: true,
             now: 51,
         });
