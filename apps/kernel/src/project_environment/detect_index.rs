@@ -190,7 +190,20 @@ fn walk(
     };
     // Bound directory enumeration too, including directories, symlinks and rejected names.
     let mut names = BTreeMap::new();
+    let remaining = MAX_FILES.saturating_sub(budget.visited);
+    let mut enumerated = 0;
     for entry in entries.take(MAX_FILES.saturating_sub(budget.visited) + 1) {
+        enumerated += 1;
+        if enumerated > remaining {
+            // Never import an arbitrary filesystem-order prefix of an oversized directory.
+            budget.visited = MAX_FILES;
+            index.skips.push(skip(
+                folder,
+                if directory.is_empty() { "." } else { directory },
+                "file_count_limit",
+            ));
+            return Ok(());
+        }
         let Ok(entry) = entry else {
             index
                 .skips
@@ -205,6 +218,8 @@ fn walk(
         };
         names.insert(name, entry);
     }
+    // Rejected names and read errors consume the enumeration budget too.
+    budget.visited += enumerated.saturating_sub(names.len());
     for (name, entry) in names {
         if budget.visited >= MAX_FILES {
             index

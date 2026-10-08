@@ -17,6 +17,21 @@ fn write(root: &TestWorktree, name: &str, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 #[test]
+fn envp02a_oversized_directory_never_imports_an_arbitrary_prefix() {
+    let root = TestWorktree::new("envp02a-file-count");
+    write(&root, "package.json", "{}");
+    for i in 0..20_000 {
+        std::fs::File::create(root.path().join(format!("file-{i:05}"))).unwrap();
+    }
+    let result = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert!(result.proposals.is_empty());
+    assert!(result.code_folders.is_empty());
+    assert!(result
+        .skips
+        .iter()
+        .any(|s| s.reason_code == "file_count_limit"));
+}
+#[test]
 fn envp02a_secret_examples_names_only_no_value_or_digest_or_execution() {
     let root = TestWorktree::new("envp02a-secret");
     write(&root, ".env.example", "API_KEY=sk-proj-private-fixture-never-retain\nPUBLIC_SITE_URL=https://example.org\nAMBIGUOUS=maybe-private\n");
