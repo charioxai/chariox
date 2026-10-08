@@ -63,13 +63,7 @@ impl ExactPlan {
             } else {
                 (
                     "webp",
-                    raster::webp(
-                        pixels,
-                        w as usize * 4,
-                        [x, y, width, height],
-                        1,
-                        50,
-                    )?,
+                    raster::webp(pixels, w as usize * 4, [x, y, width, height], 1, 50)?,
                 )
             };
             Ok(

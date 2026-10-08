@@ -262,14 +262,16 @@ pub(super) async fn handle_daemon_request(
                 crate::transport::kernel_browser_display::take_display_event(&mut response)
             {
                 // MP-08/MP-10: protocol 466 binary display plaintext.
-                match crate::transport::kernel_browser_display::encode_display_event(event).ok().and_then(|bytes| {
-                    relay_crypto::encrypt_payload_for_peer(
-                        &daemon_private_key,
-                        &client_public_key,
-                        &bytes,
-                    )
+                match crate::transport::kernel_browser_display::encode_display_event(event)
                     .ok()
-                }) {
+                    .and_then(|bytes| {
+                        relay_crypto::encrypt_payload_for_peer(
+                            &daemon_private_key,
+                            &client_public_key,
+                            &bytes,
+                        )
+                        .ok()
+                    }) {
                     Some(payload) => Some((id, sequence, payload)),
                     None => {
                         return RelayRequestOutcome {
