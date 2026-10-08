@@ -152,7 +152,15 @@ export class NativeComputer {
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
     // only for an unchanged, presented CDP measurement; otherwise whole windows.
     const browser=command.op==='clipboard_read'?null:binding.browser?.();
-    const result=browser&&!mask?await fenceBrowserCapture(browser,policy,observe):await observe(null);
+    // AT-SPI may expose a just-navigated document a moment after CDP does:
+    // retry a capture whose kernel-browser window stayed unbound (withheld).
+    let result;
+    for(let attempt=0;attempt<3;attempt++){
+      result=browser&&!mask?await fenceBrowserCapture(browser,policy,observe):await observe(null);
+      if(!browser||mask||!result.browser_withheld||signal?.aborted)break;
+      await delay(250);
+    }
+    delete result.browser_withheld;
     if(signal?.aborted || this.binding()!==binding) throw new Error('MP-11: stale native observation');
     return {...result,surface_id:binding.surface_id,generation:binding.generation};
   }

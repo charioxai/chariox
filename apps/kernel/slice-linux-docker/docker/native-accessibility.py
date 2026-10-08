@@ -118,7 +118,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
     # Only the kernel's own Chromium tree was measured through CDP.
     measured=set(browsers) if browser_protection is not None else set()
-    documents={}
+    documents={};withheld=0
     # MP-08 / MP-11: slice placement does not own Chromium's launch object.
     # Kernel host placement supplies the full tracked browser process tree.
     # OS executable metadata and document-web roles conservatively protect
@@ -239,6 +239,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
                     # MP-08/MP-11: a proven kernel-browser window masks only its
                     # protected regions; any unbound window stays withheld whole.
                     precise=_protection.window_masks(browser_protection,client,rect,documents[pid]) if pid in documents else None
+                    withheld+=pid in measured and precise is None
                     if visible:
                         uncovered.append(visible)
                         masks.extend([visible] if precise is None else [part for part in (visible_rect(mask,screen) for mask in precise) if part])
@@ -264,7 +265,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
             if node['pid'] in browsers:
                 node['native_protected']=node['protected']
                 node.update(name='[protected]',actions=[],protected=True)
-        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
+        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks,'browser_withheld':withheld}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}

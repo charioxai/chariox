@@ -21,6 +21,7 @@ class Node:
         rect=getattr(self,'rect',types.SimpleNamespace(x=100,y=80,width=300,height=200))
         return types.SimpleNamespace(getExtents=lambda coords:rect)
     def queryAction(self): raise NotImplementedError
+    def queryCollection(self): raise NotImplementedError
 
 
 class Cell(Node):
@@ -120,9 +121,11 @@ class TraversalTest(unittest.TestCase):
         page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'viewport': [300, 160], 'scale': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
+        self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
         # Unmeasured, moved/resized or navigated windows stay withheld whole.
         for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'url': 'https://other.test/'}]}]:
             self.assertEqual(snapshot(protection)['masks'], [[100, 80, 300, 200]])
+            self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
         # Browser accessibility content remains withheld from the structured tree.
         self.assertTrue(all(node['name'] == '[protected]' for node in snapshot({'pages': [page]})['nodes']))
 

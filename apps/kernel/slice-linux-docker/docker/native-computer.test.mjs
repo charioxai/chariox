@@ -33,6 +33,11 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await run({ ensureConnection: async () => { throw new Error('closed'); } }), [null]);
   // Vault policy masks the whole desktop: no browser measurement is consulted.
   assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [null]);
+  // A window AT-SPI has not yet bound is retried, and the count stays private.
+  const withheld=[1,0],bound={...binding,browser:()=>browser([[],[],[],[]])};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async()=>({data_base64:'',browser_withheld:withheld.shift()})});
+  assert.deepEqual(await adapter.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[],unknown:false}),{data_base64:'',surface_id:'surface',generation:'generation'});
+  assert.deepEqual(withheld,[]);
 });
 test('MP-08 immediate physical key and text are distinct and wake capture after each event', async () => {
   const sent=[],wakes=[];

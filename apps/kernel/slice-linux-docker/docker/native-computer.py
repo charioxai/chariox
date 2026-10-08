@@ -136,7 +136,7 @@ def main(request):
     try:
         if op == 'screenshot':
             encoded=io.BytesIO();image.save(encoded,format='PNG')
-            return {'mime_type':'image/png','data_base64':base64.b64encode(encoded.getvalue()).decode('ascii'),'width':image.width,'height':image.height,'protected':request['mask']}
+            return {'mime_type':'image/png','data_base64':base64.b64encode(encoded.getvalue()).decode('ascii'),'width':image.width,'height':image.height,'protected':request['mask'],'browser_withheld':before.get('browser_withheld',0)}
         if op == 'ocr':
             if request['mask']: return {'text':'[protected]','targets':[]}
             with tempfile.TemporaryDirectory(prefix='chariox-native-ocr-') as root:
@@ -145,7 +145,8 @@ def main(request):
                 from contextlib import redirect_stdout
                 with redirect_stdout(output): finder.recognize_image(name,request.get('query'))
                 value=output.getvalue().strip()
-                return {'targets':[json.loads(line) for line in value.splitlines() if line!='null']} if request.get('query') else {'text':value[:65536]}
+                result={'targets':[json.loads(line) for line in value.splitlines() if line!='null']} if request.get('query') else {'text':value[:65536]}
+                return {**result,'browser_withheld':before.get('browser_withheld',0)}
         raise ValueError('unsupported observation')
     finally: image.close()
 
