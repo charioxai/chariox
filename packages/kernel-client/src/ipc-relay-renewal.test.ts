@@ -7,7 +7,7 @@ import { RelayClientIdentity, createRelayKeypair } from "./relay-crypto.js"
 
 // Signed-token verification belongs to the real relay tests. This fixture
 // exercises the shared SDK's encrypted issuer calls and both retained lanes.
-for (const outcome of ["renew", "revoked", "wrong-key", "transient"] as const) {
+for (const outcome of ["renew", "revoked", "wrong-key", "transient", "target-lost", "reauth-denied", "legacy", "legacy-busy"] as const) {
   test(`short-lived relay authorization ${outcome} on the existing control/event sockets`, async () => {
     const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
     const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
@@ -16,17 +16,30 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient"] as const) {
     const server = new WebSocketServer({host:"127.0.0.1",port:0})
     await new Promise<void>(resolve=>server.once("listening",resolve))
     const address = server.address(); assert.ok(address && typeof address === "object")
-    let connections=0, renewals=0, authorizations=0, events=0
+    let connections=0, renewals=0, authorizations=0, events=0, targetLosses=0
+    let offlineUntil=0
     const timers: ReturnType<typeof setInterval>[]=[]
     server.on("connection",socket=>{
       connections++
+      let handshakes=0
       socket.on("message",data=>{
         const frame=JSON.parse(String(data))
         if(frame.kind==="client_connect") {
-          authorizations++
+          authorizations++;handshakes++
+          if(outcome==="target-lost" && handshakes>1 && targetLosses===0) {
+            targetLosses++;offlineUntil=Date.now()+100
+            socket.send(JSON.stringify({kind:"close",reason:"target daemon disconnected from relay"}));socket.close();return
+          }
+          if(Date.now()<offlineUntil) {
+            socket.send(JSON.stringify({kind:"close",reason:"target daemon is not connected to relay"}));socket.close();return
+          }
+          if(outcome==="reauth-denied" && handshakes>1) {
+            socket.send(JSON.stringify({kind:"close",reason:"relay token has been revoked"}));socket.close();return
+          }
           socket.send(JSON.stringify({kind:"client_connected",target:frame.target,daemon_public_key:daemon.publicKeyBase64}))
         } else if(frame.kind==="client_request") {
           const envelope=JSON.parse(daemon.decrypt(frame.encrypted_request,identity.publicKeyBase64))
+          if(outcome==="legacy-busy" && envelope.request.GetDaemonHealth!==undefined) return
           const renewal=envelope.request.IssueCloudRelayClientToken
           if(renewal) {
             renewals++
@@ -35,7 +48,7 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient"] as const) {
             assert.equal(renewal.public_key_thumbprint,identity.publicKeyThumbprint)
           }
           const denied=renewal && (outcome==="revoked" || outcome==="transient" && renewals===1)
-          const response=renewal ? {CloudRelayClientTokenIssued:{profile:{},token:{relay_url:`ws://127.0.0.1:${address.port}`,relay_token:token(outcome==="wrong-key"?{public_key_thumbprint:"b".repeat(64)}:{}),token_expires_at:new Date(Date.now()+1500).toISOString()}}} : {ok:true}
+          const response=envelope.request.RelayStatus!==undefined ? {RelayStatus:{status:{capabilities:outcome.startsWith("legacy")?[]:["terminal_relay_authorization_renewal_v1"]}}} : renewal ? {CloudRelayClientTokenIssued:{profile:{},token:{relay_url:`ws://127.0.0.1:${address.port}`,relay_token:token(outcome==="wrong-key"?{public_key_thumbprint:"b".repeat(64)}:{}),token_expires_at:new Date(Date.now()+1500).toISOString()}}} : {ok:true}
           socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,error:denied?{code:outcome==="revoked"?"identity_revoked":"cloud_unavailable",message:"synthetic refusal",retryable:outcome==="transient"}:null,encrypted_response:denied?null:daemon.encrypt(identity.publicKeyBase64,JSON.stringify(response))}))
         } else if(frame.kind==="client_subscribe") {
           socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,error:null,encrypted_response:daemon.encrypt(identity.publicKeyBase64,"null")}))
@@ -48,16 +61,29 @@ for (const outcome of ["renew", "revoked", "wrong-key", "transient"] as const) {
     const closed: string[]=[]
     client.onKernelEvent(event=>{if(event.event==="transport_closed")closed.push(event.message);else events++})
     try {
+      if(outcome==="legacy-busy") {
+        await assert.rejects(client.send({GetDaemonHealth:null}),/protocol 472.*update the kernel/i)
+        assert.equal(renewals,0);return
+      }
       await client.send({GetDaemonHealth:null})
-      await client.subscribeToKernelEvents("session","attachment")
-      await sleep(outcome==="renew" || outcome==="transient"?4200:1800)
+      if(outcome!=="legacy") await client.subscribeToKernelEvents("session","attachment")
+      await sleep(outcome==="renew" || outcome==="transient" || outcome==="target-lost"?4200:outcome==="legacy"?200:1800)
+      if(outcome==="legacy") {
+        assert.equal(renewals,0,"an unsupported kernel must never issue renewal for its login client")
+        assert.equal(closed.length,1)
+        assert.match(closed[0]!,/protocol 472.*update the kernel/i)
+        await assert.rejects(client.send({GetDaemonHealth:null}),/protocol 472/i)
+        return
+      }
       assert.ok(renewals>0,"SDK must request fresh authorization before expiry")
-      if(outcome==="renew" || outcome==="transient") {
+      if(outcome==="renew" || outcome==="transient" || outcome==="target-lost") {
         assert.ok(renewals>=2,"several grant expiries must renew")
-        assert.equal(connections,2,"neither socket reconnects")
+        if(outcome==="target-lost") { assert.equal(targetLosses,1);assert.ok(connections>=3,"temporary target loss reconnects") }
+        else assert.equal(connections,2,"neither socket reconnects")
         assert.ok(authorizations>=6,"both lanes acknowledge the fresh grant")
         assert.ok(events>30,"subscription events continue")
-        assert.deepEqual(closed,[])
+        assert.equal(closed.some(message=>/authorization.*(?:revoked|refused)/i.test(message)),false)
+        if(outcome!=="target-lost") assert.deepEqual(closed,[])
       } else {
         assert.equal(renewals,1,"refusal must not retry revoked authority")
         assert.equal(closed.length,1)

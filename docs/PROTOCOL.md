@@ -1,5 +1,17 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,

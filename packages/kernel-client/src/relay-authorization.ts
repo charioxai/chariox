@@ -3,6 +3,14 @@ import type { RelayConnectedFrame, RelayCloseFrame, RelayTarget } from "./kernel
 import { buildRelayConnectFrame } from "./relay-transport.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 
+export const relayAuthorizationRenewalCapability = "terminal_relay_authorization_renewal_v1"
+export const relayAuthorizationRenewalMinimumProtocolVersion = 472
+
+export function relayCloseError(reason: string): LocalIpcError {
+  const temporary = reason === "target daemon disconnected from relay" || reason === "target daemon is not connected to relay"
+  return new LocalIpcError("relay transport", reason, temporary ? "connection_closed" : "authorization_denied", temporary)
+}
+
 export type RelayAuthorization = {
   sub: string; subject_kind: string; realm_id: string; account_id?: string;
   user_id?: string; machine_id?: string; client_id?: string;
@@ -79,7 +87,7 @@ export function reauthenticateRelaySocket(socket: WebSocket, token: string, targ
     const acknowledge = (data: WebSocket.RawData) => {
       let frame: RelayConnectedFrame | RelayCloseFrame
       try { frame = JSON.parse(String(data)) } catch { return }
-      if (frame.kind === "close") finish(new LocalIpcError("renew relay authorization", "Relay authorization renewal was refused", "authorization_denied"))
+      if (frame.kind === "close") finish(relayCloseError(frame.reason))
       if (frame.kind === "client_connected") {
         if ((frame.target?.daemon_id ?? null) !== (target.daemon_id ?? null) || (frame.target?.daemon_alias ?? null) !== (target.daemon_alias ?? null) || frame.daemon_public_key !== daemonKey) finish(new LocalIpcError("renew relay authorization", "Relay authorization renewal returned an invalid target or kernel key", "authorization_denied"))
         else finish()

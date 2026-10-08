@@ -12,9 +12,13 @@ recipient key and connected target. The replacement cannot increase target
 scope or reduce its action permissions. Both control and event sockets repeat
 the existing `client_connect` exchange, acknowledge the same pinned kernel key,
 and retain their subscriptions. A later reconnect uses the latest grant.
-There is no new serialized request, response or relay message shape.
+Local daemon protocol 472 versions this transport contract. The client probes
+`terminal_relay_authorization_renewal_v1` in RelayStatus immediately after
+connecting, and displays an explicit kernel upgrade message when absent.
+Existing relay messages and unrelated Web/native feature minima are unchanged.
 
-Transient failures retry within the current grant's lifetime. A refused renewal,
+Transient issuance failures and target-offline relay closes reconnect and retry
+within the current grant's lifetime. A refused renewal,
 invalid replacement or expired grant ends terminal admission, stops retries,
 and displays an authorization message directing the user to sign in or pair
 again. The kernel session keeps running. Renewal never pairs a revoked terminal
@@ -27,9 +31,12 @@ terminal key. Provider logins are independent of relay authorization.
 ## Validation
 
 The focused SDK tests use short grants across multiple expiries, retain both
-sockets and their encrypted event subscription, exercise a transient refusal,
+sockets and their encrypted event subscription, exercise transient issuance and target-loss recovery,
 and stop on revocation or a different recipient key. Relay tests verify that
 repeated `client_connect` retains the same identity and packet permissions.
+The real-path drill also interrupts the owned kernel relay link during renewal
+and checks a new client against a pre-change kernel for the early upgrade
+message.
 
 For an owned validation kernel and session, use the existing validation launcher
 with `VALENV_EXPECT_TOKEN_EXPIRY=1`. This flag preserves the normal five-minute

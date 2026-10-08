@@ -1,4 +1,4 @@
-import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket } from "./relay-authorization.js"
+import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
 import { randomUUID } from "node:crypto"
 import {
@@ -246,6 +246,7 @@ export class LocalIpcClient {
   private readonly relayTarget: RelayTarget | null
   private readonly relayIdentity: RelayClientIdentity | null
   private relayRenewal: RelayAuthorizationRenewal | null = null
+  private relayRenewalNegotiated = false
   private relayAuthorizationFailure: LocalIpcError | null = null
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
@@ -569,6 +570,7 @@ export class LocalIpcClient {
           throw new LocalIpcError("admit kernel control", "Kernel connection changed after capability admission; reconcile before retrying")
         }
       } catch (error) {
+        if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
@@ -617,6 +619,7 @@ export class LocalIpcClient {
       try {
         return await pending.promise
       } catch (error) {
+        if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()
         if (!replayAfterWrite && error instanceof LocalIpcError
           && (error.code === "connection_closed" || error.code === "request_timeout")) {
@@ -850,7 +853,7 @@ export class LocalIpcClient {
             const closeMessage = reason.length > 0
               ? reason.toString("utf8")
               : `kernel websocket closed${code ? ` (${code})` : ""}`
-            if (this.relayRenewal && /relay token (?:expired|revoked)/i.test(closeMessage)) {
+            if (this.relayRenewal && /relay token (?:has been )?(?:expired|revoked)/i.test(closeMessage)) {
               this.refuseRelayAuthorization()
               return
             }
@@ -932,7 +935,8 @@ export class LocalIpcClient {
             return
           }
           if (frame.kind === "close") {
-            fail("connect relay transport", frame.reason)
+            const error = relayCloseError(frame.reason)
+            fail("connect relay transport", error.message, error.code, error.retryable)
             return
           }
           fail("connect relay transport", "unexpected relay handshake frame")
@@ -964,9 +968,24 @@ export class LocalIpcClient {
     const renewal: RelayAuthorizationRenewal = new RelayAuthorizationRenewal(claims.exp * 1000,
       (): Promise<number> => this.renewRelayAuthorization(renewal), () => this.refuseRelayAuthorization())
     this.relayRenewal = renewal
+    // Probe immediately, before the user relies on silent renewal. Capability
+    // negotiation also handles kernels on branches with unrelated version bumps.
+    void this.requireRelayRenewalSupport().catch(error => {
+      if (this.relayRenewal === renewal && error instanceof LocalIpcError && !error.retryable) this.refuseRelayAuthorization(error.code === "kernel_upgrade_required" ? error.message : undefined)
+    })
+  }
+
+  private async requireRelayRenewalSupport(): Promise<void> {
+    if (this.relayRenewalNegotiated) return
+    const response = await this.send<{RelayStatus: {status: {capabilities?: string[]}}}>({RelayStatus: null})
+    if (!response.RelayStatus?.status?.capabilities?.includes(relayAuthorizationRenewalCapability)) {
+      throw new LocalIpcError("negotiate relay renewal", `Hosted terminal renewal requires kernel protocol ${relayAuthorizationRenewalMinimumProtocolVersion} or newer; update the kernel before attaching this terminal.`, "kernel_upgrade_required", false)
+    }
+    this.relayRenewalNegotiated = true
   }
 
   private async renewRelayAuthorization(renewal: RelayAuthorizationRenewal): Promise<number> {
+    await this.requireRelayRenewalSupport()
     const previous = relayAuthorization(this.relayAuthToken)!
     const target = this.relayTarget?.daemon_id ?? this.relayTarget?.daemon_alias
     if (!target || !this.relayIdentity) throw new LocalIpcError("renew relay authorization", "Relay authorization is invalid", "authorization_denied")
@@ -990,9 +1009,9 @@ export class LocalIpcClient {
     return next.exp * 1000
   }
 
-  private refuseRelayAuthorization(): void {
+  private refuseRelayAuthorization(upgradeMessage?: string): void {
     if (this.relayAuthorizationFailure) return
-    const message = "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."
+    const message = upgradeMessage ?? "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."
     this.relayAuthorizationFailure = new LocalIpcError("renew relay authorization", message, "authorization_denied", false)
     this.destroy()
     this.emitSyntheticEvent({event: "transport_closed", message})
@@ -1038,7 +1057,7 @@ export class LocalIpcClient {
     if ("kind" in frame && frame.kind === "client_connected") return // The renewal waiter validates this acknowledgement.
 
     if ("kind" in frame && frame.kind === "close") {
-      if (this.relayRenewal && /relay token (?:expired|revoked)/i.test(frame.reason)) {
+      if (this.relayRenewal && /relay token (?:has been )?(?:expired|revoked)/i.test(frame.reason)) {
         this.refuseRelayAuthorization()
         return
       }
@@ -1278,7 +1297,10 @@ export class LocalIpcClient {
     if (lane === "control") {
       const changed = this.controlWebsocket !== socket
       this.controlWebsocket = socket
-      if (changed) this.onControlConnectionChanged()
+      if (changed) {
+        this.relayRenewalNegotiated = false
+        this.onControlConnectionChanged()
+      }
     } else {
       this.eventWebsocket = socket
     }
