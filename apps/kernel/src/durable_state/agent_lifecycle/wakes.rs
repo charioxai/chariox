@@ -181,6 +181,51 @@ fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result
     )
 }
 
+fn fire_one(
+    tx: &Transaction<'_>,
+    mut wake: AgentWake,
+    due: u64,
+    now: u64,
+) -> Result<Option<AgentWake>, DaemonError> {
+    let t = load(tx, &wake.task_id)?;
+    if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+        cancel_settle(tx, &mut wake, now)?;
+        return Ok(None);
+    }
+    if wake.interval_ms.is_some() {
+        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;
+        if pending {
+            return Ok(None);
+        }
+    }
+    // Missed intervals (kernel down, host asleep, stalled scheduler)
+    // coalesce into this one occurrence with an explicit count.
+    let missed = wake.interval_ms.map_or(0, |i| (now - due) / i.max(1));
+    let occurrence_id = format!("{}-fire-{}", wake.id, wake.fire_count + 1);
+    let payload = serde_json::json!({"task_id":t.task_id,"wake_id":wake.id,"kind":"timer","label":wake.label,"due_at_ms":due,"fired_at_ms":now,"late_ms":now-due,"missed_fires":missed,"fire":wake.fire_count+1});
+    wake.missed_fires += missed;
+    if let Some(interval) = wake.interval_ms {
+        wake.next_due_ms = Some(due + (missed + 1) * interval.max(1));
+        let e = event(
+            tx,
+            occurrence(
+                &t.room_id,
+                &t.agent_id,
+                &wake.id,
+                &occurrence_id,
+                "timer_fired",
+                payload,
+            ),
+        )?;
+        record_fire(tx, &mut wake, &e, now)?;
+    } else {
+        wake.state = "fired".into();
+        wake.next_due_ms = None;
+        settle_source(tx, &mut wake, occurrence_id, true, payload, now, true)?;
+    }
+    Ok(Some(wake))
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::CreateWake {
@@ -206,8 +251,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("timer requires a finite future due time"));
             }
             let active: i64 = tx.query_row("SELECT count(*) FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')",params![t.room_id,t.agent_id],|r|r.get(0)).map_err(sql)?;
-            if active >= MAX_ACTIVE_WAKES {
-                return Err(error("wake limit reached; cancel an armed wake first"));
+            // Finished-but-unhandled sources still reserve capacity. Counting
+            // inbox attribution survives finished-wake/receipt retention.
+            let unhandled: i64 = tx.query_row("SELECT count(DISTINCT source_id) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') != 'message' AND (json_extract(payload,'$.payload.wake_id') IS NOT NULL OR json_extract(payload,'$.payload.public_answer.wake_id') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM agent_wakes w WHERE w.id=agent_inbox.source_id AND json_extract(w.payload,'$.state') IN ('scheduled','starting','running','cancelling'))", params![t.room_id,t.agent_id], |r| r.get(0)).map_err(sql)?;
+            if active + unhandled >= MAX_ACTIVE_WAKES {
+                return Err(error("wake limit reached; handle outstanding wake events or cancel an armed wake first"));
             }
             let exists: bool = tx
                 .query_row(
@@ -280,37 +328,24 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let Some(due) = wake.next_due_ms.filter(|due| *due <= now) else {
                     continue;
                 };
-                let t = load(tx, &wake.task_id)?;
-                if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                    cancel_settle(tx, &mut wake, now)?;
-                    continue;
+                // A full/corrupt recipient never rolls back another timer.
+                // Keep its original due time and occurrence retryable.
+                tx.execute_batch("SAVEPOINT wake_fire").map_err(sql)?;
+                match fire_one(tx, wake.clone(), due, now) {
+                    Ok(result) => {
+                        tx.execute_batch("RELEASE wake_fire").map_err(sql)?;
+                        fired.extend(result);
+                    }
+                    Err(_) => {
+                        tx.execute_batch("ROLLBACK TO wake_fire; RELEASE wake_fire")
+                            .map_err(sql)?;
+                        if wake.last_delivery.as_deref() != Some("backpressured") {
+                            wake.last_delivery = Some("backpressured".into());
+                            save_wake(tx, &wake)?;
+                            fired.push(wake);
+                        }
+                    }
                 }
-                // Missed intervals (kernel down, host asleep, stalled scheduler)
-                // coalesce into this one occurrence with an explicit count.
-                let missed = wake.interval_ms.map_or(0, |i| (now - due) / i.max(1));
-                let occurrence_id = format!("{}-fire-{}", wake.id, wake.fire_count + 1);
-                let payload = serde_json::json!({"task_id":t.task_id,"wake_id":wake.id,"kind":"timer","label":wake.label,"due_at_ms":due,"fired_at_ms":now,"late_ms":now-due,"missed_fires":missed,"fire":wake.fire_count+1});
-                wake.missed_fires += missed;
-                if let Some(interval) = wake.interval_ms {
-                    wake.next_due_ms = Some(due + (missed + 1) * interval.max(1));
-                    let e = event(
-                        tx,
-                        occurrence(
-                            &t.room_id,
-                            &t.agent_id,
-                            &wake.id,
-                            &occurrence_id,
-                            "timer_fired",
-                            payload,
-                        ),
-                    )?;
-                    record_fire(tx, &mut wake, &e, now)?;
-                } else {
-                    wake.state = "fired".into();
-                    wake.next_due_ms = None;
-                    settle_source(tx, &mut wake, occurrence_id, true, payload, now, true)?;
-                }
-                fired.push(wake);
             }
             Ok(Outcome::Wakes(fired))
         }
@@ -471,9 +506,32 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let removed = |r: &str, a: &str| r == room && agent.as_deref().is_none_or(|x| x == a);
             // The recipient is going away, so its tasks can never progress.
             for mut t in tasks(tx)? {
-                if removed(&t.room_id, &t.agent_id)
-                    && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                {
+                if removed(&t.room_id, &t.agent_id) {
+                    if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+                        match registrations(tx, &t.task_id) {
+                            Ok(regs) => {
+                                for mut reg in regs {
+                                    if reg.live {
+                                        reg.live = false;
+                                        tx.execute(
+                                            "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
+                                            params![reg.id, encode(&reg)?],
+                                        )
+                                        .map_err(sql)?;
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                quarantine::registrations(tx, &t.task_id)?;
+                                tx.execute(
+                                    "DELETE FROM agent_registrations WHERE task_id=?1",
+                                    [&t.task_id],
+                                )
+                                .map_err(sql)?;
+                            }
+                        }
+                        continue;
+                    }
                     super::supervision::cancel_intent(tx, &mut t)?;
                     t.reason = "Room ended or agent removed".into();
                     t.revision += 1;

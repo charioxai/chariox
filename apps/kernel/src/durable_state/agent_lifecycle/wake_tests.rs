@@ -116,6 +116,13 @@ fn a03_interval_keeps_receipts_when_an_earlier_fire_is_acknowledged_late() {
     f.wait_on(&["interval"]);
     f.apply(Operation::FireWakes { now: 1_000 });
     let first = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: first,
+        handled: true,
+        now: 60_000,
+    });
     f.apply(Operation::FireWakes { now: 61_000 });
     f.apply(Operation::Ack {
         room: "room".into(),
@@ -280,6 +287,13 @@ fn a03_interval_timer_coalesces_missed_fires_and_stays_armed() {
         ("scheduled", Some(360_000), 4)
     );
     assert!(f.wakes(Operation::FireWakes { now: 359_999 }).is_empty());
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: events[0].sequence,
+        handled: true,
+        now: 359_999,
+    });
     f.wakes(Operation::FireWakes { now: 360_000 });
     assert_eq!(f.inbox().len(), 2);
     assert!(f
@@ -876,4 +890,110 @@ fn a03_wake_history_and_receipts_are_bounded() {
         "armed wakes are kept"
     );
     assert!(wakes.iter().any(|w| w.id == "finished-99"));
+}
+
+// MP-09/MP-11 secrev-d F1: a timer cannot fill its own inbox without ACKs.
+#[test]
+fn security_f1_one_shot_admission_bounds_unhandled_fires() {
+    let f = Fixture::new();
+    for n in 0..32 {
+        f.create(&format!("flood-{n}"), "timer", Some(1000), None);
+        f.apply(Operation::FireWakes { now: 1000 });
+    }
+    let mut wake = f.wake("flood-31");
+    wake.id = "overflow".into();
+    wake.registration_id = "completion-overflow".into();
+    wake.next_due_ms = Some(2000);
+    let result = f.store.agent_lifecycle(Operation::CreateWake {
+        task: "p".into(),
+        prompt: "p".into(),
+        wake,
+    });
+    assert!(
+        result.is_err(),
+        "unhandled fires must reserve wake capacity"
+    );
+}
+
+#[test]
+fn security_f1_recurring_fire_coalesces_until_handled() {
+    let f = Fixture::new();
+    f.create("recurring", "timer", Some(1000), Some(60000));
+    f.apply(Operation::FireWakes { now: 1000 });
+    f.apply(Operation::FireWakes { now: 181000 });
+    assert_eq!(
+        f.inbox().len(),
+        1,
+        "one unhandled occurrence per recurring source"
+    );
+    let seq = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        handled: true,
+        now: 181001,
+    });
+    f.apply(Operation::FireWakes { now: 181002 });
+    assert_eq!(f.wake("recurring").fire_count, 2);
+    assert_eq!(f.wake("recurring").missed_fires, 2);
+}
+
+#[test]
+fn security_f1_full_recipient_does_not_stop_peer_timers() {
+    let f = Fixture::new();
+    let mut peer = f.create("healthy", "timer", Some(1000), None);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "other-room".into(),
+        agent: "peer".into(),
+        prompt: "peer-turn".into(),
+        run: Some("peer-run".into()),
+        now: 1,
+    });
+    peer.id = "peer-wake".into();
+    peer.task_id = "peer-turn".into();
+    peer.room_id = "other-room".into();
+    peer.agent_id = "peer".into();
+    peer.registration_id = "completion-peer-wake".into();
+    f.apply(Operation::CreateWake {
+        task: "peer-turn".into(),
+        prompt: "peer-turn".into(),
+        wake: peer,
+    });
+    for n in 0..1024 {
+        f.apply(Operation::Occur(occurrence(
+            "room",
+            "agent",
+            "sender",
+            &n.to_string(),
+            "message",
+            serde_json::json!({}),
+        )));
+    }
+    let result = f.store.agent_lifecycle(Operation::FireWakes { now: 1000 });
+    assert!(
+        result.is_ok(),
+        "one recipient must not roll back all timers: {result:?}"
+    );
+    let peer = f
+        .store
+        .agent_wakes(Some("other-room"), Some("peer"))
+        .unwrap();
+    assert_eq!(peer[0].state, "fired");
+    assert_eq!(
+        f.wake("healthy").state,
+        "scheduled",
+        "full recipient's occurrence stays retryable"
+    );
+    let oldest = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: oldest,
+        handled: true,
+        now: 1001,
+    });
+    f.apply(Operation::FireWakes { now: 1002 });
+    assert_eq!(f.wake("healthy").state, "fired");
 }

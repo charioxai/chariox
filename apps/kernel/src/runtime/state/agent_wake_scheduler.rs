@@ -184,6 +184,11 @@ impl KernelRuntimeState {
         };
         let mut recipients = BTreeSet::new();
         for wake in fired {
+            if wake.last_delivery.as_deref() == Some("backpressured") {
+                self.wake_notice(&wake, format!("Wake alert: '{}' is backpressured by its recipient; its due occurrence is retained and other timers continue", wake.label));
+                recipients.insert((wake.room_id, wake.agent_id));
+                continue;
+            }
             let due = due
                 .iter()
                 .find(|d| d.id == wake.id)
