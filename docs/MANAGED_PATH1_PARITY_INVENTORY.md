@@ -53,6 +53,13 @@ with that data under one total deadline; unrelated workspace JSON is never read.
 Provider launch paths are unchanged; compiler isolation adds no provider fence.
 The private compiler envelope changes no shared client shape (local450/peer73).
 
+MP-11 F7 / review R1: all source-compiling request paths, including Room artifact
+create/update and stored-source rebuild/update, use the shared two-job compiler
+lane without holding the app mutex. Caller authority and current artifact/workflow
+snapshots are checked again before persistence. The authenticated Room timeout
+regressions cover another room's app-dependent artifact listing during both create
+and update; live evidence retains separate source identities and acceptance limits.
+
 Linux requires Bubblewrap, runtime-file discovery and the isolation syscalls.
 Shared libnode and ICU data libraries are discovered through linked dependencies;
 external built-in/ICU file paths are read from bounded read-only Node/libnode ELF

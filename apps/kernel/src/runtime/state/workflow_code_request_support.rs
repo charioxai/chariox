@@ -397,19 +397,6 @@ pub(super) fn workflow_code_artifact_apply_result(
     })
 }
 
-pub(super) fn workflow_code_schema_import_root_for_session(
-    app: &crate::app::DaemonApp,
-    session_id: &str,
-) -> Result<Option<std::path::PathBuf>, DaemonError> {
-    let session = app.sessions().get_session(session_id)?;
-    let workspace = std::path::PathBuf::from(session.workspace_id());
-    if workspace.is_absolute() {
-        Ok(Some(workspace))
-    } else {
-        Ok(None)
-    }
-}
-
 pub(super) fn workflow_code_artifact_actor(
     caller_user_id: &str,
     caller_metaagent_id: Option<&str>,
