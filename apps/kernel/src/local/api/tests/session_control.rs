@@ -1348,6 +1348,59 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
 
 // MP-08 / MP-10 / MP-11: Detect is delivered; authorization precedes evidence or provider I/O.
 #[test]
+fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
+    let worktree = crate::test_support::TestWorktree::new("envp02a-utility-project");
+    let harness = LocalRouterTestHarness::new();
+    let project = crate::session::RuntimeProject::new(
+        "utility-project",
+        "local",
+        worktree.path().to_string_lossy(),
+        "Detect",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![project]));
+    let get =
+        LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
+            project_id: "utility-project".into(),
+        });
+    let before = harness.dispatch(get.clone()).unwrap();
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_hidden(true)
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: "utility-project".into(),
+                }),
+        ))
+        .unwrap();
+    let LocalDaemonResponse::SessionCreated { session, .. } = created else {
+        panic!("utility session expected")
+    };
+    harness
+        .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+            session_ref: session.id().into(),
+            workspace_id: None,
+        }))
+        .unwrap();
+    let after = harness
+        .dispatch(get)
+        .expect("read-only utility cleanup must retain the standalone Project");
+    let (
+        LocalDaemonResponse::ProjectEnvironment {
+            environment: before,
+        },
+        LocalDaemonResponse::ProjectEnvironment { environment: after },
+    ) = (before, after)
+    else {
+        panic!("Environment snapshots expected")
+    };
+    assert_eq!(before.lineage, after.lineage);
+    assert_eq!(before.content_digest, after.content_digest);
+    harness.with_app(|app| assert!(app.sessions().list_sessions().is_empty()));
+}
+
+#[test]
 fn envp02a_detect_rejects_foreign_owner_and_wrong_source_without_side_effects() {
     let worktree = crate::test_support::TestWorktree::new("envp02a-authorization");
     let harness = LocalRouterTestHarness::new();
