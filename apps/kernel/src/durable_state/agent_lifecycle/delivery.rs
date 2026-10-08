@@ -13,6 +13,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("message source binding invalid"));
             }
             let admitted = event(tx, e)?;
+            tx.execute("INSERT INTO agent_delegation_messages VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",params![sql_integer(admitted.sequence)?,t.task_id]).map_err(sql)?;
             if admitted.reply_requested {
                 let id = format!("reply-{}", admitted.sequence);
                 if !t.obligations.iter().any(|o| o.id == id) {
@@ -144,20 +145,41 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             super::wakes::record_delivery(tx, &e)?;
             Ok(Outcome::Event(e))
         }
-        Operation::BindAttempt {
+        Operation::BindSubmission {
             room,
             agent,
             sequence,
+            prompt,
+            target,
             run,
             submit_epoch,
+            now,
         } => {
             let mut e = get_event(tx, &room, &agent, sequence)?;
-            if e.state != "submitting" || e.provider_run_id.as_deref().is_some_and(|id| id != run) {
-                return Err(error("attempt binding changed"));
+            if e.prompt_id.as_deref() != Some(&prompt)
+                || e.target_prompt_id != target
+                || !matches!(
+                    e.state.as_str(),
+                    "submitting"
+                        | "uncertain"
+                        | "blocked"
+                        | "accepted"
+                        | "acknowledged"
+                        | "handled"
+                )
+            {
+                return Err(error("submission does not match the admitted event prompt"));
             }
-            e.provider_run_id = Some(run);
-            e.submit_epoch = Some(submit_epoch);
-            save_event(tx, &e)?;
+            if e.provider_run_id.as_deref() != Some(&run) || e.submit_epoch != Some(submit_epoch) {
+                e.provider_run_id = Some(run);
+                e.submit_epoch = Some(submit_epoch);
+                e.attempted_at_ms = Some(now);
+                // A handled outcome remains handled across provider recovery.
+                if !matches!(e.state.as_str(), "acknowledged" | "handled") {
+                    e.state = "submitting".into();
+                }
+                save_event(tx, &e)?;
+            }
             Ok(Outcome::Event(e))
         }
         Operation::Receipt {
@@ -215,6 +237,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             save_event(tx, &e)?;
             super::wakes::record_delivery(tx, &e)?;
+            super::delegation::bind_message(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
             Ok(Outcome::Event(e))
         }
@@ -231,7 +254,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "inbox acknowledgement cannot repair uncertain delivery",
                 ));
             }
-            if e.state == "handled" {
+            if matches!(e.state.as_str(), "handled" | "expired" | "failed") {
                 return Ok(Outcome::Event(e));
             }
             e.state = if handled { "handled" } else { "acknowledged" }.into();
@@ -241,7 +264,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // The existing three-no-progress-wake guard requires owner action.
             if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
                 for mut t in tasks(tx)? {
-                    if t.room_id != room || t.agent_id != agent {
+                    if t.room_id != room
+                        || t.agent_id != agent
+                        || t.state == ExecutionState::Blocked
+                    {
                         continue;
                     }
                     let mut changed = false;

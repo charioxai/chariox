@@ -57,6 +57,23 @@ pub(super) fn encode(value: &impl serde::Serialize) -> Result<String, DaemonErro
 fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, DaemonError> {
     serde_json::from_str(value).map_err(|_| error("notification state corrupt"))
 }
+// Content digests retain the admitted envelope identity; stored public data is redacted.
+fn protect_envelope(
+    mut env: WorkflowNotificationEnvelope,
+) -> Result<WorkflowNotificationEnvelope, DaemonError> {
+    crate::secret_redaction::redact_json_secrets(&mut env.fields);
+    if let Some(output) = env.output.take() {
+        let mut value =
+            serde_json::to_value(output).map_err(|_| error("notification encoding failed"))?;
+        crate::secret_redaction::redact_json_secrets(&mut value);
+        env.output =
+            Some(serde_json::from_value(value).map_err(|_| error("notification encoding failed"))?);
+    }
+    env.subject = env
+        .subject
+        .map(|s| crate::secret_redaction::redact_secrets(&s).into_owned());
+    Ok(env)
+}
 pub(crate) fn workflow_identity(kernel: &str, session: &str, workflow: &str) -> String {
     // JSON tuple avoids delimiter ambiguity; identity stays stable across registration toggles.
     serde_json::json!([kernel, session, workflow]).to_string()
@@ -97,6 +114,10 @@ pub(crate) enum NotificationOperation {
         envelope: WorkflowNotificationEnvelope,
     },
     Queue(Box<PreparedNotification>),
+    ProtectRetained {
+        subscription: WorkflowNotificationSubscription,
+        occurrence_id: String,
+    },
     RemoteAttach {
         subscription: WorkflowNotificationSubscription,
     },
@@ -131,6 +152,7 @@ pub(crate) enum NotificationOutcome {
     Subscription(WorkflowNotificationSubscription),
     Ack(WorkflowNotificationAck),
     Queued,
+    Protected(Option<WorkflowNotificationEnvelope>),
     Swept,
 }
 pub(super) struct NotificationRequest {
@@ -214,19 +236,33 @@ impl DurableKernelStateStore {
         )>,
         DaemonError,
     > {
-        let db = self.lock_connection("workflow.notifications.pending")?;
-        let state = if accepted { "accepted" } else { "retryable" };
-        let mut q = db.prepare("SELECT s.notification_json,d.payload_json FROM app_outbox d JOIN app_automations s ON s.owner_id=d.owner_id AND s.installation_id=d.installation_id AND s.automation_id=d.automation_id WHERE d.source_kind='workflow_completion' AND d.state=?1 AND d.expires_at_ms>?2 AND d.next_attempt_at_ms<=?2 AND s.status='active' ORDER BY d.next_attempt_at_ms,d.sequence LIMIT ?3").map_err(sql)?;
-        let rows = q
-            .query_map(params![state, now as i64, limit as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .map_err(sql)?;
-        rows.map(|row| {
-            let (s, e) = row.map_err(sql)?;
-            Ok((decode(&s)?, decode(&e)?))
-        })
-        .collect()
+        let rows = {
+            let db = self.lock_connection("workflow.notifications.pending")?;
+            let state = if accepted { "accepted" } else { "retryable" };
+            let mut q = db.prepare("SELECT s.notification_json,d.payload_json FROM app_outbox d JOIN app_automations s ON s.owner_id=d.owner_id AND s.installation_id=d.installation_id AND s.automation_id=d.automation_id WHERE d.source_kind='workflow_completion' AND d.state=?1 AND d.expires_at_ms>?2 AND d.next_attempt_at_ms<=?2 AND s.status='active' ORDER BY d.next_attempt_at_ms,d.sequence LIMIT ?3").map_err(sql)?;
+            let rows = q
+                .query_map(params![state, now as i64, limit as i64], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(sql)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+        };
+        let mut candidates = Vec::new();
+        for (subscription, bytes) in rows {
+            let subscription: WorkflowNotificationSubscription = decode(&subscription)?;
+            let safe = protect_envelope(decode(&bytes)?)?;
+            if encode(&safe)? == bytes {
+                candidates.push((subscription, safe));
+            } else if let NotificationOutcome::Protected(Some(safe)) =
+                self.notify(NotificationOperation::ProtectRetained {
+                    subscription: subscription.clone(),
+                    occurrence_id: safe.occurrence_id,
+                })?
+            {
+                candidates.push((subscription, safe));
+            }
+        }
+        Ok(candidates)
     }
     pub(crate) fn notification_cached_sources(
         &self,
@@ -384,6 +420,20 @@ fn apply(
             tx.execute("INSERT INTO workflow_notification_source_cache VALUES (?1,?2,?3) ON CONFLICT(owner_id,kernel_id) DO UPDATE SET payload_json=excluded.payload_json",params![owner,kernel,encode(&sources)?]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
+        NotificationOperation::ProtectRetained {
+            subscription,
+            occurrence_id,
+        } => {
+            // The writer derives public bytes from its current receipt, preserving the
+            // original digest. A concurrent queue/expiry must never be resurrected.
+            let retained: Option<String> = tx.query_row("SELECT payload_json FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4 AND state IN ('accepted','retryable') AND expires_at_ms>?5",params![subscription.owner_user_id,subscription.source_id,subscription.subscription_id,occurrence_id,crate::session::unix_epoch_ms() as i64],|r|r.get(0)).optional().map_err(sql)?;
+            let Some(retained) = retained else {
+                return Ok(NotificationOutcome::Protected(None));
+            };
+            let safe = protect_envelope(decode(&retained)?)?;
+            tx.execute("UPDATE app_outbox SET payload_json=?5 WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![subscription.owner_user_id,subscription.source_id,subscription.subscription_id,occurrence_id,encode(&safe)?]).map_err(sql)?;
+            Ok(NotificationOutcome::Protected(Some(safe)))
+        }
         NotificationOperation::Retry {
             subscription_id,
             source_id,
@@ -502,8 +552,8 @@ pub(super) fn insert_receipt(
     state: &str,
     now: u64,
 ) -> Result<(), DaemonError> {
-    let bytes = encode_notification_envelope(env)?;
-    let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable')",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+    let bytes = encode_notification_envelope(&protect_envelope(env.clone())?)?;
+    let (count,retained):(i64,i64)=tx.query_row("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM app_outbox WHERE source_kind='workflow_completion' AND state IN ('accepted','retryable') AND owner_id=?1 AND installation_id=?2 AND automation_id=?3",params![sub.owner_user_id,env.source_id,sub.subscription_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
     if count >= MAX_PENDING
         || retained + bytes.len() as i64
             > chariox_app_runtime::app_outbox::MAX_RETAINED_PAYLOAD_BYTES as i64
@@ -524,6 +574,7 @@ pub(super) fn insert_receipt_row(
     let bytes = encode(env)?;
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
+    let bytes = encode(&protect_envelope(env.clone())?)?;
     let receipt_id = receipt_id(sub, env)?;
     tx.execute("INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,source_kind) VALUES (?1,?2,?3,?4,1,?5,?6,'workflow_completion','kernel',?7,1,0,?8,?6,?9,?10,1,0,0,'workflow_completion')",params![sub.owner_user_id,env.source_id,receipt_id,sub.subscription_id,env.occurrence_id,now as i64,digest,bytes,env.deadline_ms as i64,state]).map_err(sql)?;
     Ok(())
@@ -575,9 +626,11 @@ fn accept(
     }
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
-    let existing:Option<(String,String)>=tx.query_row("SELECT state,content_digest FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![sub.owner_user_id,env.source_id,sub.subscription_id,env.occurrence_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
-    let duplicate = if let Some((state, stored)) = existing {
-        if stored != digest {
+    let existing:Option<(String,String,Option<String>)>=tx.query_row("SELECT state,content_digest,payload_json FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![sub.owner_user_id,env.source_id,sub.subscription_id,env.occurrence_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
+    let duplicate = if let Some((state, stored, public_bytes)) = existing {
+        // Admit the exact retained public representation, or the original replay
+        // proof. Never normalize an incoming mutated raw replay before comparison.
+        if stored != digest && public_bytes.as_deref() != Some(bytes.as_str()) {
             return Err(error("notification occurrence conflict"));
         }
         if state == "retryable" {

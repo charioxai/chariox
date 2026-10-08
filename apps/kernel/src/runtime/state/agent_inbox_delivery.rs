@@ -57,18 +57,25 @@ impl KernelRuntimeState {
                     tasks
                         .iter()
                         .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
+                }) && !ids.iter().any(|id| {
+                    tasks
+                        .iter()
+                        .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
                 }) {
-                    return Ok(());
+                    // The source occurrence and blocked task retain their outcome.
+                    // Retire only this automatic wake so unrelated later wakes run.
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::Expire {
+                            room: room.into(),
+                            agent: agent.into(),
+                            sequence: event.sequence,
+                        })?;
+                    continue;
                 }
             }
             break event;
         };
-        if tasks
-            .last()
-            .is_some_and(|t| t.state == ExecutionState::Cancelled)
-        {
-            return Ok(());
-        }
         if event.state != "pending" {
             return Ok(());
         }
@@ -187,20 +194,11 @@ impl KernelRuntimeState {
                 self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
                 return Ok(());
             }
-            self.bind_agent_event_attempt(room, agent, event.sequence, &dispatch.provider_run_id)?;
-            let structured = self.owned.provider_store.run_uses_structured_prompt_io(
-                &self
-                    .owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)?,
-            );
+
             let result = self
                 .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                 .await;
-            let state = ledger::delivery_receipt_state(Some(&result), structured);
-            if state != "submitting" {
-                self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-            }
+            self.record_agent_event_dispatch_result(&dispatch, &result)?;
             result?;
         } else {
             let result = Box::pin(self.submit_prepared_prompt_with_queue_policy(
@@ -220,25 +218,10 @@ impl KernelRuntimeState {
                             .provider_runtime_lanes
                             .acquire(&dispatch.provider_run_id)
                             .await;
-                        self.bind_agent_event_attempt(
-                            room,
-                            agent,
-                            event.sequence,
-                            &dispatch.provider_run_id,
-                        )?;
-                        let structured = self.owned.provider_store.run_uses_structured_prompt_io(
-                            &self
-                                .owned
-                                .provider_store
-                                .get_run(&dispatch.provider_run_id)?,
-                        );
                         let result = self
                             .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                             .await;
-                        let state = ledger::delivery_receipt_state(Some(&result), structured);
-                        if state != "submitting" {
-                            self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                        }
+                        self.record_agent_event_dispatch_result(&dispatch, &result)?;
                         result?;
                     }
                 }
@@ -287,21 +270,74 @@ impl KernelRuntimeState {
         );
         Ok(())
     }
-    fn bind_agent_event_attempt(
+    // Called by the shared dispatch path, including authorized substitute reruns.
+    pub(super) fn record_agent_event_dispatch_result(
         &self,
-        room: &str,
-        agent: &str,
-        sequence: u64,
-        run: &str,
+        dispatch: &crate::app::KernelPromptDispatch,
+        result: &Result<bool, DaemonError>,
     ) -> Result<(), DaemonError> {
-        self.owned
-            .durable_state_store
-            .agent_lifecycle(Operation::BindAttempt {
-                room: room.into(),
-                agent: agent.into(),
-                sequence,
-                run: run.into(),
-                submit_epoch: self.owned.provider_store.structured_submit_epoch(),
+        let Some(event) = self.owned.durable_state_store.agent_event_for_prompt(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+        )?
+        else {
+            return Ok(());
+        };
+        if event.state != "submitting" {
+            return Ok(());
+        }
+        // The send boundary may have replaced dispatch's initial run. The
+        // bound run, rather than that initial profile, defines receipt semantics.
+        let structured = event
+            .provider_run_id
+            .as_deref()
+            .map(|id| {
+                self.owned.provider_store.get_run(id).map(|run| {
+                    self.owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                })
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let state = ledger::delivery_receipt_state(Some(result), structured);
+        if state != "submitting" {
+            self.record_agent_delivery_receipt(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                event.sequence,
+                state,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Bind only after dispatch admission and immediately before provider I/O.
+    pub(super) fn bind_agent_event_submission(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<(), DaemonError> {
+        let Some(event) = self.durable_state_store.agent_event_for_prompt(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+        )?
+        else {
+            return Ok(());
+        };
+        self.durable_state_store
+            .agent_lifecycle(Operation::BindSubmission {
+                room: dispatch.session_id.clone(),
+                agent: dispatch.agent_id.clone(),
+                sequence: event.sequence,
+                prompt: dispatch.prompt_id.clone(),
+                target: dispatch.target_active_prompt_id.clone(),
+                run: dispatch.provider_run_id.clone(),
+                submit_epoch: self.provider_store.structured_submit_epoch(),
+                now: crate::session::unix_epoch_ms(),
             })?;
         Ok(())
     }

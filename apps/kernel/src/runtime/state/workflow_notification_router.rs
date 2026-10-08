@@ -52,6 +52,7 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_notification_profile_owner(owner)?;
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -193,7 +194,11 @@ impl KernelRuntimeState {
                         }
                     }
                     LocalDaemonRequest::ListWorkflowNotifications(request) => {
-                        sessions.get_session(&request.session_id)?;
+                        if sessions.get_session(&request.session_id)?.owner_user_id() != owner {
+                            return Err(store::error(
+                                "notification inventory requires the session owner",
+                            ));
+                        }
                         let (mut sources, mut subscriptions, diagnostics) = self
                             .owned
                             .durable_state_store
@@ -648,18 +653,30 @@ mod tests {
             .session_store
             .write()
             .restore_session(transferred);
-        let LocalDaemonResponse::WorkflowNotifications { sources, .. } = runtime
-            .execute_workflow_notification_request(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone(),
-                }),
-                "local",
-            )
+        assert!(
+            runtime
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: f.session.clone(),
+                        }
+                    ),
+                    "local",
+                )
+                .is_err(),
+            "MP-11 / MP-08 / MP-10: transferred session inventory rejects the former owner"
+        );
+        let stored_source = runtime
+            .owned
+            .durable_state_store
+            .notification_inventory("local")
             .unwrap()
-        else {
-            panic!()
-        };
-        assert!(!sources[0].available);
+            .0
+            .remove(0);
+        assert!(!source_available(
+            &runtime.owned.session_store.read(),
+            &stored_source
+        ));
         let mut session = runtime
             .owned
             .session_store
@@ -693,6 +710,185 @@ mod tests {
         };
         assert!(!sources[0].available);
         assert!(!subscriptions[0].source_available);
+        drop(runtime);
+        cleanup(f);
+    }
+    #[tokio::test]
+    async fn a02_security_g11_retained_workflow_run_without_live_registration_is_reconciled() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        for status in [
+            crate::session::WorkflowRunStatus::Completed,
+            crate::session::WorkflowRunStatus::Failed,
+            crate::session::WorkflowRunStatus::Stopped,
+        ] {
+            let mut f = Fixture::new();
+            let (workflow, _, _) = f.workflow("g11");
+            let runtime = runtime(&mut f);
+            let mut config = runtime.owned.config_projection.snapshot();
+            config.room_agent_tools = true;
+            runtime.owned.config_projection.update(config);
+            let now = crate::session::unix_epoch_ms();
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    id: "g11-workflow".into(),
+                    kind: "workflow_run".into(),
+                    resource: Some("completed-run".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: "g11-workflow".into(),
+                    accepted: true,
+                    resource: Some("completed-run".into()),
+                })
+                .unwrap();
+            // Retained pre-fix workflow_run rows had no live completion registration.
+            for reg in f.store.agent_registrations("g11-retained").unwrap() {
+                f.store
+                    .agent_lifecycle(Operation::Unsubscribe {
+                        task: "g11-retained".into(),
+                        prompt: "g11-retained".into(),
+                        registration: reg.id,
+                    })
+                    .unwrap();
+            }
+            f.store
+                .agent_lifecycle(Operation::Block {
+                    task: "g11-retained".into(),
+                    prompt: "g11-retained".into(),
+                    reason: "reconcile missing workflow completion".into(),
+                })
+                .unwrap();
+            f.complete(&workflow, "completed-run", None, status, "fixture output");
+            runtime
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            runtime.sweep_agent_lifecycle().await.unwrap();
+            let task = f
+                .store
+                .agent_tasks(Some(&f.session), Some("agent"))
+                .unwrap()
+                .into_iter()
+                .find(|t| t.task_id == "g11-retained")
+                .unwrap();
+            assert_ne!(task.obligations[0].status,"open","MP-08 / MP-10 / MP-11 G11: terminal actual workflow_run obligation must be reconciled");
+            assert_eq!(
+                task.state,
+                ExecutionState::Blocked,
+                "explicit owner block remains authoritative"
+            );
+            drop(runtime);
+            cleanup(f);
+        }
+    }
+    #[test]
+    fn a02_security_g11_workflow_child_binds_only_the_invoking_task() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let mut f = Fixture::new();
+        let runtime = runtime(&mut f);
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        for (parent, workflow_run) in [("parent", "invoked-run"), ("peer", "other-run")] {
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: parent.into(),
+                    prompt: parent.into(),
+                    run: Some("parent-provider".into()),
+                    now: 1,
+                })
+                .unwrap();
+            for (kind, resource) in [("delegate", "agent"), ("workflow_run", workflow_run)] {
+                let id = format!("{parent}-{kind}");
+                f.store
+                    .agent_lifecycle(Operation::RegisterObligation {
+                        owner: "local".into(),
+                        room: f.session.clone(),
+                        agent: parent.into(),
+                        prompt: parent.into(),
+                        run: Some("parent-provider".into()),
+                        id: id.clone(),
+                        kind: kind.into(),
+                        resource: Some(resource.into()),
+                        now: 1,
+                    })
+                    .unwrap();
+                f.store
+                    .agent_lifecycle(Operation::DispatchReceipt {
+                        id,
+                        accepted: true,
+                        resource: Some(resource.into()),
+                    })
+                    .unwrap();
+            }
+        }
+        let old = crate::session::PromptQueueItem::new(
+            "old-child",
+            "user-attachment",
+            "agent",
+            "unrelated peer review",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &old, "fixture-provider", false)
+            .unwrap();
+        assert!(
+            f.store
+                .agent_tasks(Some(&f.session), Some("parent"))
+                .unwrap()[0]
+                .obligations[0]
+                .completion_task_id
+                .is_none(),
+            "unrelated first child task cannot bind a delegation"
+        );
+        let prompt = crate::session::PromptQueueItem::new(
+            "workflow-child",
+            "workflow-attachment",
+            "agent",
+            "invoked workflow review",
+            crate::session::PromptStatus::Running,
+        )
+        .with_workflow_context("invoked-run", "node");
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &prompt, "fixture-provider", false)
+            .unwrap();
+        let parent = f
+            .store
+            .agent_tasks(Some(&f.session), Some("parent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(parent.obligations[0].completion_task_id.as_deref(),Some("workflow-child"),"MP-08 / MP-10 / MP-11 G11: accepted workflow invocation must bind its exact child task");
+        let peer = f
+            .store
+            .agent_tasks(Some(&f.session), Some("peer"))
+            .unwrap()
+            .remove(0);
+        assert!(
+            peer.obligations[0].completion_task_id.is_none(),
+            "another parent invocation cannot consume this child result"
+        );
         drop(runtime);
         cleanup(f);
     }

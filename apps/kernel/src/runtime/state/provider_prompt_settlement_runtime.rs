@@ -379,7 +379,17 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
             )?;
             owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
-            Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
+            if let Err(error) =
+                Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+            {
+                // Prompt completion is already committed. Ledger supervision
+                // errors cannot strand a promoted prompt or skip run retirement.
+                crate::logging::warn_with_fields(
+                    "daemon.agent_task",
+                    "task outcome supervision failed after prompt settlement",
+                    serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+                );
+            }
             if cancellation.released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
@@ -650,7 +660,17 @@ impl KernelRuntimeState {
             };
             (completion, None)
         };
-        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
+        if let Err(error) =
+            Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+        {
+            // Prompt completion is already committed. Ledger supervision
+            // errors cannot strand a promoted prompt or skip run retirement.
+            crate::logging::warn_with_fields(
+                "daemon.agent_task",
+                "task outcome supervision failed after prompt settlement",
+                serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+            );
+        }
         self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
             .await;
         crate::logging::debug_with_fields(

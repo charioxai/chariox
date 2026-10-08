@@ -50,8 +50,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             task.provider_run_id = run.or(task.provider_run_id);
             save(tx, &task)?;
-            bind_first_delegate_task(tx, &task)?;
             Ok(Outcome::Task(task))
+        }
+        Operation::BindDelegate {
+            parent_task,
+            child_task,
+        } => {
+            super::delegation::bind(tx, &parent_task, &child_task)?;
+            Ok(Outcome::Saved)
         }
         Operation::Withdraw { task } => {
             let t = load(tx, &task)?;
@@ -152,16 +158,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else if o.kind == "message" {
                         o.status = "satisfied".into();
                     }
-                    if accepted
-                        && matches!(o.kind.as_str(), "delegate" | "workflow" | "workflow_run")
-                    {
+                    if accepted && (o.kind == "delegate" || o.tracks_workflow_run()) {
                         if let Some(source) = o.resource_id.clone() {
                             let reg = Registration {
                                 id: format!("completion-{}", o.id),
                                 task_id: task.task_id.clone(),
                                 source_id: source,
                                 obligation_id: Some(o.id.clone()),
-                                source_cursor: 0,
+                                // Spawn has no prompt: every prior agent-ID
+                                // outcome belongs to an earlier incarnation.
+                                source_cursor: if o.kind == "delegate" {
+                                    let seq: i64 = tx.query_row("SELECT COALESCE(MAX(sequence),0) FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2", params![task.room_id, o.resource_id], |r| r.get(0)).map_err(sql)?;
+                                    u64::try_from(seq)
+                                        .map_err(|_| error("corrupt source sequence"))?
+                                } else {
+                                    0
+                                },
                                 live: true,
                             };
                             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![reg.id,reg.task_id,encode(&reg)?]).map_err(sql)?;
@@ -402,7 +414,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Attempt { .. }
         | Operation::Expire { .. }
         | Operation::Defer { .. }
-        | Operation::BindAttempt { .. }
+        | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
@@ -422,13 +434,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
     }
 }
 
-fn recover_source(
+pub(super) fn recover_source(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
     mut registration: Registration,
 ) -> Result<(), DaemonError> {
     let source: Option<(i64,String,bool,Option<String>)> = tx.query_row("SELECT sequence,occurrence_id,success,public_answer FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND sequence>?3 ORDER BY sequence DESC LIMIT 1",params![task.room_id,registration.source_id,sql_integer(registration.source_cursor)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
     if let Some((seq, id, success, answer)) = source {
+        if success && super::delegation::unbound(task, &registration) {
+            return Ok(());
+        }
         let public_answer = answer
             .map(|v| decode::<serde_json::Value>(&v))
             .transpose()?;
@@ -464,70 +479,6 @@ fn recover_source(
             task.revision += 1;
             save(tx, task)?;
         }
-    }
-    Ok(())
-}
-
-// Bind once: a later independent task on the same child cannot settle the first delegation.
-fn bind_first_delegate_task(
-    tx: &Transaction<'_>,
-    child: &AgentTaskExecution,
-) -> Result<(), DaemonError> {
-    // One child task completes the oldest unbound delegation by registration
-    // sequence, independent of parent task creation or wall-clock ordering.
-    // Repeated admission/dispatch Begin calls bind nothing new.
-    let mut parents = tasks(tx)?;
-    if parents.iter().any(|p| {
-        p.obligations
-            .iter()
-            .any(|o| o.completion_task_id.as_deref() == Some(child.task_id.as_str()))
-    }) {
-        return Ok(());
-    }
-    let mut oldest: Option<(i64, usize, usize)> = None;
-    for (parent_index, parent) in parents.iter().enumerate() {
-        if parent.room_id != child.room_id
-            || parent.owner_user_id.is_empty()
-            || parent.owner_user_id != child.owner_user_id
-        {
-            continue;
-        }
-        for (obligation_index, obligation) in
-            parent.obligations.iter().enumerate().filter(|(_, o)| {
-                o.kind == "delegate"
-                    && o.status == "open"
-                    && o.dispatch_state == "accepted"
-                    && o.resource_id.as_deref() == Some(&child.agent_id)
-                    && o.completion_task_id.is_none()
-            })
-        {
-            let sequence: i64 = tx.query_row(
-                "SELECT sequence FROM durable_state_events WHERE kind='room.obligation.registered' AND subject_id=?1 ORDER BY sequence LIMIT 1",
-                [&obligation.id], |r| r.get(0),
-            ).map_err(sql)?;
-            if oldest.is_none_or(|(previous, _, _)| sequence < previous) {
-                oldest = Some((sequence, parent_index, obligation_index));
-            }
-        }
-    }
-    if let Some((_, parent_index, obligation_index)) = oldest {
-        let parent = &mut parents[parent_index];
-        let obligation = &mut parent.obligations[obligation_index];
-        obligation.completion_task_id = Some(child.task_id.clone());
-        let id = format!("completion-{}", obligation.id);
-        for mut registration in registrations(tx, &parent.task_id)?
-            .into_iter()
-            .filter(|r| r.id == id || r.obligation_id.as_deref() == Some(&obligation.id))
-        {
-            registration.source_id = child.task_id.clone();
-            tx.execute(
-                "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
-                params![registration.id, encode(&registration)?],
-            )
-            .map_err(sql)?;
-        }
-        parent.revision += 1;
-        save(tx, parent)?;
     }
     Ok(())
 }

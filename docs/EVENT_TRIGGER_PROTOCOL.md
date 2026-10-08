@@ -95,6 +95,14 @@ access.
 
 ## Private workflow notifications (local 452 / peer 82; MP-08 / MP-10 / MP-11)
 
+MP-11 F8 is closed by the existing lease-scoped authorization: leased-resource
+requests must match the authenticated `LeaseCallerBinding`, and a mismatch
+returns typed `unauthorized`. Remote lease workers reject kernel-wide
+List/Subscribe/Unsubscribe/Deliver notification requests, including requests
+from authenticated same-owner hosted peers, because these requests have no
+agent or lease selector. A future notification selector requires a separately
+allocated protocol change; this decision changes no protocol shape or version.
+
 Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
 {session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
 when runs finish**. The session owner owns the source. Its ID survives switches;
@@ -210,9 +218,9 @@ Refusal leaves no delivery receipt; completion retains a visible
 `workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
 host-file read or provider attachment promotion. There are at most 1,024 local sources
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
-and 16 MiB pending payload per kernel, measured as UTF-8 bytes for both new and
+and 16 MiB pending payload per subscription, measured as UTF-8 bytes for both new and
 already retained envelopes. Oversize/backpressure is diagnostic and cannot
-roll back successful workflow completion. Legacy accepted bytes retain their original
+roll back successful workflow completion. New envelope output, subject and fields use the shared secret redaction policy before source forwarding and receipt persistence. Delivery also protects retained pre-redaction envelopes before local queueing or peer forwarding. Legacy accepted bytes retain their original
 TTL; editing a binding's TTL affects new occurrences only, and admission of older
 pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.
 The current completion `status` is reserved while copying opaque trigger metadata,

@@ -73,6 +73,7 @@ impl KernelRuntimeOwnedState {
                 now: crate::session::unix_epoch_ms(),
             })?;
         }
+        self.reconcile_workflow_delegation(room, agent, prompt)?;
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
@@ -431,14 +432,14 @@ impl KernelRuntimeState {
                             None => None,
                         }
                     }
-                    "workflow" | "workflow_run"
-                        if self
+                    _ if obligation.tracks_workflow_run()
+                        && self
                             .owned
                             .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
                     {
                         None
                     }
-                    "workflow" | "workflow_run" => session
+                    _ if obligation.tracks_workflow_run() => session
                         .workflow_runs()
                         .iter()
                         .find(|r| r.id() == source)

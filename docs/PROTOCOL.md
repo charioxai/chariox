@@ -492,7 +492,10 @@ projected to every session client. In the TUI, open it with F8, Ctrl+G or
 `/approvals`, explicitly select Resume or Cancel, then confirm. Resume
 revalidates the blocked revision and retained receipts; progress or reconnect
 alone cannot resume. Cancellation retains obligations until actual owned
-resource settlement. Legacy `/agent task` commands still address Meta tasks;
+resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
+task; an older independent wait still receives its source completion or deadline
+wake. Historical task ordering is not an agent stop disposition.
+Legacy `/agent task` commands still address Meta tasks;
 they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
 paths fail visibly instead of fabricating acceptance.

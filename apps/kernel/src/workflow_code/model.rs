@@ -153,6 +153,8 @@ pub(super) struct WorkflowCodeCompilerInput<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) schema_files: Option<&'a BTreeMap<String, String>>,
     pub(super) schema_errors: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) typescript_stripper: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]

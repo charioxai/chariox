@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+mod delegation;
 mod delivery;
 mod migration;
 mod quarantine;
@@ -52,6 +53,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE INDEX IF NOT EXISTS agent_tasks_room ON agent_tasks(room_id,agent_id);
     CREATE UNIQUE INDEX IF NOT EXISTS agent_task_turn ON agent_tasks(room_id,agent_id,prompt_id);
     CREATE TABLE IF NOT EXISTS agent_progress_receipts(task_id TEXT NOT NULL,receipt_id TEXT NOT NULL,recorded_at_ms INTEGER NOT NULL,PRIMARY KEY(task_id,receipt_id));
+    CREATE TABLE IF NOT EXISTS agent_delegation_messages(sequence INTEGER PRIMARY KEY,task_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_urgent_reply_links(sequence INTEGER PRIMARY KEY,target_task_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_registrations(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_lifecycle_quarantine(kind TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,at_ms INTEGER NOT NULL,PRIMARY KEY(kind,id));
@@ -259,6 +261,9 @@ fn decode_task(
 }
 fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
+        tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
+    }
     Ok(())
 }
 fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
@@ -419,8 +424,11 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     if encode(&e.payload)?.len() > 32_768 {
         return Err(error("event payload limit"));
     }
-    let count:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![e.room_id,e.agent_id],|r|r.get(0)).map_err(sql)?;
-    if count >= 1024 {
+    age_delivered_events(tx, &e.room_id, &e.agent_id)?;
+    let count:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked')",params![e.room_id,e.agent_id],|r|r.get(0)).map_err(sql)?;
+    // Only agent-origin messages consume this admission quota. Kernel outcomes
+    // are deduped by source/occurrence and must commit even at recipient pressure.
+    if e.kind == "message" && count >= 1024 {
         return Err(error("inbox full; unacknowledged events retained"));
     }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
@@ -428,12 +436,19 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     save_event(tx, &e)?;
     Ok(e)
 }
+// Retain occurrence identity for replay dedup; age the delivered message window.
+// Source outcomes and unresolved reply links keep their handling authority.
+fn age_delivered_events(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), DaemonError> {
+    tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','expired') WHERE sequence IN (SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.state') IN ('accepted','acknowledged') AND NOT EXISTS(SELECT 1 FROM agent_urgent_reply_links l WHERE l.sequence=agent_inbox.sequence) ORDER BY sequence DESC LIMIT -1 OFFSET 256)", params![room,agent]).map_err(sql)?;
+    Ok(())
+}
 fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
     tx.execute(
         "UPDATE agent_inbox SET payload=?2 WHERE sequence=?1",
         params![sql_integer(e.sequence)?, encode(e)?],
     )
     .map_err(sql)?;
+    age_delivered_events(tx, &e.room_id, &e.agent_id)?;
     if !matches!(e.state.as_str(), "pending" | "submitting") {
         tx.execute(
             "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
@@ -575,6 +590,8 @@ pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
 pub(crate) struct EventSubmitReceipt {
     /// The event steered an existing turn; the normal prompt settlement is skipped.
     pub steered: bool,
+    /// Superseded run/epoch: discard this result before normal prompt settlement.
+    pub stale: bool,
     /// Client-visible receipt, present only when this job recorded it.
     pub notice: Option<String>,
 }
@@ -595,14 +612,17 @@ pub(crate) fn finish_provider_event_submit(
     if event.provider_run_id.as_deref() != Some(&finished.provider_run_id)
         || event.submit_epoch != Some(epoch)
     {
-        return Err(error(
-            "provider event receipt has a stale run or submit epoch",
-        ));
+        return Ok(Some(EventSubmitReceipt {
+            steered: event.target_prompt_id.is_some(),
+            stale: true,
+            notice: None,
+        }));
     }
     let steered = event.target_prompt_id.is_some();
     if !matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
         return Ok(Some(EventSubmitReceipt {
             steered,
+            stale: false,
             notice: None,
         }));
     }
@@ -620,6 +640,7 @@ pub(crate) fn finish_provider_event_submit(
     })? {
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
+            stale: false,
             notice: Some(receipt_notice(&settled)),
         })),
         _ => Err(error("receipt outcome mismatch")),
