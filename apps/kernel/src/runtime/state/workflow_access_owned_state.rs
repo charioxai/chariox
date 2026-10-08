@@ -402,10 +402,21 @@ impl KernelRuntimeOwnedState {
                 && operation == "resume workflow run"
             {
                 let actor = self.agent_store.get_agent(metaagent_id)?;
-                // The saved run may predate binding admission or the current
-                // definition. Check the agents it will actually resume.
-                for node in workflow_run.node_runs() {
-                    let target = self.agent_store.get_agent(node.agent_id())?;
+                // A saved run can retain old bindings; its remaining graph can
+                // also contain nodes it has not reached yet.
+                let targets = workflow
+                    .nodes()
+                    .iter()
+                    .map(|node| node.agent_id())
+                    .chain(workflow_run.node_runs().iter().map(|node| node.agent_id()))
+                    .chain(
+                        workflow_run
+                            .runtime_agent_ids_by_node()
+                            .values()
+                            .map(String::as_str),
+                    );
+                for target_id in targets {
+                    let target = self.agent_store.get_agent(target_id)?;
                     crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
                 }
             }

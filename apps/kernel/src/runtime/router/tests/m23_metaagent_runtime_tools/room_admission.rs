@@ -545,6 +545,9 @@ async fn room_boundaries() {
             )
             .unwrap();
         let node = sessions
+            .add_workflow_node(session.id(), workflow.id(), a.id())
+            .unwrap();
+        sessions
             .add_workflow_node(session.id(), workflow.id(), peer.id())
             .unwrap();
         let endpoint = sessions
@@ -572,8 +575,11 @@ async fn room_boundaries() {
         )
         .await;
     assert!(
-        resumed.is_err(),
-        "MP-11 F3: saved peer bindings cannot resume"
+        resumed
+            .unwrap_err()
+            .to_string()
+            .contains("immutable direct child"),
+        "MP-11 F3: saved peer graph bindings cannot resume"
     );
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
