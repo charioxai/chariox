@@ -95,3 +95,17 @@ test('MP-08/MP-11: keys following native focus progress use the guarded native i
  event('click',{});event('keydown',{key:'ArrowRight'});await renderer.inputChain;
  assert.deepEqual(actions.slice(-2),[{kind:'click',node_id:'n1'},{kind:'key',key:'ArrowRight'}],'explicit pointer progress clears native keyboard mode');
 });
+
+test('MP-08/MP-11: Shift+Tab keeps its backward direction in ordinary and native-focus branches',async()=>{
+ const listeners=new Map<string,EventListener>(),node={} as Node,actions:unknown[]=[];
+ const doc={addEventListener(kind:string,fn:EventListener){listeners.set(kind,fn)},removeEventListener(){}};
+ const renderer=Object.create(BrowserMirrorRenderer.prototype) as any;
+ Object.assign(renderer,{documentBindings:new Map(),disposed:false,applying:false,sequence:1,documentId:'d',inputChain:Promise.resolve(),pendingInputs:0,localFocus:{node_id:'n1',document_id:'d',through_sequence:2},nativeFocus:null,doc:null,ids:new WeakMap([[node,'n1']]),records:new Map([['n1',{id:'n1',kind:'element'}]]),input:async(action:unknown)=>{actions.push(action)},failure:(error:unknown)=>{throw error}});
+ renderer.bindEvents(doc);
+ const event=(kind:string,extra:Record<string,unknown>)=>{const e=new Event(kind,{cancelable:true});Object.assign(e,extra);Object.defineProperty(e,'composedPath',{value:()=>[node]});listeners.get(kind)!(e);return e};
+ assert.ok(event('keydown',{key:'Tab',shiftKey:true}).defaultPrevented);await renderer.inputChain;
+ assert.equal(renderer.localFocus,null,'Shift+Tab moves focus like Tab');
+ assert.deepEqual(renderer.nativeFocus,{document_id:'d',through_sequence:2});
+ event('keydown',{key:'Tab',shiftKey:true});event('keydown',{key:'Tab'});event('keydown',{key:'ArrowLeft',shiftKey:true});await renderer.inputChain;
+ assert.deepEqual(actions,[{kind:'key',key:'Shift+Tab'},{kind:'coordinate',input:{kind:'key',key:'Shift+Tab'}},{kind:'coordinate',input:{kind:'key',key:'Tab'}},{kind:'coordinate',input:{kind:'key',key:'ArrowLeft'}}]);
+});
