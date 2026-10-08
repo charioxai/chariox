@@ -437,7 +437,13 @@ impl PromptStateOwner {
             .contains_key(&PromptStateKey::new(session.id(), &agent_id));
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
-            !force_queue && !profile_transition_pending && state.active_prompt.is_none()
+            // Detached queue promotion can still be preparing Project/Vault
+            // inputs after a profile claim is released or a run becomes ready.
+            // Its backlog reserves admission until the oldest turn is activated.
+            !force_queue
+                && !profile_transition_pending
+                && state.active_prompt.is_none()
+                && state.queued_prompts.is_empty()
         };
         if should_start {
             let state = owner.ensure_agent_state(session, &agent_id);

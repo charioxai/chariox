@@ -114,6 +114,105 @@ impl PromptStateOwner {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn local_profile_release_with_gated_promotion_preserves_backlog_order() {
+        let owner = PromptStateOwner::default();
+        let session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let claim = owner
+            .claim_idle_agent_profile_transition(&session, "agent-1")
+            .unwrap();
+        assert!(matches!(
+            owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new(
+                        "older",
+                        "client",
+                        "agent-1",
+                        "older request",
+                        PromptStatus::Queued
+                    ),
+                    false,
+                )
+                .unwrap(),
+            PromptSubmissionOutcome::Queued { .. }
+        ));
+
+        // Local commit/rejection releases the claim before detached Project/Vault
+        // preparation finishes. A ready run permits ordinary, non-forced admission.
+        drop(claim);
+        let (preparing, prepared) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let promoter_owner = owner.clone();
+        let promoter_session = session.clone();
+        let promotion = tokio::spawn(async move {
+            let head = promoter_owner
+                .peek_next_queued_prompt(&promoter_session, "agent-1")
+                .unwrap();
+            preparing.send(()).unwrap();
+            gate.await.unwrap();
+            promoter_owner.activate_next_queued_prompt_with_prompt_id(
+                &promoter_session,
+                "agent-1",
+                Some(head.id()),
+                "active-older".into(),
+            )
+        });
+        prepared.await.unwrap();
+        let newer = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "newer",
+                    "client",
+                    "agent-1",
+                    "newer request",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+        let (active_while_preparing, backlog_while_preparing) =
+            owner.state_parts(&session, "agent-1");
+        // Always release/join the gate, including on the unchanged-code RED path.
+        release.send(()).unwrap();
+        let promoted = promotion.await.unwrap();
+        assert!(
+            matches!(newer, PromptSubmissionOutcome::Queued { .. }),
+            "new ordinary prompt overtook the older queued request: {newer:?}"
+        );
+        assert!(active_while_preparing.is_none());
+        assert_eq!(
+            backlog_while_preparing
+                .iter()
+                .map(PromptQueueItem::prompt)
+                .collect::<Vec<_>>(),
+            vec!["older request", "newer request"]
+        );
+        assert_eq!(promoted.unwrap().unwrap().prompt(), "older request");
+        assert_eq!(
+            owner
+                .complete_active_prompt_only(&session, "agent-1")
+                .unwrap()
+                .prompt(),
+            "older request"
+        );
+        assert_eq!(
+            owner
+                .activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    "agent-1",
+                    None,
+                    "active-newer".into(),
+                )
+                .unwrap()
+                .unwrap()
+                .prompt(),
+            "newer request"
+        );
+    }
+
     #[test]
     fn profile_completion_reserves_oldest_prompt_before_new_admission() {
         let owner = PromptStateOwner::default();
