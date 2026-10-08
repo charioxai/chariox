@@ -35,3 +35,22 @@ test("detached Login uses client enrollment without waiting for a kernel; kernel
   assert.equal(logins, 1); assert.equal(stored, 1); assert.equal(opened, 1); assert.equal(refreshed, 1)
   assert.equal(await handle(["link"]), false); assert.equal(logins, 1)
 })
+
+test("MP-08 terminal login offers local setup after successful login; accepting uses a distinct kernel enrollment", async () => {
+  const events: string[] = []
+  const profile = { accountId: "owner", userId: "owner", accountSlug: "owner", clientId: "terminal" }
+  const client = { login: async () => { events.push("client-login"); return profile }, profile: async () => profile } as unknown as CloudClient
+  const handle = createCloudClientCommands({ client, isKernelConnected: () => false, apiUrl: () => "https://cloud.example", notice: () => {}, saveProfile: async () => { events.push("persist-client") }, refresh: async () => { events.push("refresh") }, offerSetup: async value => { assert.equal(value.userId, "owner"); events.push("offer") }, setup: async value => { assert.equal(value.clientId, "terminal"); events.push("setup") } })
+  await handle(["login"])
+  assert.deepEqual(events, ["client-login", "persist-client", "refresh", "offer"])
+  await handle(["setup"])
+  assert.deepEqual(events.slice(-2), ["setup", "refresh"])
+})
+test("MP-11 setup offer does not run after failed login and explicit setup requires a signed-in terminal", async () => {
+  let offered = false, started = false
+  const client = { login: async () => { throw new Error("login refused") }, profile: async () => null } as unknown as CloudClient
+  const handle = createCloudClientCommands({ client, isKernelConnected: () => false, apiUrl: () => "https://cloud.example", notice: () => {}, saveProfile: async () => {}, refresh: async () => {}, offerSetup: async () => { offered = true }, setup: async () => { started = true } })
+  await assert.rejects(handle(["login"]), /login refused/)
+  await assert.rejects(handle(["setup"]), /Sign in first/)
+  assert.equal(offered, false); assert.equal(started, false)
+})

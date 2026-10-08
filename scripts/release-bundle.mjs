@@ -196,7 +196,8 @@ export async function assemble(options) {
   // --executables has the bundle's bin/ and libexec/ layout, the layout the macOS
   // signing tool keeps, so its receipt names the same paths.
   const executables = resolve(options.executables ?? fail('--executables is required'));
-  const inputs = [...platform.bin.map(name => `bin/${name}`), ...platform.libexec.map(name => `libexec/${name}`)]
+  const setup = await lstat(join(executables, "bin/chariox-setup")).then(() => ["bin/chariox-setup"], error => error.code === "ENOENT" ? [] : Promise.reject(error));
+  const inputs = [...platform.bin.map(name => `bin/${name}`), ...setup, ...platform.libexec.map(name => `libexec/${name}`)]
     .map(path => [join(executables, path), path]);
   for (const [source, path] of inputs) {
     if (!((await regularFile(source, path)).mode & 0o100)) fail(`${path} is not executable: ${source}`);
@@ -317,7 +318,7 @@ export function parseArgs(argv) {
   return { command, options };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (typeof Bun === "undefined" && process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const { command, options } = parseArgs(process.argv.slice(2));
     const result = command === 'slice-context' ? await exportSliceBuildContext(options.sourceRoot ?? repositoryRoot, options.sourceCommit, options.output)
