@@ -562,24 +562,28 @@ fn webp_rgb(data: &[u8]) -> (i32, i32, Vec<u8>) {
     (width, height, rgb)
 }
 #[test]
-fn mp08_lossless_webp_regions_decode_rgb_exact() {
+fn mp08_lossless_webp_regions_decode_rgb_exact_at_both_repair_efforts() {
     let (w, h) = (300usize, 70usize);
     let mut pixels = vec![0u8; w * h * 4];
     for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
         let (x, y) = (i % w, i / w);
         p.copy_from_slice(&[(x * 7 + y) as u8, (y * 13) as u8, (x ^ y) as u8, 0x5a]);
     }
-    let bytes = raster::webp(&pixels, w * 4, [17, 9, 251, 53], 1, 25).unwrap();
-    let (width, height, rgb) = webp_rgb(&bytes);
-    assert_eq!((width, height), (251, 53));
-    for y in 0..53 {
-        for x in 0..251 {
-            let p = &pixels[((y + 9) * w + x + 17) * 4..][..4];
-            assert_eq!(&rgb[(y * 251 + x) * 3..][..3], &[p[2], p[1], p[0]]);
+    // MP-08/MP-10/MP-11: both repair effort levels preserve every RGB value
+    // and reject clips outside the admitted raster.
+    for effort in [25, 50] {
+        let bytes = raster::webp(&pixels, w * 4, [17, 9, 251, 53], 1, effort).unwrap();
+        let (width, height, rgb) = webp_rgb(&bytes);
+        assert_eq!((width, height), (251, 53));
+        for y in 0..53 {
+            for x in 0..251 {
+                let p = &pixels[((y + 9) * w + x + 17) * 4..][..4];
+                assert_eq!(&rgb[(y * 251 + x) * 3..][..3], &[p[2], p[1], p[0]]);
+            }
         }
+        assert!(raster::webp(&pixels, w * 4, [290, 0, 11, 1], 1, effort).is_err());
+        assert!(raster::webp(&pixels, w * 4, [0, 69, 1, 2], 1, effort).is_err());
     }
-    assert!(raster::webp(&pixels, w * 4, [290, 0, 11, 1], 1, 25).is_err());
-    assert!(raster::webp(&pixels, w * 4, [0, 69, 1, 2], 1, 25).is_err());
 }
 #[test]
 fn mp08_scroll_plan_proves_moves_fixed_cells_and_exposed_rows() {

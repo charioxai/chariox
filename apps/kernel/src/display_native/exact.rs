@@ -39,8 +39,9 @@ impl ExactPlan {
         }
         // MP-08/MP-10: small input patches stay PNG for latency. Repairs merge
         // adjacent tiles of each row band into lossless WebP strips, about
-        // half the bytes of tile PNG on text; Retina keeps the higher effort
-        // because transfer dominates there. Up to eight threads, in order.
+        // half the bytes of tile PNG on text. Higher effort also reduces
+        // paced transfer on dense1080p text, as it does at Retina density.
+        // Up to eight threads, in order.
         let (pixels, w, patch) = (&self.pixels, self.w, self.patch);
         let rectangles = if patch {
             self.rectangles.clone()
@@ -67,7 +68,7 @@ impl ExactPlan {
                         w as usize * 4,
                         [x, y, width, height],
                         1,
-                        if w >= 2560 { 50 } else { 25 },
+                        50,
                     )?,
                 )
             };
