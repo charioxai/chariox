@@ -63,7 +63,8 @@ export class DesktopSource {
       const {verified,changed}=await this.gate.step();
       if(held&&verified===held.serial)this.publish(held.sample);
       if(changed)await this.wake();
-      await delay(this.binding.browser?.()?4:50);
+      // Unadopted (no browser, DevTools open, unbindable page): retry calmly.
+      await delay(this.gate.protectionSerial?4:50);
     }
   }
   async wake() {
