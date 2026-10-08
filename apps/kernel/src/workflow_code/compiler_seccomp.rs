@@ -1,5 +1,6 @@
 //! MP-11 F14: allow Node threads, deny process and namespace creation.
-use super::*;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+use super::isolation_error;
 
 fn statement(code: u16, k: u32) -> libc::sock_filter {
     libc::sock_filter {

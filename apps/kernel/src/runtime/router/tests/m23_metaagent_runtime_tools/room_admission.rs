@@ -539,7 +539,7 @@ async fn room_boundaries() {
     // MP-11 F3: saved runs retain their actual execution bindings even when a
     // newer definition is safe. Model a pre-admission snapshot at the store seam.
     let legacy_run = {
-        let mut app = app.lock().await;
+        let app = app.lock().await;
         let mut sessions = app.sessions_mut();
         let workflow = sessions
             .create_workflow_controlled_by_metaagent(
