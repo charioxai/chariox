@@ -274,6 +274,76 @@ mod tests {
     use super::*;
     use crate::managed_context::owner_managed::*;
 
+    fn write_owner_metadata(store: &ManagedContextOutboundOperationStore, context_id: &str) {
+        let ticket = super::super::tests::persisted_test_ticket(context_id);
+        let plan = ticket.context_plan.package_binding();
+        let saved = PersistedOwnerTicket {
+            account_id: "account".into(), user_id: "owner".into(), ticket,
+            consumption_attempted: Some(false),
+        };
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        let parent = store.status_parent().unwrap();
+        for name in [format!("{context_id}-owner.json"), format!("owner-{}.json", plan.plan_digest.trim_start_matches("sha256:"))] {
+            crate::config::write_private_file(&parent.join(name), &bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn mp08_mp11_durable_terminal_metadata_reclaims_capacity_across_restarts() {
+        let root = std::env::temp_dir().join(format!("chariox-operation-retention-{:032x}", rand::random::<u128>()));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let mut store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        for index in 0..MAX_OUTBOUND_OPERATIONS * 4 {
+            let context_id = format!("context-retention-{index:04}");
+            let ticket = super::super::tests::persisted_test_ticket(&context_id);
+            let (_, permit) = store.start(&context_id, &ticket.context_plan.package_binding().plan_digest)
+                .expect("ordinary completions and cancellations cannot consume lifetime capacity");
+            write_owner_metadata(&store, &context_id);
+            assert!(store.update(&context_id, |status| {
+                status.phase = if index % 2 == 0 { ManagedContextOutboundOperationPhase::Completed } else { ManagedContextOutboundOperationPhase::Failed };
+                status.retryable = false;
+            }));
+            drop(permit); store.finish(&context_id);
+            if index % 32 == 31 { store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap(); }
+        }
+        let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        assert!(reopened.start("context-after-reopen", "sha256:next").is_ok());
+        assert!(reopened.get("context-retention-0000").is_none(), "evicted durable status must disappear too");
+        assert!(!root.join(".operations/context-retention-0000-owner.json").exists());
+        assert!(fs::read_dir(root.join(".operations")).unwrap().count() < MAX_OUTBOUND_OPERATIONS * 3);
+    }
+
+    #[test]
+    fn mp08_mp11_metadata_retirement_preserves_unfinished_and_retryable_bindings() {
+        let root = std::env::temp_dir().join(format!("chariox-operation-expiry-{:032x}", rand::random::<u128>()));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        for (id, phase, retryable) in [
+            ("context-active", ManagedContextOutboundOperationPhase::Preparing, false),
+            ("context-retry", ManagedContextOutboundOperationPhase::Failed, true),
+            ("context-completed", ManagedContextOutboundOperationPhase::Completed, false),
+            ("context-cancelled", ManagedContextOutboundOperationPhase::Failed, false),
+        ] {
+            let ticket = super::super::tests::persisted_test_ticket(id);
+            let (_, permit) = store.start(id, &ticket.context_plan.package_binding().plan_digest).unwrap();
+            write_owner_metadata(&store, id);
+            let mut status = store.get(id).unwrap(); status.phase = phase; status.retryable = retryable; status.updated_at_ms = 1;
+            store.persist_status(&status).unwrap();
+            drop(permit); store.finish(id);
+        }
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        for id in ["context-active", "context-retry"] {
+            assert!(reopened.get(id).is_some());
+            assert!(root.join(".operations").join(format!("{id}-owner.json")).is_file());
+        }
+        for id in ["context-completed", "context-cancelled"] {
+            assert!(reopened.get(id).is_none(), "expired terminal status must retire");
+            assert!(!root.join(".operations").join(format!("{id}-owner.json")).exists());
+        }
+        assert!(reopened.start("context-retry", &super::super::tests::persisted_test_ticket("context-retry").context_plan.package_binding().plan_digest).unwrap().1.is_some());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn mp08_mp11_source_owner_operation_status_and_binding_survive_restart() {
         crate::test_support::isolated_env_test!();

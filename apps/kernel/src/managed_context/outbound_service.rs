@@ -2404,7 +2404,7 @@ mod tests {
         }
     }
 
-    fn persisted_test_ticket(context_id: &str) -> ManagedContextTransferTicket {
+    pub(super) fn persisted_test_ticket(context_id: &str) -> ManagedContextTransferTicket {
         ManagedContextTransferTicket {
             environment_id: "environment-1".to_string(),
             context_plan: ManagedKernelContextPlan::source_project_for_tests(
