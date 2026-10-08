@@ -9,7 +9,7 @@ use super::package::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
-pub(crate) const TICKET_ENDPOINT: &str = "/v1/owner-managed-kernels/context/ticket";
+pub(crate) const TICKET_ENDPOINT: &str = super::owner_authority::TICKET_ENDPOINT;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -342,38 +342,8 @@ pub(crate) async fn authorize_import_ticket(
         .as_deref()
         .filter(|credential| !credential.is_empty())
         .ok_or_else(|| admission_error("target kernel has no enrollment credential"))?;
-    let ticket: ManagedContextTransferTicket = crate::runtime::cloud_api_client::post_cloud_json(
-        profile.api_url.clone(), TICKET_ENDPOINT,
-        serde_json::json!({
-            "admission": "target", "accountId": profile.account_id, "userId": profile.user_id,
-            "machineId": profile.machine_id, "kernelId": config.daemon_id,
-            "relayRealmId": profile.realm_id, "keyThumbprint": key, "kernelCredential": credential,
-            "contextId": plan.context_id, "planDigest": plan.plan_digest, "destination": destination,
-            "source": { "kernelId": source_kernel_id, "userId": source.user_id, "relayRealmId": source.realm_id, "keyThumbprint": source.public_key_thumbprint },
-        }),
-    ).await.map_err(cloud_admission_error)?;
-    let binding = ticket.context_plan.package_binding();
-    let pins = &ticket.target;
-    let source_binding = ticket
-        .context_plan
-        .source_binding()
-        .ok_or_else(|| admission_error("owner context ticket has no source"))?;
-    ticket.context_plan.validate().map_err(admission_error)?;
-    if !ticket.environment_id.is_empty()
-        || &binding != plan
-        || pins.machine_id != destination.machine_id()
-        || pins.kernel_id != destination.kernel_id()
-        || pins.relay_realm_id != profile.realm_id
-        || pins.relay_public_key != config.relay_public_key
-        || pins.key_thumbprint != key
-        || source_binding.kernel_id != source_kernel_id
-        || source_binding.relay_realm_id != source.realm_id
-        || Some(source_binding.key_thumbprint) != source.public_key_thumbprint.as_deref()
-    {
-        return Err(admission_error(
-            "Cloud owner context ticket does not match authenticated encrypted peers",
-        ));
-    }
+    let _ = credential;
+    super::owner_authority::authorize_import(config, source, source_kernel_id, plan).await?;
     Ok(())
 }
 

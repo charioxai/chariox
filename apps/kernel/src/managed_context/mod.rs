@@ -6,6 +6,7 @@ pub(crate) mod git_credential_enrollment;
 pub mod kernel;
 pub(crate) mod outbound;
 pub(crate) mod outbound_service;
+pub(crate) mod owner_authority;
 pub mod owner_managed;
 pub mod package;
 pub(crate) mod portable_path;

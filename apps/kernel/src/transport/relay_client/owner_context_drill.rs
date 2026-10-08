@@ -331,12 +331,17 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         context_plan,
         target: selection.target.clone(),
     };
-    let cloud_response = serde_json::to_vec(&cloud_ticket).unwrap();
+    let source_peer = serde_json::json!({ "relayRealmId": "owner-realm", "machineId": source.host_machine_id,
+        "kernelId": source.daemon_id, "relayPublicKey": source.relay_public_key, "keyThumbprint": public_key_thumbprint(&source.relay_public_key) });
+    let context_selection = serde_json::to_value(&selection.context_selection).unwrap();
+    let cloud_response = serde_json::to_vec(&serde_json::json!({ "kind": "owner_managed_machine", "sourceTargetId": "directory-source",
+        "source": source_peer, "target": cloud_ticket.target, "contextSelection": context_selection })).unwrap();
     let source_id = source.daemon_id.clone();
     let target_id = target.daemon_id.clone();
     let plan_id = plan.context_id.clone();
     let server = tokio::spawn(async move {
-        for attempt in 0..9 {
+        for request_index in 0..18 {
+            let attempt = request_index / 2;
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let (header, length) = loop {
@@ -354,21 +359,27 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
                                 .strip_prefix("content-length:")
                                 .and_then(|s| s.trim().parse().ok())
                         })
-                        .unwrap();
+                        .unwrap_or(0);
                     if bytes.len() >= header + 4 + length {
                         break (header, length);
                     }
                 }
             };
-            assert!(String::from_utf8_lossy(&bytes[..header])
-                .starts_with(&format!("POST {TICKET_ENDPOINT} ")));
+            let request_headers = String::from_utf8_lossy(&bytes[..header]);
+            if request_index % 2 == 0 {
+                assert!(request_headers.starts_with("GET /v1/owner-managed-context-tickets/peers "));
+                let bytes = serde_json::to_vec(&serde_json::json!({ "peers": [{ "targetId": "directory-source", "peer": source_peer }] })).unwrap();
+                let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len());
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&bytes).await.unwrap();
+                continue;
+            }
+            assert!(request_headers.starts_with(&format!("POST {TICKET_ENDPOINT} ")));
             let body: serde_json::Value =
                 serde_json::from_slice(&bytes[header + 4..header + 4 + length]).unwrap();
-            assert_eq!(body["admission"], "target");
-            assert_eq!(body["accountId"], "owner-account");
-            assert_eq!(body["kernelId"], target_id);
-            assert_eq!(body["source"]["kernelId"], source_id);
-            assert_eq!(body["contextId"], plan_id);
+            assert_eq!(body["ownerManagedImport"]["target"]["kernelId"], target_id);
+            assert_eq!(body["ownerManagedImport"]["source"]["kernelId"], source_id);
+            assert_eq!(body["ownerManagedImport"]["contextId"], plan_id);
             assert!(body.get("environmentId").is_none());
             let mut response_ticket: serde_json::Value =
                 serde_json::from_slice(&cloud_response).unwrap();

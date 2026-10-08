@@ -773,6 +773,14 @@ async fn fetch_authoritative_ticket(
     config: &DaemonConfig,
     requested: &ManagedContextTransferTicket,
 ) -> Result<ManagedContextTransferTicket, DaemonError> {
+    if requested
+        .context_plan
+        .package_binding()
+        .destination
+        .is_some()
+    {
+        return crate::managed_context::owner_authority::authorize_export(config, requested).await;
+    }
     let cloud = config.cloud_relay.as_ref().ok_or_else(|| {
         outbound_service_error("source kernel is not connected to Chariox Cloud", true)
     })?;
@@ -799,34 +807,9 @@ async fn fetch_authoritative_ticket(
         // Only legacy/managed-worker profiles retain Machine authority.
         body["machineCredential"] = serde_json::json!(credential);
     }
-    if requested
-        .context_plan
-        .package_binding()
-        .destination
-        .is_some()
-    {
-        body.as_object_mut()
-            .expect("ticket body")
-            .remove("environmentId");
-        body["contextPlan"] = serde_json::to_value(&requested.context_plan)
-            .map_err(|_| outbound_service_error("invalid owner context plan", false))?;
-        body["target"] = serde_json::to_value(&requested.target)
-            .map_err(|_| outbound_service_error("invalid owner target", false))?;
-        body["userId"] = serde_json::json!(cloud.user_id);
-        body["admission"] = serde_json::json!("source");
-    }
     post_cloud_json(
         cloud.api_url.clone(),
-        if requested
-            .context_plan
-            .package_binding()
-            .destination
-            .is_some()
-        {
-            crate::managed_context::owner_managed::TICKET_ENDPOINT
-        } else {
-            "/v1/managed-kernels/context/ticket"
-        },
+        "/v1/managed-kernels/context/ticket",
         body,
     )
     .await
@@ -2209,16 +2192,26 @@ mod tests {
             ticket.environment_id.clear();
         }
         let expected_plan = serde_json::to_value(&ticket.context_plan).unwrap();
-        let response = serde_json::to_vec(&ticket).unwrap();
+        let expected_target = serde_json::to_value(&ticket.target).unwrap();
+        let source = serde_json::json!({ "kernelId": config.daemon_id, "machineId": config.host_machine_id,
+            "relayRealmId": "realm-1", "relayPublicKey": config.relay_public_key,
+            "keyThumbprint": public_key_thumbprint(&config.relay_public_key) });
+        let selection = serde_json::json!({ "kernelContext": expected_plan["kernelContext"], "developmentSetup": expected_plan["developmentSetup"] });
+        let binding = serde_json::json!({ "kind": "owner_managed_machine", "sourceTargetId": "directory-source-id",
+            "source": source, "target": expected_target, "contextSelection": selection });
+        let legacy_response = serde_json::to_value(&ticket).unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut buf = [0; 4096];
-                let size = stream.read(&mut buf).await.unwrap();
-                assert!(size > 0);
-                request.extend_from_slice(&buf[..size]);
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            for step in 0..if owner_managed { 4 } else { 1 } {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let size = stream.read(&mut buf).await.unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&buf[..size]);
+                    let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                        continue;
+                    };
                     let headers = String::from_utf8_lossy(&request[..end]);
                     let len: usize = headers
                         .lines()
@@ -2227,29 +2220,81 @@ mod tests {
                                 .strip_prefix("content-length:")
                                 .map(|value| value.trim().parse().unwrap())
                         })
-                        .unwrap();
-                    if request.len() >= end + 4 + len {
-                        let endpoint = if owner_managed {
-                            crate::managed_context::owner_managed::TICKET_ENDPOINT
-                        } else {
-                            "/v1/managed-kernels/context/ticket"
-                        };
-                        assert!(headers.starts_with(&format!("POST {endpoint} ")));
-                        let body: serde_json::Value =
-                            serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap();
+                        .unwrap_or(0);
+                    if request.len() < end + 4 + len {
+                        continue;
+                    }
+                    let body: serde_json::Value = if len == 0 {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::from_slice(&request[end + 4..end + 4 + len]).unwrap()
+                    };
+                    let mut status = "200 OK";
+                    let response = if !owner_managed {
+                        assert!(headers.starts_with("POST /v1/managed-kernels/context/ticket "));
                         assert!(body.get("kernelCredential").is_some());
                         assert!(body.get("machineCredential").is_none());
-                        if owner_managed {
-                            assert!(body.get("environmentId").is_none());
-                            assert_eq!(body["admission"], "source");
-                            assert_eq!(body["contextPlan"], expected_plan);
-                            assert!(body.get("target").is_some());
+                        legacy_response.clone()
+                    } else {
+                        assert!(body.get("environmentId").is_none());
+                        match step {
+                            0 => {
+                                assert!(
+                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
+                                );
+                                assert!(body["ownerManagedExport"].is_object());
+                                status = "403 Forbidden";
+                                serde_json::json!({ "error": { "code": "authorization_expired", "message": "Not consumed" } })
+                            }
+                            1 => {
+                                assert!(headers
+                                    .starts_with("GET /v1/owner-managed-context-tickets/peers "));
+                                assert!(headers
+                                    .to_ascii_lowercase()
+                                    .contains("x-chariox-kernel-credential:"));
+                                serde_json::json!({ "peers": [{ "targetId": "directory-source-id", "peer": source }] })
+                            }
+                            2 => {
+                                assert!(
+                                    headers.starts_with("POST /v1/owner-managed-context-tickets ")
+                                );
+                                assert!(headers
+                                    .to_ascii_lowercase()
+                                    .contains("x-chariox-kernel-credential:"));
+                                assert_eq!(body["sourceTargetId"], "directory-source-id");
+                                assert_eq!(body["contextSelection"], selection);
+                                let mut issued = binding.clone();
+                                issued["ticket"] = serde_json::json!("synthetic-single-use-ticket");
+                                issued
+                            }
+                            _ => {
+                                assert!(
+                                    headers.starts_with("POST /v1/managed-kernels/context/ticket ")
+                                );
+                                assert!(body.get("kernelCredential").is_some());
+                                assert!(body.get("admission").is_none());
+                                assert_eq!(
+                                    body["ownerManaged"]["ticket"],
+                                    "synthetic-single-use-ticket"
+                                );
+                                assert_eq!(body["ownerManaged"]["source"], source);
+                                assert_eq!(
+                                    body["ownerManaged"]["contextId"],
+                                    expected_plan["contextId"]
+                                );
+                                assert_eq!(
+                                    body["ownerManaged"]["planDigest"],
+                                    expected_plan["planDigest"]
+                                );
+                                binding.clone()
+                            }
                         }
-                        let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
-                        stream.write_all(header.as_bytes()).await.unwrap();
-                        stream.write_all(&response).await.unwrap();
-                        break;
-                    }
+                    };
+                    let response = serde_json::to_vec(&response).unwrap();
+                    let header = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&response).await.unwrap();
+                    break;
                 }
             }
         });
