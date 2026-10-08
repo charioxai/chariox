@@ -156,13 +156,13 @@ class OwnedKeymapTests(unittest.TestCase):
         return c
     def test_mp08_reserve_only_inert_owned_virtual_slot(self):
         c=self.connection();m=helper(c);m.Xlib.X.MappingSuccess=0
-        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}):m.prepare_owned_text_keymap()
+        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}),patch.object(m._x11_module,'open_display',return_value=c):m.prepare_owned_text_keymap()
         self.assertEqual(c.set_modifier_mapping.call_args.args[0],[[50],[0,92],[],[],[],[],[],[]])
         c.change_keyboard_mapping.assert_called_once_with(8,[[0,0,0,0]])
         c.ungrab_server.assert_called_once();c.close.assert_called_once()
     def test_mp11_held_key_refuses_before_any_keymap_change(self):
         c=self.connection();c.query_keymap.return_value=bytes([0,1])+bytes(30);m=helper(c)
-        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}):
+        with patch.dict(m.os.environ,{'CHARIOX_OWNED_VIRTUAL_DISPLAY':'1'}),patch.object(m._x11_module,'open_display',return_value=c):
             with self.assertRaises(ValueError):m.prepare_owned_text_keymap()
         c.set_modifier_mapping.assert_not_called();c.change_keyboard_mapping.assert_not_called()
         c.ungrab_server.assert_called_once()
