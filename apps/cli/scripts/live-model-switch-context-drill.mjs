@@ -182,15 +182,17 @@ try {
   if (richProbes) {
     await ask("decision-new", `Decision changed: we will use ${facts.cache_database} for the cache instead of SQLite. Our current task is ${facts.current_task}, and the next step is ${facts.next_step}. Do not use tools. Reply with just OK.`)
     try {
-      const file = await ask("file", `In your current workspace, use one shell command to create the relative file ${facts.created_file} containing the line ${facts.codename}, then read that file back with cat. Reply with just the line read from the file.`)
-      assertToolProbe(file, facts.codename, "file creation/readback")
+      const command = `echo ${facts.codename} > ${facts.created_file} && cat ${facts.created_file}`
+      const file = await ask("file", `In your current workspace, create the relative file ${facts.created_file} containing the line ${facts.codename}, then read it back. Run exactly: ${command}\nReply with just the line read from the file.`)
+      assertToolProbe(file, facts.codename, "file creation/readback", command)
       evidence.file_probe = { filename: facts.created_file, workspace_relative: true, verified: true }
     } finally {
       // Remove the file on its creating profile and placement before switching.
       // Attempt this even if creation/readback failed after writing the file.
       try {
-        const removed = await ask("file-cleanup", `In your current workspace, use one shell command to remove only the relative file ${facts.created_file}, verify that it no longer exists, and print CTXSWITCH_FILE_REMOVED. Reply with just that marker.`)
-        assertToolProbe(removed, "CTXSWITCH_FILE_REMOVED", "file cleanup")
+        const command = `rm -f -- ${facts.created_file} && test ! -e ${facts.created_file} && echo CTXSWITCH_FILE_REMOVED`
+        const removed = await ask("file-cleanup", `In your current workspace, remove only the relative file ${facts.created_file} and confirm absence. Run exactly: ${command}\nReply with just the marker.`)
+        assertToolProbe(removed, "CTXSWITCH_FILE_REMOVED", "file cleanup", command)
         evidence.file_cleanup = { filename: facts.created_file, verified: true }
       } catch (error) {
         evidence.file_cleanup = { filename: facts.created_file, verified: false, failure: error.message }

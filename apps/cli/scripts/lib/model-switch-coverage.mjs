@@ -10,11 +10,28 @@ export function scoreFacts(text, facts) {
 export function scoreSummary(recalled) {
   return { correct: Object.values(recalled).filter(Boolean).length, total: Object.keys(recalled).length }
 }
-export function assertToolProbe(result, expected, label) {
-  if (result.lifecycle !== "completed" || !result.tool_rows?.length || !result.text.includes(expected)) {
-    throw new Error(`${label} needs a completed tool call and verified output ${expected}`)
+// The drill supplies a fixed command with generated, shell-safe names. Match
+// it exactly, allowing only the official harness's shell launch wrapper.
+function matchesProbeCommand(actual, expected) {
+  if (typeof actual !== "string" || !expected) return false
+  if (actual.trim() === expected) return true
+  const wrapped = actual.trim().match(/^(?:\/(?:bin|usr\/bin)\/)?(?:bash|sh|zsh) -(?:lc|c) (['"])(.*)\1$/s)
+  return wrapped?.[2] === expected
+}
+export function assertToolProbe(result, expected, label, command) {
+  const verified = result.tool_rows?.some(row => {
+    let tool
+    try { tool = JSON.parse(row) } catch { return false }
+    if (tool.status !== "completed" || tool.error || !matchesProbeCommand(tool.input?.command, command)) return false
+    const exit = tool.exit_code ?? tool.raw?.match(/(?:^|\n)exit_code:\s*(-?\d+)(?:\n|$)/)?.[1]
+    if (exit !== undefined && Number(exit) !== 0) return false
+    return typeof tool.output === "string" && tool.output.trim() === expected
+  })
+  if (result.lifecycle !== "completed" || !verified) {
+    throw new Error(`${label} needs a successful tool result for the requested command and output ${expected}`)
   }
 }
+
 
 export function agentSnapshot(agent) {
   const remote = agent.remote_execution

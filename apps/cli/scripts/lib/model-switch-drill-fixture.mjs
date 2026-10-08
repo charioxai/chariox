@@ -55,7 +55,10 @@ export class LocalIpcClient {
       }
       if (label === "file-cleanup") {
         tool = true
-        if (this.scenario === "cleanup-failure" || (this.scenario === "target-failure" && this.agent.provider === "claude")) {
+        if (this.scenario === "cleanup-tool-failure-matching-reply") {
+          // Completed assistant turn, failed shell operation, echoed prompt marker.
+          text = "CTXSWITCH_FILE_REMOVED"
+        } else if (this.scenario === "cleanup-failure" || (this.scenario === "target-failure" && this.agent.provider === "claude")) {
           lifecycle = "failed"; text = "provider failed"
         } else {
           if (existsSync(this.file)) unlinkSync(this.file)
@@ -70,9 +73,15 @@ export class LocalIpcClient {
         text = Object.entries(this.facts).map(([key, val]) => key + "=" + val).join(" ")
         if (this.scenario === "target-failure") { lifecycle = "failed"; text = "login expired" }
       }
+      const toolFailed = lifecycle !== "completed" || (label === "file-cleanup" && this.scenario === "cleanup-tool-failure-matching-reply")
       this.turn = { user_prompt: { entry: { text: prompt } }, lifecycle, blobs: [], entries: [
         { entry: { kind: "provider_output", text } },
-        ...(tool ? [{ entry: { kind: "provider_tool", text: "fixture shell" } }] : []),
+        ...(tool ? [{ entry: { kind: "provider_tool", text: JSON.stringify({
+          tool: "bash", input: { command: label === "file" && this.scenario === "unrelated-file-tool"
+            ? "pwd" : prompt.match(/Run exactly: ([^\\n]+)/)?.[1] ?? "python3" },
+          status: toolFailed ? "error" : "completed",
+          raw: "exit_code: " + (toolFailed ? "1" : "0"), output: text,
+        }) } }] : []),
       ] }
       return { PromptSubmitted: {} }
     }
