@@ -25,6 +25,8 @@ import tomllib
 import pyte
 from PIL import Image, ImageDraw, ImageFont
 
+from lib.kernel_access_requester_outcome import verify_requester_exit
+
 MP = ["MP-08", "MP-10", "MP-11"]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--kernel", required=True)
@@ -173,7 +175,9 @@ process.exitCode = result.status ?? 1;
         # Own CLI peer is a real process; this mode never claims provider acceptance.
         requester = start([args.cli, "access", "request", "--socket", str(state / "kernel.sock"), "--holder-pid", str(os.getpid()), "--minutes", "6"], env, "outside")
     else:
-        bun = "/var/lib/chariox/dev/toolchains/bun/bin/bun"
+        bun = shutil.which("bun")
+        if bun is None:
+            raise RuntimeError("MP-10 Bun unavailable for the outside Codex helper")
         import shlex
         command = " ".join(shlex.quote(x) for x in [bun, str(helper), args.cli, str(state / "kernel.sock"), str(state / "requester.json")])
         prompt = "MP-08 / MP-10 / MP-11 real outside Codex requester drill. Run exactly " + command + ". Poll until it completes. The human will REFUSE the grant in the real TUI; this expected refusal is successful validation. Use only that command. Do not read credentials/config/token/vault files, approve anything, signal processes, or change logins. Exit after the refusal."
@@ -220,8 +224,10 @@ process.exitCode = result.status ?? 1;
     if "Grant external agent access" in frame():
         raise RuntimeError("MP-11 refused popup stayed open")
     requester.wait(timeout=45)
-    if requester.returncode != 0:
-        raise RuntimeError("MP-10 outside requester exited " + str(requester.returncode))
+    diagnostics = (state / "outside.stderr").read_text() if args.local_cli else ""
+    refusal = verify_requester_exit(requester.returncode, diagnostics, local_cli=args.local_cli)
+    if refusal is not None:
+        result["requesterDiagnostic"] = refusal
     result.update(status="PASS", requesterExit=requester.returncode,
                   established="Real TUI structured OS requester projection and refusal" if not args.local_cli else "Supplementary real local CLI/TUI requester projection and refusal")
 except SystemExit:
