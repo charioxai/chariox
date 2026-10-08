@@ -476,6 +476,21 @@ test("release verification rejects a partial or undeclared App artifact set", as
   assert.match(undeclaredResult.stderr, /release contains an undeclared App artifact: chariox-app-storage/)
 })
 
+// MP-01/MP-07/MP-11: valid signatures must not admit unreviewed service restrictions.
+for (const role of ["home", "worker"]) {
+  for (const directive of ["NoExecPaths=/home /tmp", "ProtectProc=invisible", "MemoryDenyWriteExecute=yes"]) {
+    test(`MP-01/MP-07/MP-11 signed ${role} rejects ${directive}`, async (context) => {
+      const mutation = role === "home"
+        ? { path1Service: PATH1_SERVICE.replace("[Service]", `[Service]\n${directive}`) }
+        : { workerService: WORKER_SERVICE.replace("[Service]", `[Service]\n${directive}`) }
+      const fixture = await createReleaseFixture(context, mutation)
+      const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+      assert.notEqual(result.status, 0, "signed provider restriction must fail before installation")
+      assert.match(result.stderr, /unsupported Service directive/)
+    })
+  }
+}
+
 // MP-01/MP-04/MP-07/MP-11: independently signed worker policy mutations.
 for (const directive of [
   "PrivateTmp=true", "ProtectHome=true", "NoNewPrivileges=true", "UMask=0077",
