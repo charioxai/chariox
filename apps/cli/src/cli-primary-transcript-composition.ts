@@ -20,6 +20,8 @@ import {
   buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
 
+import { relayCloudProfile } from "./preferences.js"
+
 type AnyFn = (...args: any[]) => any
 
 export type CliPrimaryTranscriptCompositionDeps = {
@@ -64,6 +66,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
+  preferencesState: AnyFn
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
@@ -175,6 +178,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           : buildEmptyTranscriptRenderable(deps.renderer))
       : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
+        collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
         loadingFrame: deps.waitingRoomState().introStep,

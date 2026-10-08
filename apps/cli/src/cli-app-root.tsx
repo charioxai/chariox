@@ -777,7 +777,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
-    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
+    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus, preferencesState,
     relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
     themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,
