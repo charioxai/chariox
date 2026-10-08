@@ -3595,13 +3595,12 @@ impl KernelRuntimeState {
                     },
                 )?;
             }
-            if let Some(task) = owned
-                .durable_state_store
-                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
-                .into_iter()
-                .find(|t| t.prompt_id == dispatch.prompt_id)
-            {
-                hidden_system_context = join_hidden_context(&hidden_system_context, &format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id, dispatch.prompt_id));
+            if let Some(hint) = owned.agent_task_context_hint(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+            )? {
+                hidden_system_context = join_hidden_context(&hidden_system_context, &hint);
             }
         }
         if owned

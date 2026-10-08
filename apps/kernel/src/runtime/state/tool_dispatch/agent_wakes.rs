@@ -48,7 +48,7 @@ fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> A
 impl KernelRuntimeState {
     pub(super) async fn dispatch_agent_wake_tool(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        run: Option<&crate::provider::RuntimeProviderRun>,
         name: &str,
         args: &serde_json::Value,
         task: &AgentTaskExecution,
@@ -103,11 +103,13 @@ impl KernelRuntimeState {
                 // Only an agent that may already run any command unattended,
                 // locally, can ask the kernel to run one for it.
                 let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
+                let Some(run) = run.filter(|_| agent.remote_execution().is_none()) else {
+                    return Err(ledger::error("watched processes require a local build agent with unattended command permission; run the command in your own shell instead"));
+                };
                 if run.execution_mode() != crate::provider::AgentExecutionMode::Build
                     || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
                     || run.write_access_mode()
                         != crate::provider::ProviderWriteAccessMode::Unrestricted
-                    || agent.remote_execution().is_some()
                 {
                     return Err(ledger::error("watched processes require a local build agent with unattended command permission; run the command in your own shell instead"));
                 }

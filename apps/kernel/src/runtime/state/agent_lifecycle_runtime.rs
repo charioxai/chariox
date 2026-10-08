@@ -36,6 +36,24 @@ impl KernelRuntimeOwnedState {
         })?;
         Ok(!existed)
     }
+    /// The provider-visible task identity for chariox.events tools, shared by
+    /// local and leased dispatch (A10 placement parity).
+    pub(super) fn agent_task_context_hint(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if !self.config_projection.snapshot().room_agent_tools {
+            return Ok(None);
+        }
+        Ok(self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .find(|t| t.prompt_id == prompt)
+            .map(|task| format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id)))
+    }
     pub(super) fn withdraw_agent_task(&self, prompt: &str) -> Result<(), DaemonError> {
         self.durable_state_store
             .agent_lifecycle(Operation::Withdraw {

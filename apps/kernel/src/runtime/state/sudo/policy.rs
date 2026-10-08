@@ -29,7 +29,11 @@ impl KernelRuntimeOwnedState {
             .get_agent(&turn.agent_id)
             .ok()
             .is_none_or(|agent| {
-                agent.session_id() != turn.session_id || agent.remote_execution().is_some()
+                agent.session_id() != turn.session_id
+                    || agent
+                        .remote_execution()
+                        .map(|remote| &remote.execution_lease_id)
+                        != turn.placement.as_ref()
             })
         {
             return Some("placement_changed");
@@ -64,25 +68,33 @@ impl KernelRuntimeState {
 
     /// The live window bound to `run`'s current turn. The provider bearer never
     /// changes: each use resolves the exact agent, running turn and window.
-    fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
+    pub(super) fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
         let denied = || error("this provider turn has no sudo authority");
-        let run = self
-            .owned
-            .provider_store
-            .get_run(run_id)
-            .map_err(|_| denied())?;
-        let agent = run.agent_instance_id().ok_or_else(denied)?;
-        if run.state() != crate::provider::ProviderRunState::Running
-            || self
-                .owned
-                .provider_store
-                .get_run_for_agent(run.session_id(), agent)
-                .is_none_or(|current| current.id() != run_id)
-        {
-            return Err(denied());
-        }
+        let (session_id, agent) = match self.leased_agent_for_projected_run(run_id) {
+            // A10: a leased turn is the home agent's current worker run.
+            Some(agent) => (agent.session_id().to_string(), agent.id().to_string()),
+            None => {
+                let run = self
+                    .owned
+                    .provider_store
+                    .get_run(run_id)
+                    .map_err(|_| denied())?;
+                let agent = run.agent_instance_id().ok_or_else(denied)?;
+                if run.state() != crate::provider::ProviderRunState::Running
+                    || self
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(run.session_id(), agent)
+                        .is_none_or(|current| current.id() != run_id)
+                {
+                    return Err(denied());
+                }
+                (run.session_id().to_string(), agent.to_string())
+            }
+        };
+        let agent = agent.as_str();
         self.sweep_sudo();
-        let session = self.owned.session_store.get_session(run.session_id())?;
+        let session = self.owned.session_store.get_session(&session_id)?;
         let (entry, prompt) = self
             .owned
             .prompt_state_owner
@@ -95,7 +107,7 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .get(&entry)
             .cloned()
-            .filter(|turn| turn.agent_id == agent && turn.session_id == run.session_id())
+            .filter(|turn| turn.agent_id == agent && turn.session_id == session_id)
             .ok_or_else(denied)?;
         if !self.sudo_live(&turn) {
             return Err(denied());
@@ -129,6 +141,9 @@ impl KernelRuntimeState {
         let Some(agent) = run.agent_instance_id() else {
             return false;
         };
+        if self.worker_sudo_grant_open(agent) {
+            return true;
+        }
         let windows = self.owned.sudo_windows_for_session(run.session_id());
         windows
             .iter()

@@ -83,6 +83,9 @@ mod sudo;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 pub(crate) use sudo::SudoWindowProjection;
+pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
+#[cfg(test)]
+pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::{is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
@@ -174,6 +177,10 @@ struct KernelRuntimeOwnedState {
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
     sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
+    /// Worker side of A10 leased sudo windows, keyed by backing agent.
+    leased_sudo_grants: Arc<std::sync::Mutex<BTreeMap<String, sudo::leased::WorkerSudoGrant>>>,
+    /// Home side of A10: windows whose first worker fence was confirmed.
+    leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -798,6 +805,8 @@ impl KernelRuntimeState {
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
+                leased_sudo_grants: Default::default(),
+                leased_sudo_fenced: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,
@@ -1181,12 +1190,12 @@ mod room_agent_admission;
 
 mod agent_inbox_delivery;
 mod agent_lifecycle_runtime;
-mod agent_process_watch;
 mod agent_process_group;
 mod agent_process_output;
-mod agent_wake_cancellation;
+mod agent_process_watch;
 mod agent_task_cancellation;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod room_dispatch_obligation;

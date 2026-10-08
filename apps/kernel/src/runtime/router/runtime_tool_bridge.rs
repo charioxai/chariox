@@ -113,7 +113,45 @@ impl CommandRouter {
             }
         }
         if tool_name == "chariox_kernel_request" {
+            // A10: a leased run passes its worker fence, then the home rechecks.
+            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                if let Some(result) = self
+                    .runtime_state
+                    .try_forward_leased_kernel_request(&run, arguments.clone())
+                    .await?
+                {
+                    return Ok(result);
+                }
+            }
             let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
+            return self.dispatch_sudo_kernel_request(turn, arguments).await;
+        }
+        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
+        {
+            let mut router = self.clone();
+            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
+                router.runtime_state = self
+                    .runtime_state
+                    .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
+            }
+            return router
+                .dispatch_meta_run_command(auth_token, arguments)
+                .await;
+        }
+        self.runtime_state
+            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+            .await
+    }
+
+    /// One privileged call under a window that both the caller's kernel and,
+    /// for a leased agent, its worker fence admitted.
+    async fn dispatch_sudo_kernel_request(
+        &self,
+        turn: crate::local::KernelSudoTurn,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        {
             let request: crate::local::LocalDaemonRequest =
                 serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
                     crate::runtime::kernel_access::error("kernel_request needs request")
@@ -143,29 +181,13 @@ impl CommandRouter {
                 command.caller.metaagent_id = Some(turn.agent_id.clone());
             }
             let response = Box::pin(self.dispatch(command, request)).await?;
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::to_value(response).map_err(|_| {
                     crate::runtime::kernel_access::error("kernel response serialization failed")
                 })?,
-            });
+            })
         }
-        if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
-            == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
-        {
-            let mut router = self.clone();
-            if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {
-                router.runtime_state = self
-                    .runtime_state
-                    .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
-            }
-            return router
-                .dispatch_meta_run_command(auth_token, arguments)
-                .await;
-        }
-        self.runtime_state
-            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
-            .await
     }
 
     pub(crate) fn runtime_tool_specs_for_auth_token(
@@ -272,6 +294,10 @@ impl CommandRouter {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.runtime_state
             .authorize_forwarded_workspace_context(&context)?;
+        if tool_name == "chariox_kernel_request" {
+            let turn = self.runtime_state.sudo_for_leased_context(&context)?;
+            return self.dispatch_sudo_kernel_request(turn, arguments).await;
+        }
         if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {

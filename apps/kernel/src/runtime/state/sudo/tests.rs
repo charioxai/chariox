@@ -260,6 +260,7 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         revision: 1,
         warning_sent: false,
         deadline: Some(std::time::Instant::now() + Duration::from_secs(3600)),
+        placement: None,
     };
     assert!(f.state.owned.prompt_state_owner.bind_sudo_turn(
         &session,
@@ -712,6 +713,7 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
         revision: 1,
         warning_sent: false,
         deadline: None,
+        placement: None,
     };
     f.state.audit_sudo(&entry, "extended").unwrap();
     // Recover only the audit stream, as a new kernel does. It never creates

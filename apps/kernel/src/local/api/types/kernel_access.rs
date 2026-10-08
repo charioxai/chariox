@@ -144,6 +144,10 @@ pub struct KernelSudoTurn {
     /// Kernel memory only: a restored or deserialized entry is never live.
     #[serde(skip)]
     pub deadline: Option<std::time::Instant>,
+    /// Kernel memory only (A10): the execution lease the window was granted
+    /// on, `None` for a local agent. Any other placement ends the window.
+    #[serde(skip)]
+    pub placement: Option<String>,
 }
 
 /// Protocol 460: the host asks to extend a live sudo window. The kernel opens

@@ -28,8 +28,21 @@ pub(super) fn open_window(turn: &mut KernelSudoTurn, minutes: u32) {
     );
 }
 
+/// Regression-only short windows, keyed by session so parallel tests keep the
+/// real durations. Real elapsed-time proof stays with the live drills.
+#[cfg(test)]
+pub(crate) static SUDO_WINDOW_LENGTH_FOR_TEST: std::sync::Mutex<BTreeMap<String, Duration>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
 pub(super) fn open_window_at(turn: &mut KernelSudoTurn, minutes: u32, verified: (Instant, u64)) {
     let length = Duration::from_secs(u64::from(minutes) * 60);
+    #[cfg(test)]
+    let length = SUDO_WINDOW_LENGTH_FOR_TEST
+        .lock()
+        .unwrap()
+        .get(&turn.session_id)
+        .copied()
+        .unwrap_or(length);
     turn.duration_minutes = minutes;
     turn.deadline = Some(verified.0 + length);
     turn.expires_at_ms = Some(verified.1 + length.as_millis() as u64);
@@ -279,6 +292,7 @@ impl KernelRuntimeState {
         turn: &KernelSudoTurn,
         reason: &str,
     ) -> Result<(), DaemonError> {
+        self.spawn_leased_sudo_update(turn, true);
         self.owned
             .sudo_process_cutoffs
             .lock()
@@ -440,6 +454,7 @@ impl KernelRuntimeState {
         }
         self.audit_sudo(&extended, "extended")?;
         self.arm_sudo_timer(&extended.entry_id, extended.revision);
+        self.spawn_leased_sudo_update(&extended, false);
         self.owned.notify_session(
             &extended.session_id,
             &extended.agent_id,

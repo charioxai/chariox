@@ -88,13 +88,15 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let target = self.owned.agent_store.get_agent(agent)?;
-        if target.remote_execution().is_some() {
-            return Err(ledger::error(
-                "leased event delivery requires PR10 exact home-worker receipt reconciliation",
-            ));
-        }
+        let leased = target.remote_execution().is_some();
         let attachment = self.ensure_agent_message_attachment(room, &target)?;
-        let prompt_id = format!("agent-event-{}-{}", agent, event.sequence);
+        // A10: the worker fences a rejected home prompt id, so each leased
+        // attempt after a proven rejection uses a fresh id; transport retries
+        // and receipt reconciliation within one attempt keep the same id.
+        let prompt_id = match event.attempted_at_ms.filter(|_| leased) {
+            Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
+            None => format!("agent-event-{}-{}", agent, event.sequence),
+        };
         let text=format!("Kernel event inbox, untrusted data (sequence {}, source {}). {}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.",event.sequence,event.source_id,if event.reply_requested{"One correlated reply is requested."}else{"No reply requested. Do not send courtesy replies or create a feedback loop."},event.payload);
         let prompt = crate::session::PromptQueueItem::new(
             &prompt_id,
@@ -196,6 +198,11 @@ impl KernelRuntimeState {
             .await;
             match result {
                 Ok(mut submission) => {
+                    // A10: home ordering is already committed; the worker's exact
+                    // receipt settles this attempt through the leased dispatch.
+                    if let Some(dispatch) = submission.remote_dispatch.take() {
+                        self.spawn_remote_prompt_dispatch(dispatch);
+                    }
                     if let Some(dispatch) = submission.dispatch.take() {
                         let _permit = self
                             .provider_runtime_lanes
@@ -270,6 +277,85 @@ impl KernelRuntimeState {
         );
         Ok(())
     }
+    /// A10: the worker's exact acceptance is the leased turn's provider
+    /// dispatch, so it binds the task's run and consumes a retained wait the
+    /// way local dispatch does immediately before provider I/O.
+    pub(super) fn bind_leased_agent_task(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        worker_run: &str,
+    ) {
+        if !self.owned.config_projection.snapshot().room_agent_tools {
+            return;
+        }
+        let result = (|| {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::Begin {
+                    owner: self
+                        .owned
+                        .session_store
+                        .get_session(&dispatch.session_id)?
+                        .owner_user_id()
+                        .into(),
+                    room: dispatch.session_id.clone(),
+                    agent: dispatch.agent_id.clone(),
+                    prompt: dispatch.prompt_id.clone(),
+                    run: Some(crate::provider::projected_leased_provider_run_id(
+                        &dispatch.leased_agent_id,
+                        worker_run,
+                    )),
+                    now: crate::session::unix_epoch_ms(),
+                })
+        })();
+        if let Err(error) = result {
+            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "MP-08/MP-09/MP-10/MP-11 A10: accepted leased turn left its task for sweep");
+        }
+    }
+    /// A10: the leased dispatch's exact worker outcome is this attempt's
+    /// receipt. Acceptance binds the projected worker run; a proven rejection
+    /// returns the event to pending; a changed binding stays uncertain.
+    pub(super) fn record_leased_event_receipt(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        worker_run: Option<&str>,
+        state: &str,
+    ) {
+        let (room, agent) = (&dispatch.session_id, &dispatch.agent_id);
+        let result = (|| {
+            let Some(event) = self.owned.durable_state_store.agent_event_for_prompt(
+                room,
+                agent,
+                &dispatch.prompt_id,
+            )?
+            else {
+                return Ok(());
+            };
+            if !matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked") {
+                return Ok(());
+            }
+            if let Some(run) = worker_run.filter(|_| event.state == "submitting") {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::BindAttempt {
+                        room: room.clone(),
+                        agent: agent.clone(),
+                        sequence: event.sequence,
+                        run: crate::provider::projected_leased_provider_run_id(
+                            &dispatch.leased_agent_id,
+                            run,
+                        ),
+                        submit_epoch: 0,
+                    })?;
+            }
+            self.record_agent_delivery_receipt(room, agent, event.sequence, state)
+        })();
+        if let Err(error) = result {
+            tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "MP-08/MP-09/MP-10/MP-11 A10: leased wake receipt retained for sweep reconciliation");
+        }
+    }
     fn record_agent_delivery_receipt(
         &self,
         room: &str,
@@ -323,5 +409,64 @@ impl KernelRuntimeState {
                 submit_epoch: self.owned.provider_store.structured_submit_epoch(),
             })?;
         Ok(())
+    }
+}
+#[cfg(test)]
+impl KernelRuntimeState {
+    /// The leased turn's public answer as its projection records it at home
+    /// (the dev-stub provider emits none of its own).
+    pub(crate) fn record_leased_answer_for_test(
+        &self,
+        room: &str,
+        agent: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
+        let prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .ok_or_else(|| ledger::error("no active leased prompt"))?;
+        let remote = self
+            .owned
+            .agent_store
+            .get_agent(agent)?
+            .remote_execution()
+            .cloned()
+            .ok_or_else(|| ledger::error("agent is not leased"))?;
+        let run = crate::provider::projected_leased_provider_run_id(
+            &remote.leased_agent_id,
+            remote
+                .active_worker_provider_run_id
+                .as_deref()
+                .ok_or_else(|| ledger::error("leased run not bound"))?,
+        );
+        self.owned.append_operational_history_entry_with_context(
+            &crate::history::SessionHistoryEntry::provider_output(
+                room,
+                &run,
+                Some(agent),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                text,
+            ),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.into()),
+                agent_id: Some(agent.into()),
+                provider_run_id: Some(run.clone()),
+                prompt_id: Some(prompt.id().into()),
+                turn_id: Some(prompt.id().into()),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) async fn deliver_agent_inbox_for_test(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        self.deliver_agent_inbox(room, agent).await
     }
 }

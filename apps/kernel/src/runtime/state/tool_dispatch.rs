@@ -335,6 +335,13 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
             {
                 let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
+                // A10: a leased run's events belong to the home ledger.
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(run, name, arguments.clone())
+                    .await?
+                {
+                    return Ok(result);
+                }
                 return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
             let is_metaagent_auth_token =

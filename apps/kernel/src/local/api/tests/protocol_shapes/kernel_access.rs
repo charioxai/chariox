@@ -21,6 +21,7 @@ fn sudo_protocol_468_window_extension_and_session_status_shapes() {
         revision: 2,
         warning_sent: false,
         deadline: Some(std::time::Instant::now()),
+        placement: None,
     };
     let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
         session_id: "s".into(),
@@ -324,5 +325,38 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
         "2066da8a5ceeea5bd31b4cdfc618b16e6fd79f428223f92a003e3a0880ed20b8"
+    );
+}
+
+/// MP-08/MP-09/MP-10/MP-11 A10: the home's leased sudo fence is one peer
+/// request bound to relay peer protocol 83; its wire carries no credential.
+#[test]
+fn leased_sudo_fence_is_bound_to_relay_peer_protocol_83() {
+    use crate::transport::relay_peer::*;
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 83);
+    assert_eq!(
+        crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION,
+        RELAY_PEER_PROTOCOL_VERSION
+    );
+    let request = RelayPeerRequest::UpdateLeasedSudo {
+        leased_agent_id: "leased-1".into(),
+        home_prompt_id: "prompt-1".into(),
+        grant: LeasedSudoGrant {
+            entry_id: "sudo:0123".into(),
+            revision: 2,
+            remaining_ms: 3_600_000,
+            initial: true,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"kind":"update_leased_sudo",
+            "leased_agent_id":"leased-1","home_prompt_id":"prompt-1",
+            "grant":{"entry_id":"sudo:0123","revision":2,"remaining_ms":3_600_000,"initial":true}
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(RelayPeerResponse::LeasedSudoUpdated).unwrap(),
+        serde_json::json!({"kind":"leased_sudo_updated"})
     );
 }
