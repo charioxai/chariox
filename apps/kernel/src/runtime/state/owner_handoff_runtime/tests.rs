@@ -358,7 +358,7 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
         let source = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
         let terminal = host.admit_terminal(DEFAULT_LOCAL_USER_ID, Default::default());
         if fault == "expiry" {
-            h.expires_at_ms = crate::session::unix_epoch_ms() + 100;
+            h.expires_at_ms = crate::session::unix_epoch_ms() + 1_000;
         }
         let admission = state.handoff_action_admission(terminal, source, &h);
         assert!(host.check_admission(Some(&admission)).is_ok());
@@ -376,7 +376,7 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
                     })
                     .unwrap();
             }
-            "expiry" => tokio::time::sleep(std::time::Duration::from_millis(120)).await,
+            "expiry" => tokio::time::sleep(std::time::Duration::from_millis(1_100)).await,
             _ => {
                 host.revoke_grants(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
                 host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
