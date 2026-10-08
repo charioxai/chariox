@@ -1561,8 +1561,8 @@ async fn sudo_review_controls_are_not_elevation_prompts() {
         "/sudo status",
         "/sudo extend",
         "/sudo revoke",
-        "/sudo status all",
-        " /sudo\trevoke all",
+        "/sudo status sudo:00af",
+        " /sudo\trevoke sudo:00af",
     ] {
         let f = fixture();
         let mut request = f.request.clone();
@@ -1580,4 +1580,32 @@ async fn sudo_review_controls_are_not_elevation_prompts() {
     }
     assert!(is_sudo_prompt("/sudo deploy the app"));
     assert!(!is_sudo_prompt("/sudoers"));
+}
+
+// MP-08/MP-10/MP-11 P2: control verbs inside task text still require approval.
+#[tokio::test]
+async fn sudo_review_control_verbs_in_tasks_reach_authorization() {
+    for text in [
+        "/sudo extend the database schema",
+        "/sudo status of prod please",
+        "/sudo revoke the obsolete deployment",
+        "/sudo status all",
+        "/sudo extend sudo:00af extra task text",
+        "/sudo status sudo:NOT_HEX",
+    ] {
+        assert!(is_sudo_prompt(text), "task classified as control: {text}");
+        let f = fixture();
+        let mut request = f.request.clone();
+        request.prompt = text.into();
+        let state = f.state.clone();
+        let task = tokio::spawn(async move {
+            state
+                .submit_sudo_prompt(request, "local", "sudo-terminal")
+                .await
+        });
+        let approval = popup(&f.state).await;
+        assert!(approval.message.contains(text.trim_start_matches("/sudo ")));
+        f.state.end_session(&f.request.session_id).await.unwrap();
+        assert!(task.await.unwrap().is_err());
+    }
 }

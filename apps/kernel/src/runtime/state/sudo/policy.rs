@@ -251,9 +251,24 @@ fn sudo_arguments(prompt: &str) -> Option<&str> {
 }
 
 pub(crate) fn is_sudo_control(prompt: &str) -> bool {
-    sudo_arguments(prompt)
-        .and_then(|rest| rest.split_whitespace().next())
-        .is_some_and(|command| matches!(command, "status" | "extend" | "revoke"))
+    let Some(arguments) = sudo_arguments(prompt) else {
+        return false;
+    };
+    let mut words = arguments.split_whitespace();
+    if !matches!(words.next(), Some("status" | "extend" | "revoke")) {
+        return false;
+    }
+    // MP-08/MP-10/MP-11 P2: match the terminal's complete control grammar.
+    // A control verb followed by ordinary task text is an elevation prompt.
+    let valid_target = words.next().is_none_or(|target| {
+        target.strip_prefix("sudo:").is_some_and(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    });
+    valid_target && words.next().is_none()
 }
 
 pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {

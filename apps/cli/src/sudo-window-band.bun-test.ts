@@ -4,6 +4,7 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KernelSudoTurn } from "@chariox/kernel-client/kernel-types"
 import { createSudoWindowBand } from "./sudo-window-band.js"
+import { sudoWindowLine } from "./sudo-window-line.js"
 
 const window: KernelSudoTurn = {
   entry_id: "sudo:00aa", session_id: "session-1", agent_id: "agent-1", owner_user_id: "local", terminal_id: "t",
@@ -52,5 +53,31 @@ test("MP-08/MP-10/MP-11 A04 cached rendering restores visibility after layout mo
     band.render([window], now, () => "builder")
     await harness.renderOnce()
     assert.match(harness.captureCharFrame(), /sudo · builder .* expiring soon/)
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 P3 identical text refreshes the Extend handler revision", async () => {
+  const harness = await createTestRenderer({ width: 120, height: 10, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { flexDirection: "column" })
+  harness.renderer.root.add(box)
+  const clicked: number[] = []
+  const band = createSudoWindowBand(harness.renderer, {
+    extend: (w) => clicked.push(w.revision ?? 0), revoke: () => {},
+  })
+  band.assign(box)
+  try {
+    const now = Date.parse("2026-10-07T13:58:45Z")
+    const updated = { ...window, revision: window.revision! + 1, expires_at_ms: window.expires_at_ms! + 30_000 }
+    assert.equal(sudoWindowLine(window, now, "builder"), sudoWindowLine(updated, now, "builder"))
+    band.render([window], now, () => "builder")
+    await harness.renderOnce()
+    const before = harness.captureCharFrame()
+    band.render([updated], now, () => "builder")
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.equal(frame, before)
+    const row = frame.split("\n").findIndex((line) => line.includes("[Extend]"))
+    await harness.mockMouse.click(frame.split("\n")[row]!.indexOf("[Extend]") + 1, row)
+    assert.deepEqual(clicked, [updated.revision])
   } finally { harness.renderer.destroy() }
 })
