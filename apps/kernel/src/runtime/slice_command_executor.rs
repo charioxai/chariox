@@ -247,6 +247,7 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             &provider,
             &provider_account.profile_id,
         )?;
+        let expected_copy = crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&materialization)?;
         let relay = lifecycle::local_docker_slice_relay(config_projection, &slice).await?;
         let config = relay.worker_discovery_config(config_projection.snapshot());
         let target = worker_discovery::discover_started_slice_worker(&config, &slice).await?;
@@ -278,11 +279,9 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
                 operation: "slice.auth.import",
                 message: "receiving kernel did not confirm copy provenance".into(),
             })?;
-        registry.update_materialization_status(
-            &owner,
-            &provider,
-            &provider_account.profile_id,
-            status,
+        registry.record_confirmed_account_copy(
+            &owner, &expected_copy, crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+            &target.machine_id, &target.kernel_id, &received.profile_id, status,
         )?;
         let mut provider_auth = slice.provider_auth.clone();
         provider_auth.retain(|summary| {

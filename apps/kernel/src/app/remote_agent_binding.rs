@@ -269,8 +269,8 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                         plan.provider_account_profiles
                             .record_confirmed_account_copy(
                                 &account_owner_user_id,
-                                plan.agent.provider(),
-                                &source_profile.profile_id,
+                                &crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&account_materialization)?,
+                                materialization_target_kind,
                                 &worker_kernel.machine_id,
                                 &worker_kernel.kernel_id,
                                 &expected_account.profile_id,
@@ -928,8 +928,8 @@ target_kind: materialization_target_kind,
                                 .provider_account_profiles
                                 .record_confirmed_account_copy(
                                     &account_owner_user_id,
-                                    agent.provider(),
-                                    &source_profile.profile_id,
+                                    &crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&account_materialization)?,
+                                    materialization_target_kind,
                                     &worker_kernel.machine_id,
                                     &worker_kernel.kernel_id,
                                     &expected_account.profile_id,

@@ -37,6 +37,7 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let mut received_copy = None;
+        let mut expected_copy = None;
         let result = async {
             let mut materialization =
                 registry.export_materialization(&owner, provider, &update.account_profile)?;
@@ -49,6 +50,7 @@ impl KernelRuntimeState {
             }
             // Cloud-owner aliases are local registry details, not lease owners.
             materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+            expected_copy = Some(crate::account_profile::ProviderAccountCopyExpectation::from_materialization(&materialization)?);
             let response = self
                 .send_remote_profile_request(
                     config,
@@ -116,8 +118,8 @@ impl KernelRuntimeState {
                 })?;
             registry.record_confirmed_account_copy(
                 &owner,
-                provider,
-                &update.account_profile,
+                expected_copy.as_ref().ok_or_else(|| DaemonError::LocalTransport {operation: "record account copy", message: "issued account expectation is absent".into()})?,
+                target_kind,
                 &binding.worker_machine_id,
                 &update.worker_kernel_id,
                 &update.account_profile,

@@ -1398,12 +1398,10 @@ impl KernelRuntimeState {
         }
         if let Ok(agent) = self.owned.agent_store.get_agent(&agent_id) {
             if let Some(binding) = agent.remote_execution() {
-                let config = self.owned.config_projection.snapshot();
                 let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
                 let target_kind = if self.list_slices().iter().any(|slice| slice.worker_kernel_ref == binding.worker_kernel_id) {
                     crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
                 } else { crate::account_profile::ProviderAccountMaterializationTargetKind::Worker };
-                let _ = config;
                 for observation in copy_observations {
                     self.owned.provider_account_profiles.apply_remote_account_copy_observation(
                         &owner, agent.provider(), agent.provider_account_profile(), target_kind,
