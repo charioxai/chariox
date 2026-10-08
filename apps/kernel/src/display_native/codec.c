@@ -123,9 +123,17 @@ static void motion_geometry(struct Codec *c,int protected) {
     if(c->width==1920&&c->height==1080){c->enc_width=1280;c->enc_height=720;}
     else if(c->width==2560&&c->height==1600){c->enc_width=1280;c->enc_height=800;}
 }
+/* MP-08/MP-10: Selkies/pixelflux rate control (encoders/software.rs): CBR
+ * at the negotiated rate split by row height, VBV of 1.5 frames at 60 fps
+ * (pixelflux vbv_bits with an infinite GOP), no filler. */
+static int row_rate(struct Codec *c,int h) {int rate=(int)((double)c->bitrate*h/c->height/1000);return rate<16?16:rate;}
+static int row_vbv(int rate) {int vbv=rate*3/120;return vbv<16?16:vbv;}
+static void row_rate_control(x264_param_t *p,int rate) {
+    p->rc.i_rc_method=X264_RC_ABR;p->rc.i_bitrate=rate;p->rc.i_vbv_max_bitrate=rate;
+    p->rc.i_vbv_buffer_size=row_vbv(rate);p->rc.b_filler=0;
+}
 static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
-    int rate=(int)((double)c->bitrate*.45*h/c->height/1000);
-    if (rate<16)rate=16;
+    int rate=row_rate(c,h);
     /* A failed h264_vaapi init is software from this first key onward. */
     if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);motion_geometry(c,protected);}}
     x264_param_t p;
@@ -133,16 +141,16 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     int ew=c->row_count==1?c->enc_width:c->width,eh=c->row_count==1?c->enc_height:h;
     if(ew!=c->width&&!c->full&&!(c->full=malloc((size_t)ew*eh*4)))return -1;
     p.i_width=ew;p.i_height=eh;p.i_csp=X264_CSP_I420;
-    p.i_threads=1;p.i_lookahead_threads=1;p.b_sliced_threads=0;
+    /* MP-08/MP-10: whole-frame motion uses pixelflux's sliced threads,
+     * clamp(cores-1,1,4); each of the eight stripe rows stays one thread. */
+    long cores=sysconf(_SC_NPROCESSORS_ONLN);
+    p.i_threads=c->row_count==1?(int)(cores-1<1?1:cores-1>4?4:cores-1):1;p.i_lookahead_threads=1;p.b_sliced_threads=p.i_threads>1;
     p.b_full_recon=1; /* Exact certificates require the complete output raster. */
     p.i_fps_num=60;p.i_fps_den=1;p.i_timebase_num=1;p.i_timebase_den=60;
-    p.i_keyint_max=120;p.i_scenecut_threshold=0;p.i_bframe=0;p.b_repeat_headers=1;p.b_annexb=1;p.i_log_level=X264_LOG_NONE;
+    /* Infinite GOP: IDRs only on session reset (lost/retired references). */
+    p.i_keyint_max=X264_KEYINT_MAX_INFINITE;p.i_scenecut_threshold=0;p.i_bframe=0;p.b_repeat_headers=1;p.b_annexb=1;p.i_log_level=X264_LOG_NONE;
     p.vui.b_fullrange=0;p.i_level_idc=51;
-    /* MP-08/MP-10: bound recovery keys as well as deltas. CQP clamps
-     * per-picture quantizers and cannot honor the paced link budget. */
-    p.rc.i_rc_method=X264_RC_CRF;p.rc.f_rf_constant=23;
-    p.rc.i_bitrate=rate;p.rc.i_vbv_max_bitrate=rate;
-    p.rc.i_vbv_buffer_size=rate/20<16?16:rate/20;
+    row_rate_control(&p,rate);
     if (x264_param_apply_profile(&p,"baseline")) return -1;
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,ew,eh)) return -1;
@@ -157,6 +165,19 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
         if (!row->decoder || !row->decoded || (protected&&!row->rgb)) return -1;
         row->decoder->thread_count=1;
         if (avcodec_open2(row->decoder,NULL,NULL)<0) return -1;
+    }
+    return 0;
+}
+/* MP-08/MP-10: retune a live session's rate without an IDR (pixelflux
+ * reconfigure_rate). Hardware rows cannot; the caller reopens them. */
+int cx_codec_rate(struct Codec *c,int bitrate) {
+    for (int r=0;r<c->row_count;r++) if (c->rows[r].hardware) return -1;
+    c->bitrate=bitrate;
+    for (int r=0;r<c->row_count;r++) {
+        struct Row *row=&c->rows[r];if(!row->codec)continue;
+        int h=2*((c->height/2*(r+1))/c->row_count)-2*((c->height/2*r)/c->row_count);
+        x264_param_t p;x264_encoder_parameters(row->codec,&p);row_rate_control(&p,row_rate(c,h));
+        if (x264_encoder_reconfig(row->codec,&p)<0) return -1;
     }
     return 0;
 }
