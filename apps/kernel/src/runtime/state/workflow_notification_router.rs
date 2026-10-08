@@ -176,7 +176,7 @@ impl KernelRuntimeState {
                             events: request.events,
                             filters: request.filters,
                         };
-                        let operation = if source.kernel_id == session.host_daemon_id() {
+                        let mut operation = if source.kernel_id == session.host_daemon_id() {
                             NotificationOperation::Attach {
                                 subscription,
                                 target,
@@ -184,6 +184,12 @@ impl KernelRuntimeState {
                         } else {
                             NotificationOperation::RemoteAttach { subscription }
                         };
+                        if let Some(grant) = self.notification_grant() {
+                            operation = NotificationOperation::Granted {
+                                grant,
+                                attach: Box::new(operation),
+                            };
+                        }
                         match self.owned.durable_state_store.notify(operation)? {
                             NotificationOutcome::Subscription(subscription) => {
                                 Ok(LocalDaemonResponse::WorkflowNotificationAttached {
@@ -297,7 +303,8 @@ impl KernelRuntimeOwnedState {
                 if !matches!(
                     route(&home, &sub.target_kernel_id),
                     NotificationRoute::Local
-                ) {
+                ) || !self.notification_grant_live(&sub)
+                {
                     continue;
                 }
                 let operation = self
@@ -712,6 +719,123 @@ mod tests {
         assert!(!subscriptions[0].source_available);
         drop(runtime);
         cleanup(f);
+    }
+    // MP-08 / MP-10 / MP-11 (review 914 P1): an attachment made under an external
+    // access grant ends with that grant; the owner's own attachments survive.
+    #[tokio::test]
+    async fn external_grant_notification_subscription_ends_with_its_grant() {
+        for end in ["revoke", "expiry", "process_exit", "restart"] {
+            let mut f = Fixture::new();
+            let (a, _, _) = f.workflow("source");
+            let (_, _, granted) = f.workflow("granted-target");
+            let (owner_target, _, owned) = f.workflow("owner-target");
+            let mut kernel = runtime(&mut f);
+            let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                        RegisterWorkflowNotificationSourceRequest {
+                            session_id: f.session.clone(),
+                            workflow_ref: a.clone(),
+                            enabled: true,
+                            output_fields: None,
+                        },
+                    ),
+                    "local",
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let attach = |publication_ref: &str| {
+                LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    delivery_mode: NotificationDeliveryMode::Queue,
+                    session_id: f.session.clone(),
+                    source_id: source.source_id.clone(),
+                    publication_ref: publication_ref.into(),
+                    queue_ref: None,
+                    ttl_days: 7,
+                    events: WorkflowNotificationEvents::Both,
+                    filters: serde_json::Value::Null,
+                })
+            };
+            let grant = kernel.insert_access_grant_for_test(&f.session);
+            let external = attach(&granted);
+            kernel
+                .with_external_command_authority(Some((grant.as_str(), &external)))
+                .execute_workflow_notification_command(external.clone(), "local")
+                .await
+                .unwrap();
+            kernel
+                .execute_workflow_notification_command(attach(&owned), "local")
+                .await
+                .unwrap();
+            f.complete(
+                &a,
+                "after-grant-end",
+                None,
+                crate::session::WorkflowRunStatus::Completed,
+                "kernel output",
+            );
+            kernel
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            match end {
+                "revoke" => {
+                    kernel
+                        .revoke_kernel_access(Some("local"), Some(&grant), "owner")
+                        .unwrap();
+                }
+                "restart" => {
+                    drop(kernel);
+                    f.store = crate::durable_state::DurableKernelStateStore::open_owned(
+                        f.root.join("kernel.sqlite"),
+                    )
+                    .unwrap();
+                    kernel = runtime(&mut f);
+                }
+                // Not yet swept: delivery itself must re-check the grant.
+                _ => {
+                    let mut access = kernel.owned.kernel_access.lock().unwrap();
+                    let live = access.grants.get_mut(&grant).unwrap();
+                    if end == "expiry" {
+                        live.deadline =
+                            std::time::Instant::now() - std::time::Duration::from_millis(1);
+                    } else {
+                        live.holder.start = live.holder.start.wrapping_add(1);
+                    }
+                }
+            }
+            kernel.owned.route_workflow_notifications();
+            let session = kernel.owned.session_store.get_session(&f.session).unwrap();
+            let queued = session
+                .workflow_queued_prompts()
+                .iter()
+                .map(|q| q.workflow_id().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                queued,
+                vec![owner_target.clone()],
+                "{end}: grant-bound delivery"
+            );
+            kernel.sweep_kernel_access();
+            let (_, subscriptions, _) = kernel
+                .owned
+                .durable_state_store
+                .notification_inventory("local")
+                .unwrap();
+            assert_eq!(
+                subscriptions
+                    .iter()
+                    .map(|s| s.workflow_id.clone())
+                    .collect::<Vec<_>>(),
+                vec![owner_target.clone()],
+                "{end}: only the owner's subscription remains active"
+            );
+            drop(kernel);
+            cleanup(f);
+        }
     }
     #[tokio::test]
     async fn a02_security_g11_retained_workflow_run_without_live_registration_is_reconciled() {

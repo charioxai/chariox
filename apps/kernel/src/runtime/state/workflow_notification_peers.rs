@@ -7,7 +7,7 @@ use crate::durable_state::{
     workflow_notifications::{self as store, NotificationOperation, NotificationOutcome},
 };
 use crate::local::*;
-const VERSION: u32 = 82;
+pub(super) const VERSION: u32 = 82;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 impl KernelRuntimeState {
@@ -291,7 +291,13 @@ impl KernelRuntimeState {
                     ));
                 }
             }
-            return Ok(LocalDaemonResponse::WorkflowNotificationAttached { subscription });
+            return self
+                .attached_within_grant(subscription)
+                .map(
+                    |subscription| LocalDaemonResponse::WorkflowNotificationAttached {
+                        subscription,
+                    },
+                );
         }
         Ok(result)
     }
@@ -395,6 +401,7 @@ impl KernelRuntimeState {
                                     && s.source_kernel_id == kernel
                                     && s.target_kernel_id == home
                             })
+                            .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
                         let target = WorkflowNotificationTarget::resolve(
                             &sessions,
