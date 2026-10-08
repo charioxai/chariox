@@ -10,6 +10,11 @@ MAX_NODES=8192
 MAX_DEPTH=32
 
 
+class NativeInputDenied(ValueError):
+    """MP-11: trusted helper refusal maps to the existing Browser/Vault code."""
+    pass
+
+
 def alive(process):
     try:
         stat=open('/proc/'+str(process['pid'])+'/stat').read()
@@ -236,42 +241,43 @@ def input_target(processes, expected=None):
     web input uses the existing document-bound Browser path instead; this
     native fallback refuses it, including nested frame/shadow descendants.
     """
+    if not processes:raise NativeInputDenied('native app scope unavailable')
     if expected is not None:
         # MP-11: recheck the bound native leaf/ancestors before every press,
         # without repeatedly traversing unrelated/background applications.
         # X focus/geometry is independently fenced by the keyboard helper.
         process=next((item for item in processes if item['pid']==expected['pid'] and item['started']==expected['started']),None)
-        if not process or not alive(process):raise ValueError('native app changed during input')
+        if not process or not alive(process):raise NativeInputDenied('native app changed during input')
         desktop=pyatspi.Registry.getDesktop(0)
         apps=[desktop.getChildAtIndex(i) for i in range(min(desktop.childCount,64))]
         apps=[app for app in apps if app and app.get_process_id()==expected['pid']]
-        if len(apps)!=1 or not 0<len(expected['path'])<=MAX_DEPTH:raise ValueError('native app ambiguous')
+        if len(apps)!=1 or not 0<len(expected['path'])<=MAX_DEPTH:raise NativeInputDenied('native app ambiguous')
         node=apps[0]
         for index in expected['path']:
-            if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise ValueError('protected native ancestor')
+            if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise NativeInputDenied('protected native ancestor')
             node=node.getChildAtIndex(index)
-            if node is None:raise ValueError('native focused leaf changed')
-        if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise ValueError('protected native focus')
+            if node is None:raise NativeInputDenied('native focused leaf changed')
+        if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise NativeInputDenied('protected native focus')
         state=node.getState()
         rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
         if not state.contains(pyatspi.STATE_FOCUSED) or not state.contains(pyatspi.STATE_SHOWING) or [rect.x,rect.y,rect.width,rect.height]!=expected['bounds']:
-            raise ValueError('native focus changed during input')
+            raise NativeInputDenied('native focus changed during input')
         return expected
     tree=snapshot(processes)
     active=tree.get('active_window')
     if not tree['available'] or not tree['complete'] or not active:
-        raise ValueError('native focus protection unavailable')
+        raise NativeInputDenied('native focus protection unavailable')
     belongs=lambda node: (node['pid']==active['pid'] and node['started']==active['started'] and
                           node['path'][:len(active['path'])]==active['path'])
     focused=[node for node in tree['nodes'] if belongs(node) and 'focused' in node['states']]
-    if not focused:raise ValueError('native focused leaf unavailable')
+    if not focused:raise NativeInputDenied('native focused leaf unavailable')
     depth=max(len(node['path']) for node in focused)
     leaves=[node for node in focused if len(node['path'])==depth]
-    if len(leaves)!=1:raise ValueError('native focus ambiguous')
+    if len(leaves)!=1:raise NativeInputDenied('native focus ambiguous')
     leaf=leaves[0]
     ancestors=[node for node in tree['nodes'] if belongs(node) and leaf['path'][:len(node['path'])]==node['path']]
     if any(node.get('native_protected',node['protected']) or node['role'] in ('document web','password text') for node in ancestors):
-        raise ValueError('protected target requires Browser or Vault input')
+        raise NativeInputDenied('protected target requires Browser or Vault input')
     identity={key:leaf[key] for key in ('pid','started','path','bounds')}
     return identity
 

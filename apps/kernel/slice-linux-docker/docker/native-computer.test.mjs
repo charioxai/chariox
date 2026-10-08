@@ -1,7 +1,7 @@
 // MP-08 / MP-11: fail-first adapter protection, binding and keyboard contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NativeComputer, nativeInput } from './native-computer.mjs';
+import { NativeComputer, nativeInput, executeNative } from './native-computer.mjs';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
 test('MP-11 native input rejects stale placement and invalid physical events', () => {
   for (const input of [{kind:'keycode',keycode:1,state:'down'},{kind:'keycode',keycode:38,state:'wrong'},{kind:'click',x:1280,y:1},{kind:'hold',key:'a',duration_ms:10001}]) assert.throws(() => nativeInput(input,binding));
@@ -68,4 +68,9 @@ test('MP-11 finding 1 each agent text/composition/chord dispatch carries live fo
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   }
   assert(sent.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});
+
+test('MP-11 finding 1 native helper uses the same typed Browser/Vault refusal for unproved focus',async()=>{
+  await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
+    {PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
 });

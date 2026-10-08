@@ -15,7 +15,7 @@ test('MP-11 agent repeats are refused; human bounded holds and agent single chor
  const events=[];const native=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{events.push(request);return {};}});
  await assert.rejects(native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'keycode',keycode:38,state:'down'}},{}),/human/);
  assert.equal(events.length,0);
- await assert.rejects(native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'hold',key:'a',duration_ms:50}},{}),/human/);
+ await assert.rejects(native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'hold',key:'a',duration_ms:50}},{}),error=>error.code==='user_domain_sensitive_requires_focus');
  await native.request({op:'input',surface_id:'s',generation:'g',input:{kind:'hold',key:'a',duration_ms:50}},{});
  await native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'key',key:'a'}},{});
  assert.equal(events.length,2);

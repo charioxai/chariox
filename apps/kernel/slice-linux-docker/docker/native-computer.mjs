@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
+import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 export function nativeInput(input, binding) {
   if (!input || typeof input !== 'object') throw new Error('MP-08: invalid native input');
@@ -52,6 +53,7 @@ export async function executeNative(request, environment, signal) {
     child.stdin.end(JSON.stringify(request));
     const code=await exit;
     if(signal?.aborted)throw Object.assign(new Error('MP-11: native input cancelled'),{code:'browser_action_cancelled'});
+    if(code!==0 && diagnostic==='NativeInputDenied' && !overflow)throw new UserDomainRefusal('sensitive_requires_focus');
     if(code!==0 || overflow) throw new Error('MP-08: native helper failed ('+diagnostic+')');
     return JSON.parse(output);
   } finally { clearTimeout(timer);signal?.removeEventListener('abort',cancel); }
@@ -111,8 +113,8 @@ export class NativeComputer {
       if(command._agent_input && input.kind==='keycode')throw new Error('MP-11: persistent physical keys require human input; agents use bounded key/hold');
       // MP-11: native repeats and clipboard/middle-button paste cannot fence
       // every text-producing event. Agents use focused text or a single chord.
-      if(command._agent_input && (['hold','clipboard_write'].includes(input.kind) || input.button===2))throw new Error('MP-11: native paste/repeat requires human or Vault input');
-      if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new Error('MP-11: protected target requires Vault input');
+      if(command._agent_input && (['hold','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
+      if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}

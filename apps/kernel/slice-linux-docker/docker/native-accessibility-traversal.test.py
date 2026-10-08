@@ -275,7 +275,7 @@ class TraversalTest(unittest.TestCase):
         leaf={**frame,'path':[0,0],'role':'text','states':['showing','focused','editable']}
         tree={'available':True,'complete':True,'protected':False,'active_window':{key:frame[key] for key in ('pid','started','path')},'nodes':[frame,leaf],'uncovered':[]}
         with patch.object(self.driver,'snapshot',return_value=tree):
-            expected=self.driver.input_target([])
+            expected=self.driver.input_target([{'pid':200,'started':'1'}])
             self.assertEqual(expected['path'],[0,0])
             for changed in [{**tree,'complete':False},{**tree,'active_window':None},
                 {**tree,'nodes':[frame,{**leaf,'protected':True}]},
