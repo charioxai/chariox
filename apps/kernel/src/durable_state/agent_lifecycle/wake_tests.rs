@@ -109,6 +109,194 @@ impl Drop for Fixture {
     }
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a new user turn remains a separate task,
+// but may explicitly cancel this same agent's retained watcher.
+#[test]
+fn a03_successor_turn_cancels_waiting_watch_without_transferring_ownership() {
+    let f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "process".into(),
+        pid: 42,
+        now: 20,
+    });
+    f.wait_on(&["process"]);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "cancel-turn".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::CancelWake {
+        id: "process".into(),
+        task: "cancel-turn".into(),
+        prompt: Some("cancel-turn".into()),
+    });
+    assert_eq!(f.wake("process").state, "cancelling");
+    assert_eq!(f.wake("process").task_id, "p");
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::ProcessExited {
+        id: "process".into(),
+        exit_code: Some(143),
+        tail: String::new(),
+        now: 50,
+    });
+    assert_eq!(f.wake("process").state, "cancelled");
+    assert_eq!(f.task().obligations[0].status, "cancelled");
+    assert!(f
+        .inbox()
+        .iter()
+        .any(|e| e.kind == "source_lost" && e.payload["task_id"] == "p"));
+}
+
+#[test]
+fn a03_successor_timer_cancellation_wakes_original_wait() {
+    let f = Fixture::new();
+    f.create("timer", "timer", Some(1_000), Some(60_000));
+    f.wait_on(&["timer"]);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "cancel-turn".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::CancelWake {
+        id: "timer".into(),
+        task: "cancel-turn".into(),
+        prompt: Some("cancel-turn".into()),
+    });
+    assert_eq!(f.wake("timer").state, "cancelled");
+    assert!(f
+        .inbox()
+        .iter()
+        .any(|e| e.kind == "source_lost" && e.payload["task_id"] == "p"));
+    f.apply(Operation::FireWakes { now: 100_000 });
+    assert_eq!(f.wake("timer").fire_count, 0);
+}
+
+#[test]
+fn a03_successor_cancel_rejects_foreign_room_agent_owner_and_stale_turn() {
+    for (room, agent, owner, prompt) in [
+        ("foreign", "agent", "owner", "cancel-turn"),
+        ("room", "other", "owner", "cancel-turn"),
+        ("room", "agent", "foreign", "cancel-turn"),
+        ("room", "agent", "owner", "stale"),
+    ] {
+        let f = Fixture::new();
+        f.create("timer", "timer", Some(1_000), None);
+        f.wait_on(&["timer"]);
+        f.apply(Operation::Begin {
+            owner: owner.into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: "cancel-turn".into(),
+            run: Some("run".into()),
+            now: 40,
+        });
+        assert!(f
+            .store
+            .agent_lifecycle(Operation::CancelWake {
+                id: "timer".into(),
+                task: "cancel-turn".into(),
+                prompt: Some(prompt.into())
+            })
+            .is_err());
+        assert_eq!(f.wake("timer").state, "scheduled");
+    }
+}
+
+#[test]
+fn a03_owner_resume_delivery_cannot_create_a_second_task_before_continuation() {
+    let f = Fixture::new();
+    f.create("timer", "timer", Some(1_000), Some(60_000));
+    f.apply(Operation::FireWakes { now: 1_000 });
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "owner action".into(),
+    });
+    let revision = f.task().blocked_revision;
+    let sequence = f.inbox()[0].sequence;
+    f.apply(Operation::OwnerResponse {
+        task: "p".into(),
+        revision,
+        resume: true,
+        now: 1_001,
+    });
+    let resumed = f.task();
+    let continuation = resumed.pending_prompt_id.clone().unwrap();
+    let attempt = || Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence,
+        prompt: "event-turn".into(),
+        target: None,
+        run: None,
+        now: 1_002,
+        work: None,
+    };
+    assert!(
+        f.store.agent_lifecycle(attempt()).is_err(),
+        "an event must not overtake the owner continuation"
+    );
+    assert_eq!(f.inbox()[0].state, "pending");
+    assert_eq!(f.task(), resumed);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: continuation.clone(),
+        run: Some("run".into()),
+        now: 1_003,
+    });
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: continuation.clone(),
+        registrations: vec!["completion-timer".into()],
+        cursor: 0,
+        deadline: 100_000,
+        reason: "resume waiting".into(),
+        now: 1_004,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: continuation,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 1_005,
+    });
+    f.apply(attempt());
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "event-turn".into(),
+        run: Some("run".into()),
+        now: 1_006,
+    });
+    assert_eq!(f.task().task_id, "p");
+    assert_eq!(f.task().prompt_id, "event-turn");
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("agent"))
+            .unwrap()
+            .len(),
+        1
+    );
+    f.apply(Operation::CancelWake {
+        id: "timer".into(),
+        task: "p".into(),
+        prompt: Some("event-turn".into()),
+    });
+    assert_eq!(f.wake("timer").state, "cancelled");
+}
+
 #[test]
 fn a03_interval_keeps_receipts_when_an_earlier_fire_is_acknowledged_late() {
     let f = Fixture::new();
@@ -116,6 +304,13 @@ fn a03_interval_keeps_receipts_when_an_earlier_fire_is_acknowledged_late() {
     f.wait_on(&["interval"]);
     f.apply(Operation::FireWakes { now: 1_000 });
     let first = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: first,
+        handled: true,
+        now: 60_000,
+    });
     f.apply(Operation::FireWakes { now: 61_000 });
     f.apply(Operation::Ack {
         room: "room".into(),
@@ -281,6 +476,13 @@ fn a03_interval_timer_coalesces_missed_fires_and_stays_armed() {
         ("scheduled", Some(360_000), 4)
     );
     assert!(f.wakes(Operation::FireWakes { now: 359_999 }).is_empty());
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: events[0].sequence,
+        handled: true,
+        now: 359_999,
+    });
     f.wakes(Operation::FireWakes { now: 360_000 });
     assert_eq!(f.inbox().len(), 2);
     assert!(f
@@ -586,12 +788,12 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
 }
 
 #[test]
-fn a03_recurring_timer_check_ins_never_block_their_task() {
+fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
     let f = Fixture::new();
     f.create("t1", "timer", Some(60_000), Some(60_000));
     f.wait_on(&["t1"]);
-    // Wake -> inspect -> nothing changed -> ack -> wait again, five times.
-    for n in 1..=5u64 {
+    // Wake -> inspect -> nothing changed -> ack -> wait; owner gate at three.
+    for n in 1..=3u64 {
         let now = n * 60_000;
         assert_eq!(f.wakes(Operation::FireWakes { now }).len(), 1);
         let e = f.inbox().pop().unwrap();
@@ -649,10 +851,20 @@ fn a03_recurring_timer_check_ins_never_block_their_task() {
         });
         assert_eq!(
             f.task().state,
-            ExecutionState::Waiting,
-            "handled check-in {n} is progress, not a no-progress strike"
+            if n < 3 {
+                ExecutionState::Waiting
+            } else {
+                ExecutionState::Blocked
+            },
+            "a check-in with no useful progress consumes its bounded wake budget"
         );
     }
+    assert!(f.wakes(Operation::FireWakes { now: 240_000 }).is_empty());
+    assert_eq!(
+        f.wake("t1").fire_count,
+        3,
+        "blocked timers stay inert until owner action"
+    );
 }
 
 #[test]
@@ -723,6 +935,124 @@ fn a03_teardown_retires_wakes_without_owner_authority() {
 }
 
 #[test]
+fn a03_teardown_settles_inflight_submitting_delivery_before_timeout() {
+    teardown_settles_inflight_deliveries("submitting");
+}
+
+#[test]
+fn a03_teardown_settles_inflight_uncertain_delivery_before_timeout() {
+    teardown_settles_inflight_deliveries("uncertain");
+}
+
+#[test]
+fn a03_teardown_settles_inflight_blocked_delivery() {
+    teardown_settles_inflight_deliveries("blocked");
+}
+
+fn teardown_settles_inflight_deliveries(state: &str) {
+    for agent in [Some("agent"), None] {
+        let f = Fixture::new();
+        f.create("t1", "timer", Some(1_000), Some(60_000));
+        f.wait_on(&["t1"]);
+        f.apply(Operation::FireWakes { now: 1_000 });
+        let sequence = f.inbox()[0].sequence;
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence,
+            prompt: "wake-prompt".into(),
+            target: None,
+            run: Some("wake-run".into()),
+            now: 1_001,
+            work: None,
+        });
+        if state == "uncertain" {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "agent".into(),
+                sequence,
+                state: state.into(),
+                now: 1_002,
+            });
+        } else if state == "blocked" {
+            f.apply(Operation::Sweep {
+                now: 1_001 + DELIVERY_TIMEOUT_MS,
+                busy_recipients: vec![],
+                held_work: Vec::new(),
+            });
+        }
+        assert_eq!(f.inbox()[0].state, state);
+        // Agent removal leaves peers alone; Room teardown leaves other Rooms alone.
+        for (room, recipient) in [("room", "peer"), ("other-room", "agent")] {
+            f.apply(Operation::Occur(occurrence(
+                room,
+                recipient,
+                "source",
+                "control",
+                "message",
+                serde_json::json!({}),
+            )));
+        }
+        for _ in 0..2 {
+            f.apply(Operation::RetireWakes {
+                room: "room".into(),
+                agent: agent.map(str::to_owned),
+                now: 2_000 + DELIVERY_TIMEOUT_MS,
+            });
+        }
+        f.apply(Operation::Sweep {
+            now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+            busy_recipients: vec![],
+            held_work: Vec::new(),
+        });
+        assert!(
+            f.store
+                .agent_tasks(Some("room"), Some("agent"))
+                .unwrap()
+                .iter()
+                .all(|t| t.state == ExecutionState::Cancelled),
+            "teardown of {state} must not produce a new Blocked delivery task"
+        );
+        assert_eq!(f.inbox()[0].state, "expired");
+        assert_eq!(f.wake("t1").last_delivery.as_deref(), Some("expired"));
+        let receipts = f.store.agent_wake_receipts(None, None).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].delivery, "expired");
+        assert!(receipts[0].delivered_at_ms.is_none());
+        assert!(receipts[0].acknowledged_at_ms.is_none());
+        for state in ["accepted", "rejected", "uncertain"] {
+            assert!(f
+                .store
+                .agent_lifecycle(Operation::Receipt {
+                    room: "room".into(),
+                    agent: "agent".into(),
+                    sequence,
+                    state: state.into(),
+                    now: 4_000 + 2 * DELIVERY_TIMEOUT_MS,
+                })
+                .is_err());
+        }
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(
+            reopened.agent_inbox("room", "agent", 0).unwrap()[0].state,
+            "expired"
+        );
+        assert_eq!(
+            reopened.agent_inbox("room", "peer", 0).unwrap()[0].state,
+            if agent.is_some() {
+                "pending"
+            } else {
+                "expired"
+            }
+        );
+        assert_eq!(
+            reopened.agent_inbox("other-room", "agent", 0).unwrap()[0].state,
+            "pending"
+        );
+    }
+}
+
+#[test]
 fn a03_wake_history_and_receipts_are_bounded() {
     let f = Fixture::new();
     f.create("interval", "timer", Some(60_000), Some(60_000));
@@ -748,10 +1078,18 @@ fn a03_wake_history_and_receipts_are_bounded() {
         let id = format!("finished-{n}");
         f.create(&id, "process", None, None);
         f.apply(Operation::ProcessExited {
-            id,
+            id: id.clone(),
             exit_code: None,
             tail: String::new(),
             now: 50,
+        });
+        // History retention is independent of the outstanding source budget.
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: f.wake(&id).last_sequence.unwrap(),
+            handled: true,
+            now: 51,
         });
     }
     let wakes = f.store.agent_wakes(None, None).unwrap();
@@ -765,4 +1103,191 @@ fn a03_wake_history_and_receipts_are_bounded() {
         "armed wakes are kept"
     );
     assert!(wakes.iter().any(|w| w.id == "finished-99"));
+}
+
+// MP-09/MP-11 secrev-d F1: a timer cannot fill its own inbox without ACKs.
+#[test]
+fn security_f1_one_shot_admission_bounds_unhandled_fires() {
+    let f = Fixture::new();
+    for n in 0..32 {
+        f.create(&format!("flood-{n}"), "timer", Some(1000), None);
+        f.apply(Operation::FireWakes { now: 1000 });
+    }
+    let mut wake = f.wake("flood-31");
+    wake.id = "overflow".into();
+    wake.registration_id = "completion-overflow".into();
+    wake.next_due_ms = Some(2000);
+    let result = f.store.agent_lifecycle(Operation::CreateWake {
+        task: "p".into(),
+        prompt: "p".into(),
+        wake,
+    });
+    assert!(
+        result.is_err(),
+        "unhandled fires must reserve wake capacity"
+    );
+}
+
+#[test]
+fn security_f1_recurring_fire_coalesces_until_handled() {
+    let f = Fixture::new();
+    f.create("recurring", "timer", Some(1000), Some(60000));
+    f.apply(Operation::FireWakes { now: 1000 });
+    f.apply(Operation::FireWakes { now: 181000 });
+    assert_eq!(
+        f.inbox().len(),
+        1,
+        "one unhandled occurrence per recurring source"
+    );
+    let seq = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        handled: true,
+        now: 181001,
+    });
+    f.apply(Operation::FireWakes { now: 181002 });
+    assert_eq!(f.wake("recurring").fire_count, 2);
+    assert_eq!(f.wake("recurring").missed_fires, 2);
+}
+
+#[test]
+fn security_f1_full_recipient_does_not_stop_peer_timers() {
+    let f = Fixture::new();
+    let mut peer = f.create("healthy", "timer", Some(1000), None);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "other-room".into(),
+        agent: "peer".into(),
+        prompt: "peer-turn".into(),
+        run: Some("peer-run".into()),
+        now: 1,
+    });
+    peer.id = "peer-wake".into();
+    peer.task_id = "peer-turn".into();
+    peer.room_id = "other-room".into();
+    peer.agent_id = "peer".into();
+    peer.registration_id = "completion-peer-wake".into();
+    f.apply(Operation::CreateWake {
+        task: "peer-turn".into(),
+        prompt: "peer-turn".into(),
+        wake: peer,
+    });
+    for n in 0..1024 {
+        f.apply(Operation::Occur(occurrence(
+            "room",
+            "agent",
+            "sender",
+            &n.to_string(),
+            "message",
+            serde_json::json!({}),
+        )));
+    }
+    let result = f.store.agent_lifecycle(Operation::FireWakes { now: 1000 });
+    assert!(
+        result.is_ok(),
+        "one recipient must not roll back all timers: {result:?}"
+    );
+    let peer = f
+        .store
+        .agent_wakes(Some("other-room"), Some("peer"))
+        .unwrap();
+    assert_eq!(peer[0].state, "fired");
+    // #914 may bypass the message cap for derived events. Until its shared
+    // policy lands, #925 retains the blocked occurrence for retry. Both paths
+    // must keep the occurrence, never silently lose it or stop peer timers.
+    let own = f.wake("healthy");
+    assert!(
+        (own.state == "scheduled" && own.fire_count == 0 && own.next_due_ms == Some(1000))
+            || (own.state == "fired" && own.fire_count == 1 && own.last_sequence.is_some()),
+        "full recipient must retain a retryable or committed occurrence: {own:?}"
+    );
+    let oldest = f.inbox()[0].sequence;
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: oldest,
+        handled: true,
+        now: 1001,
+    });
+    f.apply(Operation::FireWakes { now: 1002 });
+    assert_eq!(f.wake("healthy").state, "fired");
+    assert_eq!(
+        f.wake("healthy").fire_count,
+        1,
+        "retry cannot duplicate the occurrence"
+    );
+}
+
+// MP-09/MP-11 F12: acknowledgement alone is not useful progress.
+#[test]
+fn security_f12_recurring_ack_does_not_reset_no_progress_budget() {
+    let f = Fixture::new();
+    f.create("check-in", "timer", Some(1000), Some(60000));
+    f.wait_on(&["check-in"]);
+    let before = f.task();
+    f.apply(Operation::FireWakes { now: 1000 });
+    let seq = f.inbox()[0].sequence;
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        prompt: "check-in-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: 1001,
+        work: None,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        state: "accepted".into(),
+        now: 1002,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: seq,
+        handled: true,
+        now: 1003,
+    });
+    let after = f.task();
+    assert_eq!(
+        after.no_progress_wakes, 1,
+        "a handled timer cannot fund another endless wake turn"
+    );
+    assert_eq!(after.progress_sequence, before.progress_sequence);
+    assert_eq!(after.last_progress_at_ms, before.last_progress_at_ms);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: canonical room workflow admission
+// and legacy persisted admission both get a completion registration.
+#[test]
+fn a03_workflow_run_receipt_admits_a_live_completion_registration() {
+    for kind in ["workflow", "workflow_run"] {
+        let f = Fixture::new();
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "agent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "workflow-obligation".into(),
+            kind: kind.into(),
+            resource: Some("workflow-run".into()),
+            now: 10,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: "workflow-obligation".into(),
+            accepted: true,
+            resource: Some("workflow-run".into()),
+        });
+        let regs = f.store.agent_registrations("p").unwrap();
+        assert!(
+            regs.iter().any(|r| r.source_id == "workflow-run" && r.live),
+            "{kind} must admit its completion source"
+        );
+    }
 }

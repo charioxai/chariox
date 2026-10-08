@@ -435,13 +435,32 @@ impl SessionService {
         now_ms: u64,
         grace_period_ms: u64,
     ) -> Result<usize, DaemonError> {
+        self.reconcile_live_orphaned_workflow_runs_with_tasks(
+            session_id,
+            now_ms,
+            grace_period_ms,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn reconcile_live_orphaned_workflow_runs_with_tasks(
+        &mut self,
+        session_id: &str,
+        now_ms: u64,
+        grace_period_ms: u64,
+        supervised_tasks: &BTreeSet<(String, String)>,
+    ) -> Result<usize, DaemonError> {
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.reconcile_live_orphaned_workflow_runs(now_ms, grace_period_ms))
+        Ok(session.reconcile_live_orphaned_workflow_runs_with_tasks(
+            now_ms,
+            grace_period_ms,
+            supervised_tasks,
+        ))
     }
 
     pub fn has_queued_workflow_prompt_for_watchdog(

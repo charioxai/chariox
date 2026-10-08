@@ -74,6 +74,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if earlier != 0 {
                 return Err(error("earlier recipient delivery must settle first"));
             }
+            // Owner Resume/correction already owns the next turn. Do not let
+            // an idle inbox attempt race its admission into a second task.
+            if target.is_none()
+                && e.kind != "message"
+                && tasks(tx)?.iter().any(|t| {
+                    t.room_id == room
+                        && t.agent_id == agent
+                        && t.pending_prompt_id.is_some()
+                        && (e.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                            || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                            }))
+                })
+            {
+                return Err(error("task continuation must settle before inbox delivery"));
+            }
             replies::bind(tx, &e, target.as_deref())?;
             e.state = "submitting".into();
             e.prompt_id = Some(prompt.clone());
@@ -252,13 +268,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             e.state = if handled { "handled" } else { "acknowledged" }.into();
             save_event(tx, &e)?;
             super::wakes::record_delivery(tx, &e)?;
-            // A handled recurring check-in is the progress its timer exists for.
-            if handled
-                && matches!(
-                    e.kind.as_str(),
-                    "source_completed" | "source_lost" | "timer_fired"
-                )
-            {
+            // A recurring check-in ACK is bookkeeping, not useful progress.
+            // The existing three-no-progress-wake guard requires owner action.
+            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
                 for mut t in tasks(tx)? {
                     if t.room_id != room
                         || t.agent_id != agent
@@ -281,9 +293,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
                         });
                     if changed || belongs {
-                        t.no_progress_wakes = 0;
-                        t.progress_sequence += 1;
-                        t.last_progress_at_ms = now;
+                        let timer_outcome = e.payload["public_answer"]["kind"].as_str() == Some("timer")
+                            || tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND json_extract(payload,'$.kind')='timer')", [&e.source_id], |r| r.get::<_,bool>(0)).map_err(sql)?;
+                        // Closing a timer obligation is required bookkeeping,
+                        // but even rearming one-shot timers cannot buy progress.
+                        if !timer_outcome {
+                            t.no_progress_wakes = 0;
+                            t.progress_sequence += 1;
+                            t.last_progress_at_ms = now;
+                        }
                         t.revision += 1;
                         save(tx, &t)?;
                     }

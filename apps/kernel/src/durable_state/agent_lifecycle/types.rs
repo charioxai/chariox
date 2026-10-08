@@ -271,6 +271,13 @@ pub(crate) enum Operation {
     Withdraw {
         task: String,
     },
+    /// Private kernel lineage; not a serialized client contract.
+    BindWorkflow {
+        task: String,
+        prompt: String,
+        run: String,
+        node: String,
+    },
     OwnerResponse {
         task: String,
         revision: u64,
@@ -317,7 +324,7 @@ pub(crate) enum Operation {
     },
     /// Kernel teardown of a Room (`agent: None`) or agent, without owner
     /// authority: cancels its unfinished tasks, settles its armed wakes
-    /// (processes on physical exit) and expires its pending events.
+    /// (processes on physical exit) and expires its unresolved deliveries.
     RetireWakes {
         room: String,
         agent: Option<String>,

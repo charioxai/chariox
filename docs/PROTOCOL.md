@@ -444,6 +444,24 @@ unresolved obligations and has a finite future deadline. Waiting commits only
 when the official provider turn settles. Source completion/loss and overdue
 waits wake the retained task; ACK and provider acceptance remain distinct.
 
+MP-08 / MP-09 / MP-10 / MP-11: `chariox.events.cancel_wake` also accepts an
+earlier task's retained source from the same agent, room and owner. The caller
+still supplies the running turn's task and prompt IDs. Source ownership stays
+with the original task; its cancellation outcome invalidates the original
+wait, and a watched process settles only after physical exit. An owner Resume
+or corrective continuation takes precedence over that task's pending inbox
+delivery, so the event cannot create a replacement task during admission.
+
+A workflow node that yields remains supervised by its durable task after the
+native provider turn ends. The returned workflow run ID stays live and
+addressable for cancellation. Wake and owner continuations retain the same
+workflow/node context; cancelling the run cancels its bound tasks and resources.
+Orphan reconciliation and workflow completion must respect those retained
+tasks, including physical resource settlement after cancellation. The canonical
+`workflow_run` obligation and legacy `workflow` spelling share completion-source
+admission and settlement, so cancellation also releases the parent's wait.
+This lineage is private kernel storage and adds no serialized client fields.
+
 A final answer with unresolved obligations gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every

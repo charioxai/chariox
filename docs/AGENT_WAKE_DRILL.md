@@ -20,9 +20,12 @@ profile without reading or copying its credentials.
    delivery and acknowledgement, and the agent's final disposition.
 4. Repeat with a one-minute recurring check-in, missing several intervals
    across restart. Verify one coalesced fire, its missed count, the next due
-   time, and independent receipts for each fire. Let at least four handled
-   check-ins pass without other progress; the task must stay waiting, not
-   blocked. Cancel it explicitly; the cancellation is not shown as a fire.
+   time, and independent receipts for each fire. Let three handled
+   check-ins pass without other progress. The third must block the task with
+   one owner interaction; the fourth must not start a provider turn. Verify
+   the visible owner gate, explicitly Resume, and confirm scheduling resumes
+   on the original task. In a separate pass choose Cancel and confirm wakes
+   retire without recording cancellation as a fire.
 5. Disconnect the TUI during a wait and reconnect. `/agent wakes` must show
    the same registrations, next fire, last fire and last receipt. A future
    timer alone must not count as active managed work.
@@ -85,3 +88,20 @@ through the authorized hosted relay and normal managed STOP/start path; an
 ordinary restart does not establish that placement gate. Missing accounts,
 relay access or a managed machine must identify the exact owner action needed.
 Do not claim an MP item closed from these focused runs alone.
+
+## MP-08 / MP-09 / MP-10 / MP-11: cancellation and confirmation races
+
+1. Ask a real provider to launch a child workflow that runs the repository's
+   actual tests, then waits on a recurring timer. Have the creating task request
+   an owner decision with `chariox.events.blocked`. Once the child is Waiting,
+   choose **Cancel** in the TUI's owner interaction. Verify the returned run is
+   Stopped, the child's owned resources settle, the parent's `workflow_run`
+   obligation closes, and its completion source is released. A cancelled task
+   with an open `cancel_requested` workflow obligation is a failure.
+2. In the isolated scheduler-fault setup above, request one one-shot timer with
+   `delay_ms=1000`. Remove the stall file after that provider-created timer is
+   due, before its five-second confirmation wait expires. The scheduler verifies
+   and fires it in the same tick. Verify the actual timer reply still reports
+   `scheduler_confirmed: true` with the fired wake's exact `verified_at_ms`, then
+   acknowledge its one event. Repeat on the base and retain the false-confirmation
+   reply as RED evidence; firing alone does not prove the caller saw confirmation.

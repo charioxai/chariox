@@ -11,7 +11,18 @@ fn label(args: &serde_json::Value) -> Result<String, DaemonError> {
     if label.is_empty() || label.chars().count() > 200 {
         return Err(ledger::error("label of 1-200 characters required"));
     }
-    Ok(crate::secret_redaction::redact_secrets(label).into_owned())
+    let label = metadata(label);
+    if label.trim().is_empty() {
+        return Err(ledger::error("visible label required after sanitization"));
+    }
+    Ok(label)
+}
+
+fn metadata(text: &str) -> String {
+    super::super::agent_process_output::sanitize(text.as_bytes())
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> AgentWake {
@@ -134,21 +145,26 @@ impl KernelRuntimeState {
                         !a.is_empty()
                             && a.len() <= 64
                             && !a[0].is_empty()
-                            && a.iter().all(|s| s.len() <= 4_096 && !s.contains('\0'))
+                            && a.iter().all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
                     })
-                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell)"))?;
+                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell; control characters are refused)"))?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
                     }
-                    other => other.map(str::to_owned),
+                    other => other.map(metadata),
                 };
+                if match_text.as_ref().is_some_and(|m| m.is_empty()) {
+                    return Err(ledger::error(
+                        "visible match_text required after sanitization",
+                    ));
+                }
                 let mut wake = new_wake(task, "process", label(args)?, now);
-                wake.command = argv
-                    .iter()
-                    .map(|a| crate::secret_redaction::redact_secrets(a).into_owned())
-                    .collect();
+                wake.command = argv.clone();
                 wake.match_text = match_text;
+                self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
+                    .await?;
+                self.authorize_current_external_command()?;
                 let wake = self
                     .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, run)
                     .await?;
@@ -174,5 +190,196 @@ impl KernelRuntimeState {
             }
             _ => return Err(ledger::error("unknown wake tool")),
         })
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn security_f13_wake_label_strips_terminal_controls() {
+        let result =
+            label(&serde_json::json!({"label":"safe\u{1b}[2J\u{1b}]0;forged-title\u{7}\u{85}end"}))
+                .unwrap();
+        assert!(
+            !result.chars().any(char::is_control),
+            "unsafe label retained: {result:?}"
+        );
+        assert!(
+            !result.contains("forged-title"),
+            "OSC payload must not become visible metadata"
+        );
+    }
+
+    async fn fixture(
+        provider: &str,
+        native: bool,
+    ) -> (
+        KernelRuntimeState,
+        crate::provider::RuntimeProviderRun,
+        AgentTaskExecution,
+        crate::test_support::TestWorktree,
+    ) {
+        use crate::provider::*;
+        let worktree = crate::test_support::TestWorktree::new("security-wake-admission");
+        let mut app =
+            crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let mut request =
+            LaunchProviderRequest::new(session.id(), provider, provider, "default", "test-model")
+                .with_agent_id(agent.id())
+                .with_execution_mode(AgentExecutionMode::Build)
+                .with_permission_level(AgentPermissionLevel::Yolo)
+                .with_client_interface(if native {
+                    ProviderClientInterface::NativeTui
+                } else {
+                    ProviderClientInterface::Chariox
+                });
+        request.write_access_mode = ProviderWriteAccessMode::Unrestricted;
+        let run = RuntimeProviderRun::new(
+            "security-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "security-wake".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let ledger::Outcome::Task(task) = app
+            .durable_state_store()
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: "security-turn".into(),
+                run: Some(run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap()
+        else {
+            panic!("task required")
+        };
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        (router.runtime_state(), run, task, worktree)
+    }
+
+    #[tokio::test]
+    async fn security_f10_claude_native_yolo_cannot_launch_without_current_user_approval() {
+        let (state, run, task, _worktree) = fixture("claude", true).await;
+        let result = state
+            .dispatch_agent_wake_tool(
+                Some(&run),
+                "chariox.events.process",
+                &serde_json::json!({"label":"approval-test", "argv":["/bin/sleep","0.1"]}),
+                &task,
+            )
+            .await;
+        state.owned.agent_wakes.processes.shutdown();
+        assert!(
+            result.is_err(),
+            "launch-time bypass is insufficient without live approval: {result:?}"
+        );
+        assert!(
+            state
+                .owned
+                .durable_state_store
+                .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+                .unwrap()
+                .is_empty(),
+            "denied calls must not create a launch intent"
+        );
+    }
+    #[tokio::test]
+    async fn review_r1_control_arguments_are_refused_before_launch() {
+        let (state, run, task, _worktree) = fixture("codex", false).await;
+        for argument in ["safe\u{1b}[31mready", "line\nnext", "safe\u{85}"] {
+            let result = state
+                .dispatch_agent_wake_tool(
+                    Some(&run),
+                    "chariox.events.process",
+                    &serde_json::json!({"label":"safe", "argv":["/bin/echo", argument]}),
+                    &task,
+                )
+                .await;
+            state.owned.agent_wakes.processes.shutdown();
+            assert!(
+                result.is_err(),
+                "MP-11 R1: differing display/execution must be refused: {result:?}"
+            );
+        }
+        assert!(state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .is_empty());
+    }
+    #[tokio::test]
+    async fn review_r1_changed_argv_cannot_reuse_an_approval() {
+        let (state, run, task, worktree) = fixture("codex", false).await;
+        let mut wake = new_wake(
+            &task,
+            "process",
+            "approved echo".into(),
+            crate::session::unix_epoch_ms(),
+        );
+        wake.command = vec!["/bin/echo".into(), "two words".into(), "".into()];
+        let result = state
+            .start_agent_process(
+                wake,
+                vec!["/bin/echo".into(), "different".into()],
+                worktree.path().to_path_buf(),
+                &task.task_id,
+                &task.prompt_id,
+                &run,
+            )
+            .await;
+        state.owned.agent_wakes.processes.shutdown();
+        assert!(
+            result.is_err(),
+            "MP-11 R1: a changed vector requires fresh approval"
+        );
+        assert!(state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_r1_safe_argument_boundaries_survive_metadata_retention() {
+        let (state, run, task, _worktree) = fixture("codex", false).await;
+        let argv = vec!["/bin/echo", "two words", "", "quote\"and\\slash"];
+        let result = state.dispatch_agent_wake_tool(Some(&run), "chariox.events.process",
+            &serde_json::json!({"label":"safe\u{1b}[2Jlabel", "argv":argv, "match_text":"\u{1b}[31mready\u{85}"}), &task).await;
+        state.owned.agent_wakes.processes.shutdown();
+        result.unwrap();
+        let wake = state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .remove(0);
+        assert_eq!(wake.command, argv);
+        assert!(!wake.label.chars().any(char::is_control));
+        assert_eq!(wake.match_text.as_deref(), Some("ready"));
+        let shown = serde_json::to_string(&wake.command).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&shown).unwrap(),
+            wake.command
+        );
     }
 }

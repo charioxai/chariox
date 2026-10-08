@@ -184,6 +184,11 @@ impl KernelRuntimeState {
         };
         let mut recipients = BTreeSet::new();
         for wake in fired {
+            if wake.last_delivery.as_deref() == Some("backpressured") {
+                self.wake_notice(&wake, format!("Wake alert: '{}' is backpressured by its recipient; its due occurrence is retained and other timers continue", wake.label));
+                recipients.insert((wake.room_id, wake.agent_id));
+                continue;
+            }
             let due = due
                 .iter()
                 .find(|d| d.id == wake.id)
@@ -269,11 +274,8 @@ impl KernelRuntimeState {
             let verified = self
                 .owned
                 .durable_state_store
-                .agent_armed_timers()
-                .ok()?
-                .into_iter()
-                .find(|w| w.id == id)
-                .and_then(|w| w.verified_at_ms);
+                .agent_wake_verification(id)
+                .ok()?;
             if verified.is_some() {
                 return verified;
             }
@@ -312,17 +314,20 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let stopped = super::agent_process_group::reap_orphans(
-            &lost.iter().map(|wake| wake.id.clone()).collect(),
+            &lost
+                .iter()
+                .map(|wake| (wake.id.clone(), wake.created_at_ms))
+                .collect(),
         );
         for wake in lost {
-            let mut orphans = match stopped.get(&wake.id) {
-                Some(count) => format!("; {count} process(es) it left running were stopped"),
-                None => String::new(),
+            let mut orphans = match &stopped {
+                Ok(stopped) => stopped.get(&wake.id).map(|count| format!("; {count} process(es) it left running were stopped and their exits confirmed")).unwrap_or_default(),
+                Err(_) => "; escaped subtree settlement is unconfirmed after bounded cleanup; survivors may still be running and require operator cleanup".into(),
             };
             // Without the managed PID namespace, survivors are found only by
             // their inherited wake marker.
             if !crate::provider::managed_provider_isolation_required() {
-                orphans.push_str("; descendants that cleared their environment cannot be attributed and may still be running");
+                orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),

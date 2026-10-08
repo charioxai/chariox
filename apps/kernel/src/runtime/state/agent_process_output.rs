@@ -20,24 +20,43 @@ pub(super) fn room_protector(
 
 /// Strips terminal escapes/control bytes and redacts secrets before any
 /// output is matched, retained or shown to the model.
-fn sanitize(raw: &[u8]) -> String {
+pub(super) fn sanitize(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(n) = chars.next() {
+        let control = if c == '\u{1b}' {
+            chars.next()
+        } else {
+            match c {
+                '\u{9b}' => Some('['),
+                '\u{9d}' => Some(']'),
+                '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => Some('P'),
+                _ => None,
+            }
+        };
+        match control {
+            Some('[') => {
+                for n in chars.by_ref() {
                     if ('@'..='~').contains(&n) {
                         break;
                     }
                 }
-            } else {
-                chars.next();
             }
-        } else if c == '\t' || !c.is_control() {
-            out.push(c);
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(n) = chars.next() {
+                    if n == '\u{7}' || n == '\u{9c}' {
+                        break;
+                    }
+                    if n == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {}
+            None if c == '\t' || !c.is_control() => out.push(c),
+            None => {}
         }
     }
     crate::secret_redaction::redact_secrets(&out).into_owned()
@@ -46,6 +65,7 @@ fn sanitize(raw: &[u8]) -> String {
 pub(super) enum Signal {
     Matched(String),
     Exited(i32, String),
+    Lost(String),
     SupervisionFailed,
 }
 
@@ -53,9 +73,14 @@ pub(super) enum Signal {
 pub(super) struct Output {
     tail: std::sync::Mutex<std::collections::VecDeque<String>>,
     matched: std::sync::atomic::AtomicBool,
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Output {
+    pub(super) fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     fn push(&self, line: String) {
         let Ok(mut tail) = self.tail.lock() else {
             return;
@@ -115,10 +140,16 @@ pub(super) fn drain(
         }
         output.push(text);
     };
-    while let Ok(n) = stream.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
+    while !output.stopped.load(std::sync::atomic::Ordering::Acquire) {
+        let n = match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            Err(_) => break,
+        };
         for byte in &buffer[..n] {
             if *byte == b'\n' {
                 emit(&mut line, &mut truncated);
@@ -198,10 +229,7 @@ mod tests {
     #[test]
     fn a03_output_is_sanitized_bounded_and_matches_once() {
         assert_eq!(sanitize(b"\x1b[31mred\x1b[0m ok\x07"), "red ok");
-        let output = Arc::new(Output {
-            tail: Default::default(),
-            matched: Default::default(),
-        });
+        let output = Arc::new(Output::default());
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut input = b"boot\nready one\nready two\n".to_vec();
         input.extend(std::iter::repeat_n(b'x', 10_000));

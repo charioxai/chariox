@@ -13,6 +13,7 @@ mod types;
 #[cfg(test)]
 mod wake_tests;
 mod wakes;
+mod workflow_tasks;
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -72,6 +73,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
             .map_err(sql)?;
     }
     wakes::initialize(db)?;
+    workflow_tasks::initialize(db)?;
     migration::migrate(db)
 }
 impl DurableKernelStateStore {

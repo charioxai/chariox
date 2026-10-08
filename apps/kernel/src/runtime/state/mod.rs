@@ -1198,4 +1198,5 @@ mod agent_task_owner_resolution;
 mod agent_task_projection;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
+mod agent_workflow_tasks;
 mod room_dispatch_obligation;
