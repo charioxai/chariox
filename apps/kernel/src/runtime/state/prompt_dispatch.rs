@@ -652,16 +652,14 @@ impl KernelRuntimeState {
             if let Some(mut submission) =
                 owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
+                self.finish_owned_prompt_submission(&mut submission).await?;
                 return Ok(submission);
             }
             authorize()?;
             if let Some(mut submission) =
                 owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
             {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
+                self.finish_owned_prompt_submission(&mut submission).await?;
                 self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                 return Ok(submission);
             }
@@ -702,8 +700,7 @@ impl KernelRuntimeState {
                     if let Some(mut submission) = owned
                         .submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                     {
-                        self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                            .await?;
+                        self.finish_owned_prompt_submission(&mut submission).await?;
                         self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                         return Ok(submission);
                     }
@@ -720,8 +717,7 @@ impl KernelRuntimeState {
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
-                    self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                        .await?;
+                    self.finish_owned_prompt_submission(&mut submission).await?;
                     return Ok(submission);
                 }
             }
@@ -734,13 +730,37 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn finish_owned_prompt_submission_workflow_start(
+    pub(super) async fn finish_owned_prompt_submission(
         &self,
         submission: &mut crate::app::KernelPromptSubmission,
     ) -> Result<(), DaemonError> {
-        let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome
-        else {
-            return Ok(());
+        let prompt = match &submission.outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                let session_id = submission.session.id();
+                let agent_id = prompt.target_agent_id();
+                if !crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    prompt.source_attachment_id(),
+                ) && self
+                    .owned
+                    .agent_store
+                    .get_agent(agent_id)?
+                    .remote_execution()
+                    .is_none()
+                    && self
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(session_id, agent_id)
+                        .is_some_and(|run| {
+                            run.state() == crate::provider::ProviderRunState::Running
+                        })
+                {
+                    // A previous promotion may have failed while retaining an idle
+                    // run. Admission preserves FIFO; retry preparation off the lane.
+                    self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id)?;
+                }
+                return Ok(());
+            }
         };
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(prompt.source_attachment_id())
         {

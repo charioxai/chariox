@@ -28,8 +28,16 @@ impl owned::OwnedRemoteAgentProfileUpdate {
     }
 }
 
+pub(super) struct ValidatedAgentProfile {
+    pub(super) agent: crate::agent::AgentInstance,
+    pub(super) provider: String,
+    pub(super) account_profile: String,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
+}
+
 impl KernelRuntimeOwnedState {
-    pub(super) fn update_agent_profile(
+    pub(super) fn validate_agent_profile_update(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -38,7 +46,7 @@ impl KernelRuntimeOwnedState {
         account_profile: Option<String>,
         model: Option<String>,
         effort: Option<Option<String>>,
-    ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
+    ) -> Result<ValidatedAgentProfile, DaemonError> {
         let provider = provider
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
@@ -103,6 +111,39 @@ impl KernelRuntimeOwnedState {
             Some(value) => value.as_deref(),
             None => agent.effort(),
         };
+        Ok(ValidatedAgentProfile {
+            effort: target_effort.map(str::to_string),
+            agent,
+            provider: target_provider,
+            account_profile: target_account_profile,
+            model: target_model,
+        })
+    }
+
+    pub(super) fn update_agent_profile(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        provider: Option<String>,
+        account_profile: Option<String>,
+        model: Option<String>,
+        effort: Option<Option<String>>,
+    ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
+        let validated = self.validate_agent_profile_update(
+            session_id,
+            agent_id,
+            caller_user_id,
+            provider,
+            account_profile,
+            model,
+            effort,
+        )?;
+        let agent = validated.agent;
+        let target_provider = validated.provider;
+        let target_account_profile = validated.account_profile;
+        let target_model = validated.model;
+        let target_effort = validated.effort.as_deref();
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
             || target_account_profile != agent.provider_account_profile();

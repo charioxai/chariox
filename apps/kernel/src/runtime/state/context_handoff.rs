@@ -25,6 +25,8 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_provider: String,
     pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
+    /// Captured from the target launch environment; internal, not serialized.
+    target_1m_context_disabled: bool,
     pub(super) conversation: AgentConversation,
     /// Derived from history for a provider switch, so it carries the agent's
     /// handoff brief.
@@ -159,9 +161,10 @@ impl PendingAgentContextHandoff {
     /// The packet size the target allows: 15% of its model's window, within
     /// the prompt transport's cap.
     fn budget(&self) -> usize {
-        let window = crate::provider::model_context_window_tokens(
+        let window = crate::provider::effective_model_context_window_tokens(
             &self.target_provider,
             self.target_model.as_deref().unwrap_or_default(),
+            self.target_1m_context_disabled,
         );
         (window * HANDOFF_WINDOW_PERCENT / 100 * HANDOFF_BYTES_PER_TOKEN)
             .min(MAX_PROMPT_HANDOFF_BYTES) as usize
@@ -288,6 +291,7 @@ impl super::KernelRuntimeOwnedState {
                     target_provider: target_provider.to_string(),
                     target_account_profile: target_account_profile.to_string(),
                     target_model: target_model.map(str::to_string),
+                    target_1m_context_disabled: false,
                     conversation,
                     derived: false,
                 },
@@ -348,6 +352,8 @@ impl super::KernelRuntimeOwnedState {
         {
             // A substitute is prepared after the failed turn was recorded and
             // receives that turn's prompt as its request.
+            handoff.target_1m_context_disabled =
+                crate::provider::claude_1m_context_disabled(target_run);
             handoff.conversation = handoff.conversation.before_prompt(prompt_id);
             return Some(handoff);
         }
@@ -448,6 +454,7 @@ impl super::KernelRuntimeOwnedState {
             target_provider: target_run.provider().to_string(),
             target_account_profile: target_run.account_profile().to_string(),
             target_model: Some(target_run.model().to_string()),
+            target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
             conversation,
             derived: true,
         })
@@ -668,6 +675,7 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: Some("model-new".to_string()),
+                target_1m_context_disabled: false,
                 conversation: conversation("prior context"),
                 derived: false,
             },
@@ -1265,7 +1273,7 @@ mod tests {
             )
             .await;
         assert!(handoff.derived);
-        assert_eq!(handoff.budget(), 90_000);
+        assert_eq!(handoff.budget(), MAX_PROMPT_HANDOFF_BYTES as usize);
         assert!(handoff
             .render(handoff.budget())
             .unwrap()
@@ -1275,6 +1283,56 @@ mod tests {
             ..handoff
         };
         assert_eq!(codex.budget(), 116_280);
+    }
+
+    #[tokio::test]
+    async fn claude_handoff_budget_uses_the_target_accounts_effective_context_cap() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember amber-kestrel");
+        let request = crate::provider::LaunchProviderRequest::new(
+            &fixture.session_id,
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(&fixture.agent_id);
+        let mut target = RuntimeProviderRun::new(
+            "capped-target",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: [("CLAUDE_CODE_DISABLE_1M_CONTEXT".into(), "1".into())].into(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        target.mark_running();
+        let capped = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "next",
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            capped.budget(),
+            90_000,
+            "the account's 200k cap must constrain the handoff"
+        );
+        assert!(capped
+            .render(capped.budget())
+            .unwrap()
+            .contains("amber-kestrel"));
     }
 
     fn test_run_in_session(
@@ -1307,6 +1365,7 @@ mod tests {
             target_provider: String::new(),
             target_account_profile: "default".to_string(),
             target_model: None,
+            target_1m_context_disabled: false,
             conversation: AgentConversation::default(),
             derived: true,
         };
@@ -1407,6 +1466,7 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: None,
+                target_1m_context_disabled: false,
                 conversation: conversation("workflow context"),
                 derived: false,
             },
@@ -1432,6 +1492,7 @@ mod tests {
             target_provider: "claude-headless".to_string(),
             target_account_profile: "default".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
+            target_1m_context_disabled: false,
             conversation: conversation("prior context"),
             derived: false,
         };
@@ -1459,6 +1520,7 @@ mod tests {
                 target_provider: "codex".to_string(),
                 target_account_profile: "default".to_string(),
                 target_model: Some("gpt-5".to_string()),
+                target_1m_context_disabled: false,
                 conversation: conversation("prior context"),
                 derived: false,
             },

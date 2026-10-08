@@ -292,7 +292,7 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let envelope = if policy.is_metadata_only() {
+        let envelope = if policy.sends_bare_prompt() {
             crate::prompt_assembly::PromptEnvelope::new(
                 visible_user_prompt,
                 hidden_system_context,
@@ -461,7 +461,7 @@ impl ProviderProcessService {
         let mut run = self.get_run(provider_run_id)?;
         if let Some(model) = batch.resolved_model.as_deref() {
             let model = if run.adapter_key() == "claude" {
-                normalize_claude_selection_model(model)
+                resolved_claude_model(run.model(), model)
             } else {
                 model.to_string()
             };
@@ -508,7 +508,7 @@ impl ProviderProcessService {
         }
         if let Some(model) = batch.resolved_model.as_deref() {
             let model = if adapter_key == "claude" {
-                normalize_claude_selection_model(model)
+                resolved_claude_model(run.model(), model)
             } else {
                 model.to_string()
             };
@@ -688,6 +688,19 @@ impl ProviderProcessService {
     }
 }
 
+/// The model Claude reports for a turn, kept on the selection's 1M-token
+/// context: Claude names the base model without the `[1m]` it runs.
+fn resolved_claude_model(selected: &str, resolved: &str) -> String {
+    let resolved = normalize_claude_selection_model(resolved);
+    if selected.to_ascii_lowercase().ends_with("[1m]")
+        && !resolved.to_ascii_lowercase().ends_with("[1m]")
+    {
+        format!("{resolved}[1m]")
+    } else {
+        resolved
+    }
+}
+
 fn normalize_claude_selection_model(model: &str) -> String {
     model
         .trim()
@@ -779,6 +792,44 @@ mod tests {
 
         assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
         assert_eq!(run.provider_session_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn a_resolved_claude_model_keeps_the_one_million_token_selection() {
+        let mut providers = ProviderProcessService::new();
+        let run_id = |providers: &mut ProviderProcessService, model: &str| {
+            providers
+                .start_run_provider_only(LaunchProviderRequest::new(
+                    "session-1",
+                    "claude",
+                    "claude",
+                    "default",
+                    model,
+                ))
+                .expect("provider run should start")
+                .run()
+                .id()
+                .to_string()
+        };
+        let batch = crate::provider::ProviderPromptSignalBatch {
+            resolved_model: Some("claude/claude-sonnet-5-5".to_string()),
+            ..Default::default()
+        };
+
+        for (selected, resolved) in [
+            ("sonnet[1m]", "claude-sonnet-5-5[1m]"),
+            ("sonnet", "claude-sonnet-5-5"),
+        ] {
+            let run_id = run_id(&mut providers, selected);
+            let preview = providers
+                .preview_structured_output_metadata(&run_id, &batch)
+                .expect("preview");
+            assert_eq!(preview.model(), resolved);
+            providers
+                .apply_structured_output_metadata(&run_id, &batch)
+                .expect("apply");
+            assert_eq!(providers.get_run(&run_id).unwrap().model(), resolved);
+        }
     }
 
     #[test]

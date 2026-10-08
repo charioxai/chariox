@@ -16,6 +16,10 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, agent_id)
                 .is_some()
+            // An existing backlog is prepared by detached queue promotion,
+            // including retries. Never await its Project/Vault inputs here.
+            || self.owned.prompt_state_owner
+                .peek_next_queued_prompt(&session, agent_id).is_some()
         {
             return Ok(());
         }

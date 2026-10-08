@@ -113,8 +113,9 @@ impl<'a> KernelAgentService<'a> {
                 }
             };
             let Some(next) = next_candidate else {
-                flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                continue;
+                // A profile/steer reservation or a changed queue can defer activation.
+                // No head was consumed, so retrying here would spin under the app lock.
+                return Ok(None);
             };
             if is_workflow_prompt {
                 crate::app::RemoteLeaseRuntime::new(self.app)
