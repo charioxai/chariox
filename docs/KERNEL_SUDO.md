@@ -27,6 +27,12 @@ relaunch returns a typed kernel-access error saying "provider relaunch failed",
 ends the window as `refused_or_cancelled` and releases the held work. Retry
 `/sudo` after the provider is available; the failed request leaves no elevation.
 
+A native provider may be idle while its catalog operation lane is still busy.
+The first sudo turn waits for the refresh to complete, keeping its work hold.
+Deferred refreshes have a 60-second budget from the first deferral, including
+later refresh attempts. Exhaustion returns a typed kernel-access error saying
+"provider catalog refresh failed" and releases the window and held work.
+
 The initial window permits owner session inventory. Additional typed operations
 require a fresh owner passkey in an operation-scope popup showing their exact
 parameters. That approval binds a digest to the original work and window;

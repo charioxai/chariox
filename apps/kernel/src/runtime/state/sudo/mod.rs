@@ -20,14 +20,16 @@ mod scope;
 mod window;
 pub(crate) use policy::is_sudo_prompt;
 pub(crate) use window::sudo_window_minutes;
+#[cfg(test)]
+mod catalog_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
+#[cfg(test)]
+mod relaunch_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod window_tests;
-#[cfg(test)]
-mod relaunch_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 

@@ -33,7 +33,7 @@ pub(super) fn fixture_with_catalog_reload() -> Fixture {
     fixture_with_run_profile(None, true, "codex", "sudo-relaunch-fixture")
 }
 
-fn fixture_with_run_profile(
+pub(super) fn fixture_with_run_profile(
     script: Option<&str>,
     room_tools: bool,
     adapter: &str,

@@ -3,6 +3,10 @@ use super::*;
 // MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
 const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn catalog_refresh_timeout() -> DaemonError {
+    error("provider catalog refresh failed: not ready within 60 seconds; sudo window ended; retry /sudo when the provider is available")
+}
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -238,17 +242,36 @@ impl KernelRuntimeState {
         })
         .await?;
         let mut relaunch_deadline = None;
+        let mut catalog_deadline = None;
         loop {
+            if let Some(deadline) = catalog_deadline {
+                self.live_queued_sudo(entry)?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(catalog_refresh_timeout());
+                }
+            }
             if reload && !self.sudo_agent_busy(entry)? {
                 use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
-                let outcome = self
-                    .reload_agent_provider_if_idle_for_reason(
-                        &entry.session_id,
-                        &entry.agent_id,
-                        &ProviderReloadReason::RuntimeToolCatalog,
-                    )
-                    .await?;
+                let refresh = self.reload_agent_provider_if_idle_for_reason(
+                    &entry.session_id,
+                    &entry.agent_id,
+                    &ProviderReloadReason::RuntimeToolCatalog,
+                );
+                let outcome = if let Some(deadline) = catalog_deadline {
+                    tokio::time::timeout_at(deadline, refresh)
+                        .await
+                        .map_err(|_| catalog_refresh_timeout())??
+                } else {
+                    refresh.await?
+                };
                 reload = matches!(outcome, ProviderReloadOutcome::Deferred);
+                if reload {
+                    catalog_deadline.get_or_insert(
+                        tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT,
+                    );
+                } else {
+                    catalog_deadline = None;
+                }
                 if matches!(outcome, ProviderReloadOutcome::Reloaded) {
                     relaunch_deadline =
                         Some(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
@@ -270,7 +293,7 @@ impl KernelRuntimeState {
                 }
                 relaunch_deadline = None;
             }
-            let submission = self.try_start_sudo(entry, request, prompt, &attachments)?;
+            let submission = self.try_start_sudo(entry, request, prompt, &attachments, !reload)?;
             if let Some(submission) = submission {
                 if let Some(dispatch) = submission.dispatch {
                     self.start_active_turn_with_trace_id(
@@ -327,6 +350,7 @@ impl KernelRuntimeState {
         request: &SubmitPromptRequest,
         text: &str,
         attachments: &[crate::session::PromptAttachment],
+        catalog_ready: bool,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         // Release sudo_turns before reading session/prompt state: interaction
         // resolution holds session_store, then prompt state, then sudo_turns.
@@ -344,11 +368,15 @@ impl KernelRuntimeState {
                 &entry.entry_id,
             );
         }
-        if self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &entry.agent_id)
-            .is_some()
+        // MP-08/MP-10/MP-11: native refresh can be Deferred even while idle.
+        // Install the work hold above, but never admit a stale first turn,
+        // including when ordinary work is cancelled during the busy check.
+        if !catalog_ready
+            || self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &entry.agent_id)
+                .is_some()
         {
             return Ok(None);
         }
