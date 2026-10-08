@@ -34,9 +34,11 @@ pub(crate) struct MacComputerHelper {
     requirement: String,
     launch: Launch,
     link: Option<Arc<Link>>,
+    rendezvous_guard: Arc<Mutex<()>>,
 }
 
 struct Link {
+    rendezvous_guard: Arc<Mutex<()>>,
     epoch: String,
     pid: i32,
     started: Option<(u64, u64)>,
@@ -73,10 +75,16 @@ impl MacComputerHelper {
             requirement,
             launch,
             link: None,
+            rendezvous_guard: Arc::new(Mutex::new(())),
         }
     }
 
     fn pair(&mut self) -> Result<Arc<Link>, String> {
+        // An old reaper must not remove the empty root between mkdirs below.
+        let _rendezvous = self
+            .rendezvous_guard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // One seat per kernel home: rendezvous left by an earlier kernel is stale.
         let _ = std::fs::remove_dir_all(&self.run_root);
         std::fs::DirBuilder::new()
@@ -143,7 +151,14 @@ impl MacComputerHelper {
         drop(listener);
         let _ = std::fs::remove_file(&socket);
         let _ = std::fs::remove_file(&bootstrap);
-        admit(stream, &self.requirement, &token, epoch, dir.to_path_buf())
+        admit(
+            stream,
+            &self.requirement,
+            &token,
+            epoch,
+            dir.to_path_buf(),
+            self.rendezvous_guard.clone(),
+        )
     }
 }
 
@@ -154,6 +169,7 @@ fn admit(
     token: &str,
     epoch: String,
     dir: PathBuf,
+    rendezvous_guard: Arc<Mutex<()>>,
 ) -> Result<Arc<Link>, String> {
     const REFUSED: &str = "MP-11: Computer helper pairing refused";
     stream.set_nonblocking(false).map_err(|_| REFUSED)?;
@@ -182,6 +198,7 @@ fn admit(
         return Err(REFUSED.into());
     }
     Ok(Arc::new(Link {
+        rendezvous_guard,
         epoch,
         pid: peer.pid(),
         started: code_identity::started(peer.pid()),
@@ -286,6 +303,10 @@ impl Link {
         if alive() {
             unsafe { libc::kill(self.pid, libc::SIGKILL) };
         }
+        let _rendezvous = self
+            .rendezvous_guard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_dir_all(&self.dir);
         // The per-kernel root goes too unless a newer pairing already uses it.
         let _ = self.dir.parent().map(std::fs::remove_dir);

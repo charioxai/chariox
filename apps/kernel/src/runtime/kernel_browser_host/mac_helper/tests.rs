@@ -152,3 +152,37 @@ fn m1_helper_crash_is_observed_and_owned_state_is_removed() {
     assert!(state(&mut seat).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn m1_old_reaper_cannot_remove_the_root_during_new_pairing_setup() {
+    let (mut seat, root, _) = seat("always", Fake::Honest);
+    seat.start().unwrap();
+    let old = seat.link.as_ref().unwrap().clone();
+    seat.stop().unwrap();
+    assert!(wait(|| Arc::strong_count(&old) == 1));
+
+    // Pause the same filesystem critical section used by pair() between parent
+    // and child creation. A delayed old watcher/reaper must wait for that child.
+    let guard = seat.rendezvous_guard.lock().unwrap();
+    std::fs::create_dir_all(&seat.run_root).unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let reaper = std::thread::spawn(move || {
+        entered_tx.send(()).unwrap();
+        old.retire();
+        done_tx.send(()).unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let premature = done_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+    let parent_survived = seat.run_root.is_dir();
+    let fresh = seat.run_root.join("new-pairing");
+    std::fs::create_dir_all(&fresh).unwrap();
+    drop(guard);
+    reaper.join().unwrap();
+    let fresh_survived = fresh.is_dir();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        !premature && parent_survived && fresh_survived,
+        "old reaping removed the empty parent during new pairing setup"
+    );
+}
