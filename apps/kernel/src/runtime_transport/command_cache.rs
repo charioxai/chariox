@@ -172,6 +172,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            // MP-11 A07: physical owner input carrying a value is never
+            // fingerprinted, cached or replayed.
+            | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)

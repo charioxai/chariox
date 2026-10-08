@@ -12,6 +12,8 @@ pub enum LocalDaemonResponse {
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
+    /// Protocol 477: the safe outcome of the owner's hand-off action.
+    HandoffResolved { outcome: HandoffOutcome },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },

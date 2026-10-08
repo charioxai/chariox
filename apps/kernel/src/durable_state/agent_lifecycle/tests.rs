@@ -2714,3 +2714,61 @@ fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
         assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
     }
 }
+
+#[test]
+fn mp08_mp10_mp11_a07_handoff_completion_registers_durable_wake_and_deduplicates_races() {
+    for early in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "handoff-obligation".into(),
+            kind: "hand_off".into(),
+            resource: None,
+            now: 1,
+        });
+        let completed = || Operation::SourceOutcome {
+            public_answer: Some(
+                serde_json::json!({"status":"completed","next":"Re-read the actual rules and verify the intended diff"}),
+            ),
+            room: "room".into(),
+            source: "handoff-handoff-obligation".into(),
+            occurrence: "owner-completed".into(),
+            success: true,
+            now: 2,
+        };
+        if early {
+            f.apply(completed());
+        }
+        f.apply(Operation::DispatchReceipt {
+            id: "handoff-obligation".into(),
+            accepted: true,
+            resource: Some("handoff-handoff-obligation".into()),
+        });
+        let regs = f.store.agent_registrations("p").unwrap();
+        assert_eq!(
+            regs.len(),
+            1,
+            "MP-08/MP-10/MP-11 A07 S01/S02: owner completion must be a kernel-owned durable wake"
+        );
+        assert_eq!(regs[0].id, "completion-handoff-obligation");
+        assert_eq!(regs[0].source_id, "handoff-handoff-obligation");
+        f.apply(completed());
+        f.apply(completed());
+        assert_eq!(f.task().obligations[0].status, "settling");
+        let events = f.store.agent_inbox("room", "parent", 0).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "duplicate owner outcomes cannot wake twice"
+        );
+        assert_eq!(events[0].payload["public_answer"]["status"], "completed");
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(reopened.agent_inbox("room", "parent", 0).unwrap().len(), 1);
+        assert_eq!(reopened.agent_registrations("p").unwrap().len(), 1);
+    }
+}

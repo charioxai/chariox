@@ -309,7 +309,7 @@ impl KernelRuntimeState {
         self.schedule_agent_lifecycle_sweep();
         Ok(())
     }
-    fn schedule_agent_lifecycle_sweep(&self) {
+    pub(super) fn schedule_agent_lifecycle_sweep(&self) {
         // Output settlement may hold one or every provider lane. Dispatch
         // completion wakes after it returns so a recipient cannot reacquire
         // a lane held by this same call stack.
@@ -433,6 +433,9 @@ impl KernelRuntimeState {
                             _ => None,
                         })
                         .unwrap_or(Some(false)),
+                    super::HANDOFF_OBLIGATION_KIND => {
+                        self.reconcile_handoff(&session, source).await
+                    }
                     _ => None,
                 };
                 if let Some(success) = outcome {

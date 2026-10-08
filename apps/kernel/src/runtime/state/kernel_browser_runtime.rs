@@ -440,6 +440,7 @@ impl KernelRuntimeState {
             agent.id(),
         ) {
             tools.push(super::kernel_browser_secret_runtime::paste_spec());
+            tools.extend(self.owner_handoff_tool_spec());
             if self.room_agent_tools_enabled() {
                 tools.push(RuntimeToolSpec { name: SHARE.into(),
                     description: "MP-08: give your direct child agent an explicit subset of the browser/notes resources you were granted. It cannot open new tabs and is revoked with your grant.".into(),
@@ -461,7 +462,15 @@ impl KernelRuntimeState {
         if Self::is_note_tool(name) {
             return Some(Box::pin(self.notes_tool(token, name, arguments)).await);
         }
-        if ![LOADER, BROWSER, PASTE, SHARE].contains(&name) {
+        if ![
+            LOADER,
+            BROWSER,
+            PASTE,
+            SHARE,
+            super::owner_handoff_runtime::HANDOFF,
+        ]
+        .contains(&name)
+        {
             return None;
         }
         Some(self.kernel_browser_tool(token, name, arguments).await)
@@ -521,6 +530,11 @@ impl KernelRuntimeState {
             });
         if name == SHARE {
             return self.kernel_browser_share(&agent, arguments, &admission);
+        }
+        if name == super::owner_handoff_runtime::HANDOFF {
+            return self
+                .kernel_browser_handoff(&agent, arguments, admission)
+                .await;
         }
         if name == PASTE {
             let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(

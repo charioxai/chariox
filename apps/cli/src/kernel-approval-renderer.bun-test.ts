@@ -9,6 +9,7 @@ import { createKernelApprovalController, type KernelApprovalView } from "./kerne
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 
 const view: KernelApprovalView = {
+  choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }], handoffEntry: null,
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
   interaction: {
     id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
@@ -84,6 +85,7 @@ test("actual OpenTUI keyboard delivery isolates approval choices from the focuse
   })
   harness.renderer.root.add(prompt)
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => ({ id: "session-1", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
@@ -231,6 +233,7 @@ test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", 
   const prompt = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
   h.renderer.root.add(prompt)
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => ({ id: "session", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),

@@ -172,11 +172,11 @@ pub use api::{
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResetAllPromptSettingsRequest,
     ResetPromptSettingRequest, ResizeTerminalRequest, ResolveKernelClientConnectionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
-    RestoreProjectRequest, RestoreSliceBackupRequest, ResumeMetaagentTaskRequest,
-    ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest, RetryRoomEnvironmentRequest,
-    RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
-    RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
+    ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
+    RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,
+    ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest,
+    RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
     RoomEnvironmentBrowserHistoryAction, RoomEnvironmentBrowserTabAction,
     RoomEnvironmentClipboardText, RoomEnvironmentHumanAction, RoomEnvironmentHumanBrowserAction,
     RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
@@ -281,13 +281,16 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue, KernelConnectionClass,
+    PasskeyPrompt, PasskeyPromptKind,
+};
+pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
 };
-pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
     NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,

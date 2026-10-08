@@ -9,7 +9,7 @@ import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
-import { respondToInteraction } from "./prompt-runtime-api.js"
+import { respondToHandoff, respondToInteraction } from "./prompt-runtime-api.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
@@ -82,6 +82,9 @@ export function createCliKernelApprovalComposition(deps: {
     scroll: surface.scroll,
     respond: (sessionId, interactionId, choiceId) =>
       respondToInteraction(deps.client, sessionId, interactionId, choiceId, null),
+    respondHandoff: (sessionId, interactionId, action) =>
+      respondToHandoff(deps.client, sessionId, interactionId, action),
+    notify: deps.notify,
     applySession: deps.applySession,
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })

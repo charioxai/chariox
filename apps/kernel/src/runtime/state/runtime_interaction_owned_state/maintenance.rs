@@ -16,6 +16,9 @@ impl KernelRuntimeOwnedState {
             .iter()
             .filter(|(_, pending)| pending.belongs_to(&self.session_store))
             .filter(|(_, pending)| pending.kernel_operation_owner.is_some())
+            // MP-11 A07: a hand-off survives shutdown as safe metadata; the
+            // agent sweep re-arms it with a revalidated target on restart.
+            .filter(|(id, _)| !(shutdown && super::super::is_handoff_interaction_id(id)))
             .filter(|(_, pending)| {
                 shutdown
                     || pending
@@ -49,6 +52,7 @@ impl KernelRuntimeOwnedState {
         let Ok(_mutation) = self.pending_interactions.mutation.lock() else {
             return;
         };
+        let handoffs_rearm = self.config_projection.snapshot().room_agent_tools;
         let orphans = {
             let pending = self.pending_interactions.write();
             self.session_store
@@ -60,6 +64,7 @@ impl KernelRuntimeOwnedState {
                         .iter()
                         .filter(|interaction| {
                             waits_in_memory(interaction)
+                                && !(handoffs_rearm && interaction.handoff().is_some())
                                 && !pending.get(interaction.id()).is_some_and(|value| {
                                     value.session_id == session.id()
                                         && value.belongs_to(&self.session_store)

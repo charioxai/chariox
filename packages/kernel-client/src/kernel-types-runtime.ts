@@ -142,6 +142,8 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   default_on_timeout?: string | null
   native_origin?: NativeInteractionOrigin | null
   requested_at_ms: number
+  /** Protocol 477: a protected owner hand-off (safe metadata only). */
+  handoff?: import("./owner-handoff.js").RuntimeHandoff | null
 }
 
 export type RuntimeInteractionChoice = {

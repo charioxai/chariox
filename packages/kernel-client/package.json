@@ -19,6 +19,7 @@
     "./external-provider-observation": "./dist/external-provider-observation.js",
     "./project-environment-review": "./dist/project-environment-review.js",
     "./interaction-choice": "./dist/interaction-choice.js",
+    "./owner-handoff": "./dist/owner-handoff.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./browser-relay-crypto": "./dist/browser-relay-crypto.js",

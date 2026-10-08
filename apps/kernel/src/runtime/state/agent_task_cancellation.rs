@@ -168,6 +168,22 @@ impl KernelRuntimeState {
                             }
                         }
                     }
+                    // MP-11 A07: cancellation withdraws the owner popup; a
+                    // hand-off already gone settles as lost.
+                    super::HANDOFF_OBLIGATION_KIND => {
+                        if !self.withdraw_handoff(&task.room_id, resource) {
+                            self.owned.durable_state_store.agent_lifecycle(
+                                Operation::SourceOutcome {
+                                    public_answer: None,
+                                    room: task.room_id.clone(),
+                                    source: resource.clone(),
+                                    occurrence: format!("cancel-missing-{}", obligation.id),
+                                    success: false,
+                                    now: crate::session::unix_epoch_ms(),
+                                },
+                            )?;
+                        }
+                    }
                     _ => {}
                 }
             }

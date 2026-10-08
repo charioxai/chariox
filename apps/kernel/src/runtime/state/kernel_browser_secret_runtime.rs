@@ -69,7 +69,7 @@ impl KernelRuntimeState {
     }
 
     // Caller holds the scope's capture/input barrier for every protected operation.
-    async fn kernel_browser_bound_operation(
+    pub(super) async fn kernel_browser_bound_operation(
         &self,
         user: &str,
         admission: Option<&KernelBrowserAdmission>,

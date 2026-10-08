@@ -541,7 +541,9 @@ async fn dispatch_relay_client_request(
     // comes from relay authentication, never the request or command ID.
     if matches!(
         &request,
-        LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+        LocalDaemonRequest::KernelBrowser(_)
+            | LocalDaemonRequest::Notes(_)
+            | LocalDaemonRequest::RespondToHandoff(_)
     ) && !command.is_terminal_caller()
     {
         return RelayDispatchOutcome::RelayError(relay_error(

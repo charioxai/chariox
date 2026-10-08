@@ -187,6 +187,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "passkey_remember_minutes": request.passkey_remember_minutes
             }
         }),
+        LocalDaemonRequest::RespondToHandoff(request) => serde_json::json!({
+            "RespondToHandoff": {
+                "session_id": request.session_id,
+                "interaction_id": request.interaction_id,
+                "action": request.action.kind(),
+            }
+        }),
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {
             serde_json::json!({
                 "RequestCredentialEnrollmentInteraction": {

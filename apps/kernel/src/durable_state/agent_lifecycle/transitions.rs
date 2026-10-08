@@ -150,7 +150,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else if o.kind == "message" {
                         o.status = "satisfied".into();
                     }
-                    if accepted && (o.kind == "delegate" || o.tracks_workflow_run()) {
+                    if accepted
+                        && (o.kind == "delegate" || o.kind == "hand_off" || o.tracks_workflow_run())
+                    {
                         if let Some(source) = o.resource_id.clone() {
                             let reg = Registration {
                                 id: format!("completion-{}", o.id),

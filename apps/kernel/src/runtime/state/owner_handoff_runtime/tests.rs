@@ -1,0 +1,309 @@
+//! MP-08 / MP-10 / MP-11 A07: behavioral safety regressions, not live acceptance.
+use super::*;
+use crate::runtime::router::CommandRouter;
+use crate::session::{HandoffChangeOp, RuntimeSession, DEFAULT_LOCAL_USER_ID};
+
+fn fixture() -> (KernelRuntimeState, String) {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let session = RuntimeSession::new(
+        format!("am7-{:016x}", rand::random::<u64>()),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "kernel",
+    );
+    let id = session.id().to_owned();
+    app.sessions_mut().restore_session(session);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    (router.runtime_state().clone(), id)
+}
+fn handoff() -> RuntimeHandoff {
+    RuntimeHandoff {
+        kind: HandoffKind::Click,
+        reason: HandoffReason::ModelRefusal,
+        agent_id: "agent".into(),
+        task_id: "task".into(),
+        obligation_id: format!("obligation-{:016x}", rand::random::<u64>()),
+        explanation: "Verify before saving the firewall".into(),
+        target: HandoffTarget {
+            tab_id: "tab".into(),
+            generation: 1,
+            document_id: "doc".into(),
+            node_ref: "backend:7".into(),
+            origin: "https://console.hetzner.cloud".into(),
+            path: "/firewalls".into(),
+            label: "Save".into(),
+        },
+        change: vec![
+            HandoffChangeLine {
+                op: HandoffChangeOp::Keep,
+                text: "tcp 22 remains".into(),
+            },
+            HandoffChangeLine {
+                op: HandoffChangeOp::Add,
+                text: "tcp 443 from any".into(),
+            },
+        ],
+        expires_at_ms: crate::session::unix_epoch_ms() + 900_000,
+        save_to_vault_offered: false,
+    }
+}
+async fn register(state: &KernelRuntimeState, room: &str, h: &RuntimeHandoff) -> String {
+    state
+        .register_handoff_interaction(room, DEFAULT_LOCAL_USER_ID, h.clone(), 900)
+        .await
+        .unwrap();
+    RuntimeHandoff::interaction_id(&h.obligation_id)
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_s01_owner_only_bound_action_and_firewall_diff() {
+    let (state, room) = fixture();
+    let h = handoff();
+    let id = register(&state, &room, &h).await;
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    let projection = session
+        .active_interactions()
+        .iter()
+        .find(|i| i.id() == id)
+        .unwrap();
+    assert_eq!(projection.handoff(), Some(&h));
+    assert!(projection.message().contains("+ tcp 443 from any"));
+    assert!(projection.message().contains("  tcp 22 remains"));
+    assert!(state
+        .owned
+        .claim_handoff(&room, &id, "foreign-owner", |_| Ok(()))
+        .is_err());
+    assert!(state
+        .answer_terminal_runtime_interaction(
+            &room,
+            &id,
+            "done",
+            None,
+            Some(DEFAULT_LOCAL_USER_ID),
+            None,
+            None,
+            Some(crate::local::KernelConnectionClass::KernelAgent)
+        )
+        .await
+        .is_err());
+    let (claimed, _guard) = state
+        .owned
+        .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        .unwrap();
+    assert_eq!(claimed.target, h.target);
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let safe = outcome(&id, HandoffStatus::Completed, "click", None);
+    state.finish_handoff(&room, &h, &safe, DEFAULT_LOCAL_USER_ID);
+    let events = state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&id, "handoff.outcome", 1)
+        .unwrap();
+    assert_eq!(events[0].payload["outcome"]["status"], "completed");
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_s02_competing_terminals_late_replay_and_sweep() {
+    let (state, room) = fixture();
+    let h = handoff();
+    let id = register(&state, &room, &h).await;
+    let original = state.owned.session_store.get_session(&room).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let replies = std::thread::scope(|threads| {
+        let a = threads.spawn(|| {
+            barrier.wait();
+            state
+                .owned
+                .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        });
+        let b = threads.spawn(|| {
+            barrier.wait();
+            state
+                .owned
+                .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        });
+        barrier.wait();
+        vec![a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(
+        replies.iter().filter(|reply| reply.is_ok()).count(),
+        1,
+        "competing terminals get exactly one claim"
+    );
+    let first = replies.into_iter().find_map(Result::ok).unwrap();
+    assert!(state
+        .owned
+        .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        .is_err());
+    assert_eq!(state.reconcile_handoff(&original, &id).await, None);
+    assert!(
+        state
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(&id, "handoff.outcome", 1)
+            .unwrap()
+            .is_empty(),
+        "sweep cannot settle a still-running owner input"
+    );
+    drop(first);
+    // A crash can restore a snapshot older than the write-ahead claim.
+    state
+        .owned
+        .session_store
+        .write()
+        .restore_session(original.clone());
+    assert!(state
+        .owned
+        .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        .is_err());
+    state.reconcile_handoff(&original, &id).await;
+    let events = state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&id, "handoff.outcome", 1)
+        .unwrap();
+    assert_eq!(events[0].payload["outcome"]["status"], "uncertain");
+    assert_eq!(
+        events[0].payload["outcome"]["reason_code"],
+        "restart_after_claim"
+    );
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    assert_eq!(
+        state
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(&id, "handoff.claimed", 200)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn mp08_mp10_mp11_a07_s03_expiry_restart_and_owner_cancel_never_auto_answer() {
+    let (state, room) = fixture();
+    let mut h = handoff();
+    h.expires_at_ms = 1;
+    let id = register(&state, &room, &h).await;
+    assert!(state
+        .owned
+        .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        .is_err());
+    state.owned.pending_interactions.write().remove(&id);
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    state.reconcile_handoff(&session, &id).await;
+    let events = state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&id, "handoff.outcome", 1)
+        .unwrap();
+    assert_eq!(events[0].payload["outcome"]["status"], "expired");
+    assert!(state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&id, "handoff.claimed", 1)
+        .unwrap()
+        .is_empty());
+    let h = handoff();
+    let id = register(&state, &room, &h).await;
+    state.owned.pending_interactions.write().remove(&id);
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    state.reconcile_handoff(&session, &id).await;
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()[0]
+            .handoff()
+            .unwrap()
+            .expires_at_ms,
+        h.expires_at_ms
+    );
+    assert!(state.withdraw_handoff(&room, &id));
+    assert!(!state.withdraw_handoff(&room, &id));
+    let events = state
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(&id, "handoff.outcome", 1)
+        .unwrap();
+    assert_eq!(events[0].payload["outcome"]["status"], "cancelled");
+}
+
+#[test]
+fn mp08_mp10_mp11_a07_s04_values_never_become_command_metadata_or_cache() {
+    let request = crate::local::LocalDaemonRequest::RespondToHandoff(RespondToHandoffRequest {
+        session_id: "room".into(),
+        interaction_id: "handoff-obligation".into(),
+        action: HandoffResponseAction::EnterValue {
+            value: crate::local::HandoffValue::new("private-fixture-991"),
+            save_to_vault_key: None,
+        },
+    });
+    let command =
+        crate::runtime::command::KernelCommand::from_local_request("one", None, None, &request);
+    assert!(!format!("{request:?}").contains("private-fixture-991"));
+    assert!(!serde_json::to_string(&command)
+        .unwrap()
+        .contains("private-fixture-991"));
+    assert!(!crate::runtime_transport::command_cache::request_is_cacheable(&request));
+    assert_eq!(
+        origin_and_path("https://example.com/login?code=private#value").unwrap(),
+        ("https://example.com".into(), "/login".into())
+    );
+    assert!(origin_and_path("file:///etc/passwd").is_err());
+}
+
+#[test]
+fn mp08_mp10_mp11_a07_s02_changed_or_disabled_field_is_refused() {
+    use crate::runtime::browser_controller_snapshot::BrowserControllerDomNode;
+    let mut n = BrowserControllerDomNode {
+        node_ref: "backend:1".into(),
+        parent_ref: None,
+        document_index: 0,
+        node_type: 1,
+        node_name: "INPUT".into(),
+        text: String::new(),
+        attributes: BTreeMap::from([("type".into(), "password".into())]),
+        bounds: None,
+    };
+    assert!(node_accepts(HandoffKind::Secret, &n));
+    n.attributes.insert("readonly".into(), String::new());
+    assert!(!node_accepts(HandoffKind::Secret, &n));
+    n.attributes.remove("readonly");
+    n.attributes.insert("type".into(), "hidden".into());
+    assert!(!node_accepts(HandoffKind::Code, &n));
+    n.attributes.insert("disabled".into(), String::new());
+    assert!(!node_accepts(HandoffKind::Click, &n));
+}
+
+#[test]
+fn mp08_mp10_mp11_a07_s02_query_only_navigation_changes_private_target_binding() {
+    let first = document_url_binding("https://console.hetzner.cloud/firewalls?id=first");
+    assert_ne!(
+        first,
+        document_url_binding("https://console.hetzner.cloud/firewalls?id=other")
+    );
+    assert_ne!(
+        first,
+        document_url_binding("https://console.hetzner.cloud/firewalls?id=first#other")
+    );
+    assert_eq!(first.len(), 64);
+}

@@ -180,3 +180,18 @@ function isRecoverableProviderError(error: unknown): boolean {
   const message = describeCliError(error)
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
 }
+
+/** MP-08 / MP-10 / MP-11 A07: the owner's protected hand-off answer; the
+ * kernel returns only the safe outcome. Never resent on reconnect. */
+export async function respondToHandoff(
+  client: LocalIpcClient,
+  sessionId: string,
+  interactionId: string,
+  action: import("@chariox/kernel-client/owner-handoff").HandoffResponseAction,
+): Promise<import("@chariox/kernel-client/owner-handoff").HandoffOutcome> {
+  const { respondToHandoffRequest } = await import("@chariox/kernel-client/owner-handoff")
+  const response = await client.send<Record<string, unknown>>(respondToHandoffRequest(sessionId, interactionId, action))
+  const payload = expectVariant<{ outcome: import("@chariox/kernel-client/owner-handoff").HandoffOutcome }>(response, "HandoffResolved")
+  if (payload.outcome?.handoff_id !== interactionId) throw new Error("hand-off response identity mismatch")
+  return payload.outcome
+}
