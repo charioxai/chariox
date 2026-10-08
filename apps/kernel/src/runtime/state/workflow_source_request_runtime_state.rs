@@ -348,3 +348,98 @@ impl KernelRuntimeState {
         .await
     }
 }
+
+fn workflow_code_rebuild_structural_changes(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    workflow: &crate::session::WorkflowDefinition,
+    bindings: &crate::workflow_code::WorkflowCodeApplyReport,
+) -> Result<Vec<crate::workflow_code::WorkflowCodeStructuralChange>, DaemonError> {
+    fn change(
+        resource: &str,
+        current: impl IntoIterator<Item = String>,
+        source: impl IntoIterator<Item = String>,
+    ) -> crate::workflow_code::WorkflowCodeStructuralChange {
+        let current = current
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let source = source
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        crate::workflow_code::WorkflowCodeStructuralChange {
+            resource: resource.to_string(),
+            current_count: current.len(),
+            source_count: source.len(),
+            restore_missing: source.difference(&current).count(),
+            remove_visual_only: current.difference(&source).count(),
+            replace_existing: source.intersection(&current).count(),
+        }
+    }
+
+    let session = app.sessions().get_session(session_id)?;
+    Ok(vec![
+        change(
+            "schemas",
+            workflow
+                .schemas()
+                .iter()
+                .map(|value| value.id().to_string()),
+            bindings.schema_refs.values().cloned(),
+        ),
+        change(
+            "nodes",
+            workflow.nodes().iter().map(|value| value.id().to_string()),
+            bindings.node_ids.values().cloned(),
+        ),
+        change(
+            "edges",
+            workflow.edges().iter().map(|value| value.id().to_string()),
+            bindings.edge_ids.values().cloned(),
+        ),
+        change(
+            "endpoints",
+            workflow
+                .endpoints()
+                .iter()
+                .map(|value| value.id().to_string()),
+            bindings.endpoint_ids.values().cloned(),
+        ),
+        change(
+            "queues",
+            session
+                .workflow_prompt_queues_for_workflow(workflow.id())
+                .into_iter()
+                .map(|value| value.id().to_string()),
+            bindings.queue_ids.values().cloned(),
+        ),
+        change(
+            "schedules",
+            session
+                .workflow_schedules()
+                .iter()
+                .filter(|value| value.workflow_id() == workflow.id())
+                .map(|value| value.id().to_string()),
+            bindings.schedule_ids.values().cloned(),
+        ),
+    ])
+}
+
+fn workflow_code_source_changed_line_counts(previous: &str, generated: &str) -> (usize, usize) {
+    let previous = previous.lines().collect::<Vec<_>>();
+    let generated = generated.lines().collect::<Vec<_>>();
+    let prefix = previous
+        .iter()
+        .zip(&generated)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = previous[prefix..]
+        .iter()
+        .rev()
+        .zip(generated[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    (
+        generated.len().saturating_sub(prefix + suffix),
+        previous.len().saturating_sub(prefix + suffix),
+    )
+}
