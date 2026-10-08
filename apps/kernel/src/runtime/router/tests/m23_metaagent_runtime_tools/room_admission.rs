@@ -480,11 +480,14 @@ async fn room_boundaries() {
             .await
             .ok
     );
+    // MP-11 F3: a peer binding can reset the peer's provider context at run start.
     assert!(
-        room_command(&router, &auth_a, "workflow node add own-flow peer")
+        !room_command(&router, &auth_a, "workflow node add own-flow peer")
             .await
-            .ok
+            .ok,
+        "MP-11 F3: peers are not workflow execution resources"
     );
+    assert!(room_command(&router, &auth_a, "workflow node add own-flow b").await.ok);
     // MP-08/MP-11 A01/G18: invalid queue rejects before admission, not an open intent.
     let node = room_command(&router, &auth_a, "workflow resolve own-flow").await;
     let node_id = node.payload["response"]["workflow"]["nodes"][0]["id"]
