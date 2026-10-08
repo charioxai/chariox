@@ -329,17 +329,41 @@ impl KernelRuntimeState {
     /// caller. A lost update is fail closed: the worker fence never outlives
     /// the time the home last granted, and the home rechecks every call.
     pub(super) fn spawn_leased_sudo_update(&self, turn: &KernelSudoTurn, ended: bool) {
-        if ended {
-            self.owned
+        let fenced = {
+            let mut fenced = self
+                .owned
                 .leased_sudo_fenced
                 .lock()
-                .expect("leased sudo fences poisoned")
-                .remove(&turn.entry_id);
-        }
-        if turn.placement.is_none() {
+                .expect("leased sudo fences poisoned");
+            if ended {
+                // An end is always sent: a fence whose confirmation was lost
+                // must not wait for its own deadline.
+                fenced.remove(&turn.entry_id);
+                true
+            } else {
+                fenced.contains(&turn.entry_id)
+            }
+        };
+        // A window not yet fenced on its worker gets its first fence with
+        // its first leased turn.
+        if turn.placement.is_none() || !fenced {
             return;
         }
-        let Some(prompt) = turn.prompt_id.clone() else {
+        // Name the turn currently bound to the window (a later continuation
+        // of the same work), not only the window's first prompt.
+        let bound = self
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .sudo_bound_prompt(&session, &turn.agent_id)
+            })
+            .filter(|(entry, _)| *entry == turn.entry_id)
+            .map(|(_, prompt)| prompt);
+        let Some(prompt) = bound.or_else(|| turn.prompt_id.clone()) else {
             return;
         };
         let remaining_ms = if ended {
