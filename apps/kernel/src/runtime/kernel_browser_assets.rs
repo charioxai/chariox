@@ -75,6 +75,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-apps.mjs"),
     ),
     (
+        "browser-controller-artifacts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
+    ),
+    (
         "browser-controller-bar.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-bar.mjs"),
     ),
@@ -117,6 +121,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-controller-input.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-input.mjs"),
+    ),
+    (
+        "browser-controller-image.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
     ),
     (
         "browser-controller-permissions.mjs",
@@ -184,4 +192,39 @@ pub(super) fn materialize(root: &Path) -> Result<PathBuf, String> {
             .map_err(|_| "MD-2: cannot publish browser controller asset")?;
     }
     Ok(directory.join("kernel-browser-host.mjs"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::browser_controller_process::{
+        BrowserControllerProcessBackend, BrowserControllerProcessState,
+        BrowserControllerProcessStdioBackend,
+    };
+
+    #[test]
+    fn mp11_materialized_controller_loads_without_source_override() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-mp11-embedded-assets-{:032x}",
+            rand::random::<u128>()
+        ));
+        let script = materialize(&root).unwrap();
+        // Use only the embedded bundle, including Node's transitive imports.
+        // Health starts the actual stdio controller without launching Chromium.
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            "node",
+            vec![
+                script.display().to_string(),
+                "stdio".into(),
+                root.join("profile").display().to_string(),
+            ],
+            std::time::Duration::from_secs(5),
+        )
+        .for_host();
+        let result = backend.start();
+        let cleanup = backend.stop();
+        std::fs::remove_dir_all(root).unwrap();
+        cleanup.unwrap();
+        assert_eq!(result.unwrap().state, BrowserControllerProcessState::Ready);
+    }
 }
