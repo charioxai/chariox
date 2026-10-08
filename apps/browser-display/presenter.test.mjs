@@ -211,3 +211,31 @@ test('MP-11 desktop frame geometry is exact to the admitted physical surface at 
   await assert.rejects(presenter.present({...frame,sequence:2,width:2560,height:1600,css_width:1280,css_height:800}),/geometry\/binding/);
  }finally{presenter.close();globalThis.OffscreenCanvas=oldCanvas;globalThis.createImageBitmap=oldBitmap}
 });
+
+test('MP-11 close detaches and unsubscribes before parked credits settle',async()=>{
+ let listener;const ops=[];let detached=0;
+ const transport={kernelProtocolVersion:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{detached++}},request:async({KernelBrowser:{command}})=>{ops.push(command.op);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:command.op==='display_next'?{frame_sent:true}:{}}}}};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
+ stream.start();await new Promise(resolve=>setTimeout(resolve,10));
+ // Every credit was sent but its window event never arrives (dead lane).
+ const closing=stream.close();await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(detached,1);assert.equal(stream.presenter.closed,true);assert(ops.includes('unsubscribe'),'close cannot wait for the window timeout');
+ await closing;
+});
+test('MP-11 an errored main-thread decoder is replaced without a second close',async()=>{
+ const {BrowserDisplayPresenter}=await import('./presenter.mjs');
+ const prior={VideoDecoder:globalThis.VideoDecoder,EncodedVideoChunk:globalThis.EncodedVideoChunk};
+ let fail=true;const context={drawImage(){}};
+ globalThis.EncodedVideoChunk=class{constructor(value){Object.assign(this,value)}};
+ globalThis.VideoDecoder=class{constructor(c){this.c=c;this.state='configured'}configure(){}
+  close(){if(this.state==='closed')throw Error('InvalidStateError');this.state='closed'}
+  decode(){queueMicrotask(()=>{if(fail){this.state='closed';this.c.error(Error('synthetic decode error'))}else this.c.output({displayWidth:1280,displayHeight:800,close(){}})})}};
+ const binding={subscription_id:'s',generation:1,tab_id:'t'},presenter=new BrowserDisplayPresenter({width:1,height:1,getContext:()=>context},binding);
+ const frame={...binding,document_id:'d',kind:'video',codec:'vp09.00.10.08',key:true,width:1280,height:800,css_width:1280,css_height:800,device_scale_factor:1,data:new Uint8Array([1])};
+ try{
+  await assert.rejects(presenter.present({...frame,sequence:1}),/synthetic decode error/);
+  fail=false;assert.equal(await presenter.present({...frame,sequence:2}),true);
+  fail=true;await assert.rejects(presenter.present({...frame,sequence:3}),/synthetic decode error/);
+  presenter.close();
+ }finally{Object.assign(globalThis,prior)}
+});

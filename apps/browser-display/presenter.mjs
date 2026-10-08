@@ -97,7 +97,7 @@ export class BrowserDisplayPresenter {
         if (globalThis.Worker) {
           if(!this.workerDecoder)this.workerDecoder=new WorkerVideoDecoder();
         } else if (!this.decoder || frame.key) {
-          this.decoder?.close();
+          if (this.decoder?.state !== 'closed') this.decoder?.close();
           this.decoder = new VideoDecoder({ output: value => (this.decoded ? this.decoded.resolve(value) : value.close()), error: error => this.decoded?.reject(error) });
           this.decoder.configure({ codec:frame.codec, codedWidth:frame.width, codedHeight:frame.height, optimizeForLatency:true });
           this.videoSequence = null;
@@ -169,7 +169,7 @@ export class BrowserDisplayPresenter {
     }
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;if(this.decoder?.state!=='closed')this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -220,7 +220,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (arrivals.length) arrivals.shift()(item);
     else { frames.push(item); queuedBytes += size; }
   };
-  const receive = () => frames.length ? Promise.resolve((queuedBytes -= frames[0].size, frames.shift())) : new Promise(resolve => arrivals.push(resolve));
+  const closedItem = { presented: Promise.resolve() };
+  const receive = () => frames.length ? Promise.resolve((queuedBytes -= frames[0].size, frames.shift())) : stopped ? Promise.resolve(closedItem) : new Promise(resolve => arrivals.push(resolve));
   const off = transport.onEvent(event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
@@ -321,6 +322,12 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(options.desktop?{op:'computer',command:{op:'actors'}}:{op:'display_actors'}),
-    async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close() {
+      // MP-11: detach first; parked credits cannot hold teardown for their window timeout.
+      running = false; stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close();
+      for (const arrive of arrivals.splice(0)) arrive(closedItem);
+      await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation });
+      await stop().catch(() => {});
+    },
   };
 }
