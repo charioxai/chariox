@@ -139,17 +139,33 @@ fn envp01_legacy_adapter_is_lossless_idempotent_and_never_promotes_status() {
     assert!(!encoded.contains("sensitive-value"));
     // MP-08/MP-10: readiness is a target observation, never specification identity.
     let mut observed = state.clone();
-    for status in [ProjectEnvironmentEntryStatus::Missing, ProjectEnvironmentEntryStatus::Problem] {
+    for status in [
+        ProjectEnvironmentEntryStatus::Missing,
+        ProjectEnvironmentEntryStatus::Problem,
+    ] {
         observed.manifest.entries[0].status = status;
         store.save(&observed).unwrap();
         let snapshot = store.snapshot(&project).unwrap();
         assert_eq!(snapshot.content_digest, first.content_digest);
-        assert_eq!(snapshot.folders[0].requirements[0].legacy_entry.as_ref().unwrap().status, status);
-        assert_eq!(snapshot.legacy_manifest.as_ref().unwrap().entries[0].status, status);
+        assert_eq!(
+            snapshot.folders[0].requirements[0]
+                .legacy_entry
+                .as_ref()
+                .unwrap()
+                .status,
+            status
+        );
+        assert_eq!(
+            snapshot.legacy_manifest.as_ref().unwrap().entries[0].status,
+            status
+        );
     }
     observed.manifest.entries[0].excluded = false;
     store.save(&observed).unwrap();
-    assert_ne!(store.snapshot(&project).unwrap().content_digest, first.content_digest);
+    assert_ne!(
+        store.snapshot(&project).unwrap().content_digest,
+        first.content_digest
+    );
     assert_eq!(project.environment_definition(), Some(&definition));
 }
 

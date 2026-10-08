@@ -282,13 +282,34 @@ pub fn project_environment_snapshot(
     // Machine observations and target-owned absolute paths are not portable content identity.
     snapshot.content_digest = metadata_digest(&(
         &snapshot.lineage,
-        snapshot.project_requirements.iter().map(requirement_specification).collect::<Vec<_>>(),
+        snapshot
+            .project_requirements
+            .iter()
+            .map(requirement_specification)
+            .collect::<Vec<_>>(),
         snapshot
             .folders
             .iter()
-            .map(|f| (&f.folder_id, f.requirements.iter().map(requirement_specification).collect::<Vec<_>>()))
+            .map(|f| {
+                (
+                    &f.folder_id,
+                    f.requirements
+                        .iter()
+                        .map(requirement_specification)
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect::<Vec<_>>(),
-        snapshot.proposals.iter().map(|proposal| (&proposal.proposal_id, requirement_specification(&proposal.requirement))).collect::<Vec<_>>(),
+        snapshot
+            .proposals
+            .iter()
+            .map(|proposal| {
+                (
+                    &proposal.proposal_id,
+                    requirement_specification(&proposal.requirement),
+                )
+            })
+            .collect::<Vec<_>>(),
         &snapshot.evidence_digest,
     ));
     snapshot
