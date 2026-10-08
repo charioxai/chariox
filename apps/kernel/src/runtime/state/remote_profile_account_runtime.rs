@@ -13,9 +13,9 @@ impl KernelRuntimeState {
         agent_id: &str,
         update: &owned::OwnedRemoteAgentProfileUpdate,
         config: &crate::config::DaemonConfig,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<String, DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(&update.provider) else {
-            return Ok(());
+            return Ok(update.account_profile.clone());
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -30,11 +30,11 @@ impl KernelRuntimeState {
         } else {
             ProviderAccountMaterializationTargetKind::Worker
         };
-        if registry
-            .get(&owner, provider, &update.account_profile)?
-            .is_installed_at(target_kind, &update.worker_kernel_id)
+        let profile = registry.get(&owner, provider, &update.account_profile)?;
+        if let Some(receiving_account) =
+            profile.installed_account_id_at(target_kind, &update.worker_kernel_id)
         {
-            return Ok(());
+            return Ok(receiving_account.to_string());
         }
         let mut received_copy = None;
         let mut expected_copy = None;
@@ -135,6 +135,6 @@ impl KernelRuntimeState {
                 status,
             )?;
         }
-        Ok(())
+        Ok(update.account_profile.clone())
     }
 }

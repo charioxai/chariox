@@ -691,7 +691,18 @@ impl ProviderAccountProfile {
         target_kind: ProviderAccountMaterializationTargetKind,
         target_ref: &str,
     ) -> bool {
-        self.materializations.iter().any(|status| {
+        self.installed_account_id_at(target_kind, target_ref)
+            .is_some()
+    }
+
+    /// A context import can retain the receiving default's stable ID.
+    /// Legacy installation records without copy metadata use the source ID.
+    pub(crate) fn installed_account_id_at(
+        &self,
+        target_kind: ProviderAccountMaterializationTargetKind,
+        target_ref: &str,
+    ) -> Option<&str> {
+        let status = self.materializations.iter().find(|status| {
             status.target_kind == target_kind
                 && status.target_ref == target_ref
                 && matches!(
@@ -699,7 +710,12 @@ impl ProviderAccountProfile {
                     ProviderAccountMaterializationState::Materialized
                         | ProviderAccountMaterializationState::Stale
                 )
-        })
+        })?;
+        match &status.copy {
+            Some(copy) => (!copy.target_account_id.trim().is_empty())
+                .then_some(copy.target_account_id.as_str()),
+            None => Some(self.profile_id.as_str()),
+        }
     }
 
     /// Reuse prompt admission's plan/model and freshness policy. Missing

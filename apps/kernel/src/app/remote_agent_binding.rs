@@ -2103,15 +2103,14 @@ fn installed_remote_account_metadata(
     target_ref: &str,
     worker_owner_user_id: &str,
 ) -> Option<crate::account_profile::ProviderAccountReplicaMetadata> {
-    profile.is_installed_at(target_kind, target_ref).then(|| {
-        crate::account_profile::ProviderAccountReplicaMetadata {
-            owner_user_id: worker_owner_user_id.to_string(),
-            provider: profile.provider.clone(),
-            profile_id: profile.profile_id.clone(),
-            label: profile.label.clone(),
-            origin: profile.origin,
-            is_default: profile.is_default,
-        }
+    let receiving_account = profile.installed_account_id_at(target_kind, target_ref)?;
+    Some(crate::account_profile::ProviderAccountReplicaMetadata {
+        owner_user_id: worker_owner_user_id.to_string(),
+        provider: profile.provider.clone(),
+        profile_id: receiving_account.to_string(),
+        label: profile.label.clone(),
+        origin: profile.origin,
+        is_default: profile.is_default,
     })
 }
 
