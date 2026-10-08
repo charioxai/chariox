@@ -2461,6 +2461,7 @@ fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
         busy_recipients: Vec::new(),
+        held_work: Vec::new(),
     });
     assert!(f
         .store
@@ -2645,6 +2646,7 @@ fn a02_security_f4_accepted_parent_message_binds_exact_task() {
         target: None,
         run: None,
         now: 2,
+        work: None,
     });
     f.apply(Operation::Begin {
         owner: "owner".into(),
