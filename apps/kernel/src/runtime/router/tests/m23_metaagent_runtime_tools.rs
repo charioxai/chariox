@@ -203,7 +203,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
 
     // Discovery lets the official harness cache the interface before sudo.
     // A meta-agent's ordinary run still has no kernel-wide sudo authority.
-    assert!(router
+    let denied_kernel_request = router
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &meta_auth_token,
@@ -211,7 +211,15 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             serde_json::json!({"request": {"ListSessions": null}}),
         )
         .await
-        .is_err());
+        .expect("ordinary meta-agent kernel requests should return a structured denial");
+    assert!(
+        !denied_kernel_request.ok
+            && denied_kernel_request
+                .payload
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("not available to agents in Meta mode"))
+    );
 
     let denied_direct_tool = router
         .runtime_state
