@@ -1,7 +1,10 @@
 # BYOM / Chariox Setup (MP-07 / MP-08 / MP-11)
 
 PR1 and PR2 are rebased onto coordinator-requested OSS ownership `27aedc57e`
-on main `60c1ccb1e`. Local protocol 479 is retained; relay 73 comes from that base. MP-11 follows the
+on main `60c1ccb1e`. Their base uses local protocol 479 and relay 73. The
+linear PR4 owner-context layer on PR2 uses the already reviewed local 480 and
+relay 88 contracts, with both Setup/login and context-copy CLI entry points.
+MP-11 follows the
 owner's narrowed behavioural and security-anchor scope. Cloud remains control
 plane; each independent kernel owns its runtime and provider execution.
 
@@ -90,7 +93,8 @@ fresh-machine parity acceptance; Path-1 bootstrap checks are unchanged.
 The strict startup parser admits SSH, self-ticket and device stdin enrollment
 and readiness as distinct typed commands, rejecting extra arguments before
 runtime initialization. Inherited Browser/Computer/public-provider guards bind
-local 479 and retain relay 73; the aggregate version/hash is reconciled. Local
+the PR1/PR2 base at local 479 and relay 73; PR4 advances these to local 480 and
+relay 88 for owner context transfer. The aggregate version/hash is reconciled. Local
 source/mock drills do not establish live Cloud, signed distribution, real user
 services or fresh-machine acceptance.
 
