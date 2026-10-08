@@ -258,14 +258,15 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
         if(head[i]==-1){keys[i]=k;count[i]=0;}
         next[y]=head[i];head[i]=y;count[i]++;}
     static int votes[3201];memset(votes,0,sizeof(votes));
+    int same=0;
     for(int y=0;y<height;y++){uint64_t k=c->hash_cur[y];unsigned i=(unsigned)(k>>52)&(SLOTS-1);
         while(head[i]!=-1&&keys[i]!=k)i=(i+1)&(SLOTS-1);
         if(head[i]<0||count[i]>CHAIN)continue;
-        for(int b=head[i];b>=0;b=next[b])if(b!=y)votes[y-b+1600]++;}
+        /* Distinctive rows only: blank rows match in place and everywhere. */
+        for(int b=head[i];b>=0;b=next[b])if(b!=y)votes[y-b+1600]++;else same++;}
     /* Ties (periodic content) prefer the previous plan's offset. */
-    int dy=0,best=0,same=0;for(int d=-height+1;d<height;d++){int v=votes[d+1600];
+    int dy=0,best=0;for(int d=-height+1;d<height;d++){int v=votes[d+1600];
         if(d&&(v>best||(v==best&&v&&abs(d-c->last_dy)<abs(dy-c->last_dy)))){best=v;dy=d;}}
-    for(int y=0;y<height;y++)same+=c->hash_cur[y]==base_hash[y];
     /* Without a scroll (or when rows mostly stay in place) a static plan
      * re-encodes only changed cells; only the committed-canvas planner asks
      * for one, and it also covers a failed scroll candidate. */
