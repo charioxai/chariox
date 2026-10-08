@@ -493,10 +493,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
                 retired.push(wake);
             }
-            // Nothing delivers to a removed recipient: drop its pending events
-            // with an expired receipt instead of leaving them to the retry sweep.
-            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.state')='pending'").map_err(sql)?;
-            let pending = q
+            // Settle unresolved deliveries, including in-flight attempts, before
+            // the timeout sweep can create a Blocked task for a removed recipient.
+            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked')").map_err(sql)?;
+            let unsettled = q
                 .query_map([&room], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
                 })
@@ -504,7 +504,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
             drop(q);
-            for (a, seq) in pending.into_iter().filter(|(a, _)| removed(&room, a)) {
+            for (a, seq) in unsettled.into_iter().filter(|(a, _)| removed(&room, a)) {
                 let seq = u64::try_from(seq).map_err(|_| error("corrupt inbox sequence"))?;
                 let mut e = get_event(tx, &room, &a, seq)?;
                 e.state = "expired".into();

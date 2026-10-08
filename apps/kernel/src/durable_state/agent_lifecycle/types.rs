@@ -301,7 +301,7 @@ pub(crate) enum Operation {
     },
     /// Kernel teardown of a Room (`agent: None`) or agent, without owner
     /// authority: cancels its unfinished tasks, settles its armed wakes
-    /// (processes on physical exit) and expires its pending events.
+    /// (processes on physical exit) and expires its unresolved deliveries.
     RetireWakes {
         room: String,
         agent: Option<String>,

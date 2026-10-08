@@ -719,6 +719,121 @@ fn a03_teardown_retires_wakes_without_owner_authority() {
 }
 
 #[test]
+fn a03_teardown_settles_inflight_submitting_delivery_before_timeout() {
+    teardown_settles_inflight_deliveries("submitting");
+}
+
+#[test]
+fn a03_teardown_settles_inflight_uncertain_delivery_before_timeout() {
+    teardown_settles_inflight_deliveries("uncertain");
+}
+
+#[test]
+fn a03_teardown_settles_inflight_blocked_delivery() {
+    teardown_settles_inflight_deliveries("blocked");
+}
+
+fn teardown_settles_inflight_deliveries(state: &str) {
+    for agent in [Some("agent"), None] {
+        let f = Fixture::new();
+        f.create("t1", "timer", Some(1_000), Some(60_000));
+        f.wait_on(&["t1"]);
+        f.apply(Operation::FireWakes { now: 1_000 });
+        let sequence = f.inbox()[0].sequence;
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence,
+            prompt: "wake-prompt".into(),
+            target: None,
+            run: Some("wake-run".into()),
+            now: 1_001,
+        });
+        if state == "uncertain" {
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "agent".into(),
+                sequence,
+                state: state.into(),
+                now: 1_002,
+            });
+        } else if state == "blocked" {
+            f.apply(Operation::Sweep {
+                now: 1_001 + DELIVERY_TIMEOUT_MS,
+                busy_recipients: vec![],
+            });
+        }
+        assert_eq!(f.inbox()[0].state, state);
+        // Agent removal leaves peers alone; Room teardown leaves other Rooms alone.
+        for (room, recipient) in [("room", "peer"), ("other-room", "agent")] {
+            f.apply(Operation::Occur(occurrence(
+                room,
+                recipient,
+                "source",
+                "control",
+                "message",
+                serde_json::json!({}),
+            )));
+        }
+        for _ in 0..2 {
+            f.apply(Operation::RetireWakes {
+                room: "room".into(),
+                agent: agent.map(str::to_owned),
+                now: 2_000 + DELIVERY_TIMEOUT_MS,
+            });
+        }
+        f.apply(Operation::Sweep {
+            now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+            busy_recipients: vec![],
+        });
+        assert!(
+            f.store
+                .agent_tasks(Some("room"), Some("agent"))
+                .unwrap()
+                .iter()
+                .all(|t| t.state == ExecutionState::Cancelled),
+            "teardown of {state} must not produce a new Blocked delivery task"
+        );
+        assert_eq!(f.inbox()[0].state, "expired");
+        assert_eq!(f.wake("t1").last_delivery.as_deref(), Some("expired"));
+        let receipts = f.store.agent_wake_receipts(None, None).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].delivery, "expired");
+        assert!(receipts[0].delivered_at_ms.is_none());
+        assert!(receipts[0].acknowledged_at_ms.is_none());
+        for state in ["accepted", "rejected", "uncertain"] {
+            assert!(f
+                .store
+                .agent_lifecycle(Operation::Receipt {
+                    room: "room".into(),
+                    agent: "agent".into(),
+                    sequence,
+                    state: state.into(),
+                    now: 4_000 + 2 * DELIVERY_TIMEOUT_MS,
+                })
+                .is_err());
+        }
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(
+            reopened.agent_inbox("room", "agent", 0).unwrap()[0].state,
+            "expired"
+        );
+        assert_eq!(
+            reopened.agent_inbox("room", "peer", 0).unwrap()[0].state,
+            if agent.is_some() {
+                "pending"
+            } else {
+                "expired"
+            }
+        );
+        assert_eq!(
+            reopened.agent_inbox("other-room", "agent", 0).unwrap()[0].state,
+            "pending"
+        );
+    }
+}
+
+#[test]
 fn a03_wake_history_and_receipts_are_bounded() {
     let f = Fixture::new();
     f.create("interval", "timer", Some(60_000), Some(60_000));
