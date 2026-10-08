@@ -37,3 +37,25 @@ test('MP-11 native encoder close retires only its private session',async()=>{
  const encoder=new PortableEncoder();const retired=[];const raw={nativeRetire:name=>retired.push(name),nativeEncode:async()=>({backend:'native-x264',stripes:[],revision:1})};
  await encoder.encodeStripes(raw,8000000,false);await encoder.close();await encoder.close();assert.deepEqual(retired,[encoder.nativeSession]);
 });
+
+
+test('MP-08/MP-10/MP-11 native control flushes ordered frame notifications with the next request',async()=>{
+ const writes=[],child={stdin:{write(bytes){writes.push(bytes)}}};
+ const bridge=new NativeWorkerControl(child,()=>{});
+ bridge.commit('e',7,false);bridge.delivered('e',4);bridge.retire('old');
+ const pending=bridge.request('encode',{serial:8,encoder:'e'});
+ try{
+  assert.equal(writes.length,1,'frame notifications and request share one pipe write');
+  assert.deepEqual(writes[0].trim().split('\n').map(line=>JSON.parse(line)),[
+   {commit:'e',serial:7,admit:false},{delivered:'e',revision:4},{retire:'old'},{encode:{id:1,serial:8,encoder:'e'}}]);
+  bridge.receive({reply:1},Buffer.from('{}'));await pending;
+ }finally{bridge.close();await pending.catch(()=>{})}
+});
+test('MP-11 batches are bounded, lone notifications flush, urgent wheel keeps order, close retires pending flush',async()=>{
+ const writes=[],bridge=new NativeWorkerControl({stdin:{write:s=>writes.push(s)}},()=>{});
+ for(let i=0;i<64;i++)bridge.delivered('e',i);
+ assert.equal(writes.length,1);assert.equal(writes[0].trim().split('\n').length,64);
+ bridge.commit('e',65);await new Promise(r=>setImmediate(r));assert.equal(writes.length,2);
+ bridge.delivered('e',66);bridge.notify({wheel:[1,2,0,1]},true);assert.deepEqual(writes[2].trim().split('\n').map(s=>JSON.parse(s)),[{delivered:'e',revision:66},{wheel:[1,2,0,1]}]);
+ bridge.delivered('e',67);bridge.close();await new Promise(r=>setImmediate(r));assert.equal(writes.length,3);assert.equal(bridge.notifications.length,0);
+});

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
@@ -43,6 +43,7 @@ mod pending_action;
 mod pending_mutation;
 mod pending_responses;
 mod reconciliation;
+mod request_wire;
 mod unlocked_request;
 use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
@@ -567,7 +568,7 @@ impl BrowserControllerProcessStdioBackend {
             .stdin
             .lock()
             .map_err(|_| "controller stdin lock poisoned")?;
-        serde_json::to_writer(
+        request_wire::write_line(
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
@@ -582,10 +583,6 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
         drop(stdin);
         let started = Instant::now();
         let mut cancellation_sent = false;
@@ -604,17 +601,13 @@ impl BrowserControllerProcessStdioBackend {
                     .stdin
                     .lock()
                     .map_err(|_| "controller stdin lock poisoned")?;
-                serde_json::to_writer(
+                request_wire::write_line(
                     &mut *stdin,
                     &serde_json::json!({
                         "id":cancel_id,"method":"browser.cancel","params":{"request_id":request_id}
                     }),
                 )
                 .map_err(|error| error.to_string())?;
-                stdin
-                    .write_all(b"\n")
-                    .and_then(|()| stdin.flush())
-                    .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
                 cancellation_request_id = Some(cancel_id);
             }

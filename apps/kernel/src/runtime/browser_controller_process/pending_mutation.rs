@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::process::{Child, ChildStdin};
 use std::sync::{mpsc, Arc, Mutex, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{
-    cancellation, kill_child, pending_responses, BrowserControllerProcessOwnership,
+    cancellation, kill_child, pending_responses, request_wire, BrowserControllerProcessOwnership,
     BrowserControllerProcessStdioBackend, BrowserControllerProcessStore, BrowserControllerRpcError,
     BrowserControllerRpcRequest, BrowserControllerRpcResponse,
 };
@@ -72,7 +71,7 @@ impl BrowserControllerProcessStdioBackend {
             .stdin
             .lock()
             .map_err(|_| "controller stdin lock poisoned")?;
-        serde_json::to_writer(
+        request_wire::write_line(
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
@@ -87,10 +86,6 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller `{method}`: {error}"))?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
         Ok(PendingBrowserMutation {
             request_id,
             cancel_id,
@@ -119,17 +114,13 @@ impl PendingBrowserMutation {
                     .stdin
                     .lock()
                     .map_err(|_| "controller stdin lock poisoned")?;
-                serde_json::to_writer(
+                request_wire::write_line(
                     &mut *stdin,
                     &serde_json::json!({
                         "id":self.cancel_id,"method":"browser.cancel","params":{"request_id":self.request_id}
                     }),
                 )
                 .map_err(|error| error.to_string())?;
-                stdin
-                    .write_all(b"\n")
-                    .and_then(|()| stdin.flush())
-                    .map_err(|error| error.to_string())?;
                 sent = true;
             }
             if sent && !acknowledged {

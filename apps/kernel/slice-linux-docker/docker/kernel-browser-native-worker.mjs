@@ -1,14 +1,14 @@
 // MP-08/MP-10/MP-11: control-only bridge to the kernel-owned native worker.
 // Frame pixels and compressed packets never pass through the motion bridge.
 export class NativeWorkerControl {
- constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;}
+ constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;}
  request(operation,values){
   if(this.pending.size>=16||this.closed)throw Error('MP-11: native control unavailable');
   const id=++this.sequence;
   return new Promise((resolve,reject)=>{
    const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('MP-10: native control timeout'));},10000);
    this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});
-   this.child.stdin.write(JSON.stringify({[operation]:{id,...values}})+'\n',error=>{if(error)this.close()});
+   if(!this.notify({[operation]:{id,...values}},true))this.close();
   });
  }
  validate(header){if(!Number.isSafeInteger(header.reply)||!this.pending.has(header.reply)||header.length>8*1024*1024)throw Error('MP-11: native reply binding');}
@@ -25,9 +25,24 @@ export class NativeWorkerControl {
    delete value.timings;waiter.resolve(value);
   }catch(error){waiter.reject(error);this.close()}
  }
- retire(encoder){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({retire:encoder})+'\n');}
- delivered(encoder,revision){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({delivered:encoder,revision})+'\n');}
- // MP-08/MP-10: lossless scroll commits skip capture admission (overlay only).
- commit(encoder,serial,admit=true){if(!this.closed&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify({commit:encoder,serial,...(admit?{}:{admit:false})})+'\n');}
- close(){if(this.closed)return;this.closed=true;for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}
+ // MP-08/MP-10/MP-11: same ordered JSON-lines contract, one bounded write
+ // for a frame's notifications. Requests and physical input flush immediately.
+ notify(command,immediate=false){
+  if(this.closed||this.child.stdin.destroyed)return false;
+  this.notifications.push(JSON.stringify(command)+'\n');
+  if(immediate||this.notifications.length>=64)return this.flush();
+  if(this.flushScheduled===null)this.flushScheduled=setImmediate(()=>this.flush());
+  return true;
+ }
+ flush(){
+  if(this.flushScheduled!==null){clearImmediate(this.flushScheduled);this.flushScheduled=null;}
+  if(this.closed||this.child.stdin.destroyed){this.close();return false;}
+  if(!this.notifications.length)return true;
+  const bytes=this.notifications.join('');this.notifications=[];
+  try{this.child.stdin.write(bytes,error=>{if(error)this.close()});return true;}catch{this.close();return false;}
+ }
+ retire(encoder){this.notify({retire:encoder});}
+ delivered(encoder,revision){this.notify({delivered:encoder,revision});}
+ commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
+ close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}
 }

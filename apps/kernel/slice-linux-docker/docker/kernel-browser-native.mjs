@@ -60,7 +60,7 @@ export class LinuxCapture {
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    child.stderr.on('data',b=>{if(/^MD-DISPLAY: native stage [a-z_]+\n$/.test(b.toString()))this.helperStage=b.toString().trim().split(' ').at(-1)});
    const raster=new NativeRaster();
-   const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>{if(!child.stdin.destroyed)child.stdin.write(JSON.stringify({release:slot,serial})+'\n')});
+   const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.control({release:slot,serial}));
    const pipe=new NativePipe(header=>{
     if(header.reply!==undefined){this.nativeWorker?.validate(header);if(!this.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
     if(header.width!==geometry.width*this.scale||header.height!==geometry.height*this.scale||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
@@ -145,16 +145,22 @@ export class LinuxCapture {
   if(!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
-  this.child.stdin.write(JSON.stringify({wheel:[px,py,dx,dy]})+'\n');return true;
+  return this.control({wheel:[px,py,dx,dy]},true);
  }
  // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
  // them only while a viewer canvas is exact and unprotected.
  plans(enabled){
   enabled=Boolean(enabled);if(enabled===this.planning||!this.valid()||!this.child||this.child.stdin.destroyed)return;
-  this.planning=enabled;this.child.stdin.write(JSON.stringify({plans:enabled})+'\n');
+  this.planning=enabled;this.control({plans:enabled});
  }
  // MP-08/MP-10: only admitted physical input reaches this owned helper.
- wake(refresh=false){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.child.stdin.write(JSON.stringify(refresh?{refresh:true}:{wake:true})+'\n')}
+ wake(refresh=false){if(this.valid()&&this.child&&!this.child.stdin.destroyed)this.control(refresh?{refresh:true}:{wake:true},true)}
+ // MP-08/MP-10/MP-11: one ordered control stream, including lease release.
+ control(command,immediate=false){
+  if(this.nativeWorker)return this.nativeWorker.notify(command,immediate);
+  if(!this.child||this.child.stdin.destroyed)return false;
+  this.child.stdin.write(JSON.stringify(command)+'\n');return true;
+ }
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
  fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
