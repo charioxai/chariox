@@ -396,6 +396,59 @@ mod tests {
         );
     }
 
+    // MP-11 F14: NPROC applies to the host real UID, not the namespace UID.
+    #[test]
+    fn security_f14_root_compiler_uses_nonroot_host_uid() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        fn compiler_uid(pid: u32) -> Option<u32> {
+            let root = std::path::PathBuf::from(format!("/proc/{pid}"));
+            if std::fs::read_to_string(root.join("comm")).ok()?.trim() == "node" {
+                let status = std::fs::read_to_string(root.join("status")).ok()?;
+                return status
+                    .lines()
+                    .find(|line| line.starts_with("Uid:"))?
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse()
+                    .ok();
+            }
+            let children =
+                std::fs::read_to_string(root.join(format!("task/{pid}/children"))).ok()?;
+            children
+                .split_whitespace()
+                .filter_map(|id| id.parse::<u32>().ok())
+                .filter(|id| *id > 1)
+                .find_map(compiler_uid)
+        }
+        let node = discover_workflow_code_node_path().unwrap();
+        let mut command = compiler_command(&node, &WorkflowCodeLimitsConfig::default()).unwrap();
+        let child = command
+            .args([
+                "--disable-wasm-trap-handler",
+                "-e",
+                "setTimeout(() => {}, 2000)",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(child.id() > 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut uid = None;
+        while std::time::Instant::now() < deadline && uid.is_none() {
+            uid = compiler_uid(child.id());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "compiler UID diagnostic must run");
+        assert!(
+            uid.is_some_and(|uid| uid != 0),
+            "MP-11 F14: host root UID exempts compiler NPROC limit"
+        );
+    }
+
     #[test]
     fn compiler_isolation_denies_host_files_commands_environment_and_network() {
         let node = discover_workflow_code_node_path().expect("real Node required");
