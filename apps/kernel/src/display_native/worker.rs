@@ -57,6 +57,9 @@ enum Command {
     Wheel {
         wheel: [i32; 4],
     },
+    Click {
+        click: [i32; 2],
+    },
     Plans {
         plans: bool,
     },
@@ -325,6 +328,13 @@ pub(super) fn run() -> Result<(), String> {
                 } => {
                     if unsafe { ffi::cx_capture_wheel(capture.0, x, y, dx, dy) } != 0 {
                         return Err("MP-11: native wheel refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                // MP-08/MP-10: [x, y] primary click in device pixels.
+                Command::Click { click: [x, y] } => {
+                    if unsafe { ffi::cx_capture_click(capture.0, x, y) } != 0 {
+                        return Err("MP-11: native click refused".into());
                     }
                     wake = Some(epoch());
                 }

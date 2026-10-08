@@ -69,6 +69,7 @@ extern "C" {
     pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_shift(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_wheel(c: *mut c_void, x: i32, y: i32, dx: i32, dy: i32) -> i32;
+    pub(super) fn cx_capture_click(c: *mut c_void, x: i32, y: i32) -> i32;
     pub(super) fn cx_capture_plans(c: *mut c_void, enabled: i32);
     pub(super) fn cx_webp_lossless(
         bgrx: *const u8,

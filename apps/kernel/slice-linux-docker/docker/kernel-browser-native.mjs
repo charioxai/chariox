@@ -187,6 +187,13 @@ export class LinuxCapture {
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
   return this.control({wheel:[px,py,dx,dy]},true);
  }
+ // MP-08/MP-10: primary click on the owned display (CSS coordinates).
+ click(x,y){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
+  if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
+  return this.control({click:[px,py]},true);
+ }
  // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
  // them only while a viewer canvas is exact and unprotected.
  plans(enabled){

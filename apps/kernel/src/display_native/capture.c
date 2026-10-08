@@ -375,5 +375,17 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
     XFlush(c->display);return 0;
 }
 
+/* MP-08/MP-10: a primary-button click into the owned window (no renderer
+ * acknowledgement round trip); the caller fenced document and actor first. */
+int cx_capture_click(struct Capture *c,int x,int y){
+    if(x<0||y<0||x>=c->width||y>=c->height)return -1;
+    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    Window child;int rx,ry;
+    if(!XTranslateCoordinates(c->display,c->window,DefaultRootWindow(c->display),0,0,&rx,&ry,&child))return -1;
+    if(!XTestFakeMotionEvent(c->display,-1,rx+x,ry+c->offset+y,CurrentTime))return -1;
+    XTestFakeButtonEvent(c->display,1,True,CurrentTime);XTestFakeButtonEvent(c->display,1,False,CurrentTime);
+    XFlush(c->display);return 0;
+}
+
 /* MP-08/MP-10: plans cost a full compare; skip them while no viewer can use one. */
 void cx_capture_plans(struct Capture *c,int enabled){c->plans=enabled!=0;if(!c->plans)c->hash_last_valid=0;}

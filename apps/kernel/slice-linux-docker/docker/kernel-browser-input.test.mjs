@@ -140,3 +140,12 @@ test('MP-08/MP-10 viewer wheel deltas map to native notches; fine trackpad delta
  assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,1,-1,2,1,-1,0]);
  for(const delta of [1,-12,37,49])assert.equal(notches(delta),null,String(delta));
 });
+// MP-08/MP-10: viewer clicks on the owned display use XTest after the fence.
+test('MP-08/MP-10 viewer click routes to the owned display after the document fence; refusal falls back to CDP',async()=>{
+  const {browser,sent}=fixture();const clicks=[];let dispatched=0;
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:(...a)=>{clicks.push(a);return true},onDispatch:()=>dispatched++});
+  assert.deepEqual(clicks,[[10,20]]);assert.equal(dispatched,1);
+  assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:()=>false});
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native click falls back to CDP press/release');
+});

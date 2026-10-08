@@ -503,7 +503,8 @@ export class KernelBrowserHost {
           [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
         const owned=this.compositors.get(tab.tab_id)?.source;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
-        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+        const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
+        const deferred=await this.sampleLane(tab).run("input", () => inputHostTab(this.browser, tab, command.input, { signal, onDispatch, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

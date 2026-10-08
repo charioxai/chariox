@@ -12,7 +12,7 @@ const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
 // automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
 // stay precise on CDP.
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
@@ -92,6 +92,12 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         if (input.kind === "click") {
+          // MP-08/MP-10: a viewer click on the owned display goes through
+          // XTest after the same fences (no renderer acknowledgement wait).
+          if (nativeClick && !resolved) {
+            await check(); await mirrorGuard?.();
+            if (nativeClick(input.x, input.y)) { onDispatch?.(); return; }
+          }
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
         } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
