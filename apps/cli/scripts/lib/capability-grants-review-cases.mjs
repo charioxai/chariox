@@ -135,7 +135,9 @@ export async function runCapabilityReviewCase(kind, ctx) {
     passed('r2-stale-browser-popup-withdraws-without-owner-reply', { samePrompt: prompt.id, noGrant: true })
   } else if (kind === 'r3') {
     step('r3-official-codex-requests-new-tabs-grant-through-tui')
-    await automation.send('submit_prompt', { prompt: 'First call Chariox load_kernel_browser exactly once with no arguments. If it succeeds, call Chariox kernel_browser with command {"op":"stop"} exactly once. Stop after that and quote the exact error including its error code. Do not use other tools.' })
+    const prompt = 'First call Chariox load_kernel_browser exactly once with no arguments. If it succeeds, call Chariox kernel_browser with command {"op":"stop"} exactly once. Stop after that and quote the exact error including its error code. Do not use other tools.'
+    const agent = (await snapshot()).session.focusedAgentId
+    await automation.send('submit_prompt', { prompt })
     await until(async () => (await snapshot()).interactions.some(i => i.title === 'Chariox resource access'), 180_000)
     await press('\x1b[19~')
     await until(() => visibleScreen().includes('Chariox resource access'), 10_000)
@@ -145,8 +147,13 @@ export async function runCapabilityReviewCase(kind, ctx) {
     step('r3-provider-stop-keeps-typed-not-focused-refusal')
     try {
       await until(async () => {
-        if (visibleScreen().includes('user_domain_not_focused_agent')) return true
-        if (visibleScreen().includes('browser stop requires live owner focus') && !(await snapshot()).session.agents.some(a => a.isProcessing)) {
+        const view = await snapshot()
+        const entries = view.agentPanes[agent] ?? view.transcript.entries
+        const currentPrompt = entries.findLastIndex(entry => entry.role === 'user' && entry.text === prompt)
+        if (currentPrompt < 0 || view.session.agents.find(a => a.id === agent).isProcessing) return false
+        const response = entries.slice(currentPrompt + 1).map(entry => entry.text).join('\n')
+        if (response.includes('user_domain_not_focused_agent')) return true
+        if (response.includes('browser stop requires live owner focus')) {
           report.providerStopObserved = true
           throw new Error('MP-11 R3 Stop returned an untyped refusal')
         }
