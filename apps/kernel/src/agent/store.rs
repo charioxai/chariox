@@ -260,6 +260,24 @@ mod tests {
     use super::*;
     use crate::agent::GridPosition;
 
+    // MP-11 F2: a snapshot contains live agents, not the deleted ID high-water mark.
+    #[test]
+    fn security_f2_deleted_agent_identity_is_not_reallocated_after_restore() {
+        let mut store = AgentStore::new();
+        let live_id = store.next_agent_id();
+        store.insert(agent(&live_id, "room", None));
+        let deleted_id = store.next_agent_id();
+        store.insert(agent(&deleted_id, "room", None));
+        store.remove(&deleted_id).unwrap();
+        let mut restored = AgentStore::new();
+        for live in store.list() {
+            restored.insert_restored(live);
+        }
+        assert_ne!(restored.next_agent_id(), deleted_id);
+        // Ended sessions may leave an entirely empty snapshot.
+        assert_ne!(AgentStore::new().next_agent_id(), live_id);
+    }
+
     fn agent(id: &str, session_id: &str, alias: Option<&str>) -> AgentInstance {
         AgentInstance::new(
             id,
