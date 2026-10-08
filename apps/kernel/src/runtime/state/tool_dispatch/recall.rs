@@ -425,7 +425,7 @@ mod tests {
             "recall-run",
             &request,
             crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::agent::AgentEndpointMode::Managed,
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
                 process_label: "codex".into(),
                 pty_target: None,
                 pty_program: None,
