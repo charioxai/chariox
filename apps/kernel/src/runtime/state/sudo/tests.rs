@@ -449,7 +449,7 @@ async fn mp11_kafix_sudo_popup_names_aliases_and_returns_typed_refusal_or_expiry
         };
         assert!(prompt
             .message
-            .contains(&format!("agent {label} in session {session_label}.")));
+            .contains(&format!("agent {label} in session {session_label}:")));
         assert_eq!(
             prompt.session_alias.as_deref(),
             aliased.then_some("daily-work")
@@ -922,8 +922,8 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 #[tokio::test]
 async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
     let f = fixture();
-    // Official harnesses cache discovery before the first turn. The interface
-    // must already exist then, without granting an ordinary turn authority.
+    // MP-08/MP-10/MP-11 A04 (#924): the interface appears only with a live sudo
+    // window; providers already running reload before the first sudo turn.
     let initial_catalog = f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer");
@@ -932,7 +932,7 @@ async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
         .runtime_tool_specs_for_auth_token("unknown-token")
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
-    assert!(initial_catalog
+    assert!(!initial_catalog
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
     assert!(f
@@ -1038,7 +1038,8 @@ async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &turn.agent_id)
         .unwrap();
-    assert!(f
+    // #924: the window ends with its owner work, so the interface goes too.
+    assert!(!f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()

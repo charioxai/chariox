@@ -47,21 +47,35 @@ fn room() -> Room {
         let agent = crate::app::KernelSessionService::new(app)
             .spawn_agent(request)
             .unwrap();
-        let run = launch_test_provider(
-            app,
-            session.id(),
-            agent.id(),
-            "dev-stub",
-            "dev-stub",
-            "native-tui-idle",
-        );
+        // Launch without #914's scaffolding room turn: these tests submit
+        // their own owner prompts.
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "native-tui-idle",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .unwrap();
+        app.update_provider_run_projection(run.clone());
         (
             agent.id().to_string(),
             run.runtime_mcp_auth_token().unwrap().to_string(),
         )
     };
     let parent = spawn(&mut app, None);
+    // #914: lineage spawns register under the creator's live turn.
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), &parent.0);
     let child = spawn(&mut app, Some(&parent.0));
+    // Retire the creating turn through the prompt-state owner (#914).
+    let snapshot = app.sessions().get_session(session.id()).unwrap();
+    app.prompt_state_owner()
+        .cancel_active_prompt_only(&snapshot, &parent.0)
+        .unwrap();
     let peer = spawn(&mut app, None);
     let app = Arc::new(Mutex::new(app));
     Room {

@@ -123,7 +123,7 @@ impl ManagedContextOutboundOperationStore {
         Ok(candidate)
     }
 
-    pub(super) fn remember_owner_redemption(
+    pub(crate) fn remember_owner_redemption(
         &self,
         ticket: &ManagedContextTransferTicket,
         selection: crate::managed_context::owner_managed::OwnerManagedTransfer,
@@ -193,6 +193,9 @@ impl ManagedContextOutboundOperationStore {
             .lock()
             .expect("owner operation binding lock");
         let path = parent.join(format!("{context_id}-owner.json"));
+        if !path_entry_exists(&path)? {
+            return Ok(());
+        }
         let bytes = read_bounded_regular_file(&path, MAX_OUTBOUND_ARTIFACT_STATE_BYTES)?;
         let mut saved: PersistedOwnerTicket = serde_json::from_slice(&bytes)
             .map_err(|_| outbound_service_error("invalid owner context binding", false))?;

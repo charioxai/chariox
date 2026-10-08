@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-fn staging_union_protocol_454_snapshot_and_hash() {
+fn staging_union_protocol_467_snapshot_and_hash() {
     use crate::error::UserDomainRefusalReason as Reason;
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
@@ -10,7 +10,7 @@ fn staging_union_protocol_454_snapshot_and_hash() {
         95
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("staging-union-454.json")).unwrap();
+        serde_json::from_str(include_str!("staging-union-467.json")).unwrap();
     let requests: Vec<LocalDaemonRequest> =
         serde_json::from_value(expected["requests"].clone()).unwrap();
     let reasons = [
@@ -30,9 +30,9 @@ fn staging_union_protocol_454_snapshot_and_hash() {
     assert_eq!(
         format!(
             "{:x}",
-            Sha256::digest(include_bytes!("staging-union-454.json"))
+            Sha256::digest(include_bytes!("staging-union-467.json"))
         ),
-        "1a87e0e2c6124c83cf60794bab8eb57700edb63a267d80a5f554af54f596ebae"
+        "dfbd94a870b573f9ea4dbf8e559e6aedcf76c86eb52e34a275b60e1d192f267c"
     );
     for request in requests {
         if matches!(

@@ -273,7 +273,15 @@ async fn owner_copy_inner(source_project: bool, legacy_local: bool) {
             .unwrap(),
         };
         let context = ticket.context_plan.context_id().to_string();
-        let response = serde_json::to_vec(&ticket).unwrap();
+        // Cloud #305 answers redemption with the issuance binding.
+        let response = serde_json::to_vec(&serde_json::json!({
+            "kind": "owner_managed_machine",
+            "source": selection.source,
+            "target": selection.target,
+            "contextSelection": selection.context_selection,
+        }))
+        .unwrap();
+        store.remember_owner_redemption(&ticket, selection.clone());
         let cloud = async {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();

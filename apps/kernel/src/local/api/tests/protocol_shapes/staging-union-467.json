@@ -1,6 +1,6 @@
 {
-  "local_daemon_protocol_version": 454,
-  "relay_peer_protocol_version": 94,
+  "local_daemon_protocol_version": 467,
+  "relay_peer_protocol_version": 95,
   "requests": [
     {
       "KernelBrowser": {

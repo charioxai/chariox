@@ -28,7 +28,17 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
     let (session, first) = crate::app::KernelSessionService::new(&mut app)
         .create_session(workspace.session_request())
         .unwrap();
-    let mut agents = vec![first.clone()];
+    let first_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        first.id(),
+        "dev-stub",
+        "dev-stub",
+        "native-tui-idle",
+    );
+    // #914: lineage spawns register under the creator's live turn, which the
+    // room-tools launch helper admits.
+    let mut agents = Vec::new();
     for child in spawned {
         agents.push(
             crate::app::KernelSessionService::new(&mut app)
@@ -43,9 +53,9 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
     for peer in peers {
         agents.push(spawn_test_agent(&mut app, session.id(), peer, "dev-stub"));
     }
-    let agents = agents
-        .into_iter()
-        .map(|agent| {
+    let first_token = first_run.runtime_mcp_auth_token().unwrap().to_string();
+    let agents = std::iter::once((first, first_token))
+        .chain(agents.into_iter().map(|agent| {
             let run = launch_test_provider(
                 &mut app,
                 session.id(),
@@ -56,7 +66,7 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
             );
             let token = run.runtime_mcp_auth_token().unwrap().to_string();
             (agent, token)
-        })
+        }))
         .collect();
     Setup {
         app,

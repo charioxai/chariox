@@ -318,7 +318,7 @@ mod tests {
             body["metadata"]["owner_managed_context_transfer_protocol_version"],
             1
         );
-        assert_eq!(body["metadata"]["relay_peer_protocol_version"], 93);
+        assert_eq!(body["metadata"]["relay_peer_protocol_version"], 95);
 
         let mut session_profile = profile();
         session_profile.machine_credential = None;

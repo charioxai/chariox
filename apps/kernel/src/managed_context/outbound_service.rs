@@ -2369,7 +2369,11 @@ mod tests {
                 }
             }
         });
-        let result = authoritative_ticket_for_outbound_operation(&config, &store, &ticket).await;
+        let result = if owner_managed {
+            authoritative_ticket_for_outbound_operation(&config, &store, &ticket).await
+        } else {
+            fetch_authoritative_ticket(&config, &ticket).await
+        };
         assert!(
             result.is_ok(),
             "kernel-only profile must reach Cloud ticket authorization"

@@ -4,7 +4,7 @@ use crate::local::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn mdaccess_protocol_443_grant_shapes_and_hash() {
+fn mdaccess_protocol_467_grant_shapes_and_hash() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 467);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
@@ -86,14 +86,14 @@ fn mdaccess_protocol_443_grant_shapes_and_hash() {
         .unwrap(),
     );
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("user-domain-access-462.json")).unwrap();
+        serde_json::from_str(include_str!("user-domain-access-467.json")).unwrap();
     assert_eq!(serde_json::Value::Array(values), expected);
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "e4016ed77b6b7523dab82a10cf486fe6f546f46e4a4ad535d5e0b722857eda3e"
+        "17622fa8ce455d816ada97f86b72d30124b1cd8804f4d31a7b08b3b917246045"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})

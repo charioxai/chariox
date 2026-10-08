@@ -346,7 +346,7 @@ fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
     assert_eq!(serde_json::to_value(request).unwrap(), value);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
-        "89c4e71d4b995bad514d5f0518c5f41a41abcfa427681fb9647a6037bc2c3df0"
+        "c574f409ed1c25f7c0694a454c836630f376064a3749fddfb1171949411063b7"
     );
     let value: serde_json::Value = serde_json::from_str(r#"{"ManagedContextLaunchTarget":{"target":{"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelId":"kernel","contextId":"context","planDigest":"digest","development":{"kind":"empty","workspacePath":"/home/user/chariox-contexts/context/workspace"}}}}"#).unwrap();
     let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();

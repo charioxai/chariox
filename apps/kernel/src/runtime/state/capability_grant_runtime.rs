@@ -36,12 +36,18 @@ mod tests {
         let (session, parent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(worktree.session_request().with_owner_user_id("alice"))
             .unwrap();
+        // #914: lineage spawns register under the creator's live turn.
+        crate::test_support::admit_room_test_turn(&mut app, session.id(), parent.id());
         let child = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_owner_user_id("alice")
                     .with_spawned_by_agent_id(parent.id()),
             )
+            .unwrap();
+        let snapshot = app.sessions().get_session(session.id()).unwrap();
+        app.prompt_state_owner()
+            .cancel_active_prompt_only(&snapshot, parent.id())
             .unwrap();
         let peer = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(

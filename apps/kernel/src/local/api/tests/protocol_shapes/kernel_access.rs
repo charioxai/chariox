@@ -331,6 +331,6 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "2066da8a5ceeea5bd31b4cdfc618b16e6fd79f428223f92a003e3a0880ed20b8"
+        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
     );
 }
