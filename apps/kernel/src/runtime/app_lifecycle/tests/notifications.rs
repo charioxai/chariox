@@ -472,7 +472,10 @@ fn configuration_change_carries_effective_grants_and_skips_idempotent_writes() {
         .clone();
     entry
         .control
-        .notify("prepare_update", json!({"request_id":"configuration-settled"}))
+        .notify(
+            "prepare_update",
+            json!({"request_id":"configuration-settled"}),
+        )
         .unwrap();
     control.lifecycle().shutdown_blocking().unwrap();
     assert_eq!(
