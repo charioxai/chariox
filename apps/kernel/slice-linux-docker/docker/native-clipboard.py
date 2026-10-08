@@ -14,18 +14,19 @@ def clipboard_source(connection, processes, tree, accessibility):
     # with fully public accessibility coverage may supply an agent clipboard.
     owner=connection.get_selection_owner(connection.intern_atom('CLIPBOARD'))
     if not owner:return None
-    prop=owner.get_full_property(connection.intern_atom('_NET_WM_PID'),0)
-    if prop is None or prop.format!=32 or len(prop.value)!=1:return None
-    pid=int(prop.value[0])
-    # _NET_WM_PID is a client claim. XRes must independently identify the
-    # connection that owns the selection window; unsupported servers deny.
+    # MP-11 review R3: GTK selection windows need not publish _NET_WM_PID.
+    # XRes must identify the owning connection; a client claim is only an
+    # optional consistency check and can never grant clipboard provenance.
     try:
         if not connection.has_extension('X-Resource'):return None
         version=connection.res_query_version()
         if (version.server_major,version.server_minor)<(1,2):return None
         identities=connection.res_query_client_ids([{'client':owner.id,'mask':2}]).ids
         pids=[int(item.value[0]) for item in identities if item.spec.mask & 2 and len(item.value)==1]
-        if pids!=[pid]:return None
+        if len(pids)!=1 or pids[0]<=1:return None
+        pid=pids[0]
+        prop=owner.get_full_property(connection.intern_atom('_NET_WM_PID'),0)
+        if prop is not None and (prop.format!=32 or len(prop.value)!=1 or int(prop.value[0])!=pid):return None
     except Exception:return None
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]

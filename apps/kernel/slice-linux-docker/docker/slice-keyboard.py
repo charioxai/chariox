@@ -391,6 +391,17 @@ def main(args, stream):
         hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
     elif len(args) == 5 and args[0] == 'hold-button':
         hold_input('button', args[1], int(args[2]), int(args[3]), int(args[4]))
+    elif len(args) == 5 and args[0] == 'pointer-click' and agent:
+        # MP-11 review R1: every native click can activate a Paste control.
+        if args[1] not in ('left','right') or args[2] not in ('1','2'):
+            raise ValueError('invalid admitted pointer click')
+        admit_clipboard=room_clipboard_guard()
+        for index in range(int(args[2])):
+            handlers={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+            try:hold_input('button',args[1],1,int(args[3]),int(args[4]),before_press=admit_clipboard)
+            finally:
+                for number,handler in handlers.items():signal.signal(number,handler)
+            if index+1<int(args[2]):time.sleep(0.08)
     elif args == ['reset'] and not agent:
         reset_input()
     elif args == ['secret-target']:

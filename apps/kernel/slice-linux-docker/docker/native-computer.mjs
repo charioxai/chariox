@@ -121,7 +121,9 @@ export class NativeComputer {
       if(command._agent_input && (['hold','pointer_hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
       if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
-      if(command._agent_input && input.kind==='key' && nativePasteChord(input.key)) {
+      // MP-11 review R1: native controls may paste on any pointer click.
+      // Their labels/actions are not a complete description of effects.
+      if(command._agent_input && (input.kind==='click' || input.kind==='key' && nativePasteChord(input.key))) {
         const clipboard=await this.request({...command,op:'clipboard_read'},policy,{signal});
         if(typeof clipboard.text!=='string' || clipboard.text==='[protected]')throw new UserDomainRefusal('sensitive_requires_focus');
       }

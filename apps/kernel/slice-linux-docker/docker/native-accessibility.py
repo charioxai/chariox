@@ -4,6 +4,8 @@ import json
 import os
 import pyatspi
 from collections import deque
+from pathlib import Path
+from types import SimpleNamespace
 # MP-08 / MP-10 / MP-11: private protection coverage is independent of
 # the 64-node / 3 KiB public projection. Exhaustion still masks captures.
 MAX_NODES=8192
@@ -79,6 +81,15 @@ def frame_rect(root, window):
             return [geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width]
         window=parent
     raise ValueError('window frame unavailable')
+
+
+def visible_rect(rect, screen):
+    # MP-11 review R3: GTK owns an offscreen selection window. Only actual
+    # desktop pixels need coverage; partially visible popups remain masked.
+    x,y,width,height=rect
+    left,top=max(0,x),max(0,y)
+    right,bottom=min(screen.width_in_pixels,x+width),min(screen.height_in_pixels,y+height)
+    return [left,top,right-left,bottom-top] if right>left and bottom>top else None
 
 
 def subtract(rect, cover):
@@ -179,7 +190,7 @@ def snapshot(processes, browser_processes=None):
         connection=display.Display()
         active_window=None
         try:
-            root=connection.screen().root
+            screen=connection.screen();root=screen.root
             active=root.get_full_property(connection.intern_atom('_NET_ACTIVE_WINDOW'),X.AnyPropertyType)
             active_id=int(active.value[0]) if active is not None and len(active.value) else None
             # MP-08: bottom-to-top order lets capture skip parts hidden by owned windows above.
@@ -209,7 +220,8 @@ def snapshot(processes, browser_processes=None):
                 covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates in windows)==1
                 if pid not in allowed:complete=False
                 if not covered or pid in browsers:
-                    uncovered.append(rect);masks.append(rect)
+                    visible=visible_rect(rect,screen)
+                    if visible:uncovered.append(visible);masks.append(visible)
                 elif stacked and masks:
                     masks=[part for region in masks for part in subtract(region,rect)]
                 if covered and window_id==active_id:
@@ -221,7 +233,8 @@ def snapshot(processes, browser_processes=None):
                 attributes=child.get_attributes()
                 if attributes.override_redirect and attributes.map_state==X.IsViewable:
                     geometry=child.get_geometry()
-                    uncovered.append([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width]);masks.append(uncovered[-1])
+                    visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
+                    if visible:uncovered.append(visible);masks.append(visible)
         finally:connection.close()
         # MP-11: without a proved CDP document-to-desktop transform, withhold
         # the browser window and its entire structured app, including titles,
@@ -308,5 +321,12 @@ def act(request):
     if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()!=expected['role'] or node.name!=expected['name']:raise ValueError('stale control')
     interface=node.queryAction()
     index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
+    if request.get('agent_input'):
+        # MP-11 review R1: fence clipboard ownership/content again at doAction.
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
+        clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
+        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied)
+        clipboard.paste_guard(request['processes'],protection,request.get('browser_processes'))()
     if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}

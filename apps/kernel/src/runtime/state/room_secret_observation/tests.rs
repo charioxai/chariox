@@ -2,6 +2,43 @@ use super::*;
 
 mod lifecycle;
 
+// MP-11 review R2: exercise the worker's authenticated route, not a policy helper.
+#[tokio::test]
+async fn registered_native_target_refuses_agent_text_on_authenticated_worker_route() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{TestRoom, TestTools, install_screen_tool};
+    use crate::transport::room_browser_controller::RoomComputerInputAction;
+    let room = TestRoom::new("registered-native-agent-text");
+    let tools = TestTools::new("registered-native-agent-text");
+    let receipt = tools.screen_tool.with_extension("calls");
+    std::fs::write(&tools.screen_tool, format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$1\" >> '{}'\n", receipt.display())).unwrap();
+    let _environment = install_screen_tool(&tools.screen_tool);
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_environment_worker_binding = Some(crate::config::RoomEnvironmentWorkerBinding {
+        home_kernel_id: "proved-home".into(), home_public_key: config.relay_public_key.clone(),
+        session_id: room.session_id.clone(), slice_id: "proved-slice".into(), provisioned_slice_id: None,
+    });
+    room.runtime.owned.config_projection.update(config.clone());
+    let store = &room.runtime.owned.room_secret_observations;
+    {
+        let mut rooms = store.rooms.lock().unwrap();
+        let protection = rooms.entry(room.session_id.clone()).or_default();
+        // Only the native target is registered: no value or password role can fence it.
+        protection.targets.push(serde_json::json!({"kind":"native","target":{"focus_window":42,"active_window":41}}));
+    }
+    let request = |actor: &str, id: &str| Command::ComputerInput {
+        action_id: id.into(), actor_id: actor.into(), runtime_generation: 1, viewport_revision: 1,
+        desktop_pixel_width: 1280, desktop_pixel_height: 800,
+        action: RoomComputerInputAction::KeyboardText { input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new("ordinary public text".into()) },
+    };
+    let foreign = room.runtime.execute_bound_room_browser_controller("foreign-home", &config.relay_public_key, &room.session_id, "proved-slice", request("agent:one", "foreign")).await;
+    assert!(foreign.unwrap_err().to_string().contains("scope_denied"));
+    let result = room.runtime.execute_bound_room_browser_controller("proved-home", &config.relay_public_key, &room.session_id, "proved-slice", request("agent:one", "agent")).await;
+    assert!(matches!(result, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus })));
+    assert!(!receipt.exists(), "MP-11 refused agent text never reaches the native helper");
+    room.runtime.execute_bound_room_browser_controller("proved-home", &config.relay_public_key, &room.session_id, "proved-slice", request("human:one", "human")).await.unwrap();
+    assert_eq!(std::fs::read_to_string(receipt).unwrap().trim(), "computer-type-stdin");
+}
+
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
 // futures. Keep relay delivery out of their inline state on kernel stacks.
 #[tokio::test]

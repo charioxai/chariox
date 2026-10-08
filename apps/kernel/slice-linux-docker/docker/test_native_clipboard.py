@@ -25,10 +25,15 @@ class ClipboardTests(unittest.TestCase):
             self.assertFalse(m.is_paste_chord(key),key)
 
     def test_unknown_selection_owner_never_reads_clipboard_contents(self):
-        p,t,a,o,c=self.setup();o.get_full_property.return_value=None
+        p,t,a,o,c=self.setup();o.get_full_property.return_value=None;c.res_query_client_ids.return_value=SimpleNamespace(ids=[])
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
             self.assertIsNone(m.public_clipboard([p],a));read.assert_not_called()
         c.close.assert_called_once()
+
+    def test_gtk_selection_window_can_use_proved_server_pid_without_a_client_claim(self):
+        p,t,a,o,c=self.setup();o.get_full_property.return_value=None
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public')):
+            self.assertEqual(m.public_clipboard([p],a),('public',(99,77,'1')))
 
     def test_foreign_or_retired_clipboard_source_is_protected(self):
         p,t,a,o,c=self.setup()

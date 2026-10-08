@@ -4,6 +4,19 @@ import assert from 'node:assert/strict';
 import { NativeAccessibility } from './native-accessibility.mjs';
 const binding={surface_id:'s',generation:'g',width:1280,height:800,environment:{},ownedProcesses:async()=>[{pid:200,started:'1'}]};
 const tree={available:true,complete:true,nodes:[{pid:200,started:'1',path:[0],role:'push button',name:'Public',bounds:[1,2,3,4],actions:['click'],states:[]}],protected:false};
+test('MP-11 review R1 agent AT-SPI Paste controls require public clipboard provenance',async()=>{
+ for(const context of [{observer:'agent:a',command:{}},{observer:'terminal:a',command:{_agent_input:true}}]) {
+  let effects=0;
+  const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+   if(request.op==='clipboard_read')return {text:'[protected]'};
+   if(request.op==='accessibility_action'){effects++;return {applied:true};}
+   return {...tree,nodes:[{...tree.nodes[0],name:'Paste'}]};
+  }});
+  const seen=await native.snapshot(context.observer,{});
+  await assert.rejects(native.action(context.observer,{...context.command,target_id:seen.nodes[0].target_id,tree_revision:seen.tree_revision,action:'click'},{}),e=>e.code==='user_domain_sensitive_requires_focus');
+  assert.equal(effects,0);
+ }
+});
 test('MP-08 / MP-11 foreground application survives browser action and traversal budgets',async()=>{
  const current={...tree,active_window:{pid:300,started:'2',path:[0]},nodes:Array.from({length:600},(_,i)=>({...tree.nodes[0],path:[i],name:'Browser panel '+i,states:['showing','focused'],actions:['doDefault']}))};
  current.nodes.push({...tree.nodes[0],pid:300,started:'2',path:[0],role:'frame',name:'meeting.odt - LibreOffice Writer',states:['showing'],actions:[]});
@@ -53,7 +66,7 @@ test('MP-11 target protection invalidates cached snapshots and direct old handle
 });
 
 test('MP-08 stale handles expose the existing typed refusal instead of a generic backend failure', async () => {
- const native=new NativeAccessibility({binding:()=>binding,execute:async()=>structuredClone(tree)});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>request.op==='clipboard_read'?{text:'public'}:structuredClone(tree)});
  const observed=await native.snapshot('agent:a',{});const command={target_id:observed.nodes[0].target_id,tree_revision:observed.tree_revision,action:'click'};
  await native.action('agent:a',command,{});
  await assert.rejects(native.action('agent:a',command,{}), error=>error.code==='user_domain_stale_reference');
@@ -89,6 +102,7 @@ test('MP-08 / MP-11 failed or cancelled dispatch consumes handles even with an u
  for (const reason of ['helper failed after effect', 'action cancelled after effect']) {
   let effects=0;
   const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+   if(request.op==='clipboard_read')return {text:'public'};
    if(request.op==='accessibility_action'){effects++;throw Error(reason);}
    return structuredClone(tree);
   }});

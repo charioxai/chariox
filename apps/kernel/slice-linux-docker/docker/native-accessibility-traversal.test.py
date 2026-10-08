@@ -62,7 +62,7 @@ class TraversalTest(unittest.TestCase):
         atspi.ROLE_TABLE_CELL = 3
         atspi.STATE_MANAGES_DESCENDANTS = 2
         self.connection = types.SimpleNamespace(
-            screen=lambda: types.SimpleNamespace(root=types.SimpleNamespace(get_full_property=lambda *args: None,query_tree=lambda:types.SimpleNamespace(children=[]))),
+            screen=lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=types.SimpleNamespace(get_full_property=lambda *args: None,query_tree=lambda:types.SimpleNamespace(children=[]))),
             intern_atom=lambda value: value, close=lambda: None)
         xlib = types.ModuleType('Xlib')
         xlib.X = types.SimpleNamespace(AnyPropertyType=0, IsViewable=2)
@@ -90,7 +90,7 @@ class TraversalTest(unittest.TestCase):
         window.id=9
         window.query_tree=lambda:types.SimpleNamespace(parent=root)
         window.get_geometry=lambda:types.SimpleNamespace(x=100,y=80,width=300,height=200,border_width=0)
-        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
         self.connection.create_resource_object = lambda kind, value: window
 
     def test_mp08_foreground_binds_exact_owned_frame(self):
@@ -199,7 +199,7 @@ class TraversalTest(unittest.TestCase):
         window = types.SimpleNamespace(id=9, get_geometry=lambda:types.SimpleNamespace(width=246,height=152),query_tree=lambda: types.SimpleNamespace(parent=frame),
             get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else b'xterm'))
-        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
         self.connection.create_resource_object = lambda kind, value: window
 
     def test_mp08_owned_window_without_accessibility_masks_only_its_frame(self):
@@ -239,7 +239,7 @@ class TraversalTest(unittest.TestCase):
         root.get_full_property = lambda atom, kind: types.SimpleNamespace(value=lists[atom]) if atom in lists else None
         root.query_tree = lambda: types.SimpleNamespace(children=[])
         root.translate_coords=lambda window,*args:types.SimpleNamespace(x=20 if window.id==9 else 100,y=30 if window.id==9 else 80)
-        self.connection.screen = lambda: types.SimpleNamespace(root=root)
+        self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
         self.connection.create_resource_object = lambda kind, value: windows[value]
 
     def test_mp08_owned_window_below_an_owned_app_masks_only_its_exposed_part(self):
@@ -319,6 +319,16 @@ class TraversalTest(unittest.TestCase):
         frame=Node('xterm','frame');frame.rect=types.SimpleNamespace(x=20,y=30,width=246,height=152)
         tree=self.snapshot([Node('Office','application',[frame])])
         self.assertEqual(tree['masks'],[[300,40,102,62]])
+
+    def test_mp11_r3_hidden_selection_window_has_no_desktop_pixels(self):
+        for bounds, expected in [((-100,-100,1,1),[]),((-5,40,15,60),[[0,40,10,60]]),((1270,790,20,20),[[1270,790,10,10]])]:
+            x,y,width,height=bounds
+            popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
+                get_geometry=lambda:types.SimpleNamespace(x=x,y=y,width=width,height=height,border_width=0))
+            self.terminal(200,[popup])
+            frame=Node('xterm','frame');frame.rect=types.SimpleNamespace(x=20,y=30,width=246,height=152)
+            tree=self.snapshot([Node('Office','application',[frame])])
+            self.assertEqual(tree['masks'],expected)
 
     def test_mp11_finding4_same_pid_unmatched_window_has_no_coverage(self):
         self.terminal(200)

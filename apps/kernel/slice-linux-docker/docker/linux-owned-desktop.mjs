@@ -48,7 +48,7 @@ export class LinuxOwnedDesktop {
     const child = spawn(command.binary, command.args, { env, stdio });
     // Attach before the first asynchronous boundary to prevent unhandled spawn errors.
     child.on('error', () => {});
-    const record = { child, identity: null, core }; this.children.push(record);
+    const record = { child, identity: null, core, name }; this.children.push(record);
     if (!child.pid) throw new Error('MP-08: desktop executable unavailable');
     record.identity = await processIdentity(child.pid);
     if (!record.identity) throw new Error('MP-11: desktop child ownership unavailable');
@@ -125,7 +125,8 @@ export class LinuxOwnedDesktop {
       if(keymapExit!==0)throw new Error('MP-08: owned display keymap unavailable');
       await this.launch('openbox', ['--sm-disable'], env);
       await delay(100);
-      if (this.children.some(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null))) throw new Error('MP-08: desktop failed to become ready');
+      const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
+      if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
       this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), width: 1280, height: 800, environment: Object.freeze(env) });
       return this.current;
     } catch (error) { await this.stop(); throw error; }
