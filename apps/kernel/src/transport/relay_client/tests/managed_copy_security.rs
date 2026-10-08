@@ -29,24 +29,32 @@ fn secrev_f2_encrypted_slice_import_replay_cannot_restore_removed_login() {
         let registry = router.runtime_state().provider_account_profile_registry().clone();
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing, _priority, _events) = RelayOutgoingSender::channel(32);
-        let materialization = ProviderAccountMaterialization {
+        let mut materialization = ProviderAccountMaterialization {
             copy_source: Some(ProviderAccountCopySource { machine_id: source.host_machine_id.clone(), kernel_id: source.daemon_id.clone() }),
             profile: ProviderAccountReplicaMetadata { owner_user_id: "local".into(), provider: "opencode".into(), profile_id: "replay-account".into(), label: "Synthetic copy".into(), origin: ProviderAccountProfileOrigin::CharioxCreated, is_default: false },
             files: vec![ProviderAccountMaterializationFile { relative_path: "data/opencode/auth.json".into(), contents_base64: base64::engine::general_purpose::STANDARD.encode(br#"{"openai":{"type":"api","key":"synthetic"}}"#) }],
             generated_at_ms: 1,
         };
         let frame = relay_crypto::encrypt_payload_for_peer(&source.relay_private_key, &target.relay_public_key,
-            &serde_json::to_vec(&RelayPeerRequest::ImportManagedSliceProviderAccountCopy { slice_id: "replay-slice".into(), materialization }).unwrap()).unwrap();
+            &serde_json::to_vec(&RelayPeerRequest::ImportManagedSliceProviderAccountCopy { slice_id: "replay-slice".into(), materialization: materialization.clone() }).unwrap()).unwrap();
         let imported = super::super::peer_requests::handle_daemon_peer_request(&router, &state, &outgoing, &source.daemon_id, None, frame.clone()).await;
         assert!(imported.error.is_none(), "initial import: {:?}", imported.error);
+        materialization.generated_at_ms = 2;
+        let no_op_frame = relay_crypto::encrypt_payload_for_peer(&source.relay_private_key, &target.relay_public_key,
+            &serde_json::to_vec(&RelayPeerRequest::ImportManagedSliceProviderAccountCopy {slice_id: "replay-slice".into(), materialization}).unwrap()).unwrap();
+        let no_op = super::super::peer_requests::handle_daemon_peer_request(&router, &state, &outgoing, &source.daemon_id, None, no_op_frame.clone()).await;
+        assert!(no_op.error.is_none(), "a fresh owner import may preserve the receiving login");
         let environment = registry.resolve_environment("local", "opencode", "replay-account").unwrap();
         let auth = std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
         assert!(auth.is_file());
         // The Docker removal helper removes this official artifact. Keep persisted
-        // copy metadata, reopen the registry, and replay the exact encrypted frame.
+        // copy metadata and replay the exact encrypted frame.
         std::fs::remove_file(&auth).unwrap();
         let replay = super::super::peer_requests::handle_daemon_peer_request(&router, &state, &outgoing, &source.daemon_id, None, frame).await;
         assert!(!auth.exists(), "relay replay restored the removed credential");
         assert!(replay.error.is_some(), "stale import must be rejected");
+        let replay = super::super::peer_requests::handle_daemon_peer_request(&router, &state, &outgoing, &source.daemon_id, None, no_op_frame).await;
+        assert!(replay.error.is_some(), "a no-op import must also be consumed");
+        assert!(!auth.exists(), "replaying a no-op request restored the credential");
     });
 }

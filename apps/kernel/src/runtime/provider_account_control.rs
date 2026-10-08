@@ -644,6 +644,10 @@ fn import_managed_account_copy_with_registry(
     owner_user_id: &str,
     mut materialization: crate::account_profile::ProviderAccountMaterialization,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    // One receiving authority serializes admission and installation. Recording a
+    // request only after installation would leave a replay window on failure.
+    static IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _import = IMPORT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::account_profile::validate_managed_context_materialization_shape(
         &materialization.profile.provider,
         &materialization,
@@ -654,6 +658,7 @@ fn import_managed_account_copy_with_registry(
             message: "managed account copy requires source machine identity".into(),
         });
     }
+    registry.admit_slice_copy_generation(owner_user_id, &materialization)?;
     materialization.profile.owner_user_id = owner_user_id.to_owned();
     materialization.profile.origin =
         crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;

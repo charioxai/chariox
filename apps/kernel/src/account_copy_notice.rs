@@ -36,6 +36,43 @@ pub(crate) fn renewable_login(provider: &str, value: &serde_json::Value) -> bool
 }
 
 impl ProviderAccountProfileRegistry {
+    /// Consume authorized slice-import generations before any credential mutation,
+    /// including requests that preserve an existing receiving login. The journal
+    /// is private, credential-free local state and outlives profile removal.
+    pub(crate) fn admit_slice_copy_generation(
+        &self, owner: &str, materialization: &ProviderAccountMaterialization,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(&materialization.profile.provider)?;
+        let source = materialization.copy_source.as_ref().ok_or_else(|| registry_error("admit account copy", "copy source identity is absent"))?;
+        let target = self.copy_identity.as_ref().ok_or_else(|| registry_error("admit account copy", "receiving machine identity is absent"))?;
+        let document = self.write_document()?;
+        let matches_source = |copy: &ProviderAccountCopyMetadata| {
+            copy.source_kernel_id == source.kernel_id && copy.source_machine_id == source.machine_id
+                && copy.source_account_id == materialization.profile.profile_id
+                && copy.target_kernel_id == target.kernel_id && copy.target_machine_id == target.machine_id
+        };
+        // Seed the high-water mark from existing copies/tombstones on upgrade.
+        let recorded = document.profiles.iter().filter(|profile| profile.public.owner_user_id == owner && profile.public.provider == provider)
+            .flat_map(|profile| profile.public.materializations.iter().filter_map(|status| status.copy.as_ref()))
+            .chain(document.retired_account_copies.iter().filter(|entry| entry.owner_user_id == owner && entry.observation.provider == provider).filter_map(|entry| entry.observation.status.copy.as_ref()))
+            .filter(|copy| matches_source(copy)).map(|copy| copy.copied_at_ms).max().unwrap_or(0);
+        let scope = serde_json::to_vec(&("slice-account-copy", owner, provider, &source.machine_id, &source.kernel_id, &materialization.profile.profile_id, &target.machine_id, &target.kernel_id))
+            .map_err(|error| registry_error("admit account copy", error.to_string()))?;
+        let directory = self.path.with_extension("copy-import-generations");
+        if path_entry_exists(&directory)? { validate_managed_directory(&directory, "admit account copy")?; }
+        fs::create_dir_all(&directory).map_err(registry_io("admit account copy"))?;
+        set_private_dir_permissions(&directory)?;
+        let path = directory.join(format!("{:x}", Sha256::digest(scope)));
+        let consumed = read_bounded_regular_file_no_follow(&path, 32, "copy import generation")?
+            .map(|bytes| std::str::from_utf8(&bytes).ok().and_then(|text| text.trim().parse::<u64>().ok())
+                .ok_or_else(|| registry_error("admit account copy", "invalid copy import generation journal")))
+            .transpose()?.unwrap_or(0);
+        if materialization.generated_at_ms <= recorded.max(consumed) {
+            return Err(registry_error("admit account copy", "stale account copy import; request a new owner import or log in on the receiving machine"));
+        }
+        atomic_write_private(&path, format!("{}\n", materialization.generated_at_ms).as_bytes())
+    }
+
     pub(crate) fn record_confirmed_account_copy(
         &self,
         owner: &str,
