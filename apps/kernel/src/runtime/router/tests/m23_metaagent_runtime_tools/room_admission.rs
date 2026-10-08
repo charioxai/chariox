@@ -1215,21 +1215,36 @@ async fn concurrent_registry_add() {
     let mut daemon = DaemonApp::bootstrap(config.clone()).unwrap();
     let (room, actor) = crate::app::KernelSessionService::new(&mut daemon)
         .create_session(CreateSessionRequest::new(
-            workspace.to_string_lossy(), workspace.to_string_lossy(),
-        )).unwrap();
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
     let peer = crate::app::KernelSessionService::new(&mut daemon)
-        .spawn_agent(CreateAgentRequest::new(room.id(), "dev-stub").with_alias("peer")).unwrap();
+        .spawn_agent(CreateAgentRequest::new(room.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
     let mut auth = Vec::new();
     for agent in [&actor, &peer] {
-        let run = launch_test_provider(&mut daemon, room.id(), agent.id(), "dev-stub", "dev-stub", "room-model");
+        let run = launch_test_provider(
+            &mut daemon,
+            room.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "room-model",
+        );
         auth.push(run.runtime_mcp_auth_token().unwrap().to_owned());
     }
-    let registry_root = config.workflow_registry_root().join("rooms").join(room.id());
+    let registry_root = config
+        .workflow_registry_root()
+        .join("rooms")
+        .join(room.id());
     let registry = crate::workflow_code::WorkflowRegistry::new(None, Some(registry_root.clone()));
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(daemon)), 4);
     let marker = format!("// MP-11 R1 {}", workspace.display());
     let source = format!("{marker}\nworkflow.define({{alias:'winner'}});const node=workflow.node({{handle:'self',agent:workflow.existingAgent('{}'),canCompleteWorkflowRun:true}});workflow.endpoint(node,{{handle:'entry'}});", actor.id());
-    let losing_source = source.replace("winner", "loser").replace(actor.id(), peer.id());
+    let losing_source = source
+        .replace("winner", "loser")
+        .replace(actor.id(), peer.id());
     let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
     let first = tokio::spawn({
         let router = router.clone();
@@ -1239,22 +1254,59 @@ async fn concurrent_registry_add() {
             router.dispatch_authenticated_runtime_tool_call(&auth, "chariox.workflow_registry.add", serde_json::json!({"name":"same-name", "source":{"kind":"single_file", "source":source}})).await
         }
     });
-    tokio::time::timeout(Duration::from_secs(10), started).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), started)
+        .await
+        .unwrap()
+        .unwrap();
     // The first job has written source and is compiling outside the app mutex.
     let second = tokio::time::timeout(Duration::from_secs(10),
         router.dispatch_authenticated_runtime_tool_call(&auth[1], "chariox.workflow_registry.add", serde_json::json!({"name":"same-name", "source":{"kind":"single_file", "source":losing_source}}))).await;
     drop(release);
     let first = first.await.unwrap();
     let second = second.expect("same-name addition should reject without waiting on compilation");
-    assert!(second.as_ref().err().is_some_and(|e| e.to_string().contains("conflict")), "MP-11 R1: losing Room job needs a clear name conflict: {second:?}");
+    assert!(
+        second
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().contains("conflict")),
+        "MP-11 R1: losing Room job needs a clear name conflict: {second:?}"
+    );
     let first = first.expect("reserved first job must publish its own entry");
     assert!(first.ok, "{first:?}");
-    let winner = registry.resolve("same-name").expect("winner source and file hashes must resolve together");
+    let winner = registry
+        .resolve("same-name")
+        .expect("winner source and file hashes must resolve together");
     assert_eq!(winner.source, source);
-    assert_eq!(winner.metadata.created_by_agent_id.as_deref(), Some(actor.id()));
-    assert_eq!(winner.metadata.source_sha256, crate::workflow_code::sha256_hex(source.as_bytes()));
-    let compile = crate::workflow_code::compile_workflow_code_javascript("node", &source, &config.workflow_code_limits()).unwrap();
-    assert_eq!(winner.metadata.definition_sha256, Some(crate::workflow_code::workflow_code_definition_sha256_hex(&compile.definition)));
-    assert_eq!(serde_json::to_value(&winner.metadata).unwrap(), first.payload["WorkflowRegistryEntryAdded"]["entry"]);
-    assert!(!std::fs::read_dir(&registry_root).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".tmp-")), "each job must remove only its own staging directory");
+    assert_eq!(
+        winner.metadata.created_by_agent_id.as_deref(),
+        Some(actor.id())
+    );
+    assert_eq!(
+        winner.metadata.source_sha256,
+        crate::workflow_code::sha256_hex(source.as_bytes())
+    );
+    let compile = crate::workflow_code::compile_workflow_code_javascript(
+        "node",
+        &source,
+        &config.workflow_code_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        winner.metadata.definition_sha256,
+        Some(crate::workflow_code::workflow_code_definition_sha256_hex(
+            &compile.definition
+        ))
+    );
+    assert_eq!(
+        serde_json::to_value(&winner.metadata).unwrap(),
+        first.payload["WorkflowRegistryEntryAdded"]["entry"]
+    );
+    assert!(
+        !std::fs::read_dir(&registry_root).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp-")),
+        "each job must remove only its own staging directory"
+    );
 }

@@ -22,6 +22,12 @@ The workflow lane retains each command's provider epoch and forwarded peer bindi
 and rechecks authority before execution and result delivery. Compiler work, including
 registry compilation and summary generation, runs outside the global app mutex with
 bounded admission; authorization and target validation are repeated after the wait.
+MP-11 R1: registry additions reserve the scope/name with a nonblocking filesystem
+lock throughout compilation and atomic publication. Each job atomically creates
+its own random staging directory; failure cleans up only that job's directory.
+Concurrent same-name callers receive a clear conflict. Hidden staging directories
+and lock files are excluded from registry discovery. Empty per-name lock files
+remain on disk so their inode cannot be replaced while a writer holds the lock.
 Linux adds `workflow_code/compiler_seccomp.rs`: Node threads remain allowed, process
 and namespace creation are refused, and root-launched compilers drop host UID/GID and supplementary groups before
 exec so a process-count limit of 64 is effective. Nonroot kernels retain the
