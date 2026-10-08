@@ -28,7 +28,7 @@ class ProtocolReport(unittest.TestCase):
    root=Path(temporary);case=root/'local-wheel60-8000000';case.mkdir()
    (root/'campaign.json').write_text(json.dumps({'source':source,'exit_code':0,'cases':[{'profile':'local','workload':'wheel60','bitrate':8000000,'code':0}]}))
    base={'source':source,'source_dirty':False,'protocol':466,'status':'PASS_LOCAL_COMPONENT','network':{'rtt':0},'dpr':1,'latency':{'p95_ms':20},'type_latency':{'p95_ms':20},'motion':{'samples':[],'effective_fps':59.9,'settle_present_ms':250,'settle_ms':250,'settled_fidelity':{'lossless':True},'cpu':{'cores':{'pipeline':.5}}},'samples':[{'mem_available_bytes':20*1024**3,'disk_free_bytes':30*1024**3}]}
-   for seam in ['green','type','missing_type','cpu','missing_cpu','refinement','cadence']:
+   for seam in ['green','type','missing_type','cpu','missing_cpu','refinement','cadence','motion_type','missing_motion_type']:
     receipt=json.loads(json.dumps(base))
     if seam=='type':receipt['type_latency']['p95_ms']=200
     if seam=='missing_type':receipt.pop('type_latency')
@@ -36,6 +36,8 @@ class ProtocolReport(unittest.TestCase):
     if seam=='missing_cpu':receipt['motion'].pop('cpu')
     if seam=='refinement':receipt['motion']['settle_present_ms']=300
     if seam=='cadence':receipt['motion']['effective_fps']=54
+    if seam=='motion_type':receipt['motion']['typing']={'condition':'concurrent active motion','latency':{'n':1,'p95_ms':200}}
+    if seam=='missing_motion_type':receipt['motion']['typing']={'condition':'concurrent active motion'}
     (case/'results.json').write_text(json.dumps(receipt))
     result=subprocess.run(['python3',str(CHECKOUT/'apps/browser-display/report.py'),str(root),str(root/'report'),str(CHECKOUT)],capture_output=True,text=True)
     self.assertEqual(result.returncode,0 if seam=='green' else 1,(seam,result.stderr))

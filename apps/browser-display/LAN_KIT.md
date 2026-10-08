@@ -73,6 +73,17 @@ MD_PROTECTION_REPETITIONS=70`; add `MD_SUPERVISOR_CRASH=1` to the third run.
 Each campaign retains screenshots and logs. Zero masking violations and exact
 owned cleanup are required; these fixture runs remain supplementary evidence.
 
+MP-08/MP-10: measure typing during active scroll and wheel separately from the
+unchanged matrix by adding `MD_TYPE_DURING_MOTION=1` and setting
+`MD_CASES=local:scroll60:8000000,local:wheel60:8000000`. Use
+`MD_CREDIT_WINDOW=4` for the phase29/30 reference condition, and run twice.
+Receipts record the first acknowledged glyph echo in presentation history; a
+newer frame awaiting rAF cannot erase that proof. The aggregate reports concurrent
+typing separately and stays RED when a measured motion typing probe misses the
+RTT+50ms gate. Settled probes alone do not establish the concurrent target.
+`wan8` provides a supplementary viewer-only 8Mbps,80msRTT condition; it is not a
+hosted WSS or public-site acceptance run.
+
 `MD_CHROME=/absolute/browser` selects Chromium. Builder runs set
 `MD_MEMORY_FLOOR_GIB=12`; the laptop default reserves 15% of RAM (between 0.5 and 2 GiB), with a 10 GiB disk reserve. Explicit builder limits remain authoritative. These are drill reserves, not product runtime requirements. The old
 DPR2 geometry remains available with `MD_GEOMETRY=1280x800`.
