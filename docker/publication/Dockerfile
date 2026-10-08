@@ -45,6 +45,7 @@ COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
+COPY deploy/managed-kernel deploy/managed-kernel
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/app-package packages/app-package

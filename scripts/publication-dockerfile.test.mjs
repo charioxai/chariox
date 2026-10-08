@@ -44,6 +44,8 @@ test("publication Rust build consumes the workspace lock and every kernel path d
   for (const requiredCopy of [
     "COPY Cargo.toml Cargo.lock ./",
     "COPY apps/relay apps/relay",
+    // BYOM SSH machine control embeds deploy/managed-kernel scripts at compile time.
+    "COPY deploy/managed-kernel deploy/managed-kernel",
     "COPY packages/event-protocol packages/event-protocol",
     "COPY packages/aegs-sdk packages/aegs-sdk",
     "COPY packages/app-package packages/app-package",
