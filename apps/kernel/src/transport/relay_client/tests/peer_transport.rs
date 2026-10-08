@@ -327,6 +327,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
         .package_binding();
     let arm_plan_digest = arm_plan.plan_digest.clone();
     let arm = serde_json::to_value(RelayPeerRequest::ArmManagedContextImport {
+        destination: None,
         plan: arm_plan,
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "target-kernel-1".to_string(),
@@ -354,8 +355,9 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
             archive_size_bytes: 42,
             expires_at_ms: 1_000,
             receipt: Some(RelayManagedContextImportReceipt {
-                                provider_accounts: Vec::new(),
-transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                provider_accounts: Vec::new(),
+                destination: None,
+                transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
                 plan_digest: format!("sha256:{}", "f".repeat(64)),
                 development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {

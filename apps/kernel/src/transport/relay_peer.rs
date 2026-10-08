@@ -186,6 +186,8 @@ pub struct RelayManagedContextImportedRepository {
 pub struct RelayManagedContextImportReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_accounts: Vec<crate::account_profile::ManagedContextProviderAccountReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -984,7 +986,10 @@ pub enum RelayPeerRequest {
     },
     ArmManagedContextImport {
         plan: crate::managed_context::package::ManagedContextPlanBinding,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         target_environment_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
         target_kernel_id: String,
         target_key_thumbprint: String,
         capability: RelayManagedContextCapability,
@@ -2222,5 +2227,23 @@ mod notes_protocol_probe_tests {
             ),
             "5c9e2f881c4ebce7f3ee9f4af71ec364547a4f51f451f46d457e5809885c29ac"
         );
+    }
+}
+
+#[cfg(test)]
+mod owner_managed_context_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp11_owner_managed_arm_shape_requires_peer_88() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 88);
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+            "972bfa82e0e37d399f829a7cca14b7260100b207c610d86ccc2c0039eaab6bf4"
+        );
+        assert!(value.get("target_environment_id").is_none());
     }
 }

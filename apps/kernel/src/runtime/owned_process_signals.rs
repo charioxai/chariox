@@ -151,6 +151,10 @@ impl OwnedProcessSignals {
 
 #[cfg(unix)]
 fn send_signal(pid: i32) -> io::Result<()> {
+    // MP-11: reject system-wide targets even if a future caller loses its witness.
+    if pid == i32::MIN || (-1..=1).contains(&pid) {
+        return Err(io::Error::other("invalid process signal target"));
+    }
     // Identity and complete group membership are checked immediately before this sole seam.
     if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
         return Ok(());
@@ -442,5 +446,16 @@ mod tests {
                 "reused child signalled"
             ))
             .is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_signal_seam_rejects_system_wide_targets_without_signalling() {
+    for pid in [i32::MIN, -1, 0, 1] {
+        assert_eq!(
+            send_signal(pid).unwrap_err().to_string(),
+            "invalid process signal target"
+        );
     }
 }

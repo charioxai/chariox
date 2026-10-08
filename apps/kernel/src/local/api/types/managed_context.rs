@@ -9,7 +9,10 @@ pub use crate::managed_context::outbound_service::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartManagedContextTransferRequest {
-    pub ticket: ManagedContextTransferTicket,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<ManagedContextTransferTicket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_managed: Option<crate::managed_context::owner_managed::OwnerManagedTransfer>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
 }
@@ -30,7 +33,10 @@ pub struct GetManagedContextLaunchTargetRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextLaunchTarget {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub environment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub kernel_id: String,
     pub context_id: String,
     pub plan_digest: String,
