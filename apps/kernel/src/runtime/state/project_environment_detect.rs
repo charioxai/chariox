@@ -141,10 +141,47 @@ impl KernelRuntimeState {
             let utility_result = self
                 .detect_environment_utility(&project, primary, request.provider.as_ref(), &input)
                 .await;
-            let unauthorized = utility_result.as_ref().err().is_some_and(|error| {
-                let text = error.to_string().to_ascii_lowercase();
-                text.contains("401") || text.contains("unauthorized")
-            });
+            let error_text = utility_result
+                .as_ref()
+                .err()
+                .map(|error| error.to_string().to_ascii_lowercase())
+                .unwrap_or_default();
+            let unauthorized = error_text.contains("401") || error_text.contains("unauthorized");
+            if let Err(error) = &utility_result {
+                // Public phase/reason identifiers only: never log provider payloads or credentials.
+                let phase = match error {
+                    DaemonError::LocalTransport { operation, .. }
+                    | DaemonError::ProviderProtocol { operation, .. } => *operation,
+                    _ => "provider utility",
+                };
+                let reason = if unauthorized {
+                    "provider_unauthorized"
+                } else if error_text.contains("emfile")
+                    || error_text.contains("too many open files")
+                {
+                    "resource_open_files"
+                } else if error_text.contains("not running") {
+                    "provider_not_ready"
+                } else if error_text.contains("timeout")
+                    || error_text.contains("timed out")
+                    || error_text.contains("did not complete within")
+                {
+                    "provider_timeout"
+                } else if error_text.contains("model")
+                    && (error_text.contains("not supported") || error_text.contains("unsupported"))
+                {
+                    "unsupported_model"
+                } else if error_text.contains("exceeds bounds") {
+                    "metadata_bounds"
+                } else {
+                    "utility_failed"
+                };
+                crate::logging::warn_with_fields(
+                    "daemon.environment_detect",
+                    "provider detection utility failed",
+                    serde_json::json!({ "phase": phase, "reason": reason }),
+                );
+            }
             results.push(EnvironmentItemResult { requirement_id: "detect:model".into(), status: EnvironmentObservationStatus::NeedsYourInput,
                 reason_code: if utility_result.is_ok() { "utility_completed" } else if unauthorized { "provider_unauthorized" } else { "utility_failed" }.into(),
                 safe_summary: if utility_result.is_ok() { "Official provider metadata utility completed · proposals need review" } else if unauthorized { "Provider returned unauthorized/401 · check Provider Accounts; deterministic proposals retained" } else { "Provider utility failed · deterministic proposals retained; check provider sign-in and retry" }.into(), receipt_ids: vec![] });

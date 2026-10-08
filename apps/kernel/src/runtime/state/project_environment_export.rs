@@ -482,10 +482,12 @@ impl Drop for EnvironmentUtilityCleanup {
 
 // MP-08 / MP-10 / MP-11: utility model selection follows the normal provider defaults.
 fn detection_utility_agent_defaults(
-    _configured: Option<crate::session::SessionAgentDefaults>,
+    configured: Option<crate::session::SessionAgentDefaults>,
     provider: &str,
 ) -> crate::session::SessionAgentDefaults {
-    crate::session::SessionAgentDefaults::new(provider)
+    configured
+        .filter(|defaults| provider == "default" || defaults.provider == provider)
+        .unwrap_or_else(|| crate::session::SessionAgentDefaults::new(provider))
         .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
         .with_permission_level(crate::provider::AgentPermissionLevel::Required)
 }
