@@ -14,8 +14,14 @@ can attempt VAAPI, falling back on actual failure. Builder evidence is software
 only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
 coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
 and reduced software motion scale are implemented; exact settled pixels stay
-native DPR. Current results remain RED and the flag stays off. See the source-bound
-Phase 10 matrix and integration limits in the performance doc.
+native DPR. Current results remain RED and the flag stays off; source-bound
+measurement receipts stay outside the repository.
+
+The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
+Xcomposite, Xtst, x264, libavcodec/libavutil, static libyuv and static
+libwebp/libsharpyuv; `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
+`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
+the CDP capture and portable encoder path.
 
 MP-08/MP-10/MP-11 phase 28 (since protocol 466 only the contention fallback
 below): unprotected, whole-frame software motion at
@@ -60,8 +66,6 @@ other deltas stay on CDP. Wheel dispatch does not wait for the renderer's
 frame-aligned ack. x264 runs on its own worker thread, and capture plans are
 requested only while a viewer canvas is exact and unprotected.
 
-The historical427/74 configuration, pipeline, client and Phase7 evidence are
-in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
 The sections below record earlier419-era implementation and receipts; their
 codec, source, pacing and credit descriptions are historical, not current
 configuration. Their source identities and limitations remain unchanged.
@@ -466,8 +470,7 @@ trusted; prediction does not count as source acknowledgement. Surface stream
 errors and actor takeover to users through existing flows. The presenter canvas
 is an image surface, so IME/clipboard/file chooser/drag-drop remain existing
 kernel input capability questions rather than DOM replay inferred from pixels.
-See `MULTIDOMAIN_DISPLAY_PERFORMANCE.md` for RED performance targets and exact
-execution/binary evidence; this module is reviewable, not rollout acceptance.
+Performance remains RED; this module is reviewable, not rollout acceptance.
 
 ## MD-DISPLAY-04: protocol441 dependent-video compatibility
 
