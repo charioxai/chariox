@@ -799,4 +799,97 @@ mod tests {
             cleanup(f);
         }
     }
+    #[test]
+    fn a02_security_g11_workflow_child_binds_only_the_invoking_task() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let mut f = Fixture::new();
+        let runtime = runtime(&mut f);
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        for (parent, workflow_run) in [("parent", "invoked-run"), ("peer", "other-run")] {
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: parent.into(),
+                    prompt: parent.into(),
+                    run: Some("parent-provider".into()),
+                    now: 1,
+                })
+                .unwrap();
+            for (kind, resource) in [("delegate", "agent"), ("workflow_run", workflow_run)] {
+                let id = format!("{parent}-{kind}");
+                f.store
+                    .agent_lifecycle(Operation::RegisterObligation {
+                        owner: "local".into(),
+                        room: f.session.clone(),
+                        agent: parent.into(),
+                        prompt: parent.into(),
+                        run: Some("parent-provider".into()),
+                        id: id.clone(),
+                        kind: kind.into(),
+                        resource: Some(resource.into()),
+                        now: 1,
+                    })
+                    .unwrap();
+                f.store
+                    .agent_lifecycle(Operation::DispatchReceipt {
+                        id,
+                        accepted: true,
+                        resource: Some(resource.into()),
+                    })
+                    .unwrap();
+            }
+        }
+        let old = crate::session::PromptQueueItem::new(
+            "old-child",
+            "user-attachment",
+            "agent",
+            "unrelated peer review",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &old, "fixture-provider", false)
+            .unwrap();
+        assert!(
+            f.store
+                .agent_tasks(Some(&f.session), Some("parent"))
+                .unwrap()[0]
+                .obligations[0]
+                .completion_task_id
+                .is_none(),
+            "unrelated first child task cannot bind a delegation"
+        );
+        let prompt = crate::session::PromptQueueItem::new(
+            "workflow-child",
+            "workflow-attachment",
+            "agent",
+            "invoked workflow review",
+            crate::session::PromptStatus::Running,
+        )
+        .with_workflow_context("invoked-run", "node");
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &prompt, "fixture-provider", false)
+            .unwrap();
+        let parent = f
+            .store
+            .agent_tasks(Some(&f.session), Some("parent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(parent.obligations[0].completion_task_id.as_deref(),Some("workflow-child"),"MP-08 / MP-10 / MP-11 G11: accepted workflow invocation must bind its exact child task");
+        let peer = f
+            .store
+            .agent_tasks(Some(&f.session), Some("peer"))
+            .unwrap()
+            .remove(0);
+        assert!(
+            peer.obligations[0].completion_task_id.is_none(),
+            "another parent invocation cannot consume this child result"
+        );
+        drop(runtime);
+        cleanup(f);
+    }
 }

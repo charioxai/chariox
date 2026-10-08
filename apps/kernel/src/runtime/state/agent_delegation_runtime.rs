@@ -66,3 +66,43 @@ impl KernelRuntimeState {
         }
     }
 }
+
+// MP-08/MP-10/MP-11 F4/G11: workflow dispatch bypasses ordinary room prompt admission.
+impl KernelRuntimeOwnedState {
+    pub(super) fn reconcile_workflow_delegation(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let Some(workflow_run) = prompt.workflow_run_id() else {
+            return Ok(());
+        };
+        let Some(child) = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .find(|t| t.prompt_id == prompt.id())
+        else {
+            return Ok(());
+        };
+        // Both references are kernel assigned: the child's prompt context and the
+        // parent's accepted receipt name the same invocation, not merely an agent ID.
+        for parent in self.durable_state_store.agent_tasks(Some(room), None)? {
+            if parent.owner_user_id == child.owner_user_id
+                && parent.obligations.iter().any(|o| {
+                    o.tracks_workflow_run()
+                        && o.dispatch_state == "accepted"
+                        && o.resource_id.as_deref() == Some(workflow_run)
+                })
+            {
+                self.durable_state_store
+                    .agent_lifecycle(Operation::BindDelegate {
+                        parent_task: parent.task_id,
+                        child_task: child.task_id.clone(),
+                    })?;
+            }
+        }
+        Ok(())
+    }
+}
