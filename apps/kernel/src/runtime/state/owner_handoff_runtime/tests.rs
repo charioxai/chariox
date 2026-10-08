@@ -380,3 +380,15 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
         );
     }
 }
+
+#[test]
+fn mp08_mp10_mp11_a07_publishes_approved_shared_request_contract() {
+    let spec = handoff_spec();
+    assert_eq!(spec.name, "chariox.handoff.request");
+    assert_eq!(
+        spec.input_schema["properties"]["kind"]["enum"],
+        json!(["click", "code", "secret"])
+    );
+    assert_eq!(spec.input_schema["additionalProperties"], false);
+    assert!(spec.description.contains("chariox.events.yield"));
+}

@@ -22,7 +22,7 @@ use crate::session::{
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use serde_json::json;
 
-pub(super) const HANDOFF: &str = "chariox.kernel_browser_handoff";
+pub(super) const HANDOFF: &str = "chariox.handoff.request";
 pub(crate) const HANDOFF_OBLIGATION_KIND: &str = "hand_off";
 const DEFAULT_TIMEOUT_SEC: u64 = 900;
 

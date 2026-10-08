@@ -1,7 +1,7 @@
 # MP-08 / MP-10 / MP-11 — protected owner hand-off (A07, protocol 477)
 
 An agent with an owner-granted user-domain browser can request one owner action
-with `chariox.kernel_browser_handoff`. The request names a freshly observed tab,
+with `chariox.handoff.request`. The request names a freshly observed tab,
 browser generation, document and node, an explanation, a reason (`model_refusal`,
 `automation_disallowed`, `human_verification` or `owner_authorization`) and a
 kind (`click`, `code` or `secret`). Optional keep/add/remove lines describe the
