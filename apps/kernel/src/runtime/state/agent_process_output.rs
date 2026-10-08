@@ -20,7 +20,7 @@ pub(super) fn room_protector(
 
 /// Strips terminal escapes/control bytes and redacts secrets before any
 /// output is matched, retained or shown to the model.
-fn sanitize(raw: &[u8]) -> String {
+pub(super) fn sanitize(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

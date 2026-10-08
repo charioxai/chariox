@@ -147,6 +147,9 @@ impl KernelRuntimeState {
                     .map(|a| crate::secret_redaction::redact_secrets(a).into_owned())
                     .collect();
                 wake.match_text = match_text;
+                self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
+                    .await?;
+                self.authorize_current_external_command()?;
                 let wake = self
                     .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, run)
                     .await?;
@@ -172,5 +175,100 @@ impl KernelRuntimeState {
             }
             _ => return Err(ledger::error("unknown wake tool")),
         })
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    async fn fixture(
+        provider: &str,
+        native: bool,
+    ) -> (
+        KernelRuntimeState,
+        crate::provider::RuntimeProviderRun,
+        AgentTaskExecution,
+        crate::test_support::TestWorktree,
+    ) {
+        use crate::provider::*;
+        let worktree = crate::test_support::TestWorktree::new("security-wake-admission");
+        let mut app =
+            crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let mut request =
+            LaunchProviderRequest::new(session.id(), provider, provider, "default", "test-model")
+                .with_agent_id(agent.id())
+                .with_execution_mode(AgentExecutionMode::Build)
+                .with_permission_level(AgentPermissionLevel::Yolo)
+                .with_client_interface(if native {
+                    ProviderClientInterface::NativeTui
+                } else {
+                    ProviderClientInterface::Chariox
+                });
+        request.write_access_mode = ProviderWriteAccessMode::Unrestricted;
+        let run = RuntimeProviderRun::new(
+            "security-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "security-wake".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let ledger::Outcome::Task(task) = app
+            .durable_state_store()
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: "security-turn".into(),
+                run: Some(run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap()
+        else {
+            panic!("task required")
+        };
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        (router.runtime_state(), run, task, worktree)
+    }
+
+    #[tokio::test]
+    async fn security_f10_claude_native_yolo_cannot_launch_without_current_user_approval() {
+        let (state, run, task, _worktree) = fixture("claude", true).await;
+        let result = state
+            .dispatch_agent_wake_tool(
+                &run,
+                "chariox.events.process",
+                &serde_json::json!({"label":"approval-test", "argv":["/bin/sleep","0.1"]}),
+                &task,
+            )
+            .await;
+        state.owned.agent_wakes.processes.shutdown();
+        assert!(
+            result.is_err(),
+            "launch-time bypass is insufficient without live approval: {result:?}"
+        );
+        assert!(
+            state
+                .owned
+                .durable_state_store
+                .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+                .unwrap()
+                .is_empty(),
+            "denied calls must not create a launch intent"
+        );
     }
 }
