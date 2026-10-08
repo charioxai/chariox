@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OwnedDisplay, ownsDisplay } from './kernel-browser-owned-display.mjs';
-import { selectNativeCapture } from './kernel-browser-native.mjs';
+import { selectNativeCapture, nativeRefusalReason } from './kernel-browser-native.mjs';
 for(const display of [null,{}, {display:':0',pid:200}, {display:':99',owned:true}])
  test('MD-DISPLAY refuses unowned display '+JSON.stringify(display),async()=>{
   let launched=false;
@@ -142,4 +142,23 @@ for(const scale of [1,2])test(`MP-10 native window fits negotiated DPR${scale} b
  await assert.rejects(source.start(),stop);
  assert.deepEqual(calls[1],{method:'Browser.setWindowBounds',params:{windowId:7,bounds:{width:geometry.width*scale,height:geometry.height*scale+87}}});
  assert.equal(source.attested,false,'bounds do not admit a surface');assert.equal(source.latest,null);
+});
+
+// MP-08/MP-10/MP-11: renderer image scale must match the physical DPR1 host
+// window; deviceScaleFactor alone produces a different native DPR2 surface.
+for(const scale of [1,2])test(`MP-10 negotiated DPR${scale} also selects native view image scale`,async()=>{
+ const geometry=await import('./kernel-browser-geometry.mjs');
+ assert.deepEqual(geometry.displayDeviceMetrics(1280,800,scale),{width:1280,height:800,deviceScaleFactor:scale,scale,mobile:false});
+});
+
+// MP-08/MP-10: refusal diagnostics are fixed labels, never error/page text.
+test('MP-10 native refusals carry fixed reasons',async()=>{
+ assert.equal(nativeRefusalReason(Error('Capture protection bounds unavailable')),'region_bounds');
+ assert.equal(nativeRefusalReason(Error('Capture protection tree limit exceeded')),'region_tree_limit');
+ assert.equal(nativeRefusalReason(Error('native attestation RGB differed')),'attestation_mismatch');
+ assert.equal(nativeRefusalReason(Error('MD-DISPLAY: native readback unavailable'),'window_not_found'),'window_not_found');
+ assert.equal(nativeRefusalReason(Error('MD-DISPLAY: native readback unavailable')),'first_frame_timeout');
+ assert.equal(nativeRefusalReason(Error('secret https://example.test/page')),'other');
+ const reasons=[];assert.equal(await selectNativeCapture({platform:'linux',display:null,refused:r=>reasons.push(r),create:()=>assert.fail()}),null);
+ assert.deepEqual(reasons,['display_not_owned']);
 });

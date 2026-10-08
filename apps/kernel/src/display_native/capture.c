@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <time.h>
 static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ipc.h>
@@ -80,29 +81,38 @@ static int redirect_window(struct Capture *c,int mode) {
     if(redirect_error)return 0;
     c->redirected=1;c->redirect_mode=mode;return 1;
 }
+/* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
+ * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
+static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
 struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     struct Capture *c = calloc(1,sizeof(*c));
     if (!c) return NULL;
     c->shm.shmid = -1; c->owner=owner; c->width=width; c->height=height;
     c->display=XOpenDisplay(NULL);
     int error;
-    if (!c->display || !XShmQueryExtension(c->display) || !XDamageQueryExtension(c->display,&c->event,&error)) goto fail;
-    Window root,parent,*children=NULL; unsigned count=0, found=0;
-    if (!XQueryTree(c->display,DefaultRootWindow(c->display),&root,&parent,&children,&count)) goto fail;
+    if (!c->display || !XShmQueryExtension(c->display) || !XDamageQueryExtension(c->display,&c->event,&error)) {open_refused("x_extensions");goto fail;}
+    Window root,parent,*children=NULL; unsigned count=0, found=0, owned=0;
+    char seen[256]="";
+    if (!XQueryTree(c->display,DefaultRootWindow(c->display),&root,&parent,&children,&count)) {open_refused("x_tree");goto fail;}
     for (unsigned i=0;i<count;i++) {
         unsigned w,h;
-        if (window_pid(c->display,children[i])==owner && dimensions(c->display,children[i],&w,&h) && w==(unsigned)width && h>=(unsigned)height && h-height<=400) {
+        if (window_pid(c->display,children[i])!=owner || !dimensions(c->display,children[i],&w,&h)) continue;
+        if (owned++<8) {size_t n=strlen(seen);snprintf(seen+n,sizeof(seen)-n,"%s%ux%u",n?",":"",w,h);}
+        if (w==(unsigned)width && h>=(unsigned)height && h-height<=400) {
             c->window=children[i]; c->window_height=h; found++;
         }
     }
     if (children) XFree(children);
-    if (found!=1) goto fail;
+    if (found!=1) {
+        fprintf(stderr,"MD-DISPLAY: native geometry requested %dx%d owned %s\n",width,height,owned?seen:"none");
+        open_refused(found?"window_ambiguous":"window_not_found");goto fail;
+    }
     c->offset=c->window_height-height;
     /* The kernel owns a private X server; its root is never presented. Manual
      * keeps the named owned-window pixmap without compositing an unused root. */
-    if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic))goto fail;
+    if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic)){open_refused("composite_redirect");goto fail;}
     c->pixmap=XCompositeNameWindowPixmap(c->display,c->window); XSync(c->display,False);
-    if (!c->pixmap) goto fail;
+    if (!c->pixmap) {open_refused("composite_pixmap");goto fail;}
     c->image=XShmCreateImage(c->display,DefaultVisual(c->display,0),DefaultDepth(c->display,0),ZPixmap,NULL,&c->shm,width,height);
     if (!c->image || c->image->bits_per_pixel!=32 || c->image->byte_order!=LSBFirst || c->image->bytes_per_line!=width*4 || c->image->red_mask!=0xff0000 || c->image->green_mask!=0xff00 || c->image->blue_mask!=0xff) goto fail;
     size_t size=(size_t)width*height*4;

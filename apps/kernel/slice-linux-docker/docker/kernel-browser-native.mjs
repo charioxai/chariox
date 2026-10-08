@@ -15,9 +15,18 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
-export async function selectNativeCapture({platform=process.platform,display,create}){
- if(platform!=='linux'||!ownsDisplay(display))return null;
+export async function selectNativeCapture({platform=process.platform,display,create,refused=()=>{}}){
+ if(platform!=='linux'||!ownsDisplay(display)){refused(platform!=='linux'?'platform':'display_not_owned');return null;}
  try{return await create()}catch{return null}
+}
+// MP-08/MP-10: fixed refusal labels for diagnostics; never error/page text.
+const refusalReasons=[['Capture protection bounds unavailable','region_bounds'],['Capture protection tree limit exceeded','region_tree_limit'],['Capture protection limit exceeded','region_limit'],['Capture protection unavailable','region_query'],['native attestation RGB differed','attestation_mismatch'],['native attestation retired','attestation_retired'],['native surface not owned','surface_not_owned'],['native region fence retired','region_retired'],['stale_document_reference','document_changed']];
+export function nativeRefusalReason(error,helperStage){
+ const message=`${error?.message??''} ${error?.code??''}`;
+ const known=refusalReasons.find(([text])=>message.includes(text));
+ if(known)return known[1];
+ if(message.includes('native readback unavailable'))return helperStage??'first_frame_timeout';
+ return 'other';
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing=()=>{}}){
@@ -59,7 +68,11 @@ export class LinuxCapture {
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
-   child.stderr.on('data',b=>{if(/^MD-DISPLAY: native stage [a-z_]+\n$/.test(b.toString()))this.helperStage=b.toString().trim().split(' ').at(-1)});
+   // MP-08/MP-10: fixed-label stage and owned-window sizes only.
+   child.stderr.on('data',b=>{for(const line of b.toString().split('\n')){
+    if(/^MD-DISPLAY: native stage [a-z_]+$/.test(line))this.helperStage=line.split(' ').at(-1);
+    else if(/^MD-DISPLAY: native geometry requested \d+x\d+ owned (none|\d+x\d+(,\d+x\d+){0,7})$/.test(line))this.timing(line.replace('MD-DISPLAY: native geometry ','native_geometry '),performance.timeOrigin+performance.now());
+   }});
    const raster=new NativeRaster();
    const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.control({release:slot,serial}));
    const pipe=new NativePipe(header=>{
@@ -105,7 +118,7 @@ export class LinuxCapture {
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    if(!this.valid())throw Error('native attestation retired');
    this.attested=true;this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
-  }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host'),performance.timeOrigin+performance.now());await this.close();throw error}
+  }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host')+' '+nativeRefusalReason(error,this.helperStage),performance.timeOrigin+performance.now());await this.close();throw error}
  }
  async publish(){
   if(this.publishing)return;this.publishing=true;
