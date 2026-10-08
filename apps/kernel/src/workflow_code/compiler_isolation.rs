@@ -279,30 +279,17 @@ fn open_schema_beneath(
 }
 
 #[cfg(target_os = "linux")]
+#[path = "compiler_linux.rs"]
+mod linux;
+
+#[cfg(target_os = "linux")]
 pub(super) fn compiler_command(
     node: &Path,
     limits: &WorkflowCodeLimitsConfig,
 ) -> Result<Command, crate::DaemonError> {
     use std::os::unix::process::CommandExt;
     let node = fs::canonicalize(node).map_err(io_error("workflow_code.compile"))?;
-    // Only the operator-selected executable and its dynamic libraries are
-    // mounted. No /usr tree, home, workspace, host /proc, sockets or shell.
-    let dependencies = Command::new("/usr/bin/ldd")
-        .env_clear()
-        .arg(&node)
-        .output()
-        .map_err(io_error("workflow_code.compile"))?;
-    if !dependencies.status.success() {
-        return Err(isolation_error(
-            "cannot identify compiler runtime libraries",
-        ));
-    }
-    let mut mounts = BTreeSet::new();
-    for word in String::from_utf8_lossy(&dependencies.stdout).split_whitespace() {
-        if word.starts_with('/') {
-            mounts.insert(PathBuf::from(word));
-        }
-    }
+    let mounts = linux::runtime_files(&node)?;
     if !Path::new("/usr/bin/bwrap").is_file() {
         return Err(isolation_error(
             "isolated workflow compilation requires /usr/bin/bwrap",

@@ -51,33 +51,20 @@ impl KernelRuntimeState {
         let [run_id] = owners.as_slice() else {
             return Err(error("sudo requires one dedicated provider process"));
         };
-        let turns = self
+        let turn = self.sudo_for_provider_run(run_id)?;
+        let born_after_cutoff = self
             .owned
-            .sudo_turns
+            .sudo_process_cutoffs
             .lock()
-            .expect("access state poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        turns
-            .into_iter()
-            .find(|turn| {
-                turn.provider_run_id.as_deref() == Some(run_id.as_str())
-                    && self.sudo_live(turn)
-                    && self
-                        .owned
-                        .sudo_process_cutoffs
-                        .lock()
-                        .expect("sudo process cutoffs poisoned")
-                        .get(&turn.entry_id)
-                        .is_some_and(|cutoff| {
-                            chain[..root_index].iter().all(|identity| {
-                                crate::runtime::kernel_access::process::born_after(
-                                    identity, *cutoff,
-                                )
-                            })
-                        })
-            })
+            .expect("sudo process cutoffs poisoned")
+            .get(&turn.entry_id)
+            .is_some_and(|cutoff| {
+                chain[..root_index].iter().all(|identity| {
+                    crate::runtime::kernel_access::process::born_after(identity, *cutoff)
+                })
+            });
+        born_after_cutoff
+            .then_some(turn)
             .ok_or_else(|| error("this provider turn has no sudo authority"))
     }
 

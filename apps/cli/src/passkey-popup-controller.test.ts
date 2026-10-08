@@ -288,7 +288,7 @@ test("access grants and extensions require a fresh passkey and let the owner cho
   }
 })
 
-test("sudo always asks for a fresh passkey and has no remember or lifetime control", async () => {
+test("MP-08/MP-10/MP-11 A04 sudo asks for a fresh passkey and offers a 1-8 hour window", async () => {
   const h = harness()
   h.popup.apply([prompt("critical")])
   h.popup.show()
@@ -296,20 +296,26 @@ test("sudo always asks for a fresh passkey and has no remember or lifetime contr
   h.popup.handleKey(key("tab"))
   h.popup.handleKey(key("return"))
   h.resolve(); await settle()
-  const sudo = { ...prompt("sudo"), kind: "sudo" as const }
+  const sudo = { ...prompt("sudo"), kind: "sudo" as const, lifetime_minutes: 60, max_lifetime_minutes: 480 }
   assert.deepEqual(passkeyPromptsFromEvent([sudo]), [sudo])
   h.popup.apply([sudo])
   h.popup.show()
   const count = h.requests.length
   h.popup.handleKey(key("return"))
   await settle()
-  assert.equal(h.requests.length, count)
+  assert.equal(h.requests.length, count, "the remembered critical passkey never mints sudo")
   assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
-  h.popup.handleKey(key("tab"))
+  assert.equal(h.popup.view().passkey.accessLifetimeMinutes, 60)
+  const offered = [60]
+  for (let i = 0; i < 4; i++) {
+    h.popup.handleKey(key("tab"))
+    offered.push(h.popup.view().passkey.accessLifetimeMinutes!)
+  }
+  assert.deepEqual(offered, [60, 120, 240, 480, 60])
   assert.equal(h.popup.view().passkey.rememberMinutes, 0)
-  assert.equal(h.popup.view().passkey.accessLifetimeMinutes, undefined)
+  h.popup.handleKey(key("tab"))
   type(h, "fresh")
   h.popup.handleKey(key("return"))
-  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null }])
+  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 120 }])
   h.resolve(); await settle()
 })

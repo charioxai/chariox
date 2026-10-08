@@ -261,4 +261,9 @@ pub use workspace::*;
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
 /// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
 /// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 459;
+/// Version 460 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
+/// Version 468 combines A03 and A04 and adds home-ordered leased wakes and
+/// both-end sudo window fences (MP-08/09/10/11 A10).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 468;

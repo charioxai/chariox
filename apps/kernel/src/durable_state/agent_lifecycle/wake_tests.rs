@@ -238,6 +238,7 @@ fn a03_one_shot_timer_fires_once_wakes_the_wait_and_records_receipts() {
         target: None,
         run: Some("run".into()),
         now: 1_600,
+        work: None,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
     assert_eq!(f.wake("t1").last_delivery.as_deref(), Some("submitting"));
@@ -469,6 +470,7 @@ fn a03_overdue_wake_cold_admission_has_a_bounded_clock_without_fake_progress() {
         target: None,
         run: None,
         now: 300_001,
+        work: None,
     });
     let task = f.task();
     assert!(lacks_live_executor(&task, 300_002, false, false));
@@ -573,6 +575,7 @@ fn a03_wake_admission_survives_more_than_one_page_of_handled_history() {
         target: None,
         run: None,
         now: 300_001,
+        work: None,
     });
     assert!(
         f.store
@@ -602,6 +605,7 @@ fn a03_recurring_timer_check_ins_never_block_their_task() {
             target: None,
             run: Some("run".into()),
             now: now + 1,
+            work: None,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
