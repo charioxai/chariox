@@ -30,7 +30,7 @@ export function fixtureHtml(url, cross) {
       <iframe id=same src="/same" style="position:absolute;left:760px;top:170px;width:160px;height:100px;border:0"></iframe>
       <iframe id=nested src="${cross}/nested" style="position:absolute;left:20px;top:280px;width:260px;height:110px;border:0"></iframe>
       <iframe id=scaled src="${cross}/login" style="position:absolute;left:320px;top:280px;width:200px;height:80px;border:0;transform:scale(.5);transform-origin:0 0"></iframe>
-      <p id=echo style="color:#ff00ff;font:bold 18px sans-serif;position:absolute;left:560px;top:280px;margin:0">token ${VAULT_VALUE}</p>
+      ${url.includes('novault') ? '' : `<p id=echo style="color:#ff00ff;font:bold 18px sans-serif;position:absolute;left:560px;top:280px;margin:0">token ${VAULT_VALUE}</p>`}
       <div id=host style="position:absolute;left:560px;top:320px"></div>
       <input id=fixed type=password style="${M};position:fixed;right:10px;bottom:10px;width:90px;height:22px;border:0">
       <article style="${C};position:absolute;left:20px;top:420px;width:880px;height:1600px">Ordinary article text.</article>
