@@ -11,10 +11,12 @@ test('MP-11 physical holds exclude other actors and grant retirement releases be
  assert.deepEqual(events.at(-1),{op:'release',codes:[38]});
  await input('human:b','down');await input('human:b','up');
 });
-test('MP-11 agent persistent down is denied before physical dispatch; bounded holds remain available',async()=>{
+test('MP-11 agent repeats are refused; human bounded holds and agent single chords remain available',async()=>{
  const events=[];const native=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{events.push(request);return {};}});
  await assert.rejects(native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'keycode',keycode:38,state:'down'}},{}),/human/);
  assert.equal(events.length,0);
- await native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'hold',key:'a',duration_ms:50}},{});
- assert.equal(events.length,1);
+ await assert.rejects(native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'hold',key:'a',duration_ms:50}},{}),/human/);
+ await native.request({op:'input',surface_id:'s',generation:'g',input:{kind:'hold',key:'a',duration_ms:50}},{});
+ await native.request({op:'input',surface_id:'s',generation:'g',_agent_input:true,input:{kind:'key',key:'a'}},{});
+ assert.equal(events.length,2);
 });

@@ -79,6 +79,19 @@ def helper(connection):
 
 
 class KeyboardTextTests(unittest.TestCase):
+    def test_mp11_finding1_focus_change_stops_a_multi_character_native_event(self):
+        connection=Display()
+        connection.grab_server=lambda:None
+        connection.ungrab_server=lambda:None
+        module=helper(connection)
+        checks=[]
+        def admit():
+            checks.append(True)
+            if len(checks)==3:raise ValueError('protected focus changed')
+        with patch.object(module,'focused_target',return_value={'focus_window':10}),patch.object(module,'assert_secret_target'),patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            with self.assertRaises(ValueError):module.type_text('ab',before_press=admit)
+        self.assertEqual(connection.text,'a')
+
     def type(self, text, inherited=False):
         connection = Display()
         if inherited: connection.mapping[0x01000000 | ord(text[0])] = 181

@@ -1,5 +1,31 @@
 # MP-08 / MP-10 / MP-11 — Linux Computer Phase B
 
+## MP-08 / MP-11 native protection fallback
+
+Native Computer does not have a proved CDP document-to-desktop transform.
+It therefore withholds browser windows and their structured names/actions,
+including unregistered OTP, payment, private ancestors, frames and shadow
+content. The existing document-bound Browser path remains available.
+
+Agent native text and single chords require a complete, uniquely bound owned
+foreground accessibility frame and a public focused leaf. Each text keystroke
+rechecks that leaf and fences the X11 focus; web-document leaves require the
+Browser/Vault path. Agent native clipboard writes, middle-button paste and
+keyboard holds are refused because they cannot fence every text-producing
+repeat/paste. Human input retains its separate admitted path.
+
+Capture coverage is proved per visible window using a unique showing AT-SPI
+frame, title and X11 geometry. An unmatched/ambiguous window is masked even
+when its process has another accessible frame. Only proved coverage may
+subtract an occluding window. Override-redirect windows are always inspected;
+unknown popups are masked independently of the normal-window list. The
+before/after observation fence covers these masks and window bindings.
+
+These conservative fallbacks are security restrictions, not functional or
+MP-10 acceptance evidence. Real-live hosted/client/provider parity still
+requires the current validation matrix and independently reviewed anchors.
+
+
 Phase B implements PR boundaries 1–4 of the approved
 `COMPUTER_USE_LINUX_PLAN.md` on multidomain round 2 (`6dde21a8c`).
 This source supplies lifecycle, native operations, AT-SPI targeting and shared
