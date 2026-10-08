@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
@@ -108,17 +108,62 @@ pub(crate) async fn handle_connection(
     // MD-DISPLAY-02/04: interactive encrypted event/receipt pairs must not
     // wait for TCP delayed ACKs. The relay still routes opaque packets.
     stream.set_nodelay(true)?;
-    let socket =
-        match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, accept_async(stream)).await {
-            Ok(Ok(socket)) => socket,
-            Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
-            Err(_) => return Ok(()),
-        };
+    let mut binary_events = false;
+    let handshake = accept_hdr_async(
+        stream,
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            let protocol_offered = request
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|protocols| {
+                    protocols
+                        .split(',')
+                        .any(|p| p.trim() == crate::binary_event::CAPABILITY)
+                });
+            binary_events = protocol_offered
+                || request
+                    .headers()
+                    .get(crate::binary_event::VERSION_HEADER)
+                    .is_some_and(|version| version == "96");
+            if protocol_offered {
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    crate::binary_event::CAPABILITY.parse().unwrap(),
+                );
+            }
+            if binary_events {
+                response
+                    .headers_mut()
+                    .insert(crate::binary_event::VERSION_HEADER, "96".parse().unwrap());
+            }
+            Ok(response)
+        },
+    );
+    let socket = match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, handshake).await {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
+        Err(_) => return Ok(()),
+    };
     let (mut writer, mut reader) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
     let mut writer_task = Some(tokio::spawn(async move {
-        while let Some(message) = outgoing_rx.recv().await {
+        while let Some(mut message) = outgoing_rx.recv().await {
+            // MP-08/MP-10: a legacy receiver gets the original JSON/base64
+            // contract. The negotiated path forwards ciphertext unchanged.
+            if !binary_events {
+                if let Message::Binary(bytes) = &message {
+                    let Ok(envelope) = crate::binary_event::legacy_client_envelope(bytes) else {
+                        break;
+                    };
+                    let Ok(text) = serde_json::to_string(&envelope) else {
+                        break;
+                    };
+                    message = Message::Text(text.into());
+                }
+            }
             if writer.send(message).await.is_err() {
                 let _ = writer.flush().await;
                 break;
@@ -961,6 +1006,13 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::DaemonUnsubscribe { .. }
                         | RelayEnvelope::ClientEvent { .. } => {}
                     }
+                }
+                Message::Binary(bytes) => {
+                    let Some(current_daemon_key) = registered_daemon_key.as_ref().filter(|_| binary_events) else {
+                        send_close(&outgoing_tx, "binary events require a negotiated daemon connection".into());
+                        break;
+                    };
+                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &bytes).await?;
                 }
                 Message::Ping(payload) => {
                     if outgoing_tx.try_send(Message::Pong(payload)).is_err() {

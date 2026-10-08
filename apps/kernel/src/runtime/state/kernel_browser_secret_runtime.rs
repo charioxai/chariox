@@ -59,6 +59,13 @@ impl KernelRuntimeState {
                 .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
                 .await;
         }
+        let gate = self.owned.kernel_browser_host.display_gate(user);
+        let _input = (method == "host.secret" || params["op"] == "input").then(|| gate.input());
+        let _capture = if params["display_subscription_id"].is_string() {
+            Some(gate.capture().await.map_err(host_error)?)
+        } else {
+            None
+        };
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         let at = std::time::Instant::now();

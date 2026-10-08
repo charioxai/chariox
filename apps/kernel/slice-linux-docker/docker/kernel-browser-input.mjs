@@ -1,11 +1,15 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
-const viewport = { css_width: 1280, css_height: 800 };
+const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror } = {}) {
+// MP-08/MP-10: mouse-wheel notches (multiples of 120) animate like a native
+// wheel through the owned display; precise trackpad deltas stay on CDP.
+const notches = delta => delta % 120 === 0 ? delta / 120 : null;
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
@@ -87,7 +91,22 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
         } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
-          await sendInput("Input.dispatchMouseEvent", { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y });
+          const nx = notches(input.delta_x), ny = notches(input.delta_y);
+          if (nativeWheel && nx !== null && ny !== null && Math.abs(nx) <= 10 && Math.abs(ny) <= 10 && (nx || ny)) {
+            await check(); await mirrorGuard?.();
+            // MP-11: a retired source has dispatched nothing. Fall back to
+            // fenced CDP input without claiming an uncertain native action.
+            if (nativeWheel(input.x, input.y, nx, ny)) { onDispatch?.(); return; }
+          }
+          const params = { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y };
+          if (!asyncScroll || (typeof asyncScroll === 'function' && !asyncScroll())) { await sendInput("Input.dispatchMouseEvent", params); return; }
+          // MP-08/MP-10: the document fence and dispatch stay serialized; the
+          // caller does not hold the input lane for the renderer's
+          // frame-aligned wheel ack. CDP preserves dispatch order.
+          await check(); await mirrorGuard?.(); onDispatch?.();
+          const ack = connection.send("Input.dispatchMouseEvent", params, sessionId);
+          ack.catch(() => {});
+          return { ack };
         } else throw new Error("MD-2: unsupported input");
       }
     });

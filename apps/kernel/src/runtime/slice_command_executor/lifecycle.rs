@@ -1361,7 +1361,7 @@ fn hosted_slice_token_installation_matches(
 ) -> bool {
     slice_id == expected_slice_id
         && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        && peer_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
 }
 
 async fn wait_for_hosted_slice_relay_activation(

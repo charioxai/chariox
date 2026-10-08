@@ -13,18 +13,33 @@ pub(super) async fn send_relay_envelope_frame<S>(
     writer: &mut S,
     envelope: RelayEnvelope,
     lane: &'static str,
+    binary_events: bool,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
 {
     let kind = relay_envelope_kind(&envelope);
-    let payload = match serde_json::to_string(&envelope) {
-        Ok(payload) => payload,
-        Err(_) => return false,
+    let frame = if binary_events {
+        match chariox_relay::binary_event::from_envelope(&envelope) {
+            Ok(Some(bytes)) => Message::Binary(bytes.into()),
+            Ok(None) => match serde_json::to_string(&envelope) {
+                Ok(text) => Message::Text(text.into()),
+                Err(_) => return false,
+            },
+            Err(_) => match serde_json::to_string(&envelope) {
+                Ok(text) => Message::Text(text.into()),
+                Err(_) => return false,
+            },
+        }
+    } else {
+        match serde_json::to_string(&envelope) {
+            Ok(text) => Message::Text(text.into()),
+            Err(_) => return false,
+        }
     };
-    let payload_len = payload.len();
+    let payload_len = frame.len();
     let started = Instant::now();
-    let sent = writer.send(Message::Text(payload.into())).await.is_ok();
+    let sent = writer.send(frame).await.is_ok();
     if kind == "daemon_event" {
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
     }

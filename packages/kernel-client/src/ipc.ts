@@ -44,6 +44,7 @@ import {
   type RelayClientIdentity,
 } from "./relay-crypto.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
+import { decodeDisplayEvent } from "./browser-relay-crypto.js"
 import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
@@ -950,6 +951,22 @@ export class LocalIpcClient {
   }
 
   private handleWebSocketMessage(data: WebSocket.RawData, lane: KernelSocketLane) {
+    // MP-08/MP-10: protocol 466 display events arrive as binary messages.
+    if (Buffer.isBuffer(data) && data[0] === 0x43) {
+      let display: KernelEvent | null = null
+      try {
+        const value = decodeDisplayEvent(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        display = value ? kernelEventFromValue(value) : null
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
+        return
+      }
+      if (display) {
+        this.markKernelEventReceived()
+        for (const handler of this.eventHandlers) handler(display)
+        return
+      }
+    }
     let frame:
       | KernelTransportResponseFrame<unknown>
       | KernelTransportEventFrame<KernelEvent>

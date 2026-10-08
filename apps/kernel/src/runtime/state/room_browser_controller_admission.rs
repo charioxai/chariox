@@ -150,14 +150,14 @@ fn admission_error(message: &str) -> DaemonError {
 
 // MD-N2: refuse before serializing a new command to an old or unknown worker.
 pub(super) fn require_notes_worker_protocol(version: Option<u32>) -> Result<(), DaemonError> {
-    if version
-        .is_some_and(|version| version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
-    {
+    if version.is_some_and(|version| {
+        version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
+    }) {
         Ok(())
     } else {
         Err(admission_error(&format!(
             "Room Notes require relay peer protocol {} or newer",
-            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
         )))
     }
 }
@@ -165,11 +165,11 @@ pub(super) fn require_notes_worker_protocol(version: Option<u32>) -> Result<(), 
 mod notes_peer_tests {
     #[test]
     fn md_notes_refuses_unknown_and_pre_union_workers_before_dispatch() {
-        let minimum = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
         for version in [None, Some(70), Some(73), Some(minimum - 1)] {
             assert!(super::require_notes_worker_protocol(version).is_err());
         }
-        for version in [Some(minimum), Some(minimum + 1)] {
+        for version in [Some(minimum), Some(minimum + 1), Some(94), Some(96)] {
             assert!(super::require_notes_worker_protocol(version).is_ok());
         }
     }

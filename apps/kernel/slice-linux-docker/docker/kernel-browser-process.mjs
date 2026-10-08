@@ -1,8 +1,10 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
@@ -30,8 +32,9 @@ export function launchArguments(profile, headless, display = false, nativeAccess
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
-    "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit"] : []),
+    `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
+    // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${geometry.dpr}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []),
     ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
   ];
 }
@@ -107,6 +110,7 @@ export class HostChromium {
     this.child = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
+      await this.display?.close();this.display=null;
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;

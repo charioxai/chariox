@@ -2,6 +2,63 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
+    ("kernel-browser-codec-protection.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py")),
+    ("kernel-browser-native-worker.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-worker.mjs")),
+    ("kernel-browser-native-credit.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs")),
+    ("kernel-browser-openh264.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py")),
+    ("browser-controller-image.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs")),
+    ("browser-controller-artifacts.mjs", include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs")),
+    ("kernel-browser-stripes.py", include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py")),
+    ("kernel-browser-shared-raster.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-shared-raster.mjs")),
+    ("kernel-browser-geometry.mjs", include_bytes!("../../slice-linux-docker/docker/kernel-browser-geometry.mjs")),
+    (
+        "kernel-browser-native-pipe.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-pipe.mjs"),
+    ),
+    (
+        "kernel-browser-owned-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-owned-display.mjs"),
+    ),
+    (
+        "kernel-browser-native.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native.mjs"),
+    ),
+    (
+        "kernel-browser-xshm.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-xshm.py"),
+    ),
+    (
+        "kernel-browser-raster-damage.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-raster-damage.py"),
+    ),
+    (
+        "kernel-browser-motion.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-motion.mjs"),
+    ),
+    (
+        "kernel-browser-tiles.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-tiles.mjs"),
+    ),
+    (
+        "kernel-browser-refiner.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-refiner.mjs"),
+    ),
+    (
+        "kernel-browser-pixel-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-pixel-worker.mjs"),
+    ),
+    (
+        "kernel-browser-webcodecs.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-webcodecs.mjs"),
+    ),
+    (
+        "kernel-browser-compositor.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-compositor.mjs"),
+    ),
+    (
+        "kernel-browser-sample-lane.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
+    ),
     (
         "native-clipboard.py",
         include_bytes!("../../slice-linux-docker/docker/native-clipboard.py"),
@@ -93,6 +150,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-display-capture.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-capture.mjs"),
+    ),
+    (
+        "kernel-browser-contention.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-contention.mjs"),
     ),
     (
         "kernel-browser-timing.mjs",
