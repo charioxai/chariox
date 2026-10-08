@@ -211,7 +211,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "inbox acknowledgement cannot repair uncertain delivery",
                 ));
             }
-            if e.state == "handled" {
+            if matches!(e.state.as_str(), "handled" | "expired" | "failed") {
                 return Ok(Outcome::Event(e));
             }
             e.state = if handled { "handled" } else { "acknowledged" }.into();

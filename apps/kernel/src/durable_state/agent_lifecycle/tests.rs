@@ -2318,3 +2318,134 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
         );
     }
 }
+
+// MP-08/MP-10/MP-11 security F1: admission pressure is recipient-local.
+fn security_fill_inbox(f: &Fixture, agent: &str, state: &str) {
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..1024 {
+        let mut e = occurrence(
+            "room",
+            agent,
+            "sender",
+            &format!("fill-{n}"),
+            "message",
+            serde_json::json!({}),
+        );
+        tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')", params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).unwrap();
+        e.sequence = tx.last_insert_rowid() as u64;
+        e.state = state.into();
+        tx.execute(
+            "UPDATE agent_inbox SET payload=?2 WHERE sequence=?1",
+            params![sql_integer(e.sequence).unwrap(), encode(&e).unwrap()],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+#[test]
+fn a02_security_f1_full_recipient_cannot_abort_source_outcome() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "healthy".into(),
+        prompt: "healthy-task".into(),
+        run: None,
+        now: 1,
+    });
+    f.apply(Operation::Subscribe {
+        task: "healthy-task".into(),
+        prompt: "healthy-task".into(),
+        registration: Registration {
+            id: "healthy-reg".into(),
+            task_id: "healthy-task".into(),
+            source_id: "child".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    security_fill_inbox(&f, "parent", "pending");
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "completion".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    assert_eq!(f.store.agent_inbox("room", "healthy", 0).unwrap().len(), 1);
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", 1024)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "source_completed"));
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+}
+#[test]
+fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", true);
+    security_fill_inbox(&f, "parent", "pending");
+    f.apply(Operation::Sweep {
+        now: LONG_WAIT_MS + 1,
+        busy_recipients: Vec::new(),
+    });
+    assert!(f
+        .store
+        .agent_inbox("room", "parent", 1024)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "deadline_reached"));
+}
+#[test]
+fn a02_security_f1_accepted_history_does_not_exhaust_admission() {
+    let f = Fixture::new();
+    security_fill_inbox(&f, "parent", "accepted");
+    f.apply(Operation::Occur(occurrence(
+        "room",
+        "parent",
+        "sender",
+        "fresh",
+        "message",
+        serde_json::json!({}),
+    )));
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM agent_inbox WHERE json_extract(payload,'$.state')='accepted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(count <= 256, "accepted history retained {count} rows");
+}
+#[test]
+fn a02_security_f1_done_task_closes_registrations() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Subscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: Registration {
+            id: "passive".into(),
+            task_id: "p".into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+        },
+    });
+    f.settle("p", true);
+    assert_eq!(f.task().state, ExecutionState::Done);
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+}
