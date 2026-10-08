@@ -1,10 +1,15 @@
 use thiserror::Error;
+mod user_domain_refusal;
+pub(crate) use user_domain_refusal::HostFailure;
+pub use user_domain_refusal::UserDomainRefusalReason;
 
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("User-domain request refused")]
+    UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
     InvalidConfig {
         field: &'static str,

@@ -5,7 +5,7 @@ use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
 fn sudo_protocol_460_window_extension_and_session_status_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let turn = crate::local::KernelSudoTurn {
         entry_id: "sudo:one".into(),
         session_id: "s".into(),
@@ -52,7 +52,7 @@ fn sudo_protocol_460_window_extension_and_session_status_shapes() {
 
 #[test]
 fn kernel_access_lifetime_config_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let response = LocalDaemonResponse::UserConfig {
         path: "/state/config.toml".into(),
         config: crate::config::CharioxUserConfig::default(),
@@ -89,7 +89,7 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -145,7 +145,7 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
         session_id: "session-1".into(),
@@ -226,7 +226,7 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
         session_id: "s".into(),
@@ -291,7 +291,7 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
 
 #[test]
 fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let request = LocalDaemonRequest::RequestKernelSudo(crate::local::RequestKernelSudoRequest {
         agent_id: "a".into(),
         prompt: "full\nprompt".into(),
@@ -316,7 +316,7 @@ fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
 
 #[test]
 fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 469);
     let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","session_id":"s","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
     assert_eq!(
         format!(

@@ -37,7 +37,8 @@ impl CommandRouter {
             crate::runtime::capability_executor::CapabilityRuntimeStore::new(
                 router.runtime_state.clone(),
             );
-        router.dispatch_authorized(command, request).await
+        // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
+        Box::pin(router.dispatch_authorized(command, request)).await
     }
 
     async fn dispatch_authorized(
@@ -58,10 +59,11 @@ impl CommandRouter {
                     self.kernel_local_socket_path().display()
                 )));
             }
-            return self
-                .runtime_state
-                .request_kernel_sudo(&command.caller.caller_id, sudo_request.clone())
-                .await;
+            return Box::pin(
+                self.runtime_state
+                    .request_kernel_sudo(&command.caller.caller_id, sudo_request.clone()),
+            )
+            .await;
         }
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
@@ -101,14 +103,12 @@ impl CommandRouter {
                     .runtime_state
                     .sudo_entry_pending(&answer.session_id, &answer.interaction_id)
                 {
-                    return self
-                        .runtime_state
-                        .answer_sudo_entry_from_terminal(
-                            &crate::runtime::command::command_caller_user_id(&command),
-                            &command.caller.caller_id,
-                            answer,
-                        )
-                        .await;
+                    return Box::pin(self.runtime_state.answer_sudo_entry_from_terminal(
+                        &crate::runtime::command::command_caller_user_id(&command),
+                        &command.caller.caller_id,
+                        answer,
+                    ))
+                    .await;
                 }
             }
         }
@@ -146,14 +146,12 @@ impl CommandRouter {
                         "only a Chariox terminal can authorize sudo",
                     ));
                 }
-                return self
-                    .runtime_state
-                    .submit_sudo_prompt(
-                        prompt.clone(),
-                        &crate::runtime::command::command_caller_user_id(&command),
-                        &command.caller.caller_id,
-                    )
-                    .await;
+                return Box::pin(self.runtime_state.submit_sudo_prompt(
+                    prompt.clone(),
+                    &crate::runtime::command::command_caller_user_id(&command),
+                    &command.caller.caller_id,
+                ))
+                .await;
             }
         }
         if matches!(&request, LocalDaemonRequest::SubmitPrompts(batch) if batch.prompts.iter().any(|prompt| crate::runtime::state::is_sudo_prompt(&prompt.prompt)))
@@ -162,10 +160,8 @@ impl CommandRouter {
                 "submit /sudo individually so each entry has its own popup",
             ));
         }
-        match self
-            .dispatch_pre_lane(&command, &request, &caller_user_id)
-            .await
-        {
+        // MD-4: keep transport callers independent of unrelated pre-lane futures.
+        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id)).await {
             Ok(Some(response)) => {
                 if let Some((session_id, attachment_id)) =
                     projected_terminal_output_attachment(&request)

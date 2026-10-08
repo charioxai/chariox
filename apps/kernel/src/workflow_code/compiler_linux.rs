@@ -2,7 +2,37 @@
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 
+/// The operator-fixed runtime is discovered once per canonical path, size and
+/// modification time; a changed runtime or a vanished asset is rediscovered.
 pub(super) fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
+    type Discovered = BTreeMap<PathBuf, (u64, std::time::SystemTime, BTreeSet<PathBuf>)>;
+    static DISCOVERED: std::sync::Mutex<Discovered> = std::sync::Mutex::new(BTreeMap::new());
+    let canonical = fs::canonicalize(node).map_err(io_error("workflow_code.compile"))?;
+    let metadata = fs::metadata(&canonical).map_err(io_error("workflow_code.compile"))?;
+    let identity = (
+        metadata.len(),
+        metadata
+            .modified()
+            .map_err(io_error("workflow_code.compile"))?,
+    );
+    if let Some((len, modified, files)) = DISCOVERED.lock().unwrap().get(&canonical) {
+        if (*len, *modified) == identity
+            && files
+                .iter()
+                .all(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
+        {
+            return Ok(files.clone());
+        }
+    }
+    let files = discover_runtime_files(node)?;
+    DISCOVERED
+        .lock()
+        .unwrap()
+        .insert(canonical, (identity.0, identity.1, files.clone()));
+    Ok(files)
+}
+
+fn discover_runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
     let dependencies = Command::new("/usr/bin/ldd")
         .env_clear()
         .arg(node)
@@ -86,7 +116,8 @@ fn runtime_data_path(bytes: &[u8]) -> Option<PathBuf> {
     (builtin || icu).then(|| path.to_path_buf())
 }
 
-/// Scan only file-backed, non-writable ELF load segments for bounded NUL path
+/// Scan only file-backed, non-writable ELF load segments (read-only and, where
+/// .rodata shares the text segment as on arm64, read+execute) for bounded NUL path
 /// literals. Stripped distro binaries retain these runtime names. No binutils,
 /// Node execution, directory traversal or package-manager database is needed.
 fn external_data_files(binary: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
@@ -151,7 +182,7 @@ fn external_data_files(binary: &Path) -> Result<BTreeSet<PathBuf>, crate::Daemon
     let mut total = 0u64;
     for segment in segments.chunks_exact(entry_size) {
         let flags = word(segment, if wide { 4 } else { 24 });
-        if word(segment, 0) != 1 || flags & 7 != 4 {
+        if word(segment, 0) != 1 || flags & 2 != 0 {
             continue;
         }
         let offset = if wide {

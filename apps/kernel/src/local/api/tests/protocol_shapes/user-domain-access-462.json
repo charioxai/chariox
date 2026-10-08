@@ -1,0 +1,118 @@
+[
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "list_grants"
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "after": 3,
+        "op": "subscribe_grants",
+        "wait_ms": 25000
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "agent_id": "a",
+        "op": "revoke_grants"
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "agent_id": null,
+        "op": "revoke_grants"
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "result": {
+        "cursor": 4,
+        "event": "user_domain_grants_changed",
+        "grants": [
+          {
+            "agent_id": "a",
+            "expiry_rule": "active turn or pending wake; then idle window",
+            "focused": false,
+            "idle_since_ms": 2,
+            "idle_timeout_seconds": 1800,
+            "kernel_id": "home",
+            "resources": [
+              {
+                "kind": "browser_tab",
+                "tab_id": "t"
+              },
+              {
+                "kind": "app_view",
+                "view_id": "v"
+              },
+              {
+                "kind": "note",
+                "note_id": "n"
+              },
+              {
+                "capture_id": "c",
+                "kind": "capture"
+              }
+            ],
+            "session_id": "s",
+            "since_ms": 1,
+            "prompt_id": "p",
+            "expires_at_ms": 28800001
+          },
+          {
+            "agent_id": "child",
+            "expiry_rule": "active turn or pending wake; then idle window",
+            "focused": false,
+            "idle_since_ms": 2,
+            "idle_timeout_seconds": 1800,
+            "kernel_id": "home",
+            "resources": [
+              {
+                "kind": "browser_tab",
+                "tab_id": "t"
+              }
+            ],
+            "session_id": "s",
+            "since_ms": 1,
+            "expires_at_ms": 28800001,
+            "delegated_by_agent_id": "a"
+          }
+        ],
+        "notice": {
+          "agent_id": "a",
+          "at_ms": 3,
+          "resource": {
+            "kind": "browser_tab",
+            "tab_id": "t"
+          }
+        }
+      }
+    }
+  },
+  {
+    "UserAppViewsListed": {
+      "views": [
+        {
+          "access": {
+            "focused_agent_kernel_id": "worker",
+            "kernel_id": "home",
+            "kernel_name": "home",
+            "reachable_by_focused_agent": false
+          },
+          "generation": "7",
+          "installation_id": "app",
+          "origin": "https://app.a.invalid",
+          "view_id": "v"
+        }
+      ]
+    }
+  }
+]

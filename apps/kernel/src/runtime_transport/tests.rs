@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(unix)]
+mod kernel_browser_terminals;
+
 use std::path::{Path, PathBuf};
 
 use crate::local::{
@@ -2093,6 +2096,34 @@ async fn dispatch_transport_test_request(
     request: LocalDaemonRequest,
     receive_response: bool,
 ) -> Option<KernelOutgoingFrame> {
+    dispatch_transport_test_request_on_connection(
+        runtime,
+        router,
+        request_id,
+        command_id,
+        request,
+        receive_response,
+        Arc::new(Mutex::new(ConnectionState {
+            local_terminal_id: "MD-3-test-connection".into(),
+            terminal_lifetime: Default::default(),
+            browser_terminal_contexts: Default::default(),
+            subscription: None,
+            watch_task: None,
+        })),
+    )
+    .await
+}
+
+#[cfg(unix)]
+async fn dispatch_transport_test_request_on_connection(
+    runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
+    request_id: &str,
+    command_id: &str,
+    request: LocalDaemonRequest,
+    receive_response: bool,
+    connection_state: Arc<Mutex<ConnectionState>>,
+) -> Option<KernelOutgoingFrame> {
     let (priority_tx, mut priority_rx) = mpsc::channel(8);
     let (event_tx, _event_rx) = mpsc::channel(8);
     let outgoing = KernelOutgoingSender::new(priority_tx, event_tx);
@@ -2100,6 +2131,11 @@ async fn dispatch_transport_test_request(
         priority_rx.close();
     }
     let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let connection_class = if matches!(&request, LocalDaemonRequest::KernelBrowser(_)) {
+        KernelConnectionClass::Terminal
+    } else {
+        KernelConnectionClass::Unauthenticated
+    };
     let payload = serde_json::to_vec(&KernelIncomingFrame::Request {
         request_id: request_id.to_string(),
         command_id: Some(command_id.to_string()),
@@ -2112,10 +2148,7 @@ async fn dispatch_transport_test_request(
         IncomingConnection {
             runtime: &runtime,
             router: &router,
-            connection_state: &Arc::new(Mutex::new(ConnectionState {
-                subscription: None,
-                watch_task: None,
-            })),
+            connection_state: &connection_state,
             inbound_request_admission: &InboundRequestAdmission::new(
                 process_inbound_request_limit(),
             ),
@@ -2125,7 +2158,7 @@ async fn dispatch_transport_test_request(
             outgoing_tx: &outgoing,
             close_tx: &close_tx,
             close_requested: &Arc::new(AtomicBool::new(false)),
-            connection_class: KernelConnectionClass::Unauthenticated,
+            connection_class,
             peer: None,
             bound_grant: &Arc::default(),
         },
@@ -2461,3 +2494,173 @@ mod wake_pressure;
 mod kernel_access_grants;
 
 mod ka_validation;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn md5_local_cached_browser_observations_obey_current_vault_policy() {
+    for pixels in [false, true] {
+        let root = crate::test_support::TestWorktree::new("MD5-local-cache");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = router.runtime_state();
+        let caller = router
+            .local_terminal_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                "MD-3-test-connection",
+            )
+            .await;
+        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: if pixels {
+                crate::local::KernelBrowserCommand::Screenshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            } else {
+                crate::local::KernelBrowserCommand::Snapshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            },
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            "fixture",
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        let (user, _) = state.kernel_browser_terminal_context(&command).unwrap();
+        state.install_kernel_browser_fixture(&user, root.path());
+        let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+        let first = dispatch_transport_test_request(
+            runtime.clone(),
+            router.clone(),
+            "first",
+            "MD5-receipt",
+            request.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            first,
+            KernelOutgoingFrame::Response { error: None, .. }
+        ));
+        state.register_kernel_browser_fixture_value(&user, "MD5-sensitive-fixture");
+        let replay = dispatch_transport_test_request(
+            runtime.clone(),
+            router.clone(),
+            "replay",
+            "MD5-receipt",
+            request.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(replay, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none()),
+            "MD-5: local replay bypassed changed Vault protection"
+        );
+        state.fence_kernel_browser_fixture(&user);
+        let replay = dispatch_transport_test_request(
+            runtime,
+            router,
+            "fenced",
+            "MD5-receipt",
+            request,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(replay, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none())
+        );
+        state.shutdown_cleanup().await.unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn md3_transport_disconnect_fences_input_queued_behind_vault_barrier() {
+    let root = crate::test_support::TestWorktree::new("MD3-queued-socket");
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        2,
+    ));
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Input {
+            tab_id: "host-tab-fixture".into(),
+            generation: 1,
+            input: crate::local::KernelBrowserInput::Text {
+                text: "fixture".into(),
+            },
+        },
+    });
+    let caller = router
+        .local_terminal_caller(
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            "MD-3-test-connection",
+        )
+        .await;
+    let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+        "fixture",
+        crate::runtime::command::KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    let state = router.runtime_state();
+    let (user, _) = state.kernel_browser_terminal_context(&command).unwrap();
+    state.install_kernel_browser_fixture(&user, root.path());
+    let barrier = state
+        .kernel_browser_fixture_barrier(&user)
+        .write_owned()
+        .await;
+    let connection = Arc::new(Mutex::new(ConnectionState {
+        local_terminal_id: "MD-3-test-connection".into(),
+        terminal_lifetime: Default::default(),
+        browser_terminal_contexts: Default::default(),
+        subscription: None,
+        watch_task: None,
+    }));
+    let queued_router = router.clone();
+    let queued_connection = connection.clone();
+    let pending = tokio::spawn(async move {
+        dispatch_transport_test_request_on_connection(
+            Arc::new(KernelTransportRuntime::default()),
+            queued_router,
+            "queued",
+            "queued",
+            request,
+            true,
+            queued_connection,
+        )
+        .await
+    });
+    timeout(Duration::from_secs(2), async {
+        while connection.lock().await.browser_terminal_contexts.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    disconnect_browser_terminal(&router, &connection).await;
+    drop(barrier);
+    let response = pending.await.unwrap().unwrap();
+    assert!(
+        matches!(response, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none()),
+        "MD-3: detached dispatch sent input after socket retirement"
+    );
+    assert!(!root.path().join("input").exists());
+    assert!(state.kernel_browser_fixture_actors(&user)["actors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    state.shutdown_cleanup().await.unwrap();
+}

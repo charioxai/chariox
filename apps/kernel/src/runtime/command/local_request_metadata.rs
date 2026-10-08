@@ -72,6 +72,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
+        LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
+        LocalDaemonRequest::CaptureVisibleRegion(_) => {
+            LocalRequestMetadata::new("screenshot.capture", Normal)
+        }
         LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -570,6 +575,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
+        LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
+        LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
@@ -590,6 +598,14 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
+        LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
+        LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",
+        LocalDaemonRequest::CloseUserAppView(_) => "app.user_view.close",
+        LocalDaemonRequest::GetUserAppViewFrontend(_) => "app.user_view.frontend",
+        LocalDaemonRequest::CallUserAppView(_) => "app.user_view.call",
+        LocalDaemonRequest::SubscribeUserAppViews(_) => "app.user_view.subscribe",
+        LocalDaemonRequest::AnswerUserDomainInteraction(_) => "app.user_view.answer",
+
         LocalDaemonRequest::SetAppViewPanel(_) => "app.view.panel",
         LocalDaemonRequest::UninstallApp(_) => "app.uninstall",
         LocalDaemonRequest::RestoreAppDataSnapshot(_) => "app.snapshot.restore",

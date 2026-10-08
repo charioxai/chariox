@@ -196,6 +196,10 @@ fn open_schema_file(
     ))
 }
 
+#[cfg(any(test, target_os = "macos"))]
+#[path = "compiler_macho.rs"]
+mod macho;
+
 #[cfg(target_os = "macos")]
 #[path = "compiler_seatbelt.rs"]
 mod seatbelt;

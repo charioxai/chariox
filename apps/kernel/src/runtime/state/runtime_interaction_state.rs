@@ -312,6 +312,20 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         if connection_class
             .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && interaction_id.starts_with("capability-request-")
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.kernel_operation_owner.is_some())
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Only the owner's Chariox terminal can authorize resource acquisition",
+            ));
+        }
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && self
                 .owned
                 .pending_interactions
@@ -322,6 +336,20 @@ impl KernelRuntimeState {
             return Err(DaemonError::LocalTransport {
                 operation: "credential interaction",
                 message: "Only a Chariox terminal can answer a credential prompt".into(),
+            });
+        }
+        if connection_class
+            .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
+            && self
+                .owned
+                .pending_interactions
+                .write()
+                .get(interaction_id)
+                .is_some_and(|pending| pending.user_domain_interaction.is_some())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime interaction",
+                message: "Only a Chariox terminal can answer a user-domain decision".into(),
             });
         }
         let authorization = self

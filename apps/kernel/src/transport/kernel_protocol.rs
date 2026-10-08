@@ -79,6 +79,10 @@ pub(crate) enum KernelOutgoingFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum KernelEvent {
+    KernelBrowserFrame {
+        subscription_id: String,
+        frame: Value,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -639,6 +643,7 @@ fn changed_workflow_runs(
 
 pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => "kernel_browser_frame",
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
@@ -665,6 +670,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
 
 pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => None,
         KernelEvent::TerminalOutput { records } => {
             records.first().map(|record| record.session_id.as_str())
         }
@@ -713,6 +719,7 @@ pub(crate) fn subscription_event_stream_id(session_id: &str, attachment_id: &str
 
 pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => false,
         KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
             record
                 .recipient_attachment_ids
@@ -814,6 +821,7 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
+        DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

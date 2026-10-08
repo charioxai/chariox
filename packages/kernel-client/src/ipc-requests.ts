@@ -19,3 +19,8 @@ export * from "./ipc-disposable-worker-requests.js"
 export * from "./ipc-managed-context-requests.js"
 export * from "./ipc-project-environment-setup-requests.js"
 export * from "./ipc-config-requests.js"
+
+export * from "./ipc-kernel-browser-requests.js"
+
+export * from "./notes.js"
+export * from "./ipc-screenshot-requests.js"
