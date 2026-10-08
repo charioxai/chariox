@@ -1386,9 +1386,7 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
         .to_string()
         .contains("binding mismatch"));
     harness
-        .block_on_test_task(
-            runtime.delete_environment_utility_session(&session),
-        )
+        .block_on_test_task(runtime.delete_environment_utility_session(&session))
         .unwrap();
     let after = harness
         .dispatch(get)
@@ -1405,13 +1403,22 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
     assert_eq!(before.lineage, after.lineage);
     assert_eq!(before.content_digest, after.content_digest);
     harness.with_app(|app| assert!(app.sessions().list_all_sessions().is_empty()));
-    let LocalDaemonResponse::SessionCreated { session, .. } = harness.dispatch(
-        LocalDaemonRequest::CreateSession(worktree.session_request().with_hidden(true)),
-    ).unwrap() else { panic!("temporary hidden session expected") };
-    harness.dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
-        project_id: "utility-project".into(),
-    })).unwrap();
-    harness.block_on_test_task(runtime.delete_environment_utility_session(&session)).unwrap();
+    let LocalDaemonResponse::SessionCreated { session, .. } = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request().with_hidden(true),
+        ))
+        .unwrap()
+    else {
+        panic!("temporary hidden session expected")
+    };
+    harness
+        .dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+            project_id: "utility-project".into(),
+        }))
+        .unwrap();
+    harness
+        .block_on_test_task(runtime.delete_environment_utility_session(&session))
+        .unwrap();
     harness.with_app(|app| assert!(app.sessions().list_all_sessions().is_empty()));
 }
 

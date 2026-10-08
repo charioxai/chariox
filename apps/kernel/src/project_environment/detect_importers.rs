@@ -545,10 +545,18 @@ impl Importer {
                     }
                 }
             }
-            "AGENTS.md" | "CLAUDE.md" | "GEMINI.md" => {
-                self.tool(file, AgentToolKind::InstructionFile, name, text.lines().next().map(|_| 1))
-            }
-            "SKILL.md" => self.tool(file, AgentToolKind::Skill, &file.path, text.lines().next().map(|_| 1)),
+            "AGENTS.md" | "CLAUDE.md" | "GEMINI.md" => self.tool(
+                file,
+                AgentToolKind::InstructionFile,
+                name,
+                text.lines().next().map(|_| 1),
+            ),
+            "SKILL.md" => self.tool(
+                file,
+                AgentToolKind::Skill,
+                &file.path,
+                text.lines().next().map(|_| 1),
+            ),
             _ => {}
         }
         // Structured dependency declarations are language-independent evidence.

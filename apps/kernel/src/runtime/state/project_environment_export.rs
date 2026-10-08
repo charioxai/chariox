@@ -319,9 +319,7 @@ impl KernelRuntimeState {
             .discover_project_environment(session.id(), agent.id(), input)
             .await;
         // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
-        let cleanup = self
-            .delete_environment_utility_session(&session)
-            .await;
+        let cleanup = self.delete_environment_utility_session(&session).await;
         let mut cleanup_guard = cleanup_guard;
         if cleanup.is_ok() {
             cleanup_guard.session = None;
@@ -471,10 +469,7 @@ impl Drop for EnvironmentUtilityCleanup {
         };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Err(error) = runtime
-                    .delete_environment_utility_session(&session)
-                    .await
-                {
+                if let Err(error) = runtime.delete_environment_utility_session(&session).await {
                     tracing::warn!(
                         session_id = session.id(),
                         "MP-08 / MP-10 / MP-11: utility session cleanup failed: {}",
