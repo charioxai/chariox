@@ -1023,7 +1023,10 @@ export class LocalIpcClient {
 
     if ("kind" in frame && frame.kind === "close") {
       this.rejectPending(frame.reason, lane)
-      if (frame.reason === "relay token revoked" || frame.reason === "client renewal reduced permissions" || frame.reason === "client renewal changed identity or key") {
+      if (/^relay token (?:has been )?revoked$/i.test(frame.reason)
+        || frame.reason === "client renewal reduced permissions"
+        || frame.reason === "client renewal changed identity or key"
+        || frame.reason === "relay authorization renewal changed identity or reduced permissions") {
         this.invalidateRelayAuthorization(Object.assign(new Error("Relay authorization revoked"), { code: "authorization_denied" }))
       }
       return

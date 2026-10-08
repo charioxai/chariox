@@ -4,6 +4,38 @@ import WebSocket, { WebSocketServer } from "ws"
 import { LocalIpcClient, RelayClientIdentity } from "./ipc.js"
 import { createRelayKeypair } from "./relay-crypto.js"
 
+test("MP-08/MP-11 combined relay refusal cannot reopen retained terminal authority", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address(); assert.ok(address && typeof address === "object")
+  const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  let connections = 0
+  server.on("connection", socket => {
+    connections++
+    socket.on("message", raw => {
+      const frame = JSON.parse(String(raw))
+      if (frame.kind === "client_connect") socket.send(JSON.stringify({ kind: "client_connected", target: frame.target, daemon_public_key: daemon.publicKeyBase64 }))
+      if (frame.kind === "client_request") socket.send(JSON.stringify({ kind: "client_response", request_id: frame.request_id, encrypted_response: daemon.encrypt(frame.encrypted_request.sender_public_key, JSON.stringify({ accepted: true })), error: null }))
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, { relayAuthToken: "synthetic-grant", targetDaemonId: "remote", relayIdentity: identity })
+  try {
+    client.startRelayAuthRenewal(Date.now()+300_000, async () => ({ token: "synthetic-renewed", expiresAtMs: Date.now()+300_000 }))
+    await client.send({ GetDaemonHealth: null })
+    for (const socket of server.clients) {
+      socket.send(JSON.stringify({ kind: "close", reason: "relay authorization renewal changed identity or reduced permissions" }))
+      socket.close()
+    }
+    await new Promise(resolve => setTimeout(resolve, 30))
+    await assert.rejects(client.send({ GetDaemonHealth: null }), (error: unknown) => (error as { code?: string }).code === "authorization_denied")
+    assert.equal(connections, 1)
+  } finally {
+    await client.close(); for (const socket of server.clients) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 test("active remote terminal crosses repeated grant expiries without reconnecting or resubscribing", async () => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>(resolve => server.once("listening", resolve))
