@@ -749,6 +749,44 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         open_leased_sudo(&fixture, &room, &attachment, &agent, window_length).await;
     let run = worker.run_for(&fixture, &agent).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let worker_session = run.session_id().to_string();
+    let attached = dispatch_json(
+        &worker.router,
+        json!({"AttachToSession":{
+            "session_id":worker_session,"client_id":"a10-worker-terminal",
+            "capability_level":"FullTerminal"
+        }}),
+    )
+    .await
+    .unwrap();
+    let worker_owner = worker
+        .router
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&worker_session)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    let worker_local_sudo = timeout(
+        Duration::from_secs(2),
+        worker.router.runtime_state.submit_sudo_prompt(
+            crate::local::SubmitPromptRequest {
+                session_id: worker_session,
+                attachment_id: attached["SessionAttached"]["attachment"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .into(),
+                target_agent_id: run.agent_instance_id().map(str::to_owned),
+                prompt: "/sudo MP-10 A10 worker-local entry".into(),
+                attachments: Vec::new(),
+            },
+            &worker_owner,
+            "a10-worker-terminal",
+        ),
+    )
+    .await;
     let lists = |token: &str| {
         worker
             .router
@@ -785,8 +823,8 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .await
         .unwrap()
         .unwrap();
-    // Forge from the real worker identity over the relay: the sibling's own
-    // current lease and turn, then the elevated agent's as a control.
+    // Check the sibling's own current lease and turn over the real relay,
+    // then the elevated agent's binding as a positive control.
     let forward = |context| {
         send_peer_request_via_temporary_connection(
             &worker.state.config,
@@ -810,6 +848,19 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .unwrap()
         .unwrap();
     let elevated_at_home = forward(elevated_context.clone()).await;
+    // Each current causal binding is required independently. A mismatched
+    // prompt, provider run or execution lease must deny at home even while
+    // this agent's sudo window is live; a valid request still works afterward.
+    let mut stale_prompt = elevated_context.clone();
+    stale_prompt.home_prompt_id = Some("a10-previous-home-prompt".into());
+    let mut stale_run = elevated_context.clone();
+    stale_run.worker_provider_run_id = "a10-previous-worker-run".into();
+    let mut stale_lease = elevated_context.clone();
+    stale_lease.leased_agent_id = "a10-previous-leased-agent".into();
+    let stale_prompt_result = forward(stale_prompt).await;
+    let stale_run_result = forward(stale_run).await;
+    let stale_lease_result = forward(stale_lease).await;
+    let valid_after_denials = forward(elevated_context.clone()).await;
     // Expiry: both ends refuse once the home deadline passes.
     tokio::time::sleep(
         window_length.saturating_sub(verified.elapsed()) + Duration::from_millis(500),
@@ -825,6 +876,14 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let expired_at_home = forward(elevated_context).await;
     worker.stop().await;
     fixture.stop().await;
+    assert!(
+        worker_local_sudo
+            .as_ref()
+            .is_ok_and(|result| result.as_ref().is_err_and(|error| error
+                .to_string()
+                .contains("authorized only by its home kernel"))),
+        "the worker cannot independently elevate a leased backing agent: {worker_local_sudo:?}"
+    );
     let allowed = allowed.expect("the elevated leased turn acts as the host");
     assert!(allowed.ok, "{allowed:?}");
     assert!(
@@ -850,6 +909,16 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     assert!(
         matches!(&elevated_at_home, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "control: the same path admits the elevated turn: {elevated_at_home:?}"
+    );
+    assert!(stale_prompt_result.is_err(), "stale prompt must deny");
+    assert!(stale_run_result.is_err(), "stale provider run must deny");
+    assert!(
+        stale_lease_result.is_err(),
+        "stale leased binding must deny"
+    );
+    assert!(
+        matches!(&valid_after_denials, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
+        "valid binding remains usable after the denials: {valid_after_denials:?}"
     );
     // After expiry the home refuses at its forwarded-binding or window fence.
     assert!(
@@ -960,6 +1029,19 @@ fn mp10_a10_elevated_leased_work_continues_after_a_wake() {
 /// worker fence and the home window again. Base: the leased continuation was
 /// never admitted under the window's work hold.
 async fn elevated_leased_work_continues_after_a_wake() {
+    leased_work_continues_after_a_wake(false).await;
+}
+
+#[test]
+fn mp10_a10_worker_restart_resumes_leased_work_without_elevation() {
+    run_test(worker_restart_resumes_leased_work_without_elevation);
+}
+
+async fn worker_restart_resumes_leased_work_without_elevation() {
+    leased_work_continues_after_a_wake(true).await;
+}
+
+async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
@@ -1044,6 +1126,13 @@ async fn elevated_leased_work_continues_after_a_wake() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // Restart from the same durable state while the home-owned timer wait
+    // remains open. Its next correlated turn must run as regular work.
+    let worker = if restart_worker {
+        worker.restart(&fixture).await
+    } else {
+        worker
+    };
     let Outcome::Event(event) = store
         .agent_lifecycle(Operation::Occur(ledger::occurrence(
             &room,
@@ -1098,16 +1187,27 @@ async fn elevated_leased_work_continues_after_a_wake() {
             json!({"request":{"ListSessions":null}}),
         )
         .await;
+    fixture.home.runtime_state.sweep_sudo();
+    let remaining_windows = fixture.home.runtime_state.list_sudo_turns(&owner);
     worker.stop().await;
     fixture.stop().await;
     assert!(delivered.is_ok(), "{delivered:?}");
     assert!(accepted.prompt_id.is_some());
-    assert!(
-        listed,
-        "the continuation lists the tool under the live fence"
-    );
-    assert!(
-        elevated.as_ref().is_ok_and(|r| r.ok),
-        "the continuation acts as the host on both ends: {elevated:?}"
-    );
+    if restart_worker {
+        assert!(!listed, "the restarted worker lists no privileged tool");
+        assert!(elevated.is_err(), "the restarted worker denies elevation");
+        assert!(
+            remaining_windows.is_empty(),
+            "the home ends the lost window"
+        );
+    } else {
+        assert!(
+            listed,
+            "the continuation lists the tool under the live fence"
+        );
+        assert!(
+            elevated.as_ref().is_ok_and(|r| r.ok),
+            "the continuation acts as the host on both ends: {elevated:?}"
+        );
+    }
 }
