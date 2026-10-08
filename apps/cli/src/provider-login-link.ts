@@ -40,7 +40,7 @@ type LoginLinkRenderer = {
  * Mouse reporting is suspended, so native selection works without a modifier. */
 export function createProviderLoginLinkPresenter(renderer: LoginLinkRenderer) {
   let active = false
-  return async (url: string, userCode?: string | null): Promise<boolean> => {
+  const present = async (url: string, userCode?: string | null): Promise<boolean> => {
     if (!providerLoginUrl(url) || !process.stdin.isTTY || !process.stdout.isTTY || active) return false
     active = true
     const write = (text: string) => { writeSync(process.stdout.fd, text) }
@@ -93,4 +93,5 @@ export function createProviderLoginLinkPresenter(renderer: LoginLinkRenderer) {
       renderer.resume()
     }
   }
+  return Object.assign(present, { isActive: () => active })
 }

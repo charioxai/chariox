@@ -220,7 +220,7 @@ try {
   const honest = !output.slice(copyMark).includes('selection copied to clipboard') && output.slice(linkMark).includes('unconfirmed')
   let deviceLink = false
   if (fullLink) {
-  await press('\r')
+  await press(options['return-key'] === 'ctrl-c' ? '\x03' : '\r')
   // The same prompt regains focus after the handoff, with mouse mode restored.
   await sleep(600)
   await press('\x15')

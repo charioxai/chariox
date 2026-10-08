@@ -217,6 +217,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const renderer = useRenderer()
   const secretInput = createCliSecretInput(renderer)
+  const providerLoginLink = createProviderLoginLinkPresenter(renderer)
   onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
@@ -891,7 +892,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     clearTextSelection: () => renderer.clearSelection(),
-    showProviderLoginLink: createProviderLoginLinkPresenter(renderer),
+    showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
@@ -945,7 +946,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
-    flashFooter, handleSigint, handleStdinData, clearTerminalOutputRecordTimer,
+    flashFooter, handleSigint,
+    handleStdinData: (chunk: Buffer | string) => { if (!providerLoginLink.isActive()) handleStdinData(chunk) },
+    clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected, statusLine, sessionState, focusedAgentId,
