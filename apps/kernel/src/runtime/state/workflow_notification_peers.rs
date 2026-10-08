@@ -11,6 +11,22 @@ const VERSION: u32 = 82;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 impl KernelRuntimeState {
+    pub(super) fn ensure_notification_profile_owner(&self, owner: &str) -> Result<(), DaemonError> {
+        if self
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .as_ref()
+            .is_some_and(|profile| profile.user_id != owner)
+        {
+            return Err(store::error(
+                "workflow notifications require the authenticated profile owner",
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         if config.kernel_runtime_role != crate::config::KernelRuntimeRole::General
@@ -43,11 +59,19 @@ impl KernelRuntimeState {
 
     pub(super) async fn notification_peer(
         &self,
+        owner: &str,
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
         self.ensure_notification_home_role()?;
         let config = self.owned.config_projection.snapshot();
+        if config
+            .cloud_relay
+            .as_ref()
+            .is_some_and(|profile| profile.user_id != owner)
+        {
+            return Err(store::error("notification transport profile owner changed"));
+        }
         let target = ClientTarget {
             daemon_id: Some(kernel.into()),
             daemon_alias: None,
@@ -74,6 +98,7 @@ impl KernelRuntimeState {
         owner: &str,
     ) -> Result<(), DaemonError> {
         self.ensure_notification_home_role()?;
+        self.ensure_notification_profile_owner(owner)?;
         let projection = self.owned.notification_inventory_projection.clone();
         // Refresh uses the same Cloud inventory credential as the waiting room.
         // No workflow data is sent to Cloud. A picker failure retains cache offline.
@@ -91,6 +116,7 @@ impl KernelRuntimeState {
         fresh: bool,
     ) -> Result<(), DaemonError> {
         self.ensure_notification_home_role()?;
+        self.ensure_notification_profile_owner(owner)?;
         let (_, kernels) = self.owned.notification_inventory_projection.snapshot();
         let home = self.owned.config_projection.snapshot().daemon_id;
         let mut cache = self
@@ -118,10 +144,12 @@ impl KernelRuntimeState {
                 for peer in peers {
                     let runtime = self.clone();
                     let kernel = peer.kernel_id.clone();
+                    let owner = owner.to_owned();
                     set.spawn(async move {
                         let response = tokio::time::timeout_at(
                             deadline,
                             runtime.notification_peer(
+                                &owner,
                                 &kernel,
                                 RelayPeerRequest::ListWorkflowNotificationSources {
                                     protocol_version: VERSION,
@@ -167,6 +195,7 @@ impl KernelRuntimeState {
         for kernel in touched {
             groups.entry(kernel).or_default();
         }
+        self.ensure_notification_profile_owner(owner)?;
         for (kernel, sources) in groups {
             self.owned
                 .durable_state_store
@@ -184,6 +213,7 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_notification_profile_owner(owner)?;
         if matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_)) {
             self.refresh_notification_sources(owner).await?;
         }
@@ -210,6 +240,7 @@ impl KernelRuntimeState {
             if sub.source_kernel_id != sub.target_kernel_id {
                 let _ = self
                     .notification_peer(
+                        owner,
                         &sub.source_kernel_id,
                         RelayPeerRequest::UnsubscribeWorkflowNotifications {
                             protocol_version: VERSION,
@@ -227,6 +258,7 @@ impl KernelRuntimeState {
             if subscription.source_kernel_id != subscription.target_kernel_id {
                 let response = self
                     .notification_peer(
+                        owner,
                         &subscription.source_kernel_id,
                         RelayPeerRequest::SubscribeWorkflowNotifications {
                             protocol_version: VERSION,
@@ -454,6 +486,7 @@ impl KernelRuntimeState {
             deliveries.spawn(async move {
                 if let Ok(RelayPeerResponse::WorkflowNotificationAccepted { .. }) = runtime
                     .notification_peer(
+                        &sub.owner_user_id,
                         &sub.target_kernel_id,
                         RelayPeerRequest::DeliverWorkflowNotification {
                             protocol_version: VERSION,
@@ -649,6 +682,50 @@ mod tests {
             )
             .is_err());
     }
+    #[tokio::test]
+    async fn security_f9_member_cannot_refresh_profile_owner_inventory() {
+        let mut f = Fixture::for_kernel("notification-home");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        assert!(runtime
+            .refresh_notification_sources_from_inventory("member", false)
+            .await
+            .is_err());
+        assert!(f
+            .store
+            .notification_cached_sources("member")
+            .unwrap()
+            .is_empty());
+    }
+    #[tokio::test]
+    async fn security_f9_member_cannot_list_profile_owner_inventory() {
+        let mut f = Fixture::for_kernel("notification-home");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let result = runtime
+            .execute_workflow_notification_command(
+                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
+                    session_id: f.session.clone(),
+                }),
+                "member",
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn security_f9_standalone_member_cannot_list_session_owner_inventory() {
+        let mut f = Fixture::for_kernel("notification-home");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        config.cloud_relay = None;
+        runtime.owned.config_projection.update(config);
+        assert!(runtime
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
+                    session_id: f.session.clone()
+                }),
+                "member"
+            )
+            .is_err());
+    }
     async fn relay_drill() {
         let relay_config = RelayConfig {
             host: "127.0.0.1".into(),
@@ -719,6 +796,7 @@ mod tests {
         let source_record = source.source(&a);
         let response = target_runtime
             .notification_peer(
+                "local",
                 &sc.daemon_id,
                 RelayPeerRequest::ListWorkflowNotificationSources {
                     protocol_version: VERSION,
@@ -790,6 +868,7 @@ mod tests {
         bad.owner_user_id = "other-owner".into();
         assert!(target_runtime
             .notification_peer(
+                "local",
                 &sc.daemon_id,
                 RelayPeerRequest::SubscribeWorkflowNotifications {
                     protocol_version: VERSION,
@@ -862,6 +941,7 @@ mod tests {
         assert!(matches!(
             source_runtime
                 .notification_peer(
+                    "local",
                     &tc.daemon_id,
                     RelayPeerRequest::DeliverWorkflowNotification {
                         protocol_version: VERSION,
@@ -938,6 +1018,7 @@ mod tests {
         );
         assert!(target_runtime
             .notification_peer(
+                "local",
                 &sc.daemon_id,
                 RelayPeerRequest::ListWorkflowNotificationSources {
                     protocol_version: 70

@@ -52,6 +52,7 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.ensure_notification_profile_owner(owner)?;
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -193,7 +194,11 @@ impl KernelRuntimeState {
                         }
                     }
                     LocalDaemonRequest::ListWorkflowNotifications(request) => {
-                        sessions.get_session(&request.session_id)?;
+                        if sessions.get_session(&request.session_id)?.owner_user_id() != owner {
+                            return Err(store::error(
+                                "notification inventory requires the session owner",
+                            ));
+                        }
                         let (mut sources, mut subscriptions, diagnostics) = self
                             .owned
                             .durable_state_store
@@ -648,18 +653,30 @@ mod tests {
             .session_store
             .write()
             .restore_session(transferred);
-        let LocalDaemonResponse::WorkflowNotifications { sources, .. } = runtime
-            .execute_workflow_notification_request(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone(),
-                }),
-                "local",
-            )
+        assert!(
+            runtime
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: f.session.clone(),
+                        }
+                    ),
+                    "local",
+                )
+                .is_err(),
+            "MP-11 / MP-08 / MP-10: transferred session inventory rejects the former owner"
+        );
+        let stored_source = runtime
+            .owned
+            .durable_state_store
+            .notification_inventory("local")
             .unwrap()
-        else {
-            panic!()
-        };
-        assert!(!sources[0].available);
+            .0
+            .remove(0);
+        assert!(!source_available(
+            &runtime.owned.session_store.read(),
+            &stored_source
+        ));
         let mut session = runtime
             .owned
             .session_store
