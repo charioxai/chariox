@@ -122,7 +122,7 @@ test("executeShellCommand stores Claude setup tokens through hidden input", asyn
   )
 
   assert.equal(result.ok, true)
-  assert.equal(result.message, "claude/work setup token replaced in Chariox Vault")
+  assert.equal(result.message, "claude/work setup token verified and replaced in Chariox Vault")
   assert.deepEqual(result.data, {
     provider: "claude",
     account_profile: "work",

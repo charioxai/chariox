@@ -20,14 +20,15 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    let provider = provider.trim().to_ascii_lowercase();
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        crate::provider::canonical_provider_family(&provider).unwrap_or(provider.as_str()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
-    format!("provider-account-{}-{digest:x}", canonical_label(provider))[..64].to_string()
+    format!("provider-account-{}-{digest:x}", canonical_label(&provider))[..64].to_string()
 }
 
 pub(crate) fn resolve_provider_account_credentials(
@@ -255,6 +256,21 @@ mod tests {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn every_claude_mode_resolves_the_same_account_credential() {
+        // A setup token stored for the account must reach `claude-p` and
+        // `claude-headless` agents of that account too.
+        let stored = provider_account_credential_id("local", "claude", "work");
+        assert_eq!(
+            provider_account_credential_id("local", "claude-p", "work"),
+            stored
+        );
+        assert_eq!(
+            provider_account_credential_id("local", "claude-headless", "work"),
+            stored
+        );
     }
 
     #[test]

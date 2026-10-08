@@ -116,7 +116,9 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_variant: run.variant().map(str::to_string),
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
-            session_id: Some(session_id),
+            // A requested --session-id is not yet a resumable conversation.
+            // Only a restored ID or Claude's native init confirms one.
+            session_id: run.resume_state().claude_session_id().map(str::to_string),
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
@@ -870,6 +872,10 @@ cat >/dev/null
         assert!(latest.contains("\t--permission-mode\tplan"));
         assert!(!latest.contains("bypassPermissions"));
         assert!(!latest.contains("--allow-dangerously-skip-permissions"));
+        assert!(
+            !latest.contains("\t--resume\t"),
+            "a restart before native init must not resume a nonexistent conversation: {latest}"
+        );
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
@@ -894,7 +900,19 @@ cat >/dev/null
 printf 'argv' >> "$CLAUDE_TEST_TRACE"
 for arg in "$@"; do printf '\t%s' "$arg" >> "$CLAUDE_TEST_TRACE"; done
 printf '\n' >> "$CLAUDE_TEST_TRACE"
-while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"; done
+session_id=''; previous=''
+for arg in "$@"; do
+  case "$previous" in --session-id|--resume) session_id="$arg" ;; esac
+  previous="$arg"
+done
+started=false
+while IFS= read -r line; do
+  printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"
+  if [ "$started" = false ]; then
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session_id"
+    started=true
+  fi
+done
 "#
                     .to_string(),
                     "fixture".to_string(),
@@ -909,7 +927,14 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
             },
         );
         let mut binding = initialize_claude_runtime(&run).unwrap();
-        let session_id = binding.state.session_id().unwrap().to_string();
+        assert!(binding.state.session_id().is_none());
+        let session_id = binding
+            .state
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--session-id")
+            .expect("fresh launch should request a session ID")[1]
+            .clone();
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
             "remember cancelled context",
             "",
@@ -918,6 +943,15 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
         );
         submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
         wait_for_trace_lines(&trace, 2);
+        let native_init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while binding.state.session_id().is_none() {
+            super::drain_claude_events(&run, &mut binding.state).unwrap();
+            assert!(
+                std::time::Instant::now() < native_init_deadline,
+                "native init should acknowledge the session"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         super::abort_claude_turn(&run, &mut binding.state).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
