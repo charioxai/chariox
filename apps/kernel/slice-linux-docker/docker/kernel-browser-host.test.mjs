@@ -99,6 +99,30 @@ test('MP-08/MP-10/MP-11 an unchanged admitted native credit performs no CDP obse
  }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
 }));
 
+// MP-08/MP-10: protocol 475 push credits wait on readiness and return a
+// frame, or nothing after a bounded budget; reset retires the stream base.
+test('MP-08/MP-10 push credit waits on encoder readiness and retires the base on reset',()=>using(async({host,sent})=>{
+ const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const {DisplayStream}=await import('./kernel-browser-display.mjs');
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+  const sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},motion:true};
+  const source={attested:true,closed:false,policy:host.protection,changedAt:-Infinity,valid:()=>true,allowed:()=>true,sample:()=>sample,close:async()=>{}};
+  let waits=[],invalidated=0;const stream=new DisplayStream({subscription_id:'push',tab_id:tab.tab_id,observed_by:'adapter',codec:'avc1.420033',device_scale_factor:1,bitrate:8000000},{encoder:{close:async()=>{}}});
+  const base=()=>Object.assign(stream,{document_id:tab.document_id,previous:{signature:'base'},exact:true,compositorSerial:1,compositorRegionRevision:undefined,creditEpoch:0,refinerDocument:tab.document_id,
+   refiner:{quietNativeMs:50,request:()=>null,invalidate(){},close:async()=>{}},producer:{source,frames:[],waitReady:async ms=>{waits.push(ms);await new Promise(r=>setTimeout(r,Math.min(ms,5)))},take:()=>null,feedback(){},invalidate(){},retireUnsent(){},close:async()=>{}}});
+  base();const invalidate=stream.invalidate.bind(stream);stream.invalidate=()=>{invalidated++;invalidate();base();};
+  host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});host.displays.set(stream.subscription_id,stream);
+  const before=sent.length,started=performance.now();
+  const credit={op:'screenshot',display_subscription_id:'push',generation:opened.generation,after_sequence:0,push:{reset:false,congested:false}};
+  const result=await host.request(credit);
+  assert.equal(result.frame_sent,false);assert.ok(performance.now()-started>=90,'an empty push credit waits for its budget');
+  assert.ok(waits.length>=1&&waits.every(ms=>ms>0&&ms<=100),'waits are bounded by the credit budget');
+  assert.equal(sent.length,before,'unchanged push credits perform no CDP observation');assert.equal(invalidated,0);
+  await host.request({...credit,push:{reset:true,congested:false}});assert.equal(invalidated,1,'reset retires the reference chain once');
+ }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));
+
 test("MP-11: retained input succeeds and leaves Chromium live", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op:'open', url:'https://example.com' });
   const tab = opened.tabs[0];

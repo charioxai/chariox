@@ -349,8 +349,11 @@ export class DisplayStream {
     // MP-08/MP-10: one input frame borrows at most32KiB. Keep the debt
     // so later input/motion repays it; large repairs never bypass the ceiling.
     const urgent=source.input_triggered===true&&bytes<=32768&&this.tokens>=0;
-    const deadline = this.now() + (urgent?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
-    if(deadline<=this.now())await this.wait(0);
+    // MP-08/MP-10: rate-controlled video is bounded by its encoder and the
+    // client ACK gate; only exact repairs (PNG/WebP tiles) are link paced.
+    const video=['video','stripes'].includes(payload.kind);
+    const deadline = this.now() + (urgent||video?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
+    if(deadline<=this.now()&&!video)await this.wait(0);
     while(this.now()<deadline){
       if(!currentBinding()){
         if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
@@ -360,7 +363,7 @@ export class DisplayStream {
       // Deterministic test clocks may not advance; real clocks always do.
       if(this.now()===before)break;
     }
-    this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-bytes;
+    this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-(video?0:bytes);
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
     if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }

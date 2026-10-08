@@ -1,4 +1,3 @@
-import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
@@ -23,12 +22,8 @@ import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
 import { CompositorSource } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
-import { exactPatchLimit, DisplayStream } from "./kernel-browser-display.mjs";
-import {nativeDamageTiles} from './kernel-browser-tiles.mjs';
-import {MotionEncoder} from './kernel-browser-motion.mjs';
-import {NativeRefiner} from './kernel-browser-refiner.mjs';
-import {identicalToDelivered,nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
-import { DisplayCapture } from './kernel-browser-display-capture.mjs';
+import { DisplayStream } from "./kernel-browser-display.mjs";
+import { displayCredit, displayPushCredit } from './kernel-browser-display-credit.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
@@ -404,131 +399,7 @@ export class KernelBrowserHost {
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
-      const cachedSource=this.compositors.get(stream.tab_id)?.source;
-      const empty=()=>nativeCreditEmpty(stream,cachedSource,this.protection,this.inputEpochs.get(stream.tab_id)??0,
-          this.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
-      if(empty()){
-        // MP-08/MP-10/MP-11: park one serial capture credit on source/codec
-        // readiness during motion instead of exchanging hundreds of empty RPCs.
-        // This is negative-only scheduling; every pixel still takes full fences.
-        // Input's sparse source offer also wakes this bounded wait. Idle exact
-        // credits must not poll the kernel/controller thousands of times/sec.
-        await stream.producer.waitReady(20,signal);
-        assertNotCancelled(signal);
-        if(empty())return {generation:this.generation,frame_sent:false,display_frame:null};
-      }
-      const tab = await this.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
-      // Recreate the closure when navigation changes the loader binding. Pixels
-      // and pending repairs are then invalidated by the new document as usual.
-      if (!stream.capture || stream.capture.document !== tab.document_id)
-        stream.capture = new DisplayCapture((clip) => {
-          return this.displayScreenshot(tab,clip);
-        }, stream.device_scale_factor, this.timing);
-      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      const layoutAt = timestamp();
-      // MP-08/MP-10: an attested window supplies the complete viewport. Layout
-      // is needed only to select safe CDP crops; a retired native source falls
-      // back to full protected capture when no layout was read.
-      const viewport = cachedSource?.attested ? null : (await connection.send("Page.getLayoutMetrics", {}, sessionId)).cssVisualViewport;
-      this.timing('capture_layout_metrics', layoutAt);
-      // Native CDP clips are page rectangles. Our private damage hints are
-      // viewport rectangles; use full protected capture for scroll/zoom/unknown
-      // origins until that coordinate transform has separate mask/race proof.
-      const nativeCropSafe = viewport?.pageX === 0 && viewport?.pageY === 0 && viewport?.scale === 1;
-      const capturePolicy=this.protection;
-      const epoch = this.inputEpochs.get(tab.tab_id) ?? 0;
-      const compositor=await this.compositorFor(tab,stream);
-      const regionRevision=compositor?.regionRevision;
-      if(stream.compositorRegionRevision!==regionRevision){
-        // MP-11: no pixels may leave during the metadata fence. Keep only the
-        // local canvas bookkeeping until a fresh capture decides whether its
-        // masks/base are identical; pending codecs/refinements always retire.
-        if(nativeRegionPending(stream,compositor,tab.document_id,this.protection)){
-          stream.producer?.retireUnsent();stream.refiner?.invalidate();
-          return {generation:this.generation,frame_sent:false,display_frame:null};
-        }
-        // MP-08/MP-10/MP-11: keep only a COMPLETE exact canvas after a fresh
-        // post-fence capture proves the same masks and an exact source base.
-        // Unsent old frames still retire; unknown/new geometry takes a key.
-        const stable=nativeRegionBaseCurrent(stream,compositor,tab.document_id,this.protection);
-        if(stable){stream.producer.retireUnsent();stream.refiner?.invalidate();}else stream.invalidate();
-        stream.compositorRegionRevision=regionRevision;
-      }
-      const sample=compositor?.sample();
-      let source;
-      // MP-08/MP-10/MP-11: an admitted native source refreshing its masks
-      // must not put an exact CDP capture in front of the next input credit.
-      if(compositor&&!sample&&stream.codec!=='png')return {generation:this.generation,frame_sent:false,display_frame:null};
-      if(compositor&&sample&&stream.codec!=='png'){
-        // Serials are source-local. Retiring a source also retires its exact
-        // base, even when a newly navigated document starts at the same serial.
-        if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)this.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:this.timing});}
-        // Admit recovery before selecting a native patch or taking an encoded
-        // packet. A lost canvas base also reoffers any skipped patchable source.
-        // Once retired, empty credits must let the pending recovery key finish.
-        if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
-        if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:this.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:this.timing});stream.refinerDocument=tab.document_id;}
-        const policy=this.protection;
-        const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
-        // Always run the deadline/epoch-aware verifier before unchanged reuse.
-        // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
-        const nativeExact=binding.native&&stream.exact&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
-        const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,this.inputChangedAt.get(tab.tab_id)??-Infinity),()=>this.protection===policy&&compositor.sample()?.serial===sample.serial&&(this.inputEpochs.get(tab.tab_id)??0)===epoch);
-        stream.creditEpoch=epoch;
-        stream.producer.feedback(Math.max(0,stream.sequence-command.after_sequence));
-        // MP-08/MP-10: an identical readback (protection refresh) of the
-        // delivered exact canvas with the same masks needs no frame.
-        if(stream.exact&&identicalToDelivered(stream,sample)&&JSON.stringify(sample.raw[displayMaskRegions]??[])===stream.compositorMasks){
-          stream.compositorSerial=sample.serial;
-          return {generation:this.generation,frame_sent:false,display_frame:null};
-        }
-        const patchable=stream.canPatchNative(sample);
-        const shift=patchable?null:stream.shiftKind(sample);
-        const encoded=patchable||shift ? null : stream.producer.take();
-        if(shift){
-          // MP-08/MP-10: lossless scroll frame: proved moves plus WebP residuals.
-          stream.producer.retireUnsent();
-          const reply=await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:[],patch:true,shift,effort:stream.shiftEffort(),...(shift==='overlay'?{base:stream.compositorCommittedSerial??stream.compositorSerial}:{})});
-          if(reply.shift_refused===true){
-            this.timing(`shift_refused_${shift} ${/^MP-1[01]: [a-z ]{1,40}$/.test(reply.reason)?reply.reason:''}`,timestamp());
-            // A refused plan holds lossless frames until exactness returns
-            // and re-offers the latest sample to the video encoder.
-            stream.shiftHold=true;stream.producer.retry(compositor.sample()??sample);
-            return {generation:this.generation,frame_sent:false,display_frame:null};
-          }
-          if(reply.native_packet)stream.encoder.adoptPacket(reply.native_packet);
-          if(!Array.isArray(reply.native_tiles)||!Array.isArray(reply.moves)||reply.moves.length>64||reply.native_tiles.length>64||!(reply.moves.length||reply.native_tiles.length)){stream.encoder.discard?.({packet:reply.native_packet});throw Error('MP-11: native shift reply');}
-          source={...sample,...reply,...(reply.moves.length?{}:{moves:undefined}),motion:false,generation:this.generation};
-        }else if(patchable){
-          stream.producer.retireUnsent();
-          const adjacent=sample.serial===(stream.exact?(stream.compositorCommittedSerial??stream.compositorSerial):stream.compositorSerial)+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
-          const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
-          source={...sample,...patch,motion:false,generation:this.generation};
-        }
-        else if(encoded){source={...encoded,generation:this.generation};}
-        else if(exact&&stream.previous)source={...exact,generation:this.generation};
-        // The viewer already backs off empty credits. A second delay while
-        // holding the capture gate adds latency to every pipelined slot.
-        else return {generation:this.generation,frame_sent:false,display_frame:null};
-      }else{
-        source=await stream.capture.next({...tab,input_epoch:epoch},this.protection,stream.previous&&stream.acceptsCredit(command.after_sequence),!stream.exact||!nativeCropSafe,
-          stream.codec!=='png'&&this.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:geometry.width,height:geometry.height,scale:1/stream.device_scale_factor,display_motion:true}:null,
-          this.scrolling.get(tab.tab_id)?.document_id===tab.document_id&&this.scrolling.get(tab.tab_id).until>performance.now());
-      }
-      // MP-10: only a post-dispatch native capture can claim the input burst.
-      const inputAt=this.inputChangedAt.get(tab.tab_id)??-Infinity;
-      source.input_triggered=Number.isFinite(inputAt)&&epoch!==stream.deliveredInputEpoch&&Number.isFinite(source.captured_ms)&&source.captured_ms>=performance.timeOrigin+inputAt;
-      try { await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id); }
-      catch (error) { stream.encoder.discard?.(source.encoded);stream.invalidate(); throw error; }
-      assertNotCancelled(signal);
-      const frame = await stream.frame(source, source.document_id, command.after_sequence, async () => {
-        assertNotCancelled(signal);
-        await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-        return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((this.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
-      },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&this.protection===capturePolicy&&(source.motion||((this.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
-      if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
-      compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
-      return { generation: this.generation, frame_sent: frame !== null, display_frame: frame };
+      return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
       if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference");
