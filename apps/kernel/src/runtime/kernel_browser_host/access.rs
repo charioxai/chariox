@@ -253,6 +253,12 @@ impl KernelBrowserHost {
             .lock()
             .map_err(|_| "MP-11: grant lock unavailable")?;
         Self::check_admission_epoch(&state, admission)?;
+        // MP-11: Stop affects the entire owner browser, including unrelated
+        // tabs and App views. A retained resource grant cannot authorize it,
+        // even if the request supplies an owned tab_id or subscription_id.
+        if method == "host.browser" && params["op"] == "stop" {
+            require_focus(&state, &admission.user, agent)?;
+        }
         state
             .access
             .prune_subscriptions(&admission.user, agent, Instant::now());

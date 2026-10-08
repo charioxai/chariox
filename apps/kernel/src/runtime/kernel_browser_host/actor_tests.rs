@@ -502,7 +502,7 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap();
     }
-    for op in ["state", "start", "stop", "navigate", "close"] {
+    for op in ["state", "start", "navigate", "close"] {
         host.scope_browser_request(
             Some(&admission),
             "host.browser",
@@ -550,6 +550,125 @@ fn mdaccess_retained_notes_commits_share_grant_and_revoke_boundary() {
             "MP-11: revoked note commit"
         ))
         .is_err());
+}
+
+#[test]
+fn mp11_global_stop_requires_focus_even_with_retained_tabs() {
+    for owns_tab in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-mp11-stop-scope-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let script = root.join("controller.sh");
+        // A real stdio controller lifetime. Browser resources are fixture IDs;
+        // this tests kernel admission/shutdown, not Chromium/client acceptance.
+        std::fs::write(
+            &script,
+            r#"set -eu
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+    *) result='{}' ;;
+  esac
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#,
+        )
+        .unwrap();
+        let host = KernelBrowserHost::new(root.clone());
+        let backend = BrowserControllerProcessStdioBackend::new(
+            "/bin/sh",
+            vec![script.display().to_string()],
+            Duration::from_secs(2),
+        )
+        .for_host();
+        host.inner
+            .lock()
+            .unwrap()
+            .browsers
+            .insert("owner".into(), Arc::new(Mutex::new(backend)));
+        host.backend("owner")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .start()
+            .unwrap();
+        host.set_focus("owner", Some("first"));
+        host.load("owner", "first").unwrap();
+        let first = host.admit("owner", "first").unwrap();
+        if owns_tab {
+            host.claim_resource(
+                Some(&first),
+                UserDomainResource::BrowserTab {
+                    tab_id: "first-tab".into(),
+                },
+                false,
+            )
+            .unwrap();
+        }
+        host.set_focus("owner", Some("second"));
+        host.load("owner", "second").unwrap();
+        let second = host.admit("owner", "second").unwrap();
+        host.claim_resource(
+            Some(&second),
+            UserDomainResource::BrowserTab {
+                tab_id: "second-tab".into(),
+            },
+            false,
+        )
+        .unwrap();
+        let mut refusals = Vec::new();
+        // Exercise the actual tabless Stop path, and reject tab_id smuggling.
+        for params in [
+            json!({"op":"stop"}),
+            json!({"op":"stop","tab_id":"first-tab"}),
+        ] {
+            refusals.push(host.protected_request_admitted(
+                "owner",
+                Some(&first),
+                "host.browser",
+                params,
+                json!({"values":[],"targets":[],"unknown":false}),
+            ));
+        }
+        let still_running = host
+            .backend("owner")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .health()
+            .unwrap()
+            .state
+            == BrowserControllerProcessState::Ready;
+        let second_can_stop =
+            host.scope_browser_request(Some(&second), "host.browser", &json!({"op":"stop"}));
+        let owner_can_stop =
+            host.scope_browser_request(None, "host.browser", &json!({"op":"stop"}));
+        let first_retained = host.has_grant("owner", "first");
+        host.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        for result in refusals {
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::NotFocusedAgent
+                    ))
+                ),
+                "MP-11: retained global Stop was admitted: {result:?}"
+            );
+        }
+        assert!(
+            still_running,
+            "MP-11: retained Stop shut down the shared controller"
+        );
+        second_can_stop.unwrap();
+        owner_can_stop.unwrap();
+        assert!(first_retained);
+    }
 }
 
 #[test]
