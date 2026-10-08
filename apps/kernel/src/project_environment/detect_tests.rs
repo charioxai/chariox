@@ -17,6 +17,23 @@ fn write(root: &TestWorktree, name: &str, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 #[test]
+fn envp02a_empty_declarations_do_not_invent_line_origins() {
+    let root = TestWorktree::new("envp02a-empty-origins");
+    for name in [".nvmrc", ".python-version", "AGENTS.md", "SKILL.md"] {
+        write(&root, name, "");
+    }
+    let result = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert!(!result.proposals.is_empty());
+    for proposal in result.proposals {
+        for origin in proposal.requirement.origins {
+            if let RequirementOrigin::Detected { line, .. } = origin {
+                assert_eq!(line, None, "empty file has no first line");
+            }
+        }
+    }
+}
+
+#[test]
 fn envp02a_oversized_directory_never_imports_an_arbitrary_prefix() {
     let root = TestWorktree::new("envp02a-file-count");
     write(&root, "package.json", "{}");
