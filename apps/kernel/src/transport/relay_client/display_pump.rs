@@ -351,6 +351,8 @@ mod tests {
             state.sent.push_back((round + 1, at));
             assert_eq!(state.admit(at + Duration::from_millis(150)), Gate::Closed);
             state.acknowledge(round + 1, false, at + Duration::from_millis(160));
+            // The pump re-admits after every ack; that ends the closure.
+            assert!(matches!(state.admit(at + Duration::from_millis(161)), Gate::Open(_)));
         }
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(600)) else {
             panic!()
