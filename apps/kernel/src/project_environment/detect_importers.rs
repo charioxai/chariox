@@ -200,10 +200,7 @@ impl Importer {
             },
         );
         for gui in ["Canva", "Notion", "ChatGPT"] {
-            if name
-                .to_ascii_lowercase()
-                .contains(&gui.to_ascii_lowercase())
-            {
+            if contains_word(&name.to_ascii_lowercase(), &gui.to_ascii_lowercase()) {
                 self.software(file, gui, None, None, true)
             }
         }
@@ -213,7 +210,7 @@ impl Importer {
                 if let Some((number, _)) = text
                     .lines()
                     .enumerate()
-                    .find(|(_, line)| line.contains(gui))
+                    .find(|(_, line)| contains_word(line, gui))
                 {
                     self.software(file, gui, None, Some(number as u32 + 1), true)
                 }
@@ -711,4 +708,11 @@ fn parse_jsonc(text: &str) -> Option<Value> {
         output.push(c);
     }
     serde_json::from_str(&output).ok()
+}
+
+// MP-08 / MP-10 / MP-11: A GUI name is a complete word, never Canvas or Notional.
+fn contains_word(source: &str, word: &str) -> bool {
+    source
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|token| token == word)
 }

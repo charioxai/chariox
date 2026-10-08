@@ -391,3 +391,24 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     store.remove("project").unwrap();
     assert!(store.load_detection("project").unwrap().is_none());
 }
+
+#[test]
+fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
+    let root = TestWorktree::new("envp02a-gui-names");
+    write(&root, "Canvas-design.svg", "<svg/>\n");
+    write(&root, "notes.md", "Canvas design and Notional examples.\n");
+    let first = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert!(
+        !first.proposals.iter().any(|p| matches!(&p.requirement.spec,
+        RequirementSpec::Software { identity, .. } if identity == "Canva" || identity == "Notion"))
+    );
+    write(&root, "notes.md", "Canva and Notion. ChatGPT.\n");
+    let actual = detect_environment(&[folder(&root)], "environment").unwrap();
+    for name in ["Canva", "Notion", "ChatGPT"] {
+        assert!(actual
+            .proposals
+            .iter()
+            .any(|p| matches!(&p.requirement.spec,
+            RequirementSpec::Software { identity, detect_only: true, .. } if identity == name)));
+    }
+}
