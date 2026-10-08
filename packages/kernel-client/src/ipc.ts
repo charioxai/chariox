@@ -402,7 +402,7 @@ export class LocalIpcClient {
     this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, start.resumeFromEventId)
+        await this.sendRelaySubscribe(start.subscription, start.resumeFromEventId)
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
           buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
@@ -432,12 +432,7 @@ export class LocalIpcClient {
     this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(
-          start.subscription.sessionId,
-          start.subscription.attachmentId,
-          start.resumeFromEventId,
-          kernelSubscriptionScopeValue(start.subscription),
-        )
+        await this.sendRelaySubscribe(start.subscription, start.resumeFromEventId)
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
           buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
@@ -703,18 +698,22 @@ export class LocalIpcClient {
     return this.nextReconnectDelayMs(delayMs)
   }
 
+  /**
+   * MP-08: binds the given subscription, never whichever one is active after
+   * the socket await, so overlapping subscribes cannot share an id with
+   * different keys.
+   */
   private async sendRelaySubscribe(
-    sessionId: string,
-    attachmentId: string,
+    subscription: KernelSubscriptionState,
     resumeFromEventId: number | null,
-    subscriptionScope?: string,
   ): Promise<void> {
+    const { sessionId, attachmentId } = subscription
+    const subscriptionScope = kernelSubscriptionScopeValue(subscription)
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
     const daemonPublicKey = this.relayDaemonPublicKeyForSocket(lane, socket)
     const requestId = randomUUID()
-    const subscription = this.activeKernelSubscription
-    if (!subscription?.relaySubscriptionId) {
+    if (!subscription.relaySubscriptionId) {
       throw new LocalIpcError("write relay subscribe", "relay subscription state is missing")
     }
     const subscriptionId = subscription.relaySubscriptionId
@@ -1039,8 +1038,15 @@ export class LocalIpcClient {
       if (!subscription?.relayDecryptEvent || subscription.relaySubscriptionId !== frame.subscription_id) {
         return
       }
+      let decrypted: string
       try {
-        const decrypted = subscription.relayDecryptEvent(frame.encrypted_event)
+        decrypted = subscription.relayDecryptEvent(frame.encrypted_event)
+      } catch {
+        // MP-08: an event sealed for a superseded binding of this subscription
+        // (or a stale connection) is dropped; it must not fail the lane.
+        return
+      }
+      try {
         const event = kernelEventFromValue(JSON.parse(decrypted))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
@@ -1231,12 +1237,7 @@ export class LocalIpcClient {
 
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(
-          subscription.sessionId,
-          subscription.attachmentId,
-          this.lastReceivedEventId,
-          kernelSubscriptionScopeValue(subscription),
-        )
+        await this.sendRelaySubscribe(subscription, this.lastReceivedEventId)
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
           buildKernelSubscriptionTransportRequest(subscription, this.lastReceivedEventId),

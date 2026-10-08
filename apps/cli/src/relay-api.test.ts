@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
-import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, pollCloudRelayLogin } from "./relay-api.js"
+import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, logoutCloudRelay, pollCloudRelayLogin } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
 function fakeClient(send: (request: unknown) => Promise<unknown>): LocalIpcClient {
@@ -38,7 +38,7 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint", allowedTargets?: unk
 }
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 462)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 464)
   const requests: unknown[] = []
   const client = fakeClient(async (request) => {
     requests.push(request)
@@ -135,4 +135,20 @@ test("device denial survives the kernel-to-CLI poll projection without a profile
     return { CloudRelayLoginPolled: { result: { status: "access_denied", interval_seconds: null, expires_at: null, profile: null } } }
   })
   assert.deepEqual(await pollCloudRelayLogin(client, "https://cloud.example.test", "synthetic-device-code"), { status: "access_denied" })
+})
+
+test("MP-08 Cloud logout accepts the kernel's unit-variant acknowledgement", async () => {
+  const requests: unknown[] = []
+  const client = {
+    send: async (request: unknown) => {
+      requests.push(request)
+      return "CloudRelayLoggedOut"
+    },
+  } as unknown as LocalIpcClient
+
+  await logoutCloudRelay(client)
+
+  assert.equal(requests.length, 1)
+  const unexpected = { send: async () => "SomethingElse" } as unknown as LocalIpcClient
+  await assert.rejects(logoutCloudRelay(unexpected), /expected CloudRelayLoggedOut/)
 })
