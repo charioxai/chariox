@@ -80,7 +80,7 @@ pub struct RespondToHandoffRequest {
     pub action: HandoffResponseAction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoffResponseAction {
     /// Click the bound element now, as the owner.
@@ -96,6 +96,37 @@ pub enum HandoffResponseAction {
     /// The owner completed the step in the live browser.
     Done,
     Cancel,
+}
+
+impl<'de> Deserialize<'de> for HandoffResponseAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // MP-11 A07: tagged unit variants otherwise discard extra fields,
+        // including a generic reply. Empty struct variants enforce the boundary.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Click {},
+            EnterValue {
+                value: HandoffValue,
+                #[serde(default)]
+                save_to_vault_key: Option<String>,
+            },
+            Done {},
+            Cancel {},
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Click {} => Self::Click,
+            Wire::EnterValue {
+                value,
+                save_to_vault_key,
+            } => Self::EnterValue {
+                value,
+                save_to_vault_key,
+            },
+            Wire::Done {} => Self::Done,
+            Wire::Cancel {} => Self::Cancel,
+        })
+    }
 }
 
 impl HandoffResponseAction {
