@@ -21,6 +21,12 @@ elevated context: they stay queued with a visible "Deferred" notice and run as
 distinct regular turns once the work ends, the window expires or it is revoked.
 Spawned, forked and workflow agents never inherit the window.
 
+If a warm provider must relaunch to discover the sudo tool, it has 60 seconds
+from reload to become ready, including its launch delay. A failed or stalled
+relaunch returns a typed kernel-access error saying "provider relaunch failed",
+ends the window as `refused_or_cancelled` and releases the held work. Retry
+`/sudo` after the provider is available; the failed request leaves no elevation.
+
 The initial window permits owner session inventory. Additional typed operations
 require a fresh owner passkey in an operation-scope popup showing their exact
 parameters. That approval binds a digest to the original work and window;

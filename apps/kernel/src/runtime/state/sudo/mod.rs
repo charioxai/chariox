@@ -26,6 +26,8 @@ mod process_tests;
 mod tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod relaunch_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 

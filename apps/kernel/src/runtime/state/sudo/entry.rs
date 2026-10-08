@@ -1,5 +1,8 @@
 use super::*;
 
+// MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
+const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -234,7 +237,7 @@ impl KernelRuntimeState {
             app.ensure_prompt_provider_run_for_agent(&entry.session_id, &entry.agent_id)
         })
         .await?;
-        let mut relaunched = false;
+        let mut relaunch_deadline = None;
         loop {
             if reload && !self.sudo_agent_busy(entry)? {
                 use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
@@ -246,13 +249,26 @@ impl KernelRuntimeState {
                     )
                     .await?;
                 reload = matches!(outcome, ProviderReloadOutcome::Deferred);
-                relaunched = matches!(outcome, ProviderReloadOutcome::Reloaded);
+                if matches!(outcome, ProviderReloadOutcome::Reloaded) {
+                    relaunch_deadline =
+                        Some(tokio::time::Instant::now() + SUDO_PROVIDER_RELAUNCH_TIMEOUT);
+                }
             }
-            // The relaunched provider takes the first turn once it runs again.
-            if relaunched && !self.sudo_provider_running(entry) {
+            // A detached relaunch can fail without leaving a run. Bound every
+            // readiness state, including absent, Starting and Parked, so the
+            // normal request error cleanup releases the window and work hold.
+            if let Some(deadline) = relaunch_deadline {
                 self.live_queued_sudo(entry)?;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error(
+                        "provider relaunch failed: not ready within 60 seconds; sudo window ended; retry /sudo when the provider is available",
+                    ));
+                }
+                if !self.sudo_provider_running(entry) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                relaunch_deadline = None;
             }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments)?;
             if let Some(submission) = submission {
