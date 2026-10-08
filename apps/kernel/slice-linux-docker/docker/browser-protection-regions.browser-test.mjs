@@ -1,0 +1,88 @@
+// Opt-in MP-08/MP-11: real Chromium, every frame incl. isolated ones, DPR 1 and 2.
+// Oracle: CDP viewport pixels. Protected content (magenta) is fully covered;
+// ordinary content (cyan: consent dialog, cross-site captcha frame, article)
+// stays visible. Desktop placement is proven by the Xvfb drill.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { decodePng } from './kernel-browser-pixels.mjs';
+import { fenceBrowserCapture, measureBrowserProtection } from './browser-protection-regions.mjs';
+import { VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from './browser-protection-fixture.mjs';
+const executable = process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
+assert.ok(executable, 'Explicit installed Chromium required; never download a browser');
+
+async function withFixture(dpr, run) {
+  const root = await mkdtemp(path.join(tmpdir(), 'cx-protection-'));
+  const fixture = await serveFixture();
+  const chromium = await launchChromium({ executable, dpr, root });
+  try {
+    const opened = await openFixture(chromium.browser, fixture.url);
+    const shot = async () => decodePng((await opened.connection.send('Page.captureScreenshot', { format: 'png' }, opened.sessionId)).data, dpr);
+    await run({ ...chromium, ...opened, shot });
+  } finally { await chromium.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
+}
+const policy = (values = []) => ({ values, targets: [], unknown: false });
+
+for (const dpr of [1, 2]) {
+  test(`DPR ${dpr}: every protected frame region is covered; ordinary content stays visible`, () => withFixture(dpr, async ({ browser, connection, sessionId, shot }) => {
+    for (const scroll of [0, 300]) {
+      await connection.send('Runtime.evaluate', { expression: `scrollTo(0, ${scroll})` }, sessionId);
+      const { pages } = await measureBrowserProtection(browser, policy([VAULT_VALUE]));
+      assert.equal(pages.length, 1);
+      const [page] = pages;
+      assert.equal(page.dpr, dpr);
+      const pixels = await shot();
+      assert.deepEqual(page.viewport, [pixels.width, pixels.height]);
+      const before = census(pixels), after = census(pixels, page.regions);
+      assert.ok(before.magenta > 1000 * dpr * dpr, 'fixture shows protected pixels');
+      assert.equal(after.magenta, 0, `scroll ${scroll}: protected pixels remain`);
+      // Ordinary content incl. the cross-site captcha frame is not withheld.
+      assert.ok(after.cyan > before.cyan * 0.95, `scroll ${scroll}: ordinary content masked (${after.cyan}/${before.cyan})`);
+    }
+  }));
+}
+
+test('Vault echoes and opaque media are protected only while values are registered', () => withFixture(1, async ({ browser, shot }) => {
+  const pixels = await shot();
+  const without = (await measureBrowserProtection(browser, policy())).pages[0];
+  const withValue = (await measureBrowserProtection(browser, policy([VAULT_VALUE]))).pages[0];
+  assert.ok(census(pixels, without.regions).magenta > 0, 'the echo paragraph is ordinary without a Vault value');
+  assert.equal(census(pixels, withValue.regions).magenta, 0);
+}));
+
+test('a captcha frame stays visible; its region is not protected', () => withFixture(1, async ({ browser, connection, sessionId }) => {
+  const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: 'JSON.stringify(document.getElementById("captcha").getBoundingClientRect())' }, sessionId);
+  const box = JSON.parse(result.value);
+  const { pages } = await measureBrowserProtection(browser, policy());
+  const overlap = pages[0].regions.filter(([x, y, w, h]) => x < box.right && x + w > box.left && y < box.bottom && y + h > box.top);
+  assert.deepEqual(overlap, []);
+}));
+
+test('layout moved between measurement and capture re-captures fail-closed', () => withFixture(1, async ({ browser, connection, sessionId }) => {
+  const calls = [];
+  const result = await fenceBrowserCapture(browser, policy(), async protection => {
+    calls.push(protection);
+    if (calls.length === 1) await connection.send('Runtime.evaluate', { expression: 'scrollBy(0, 120)' }, sessionId);
+    return calls.length;
+  });
+  assert.equal(result, 2);
+  assert.ok(calls[0]?.pages?.length === 1);
+  assert.equal(calls[1], null);
+  const stable = [];
+  assert.equal(await fenceBrowserCapture(browser, policy(), async protection => { stable.push(protection); return 'ok'; }), 'ok');
+  assert.equal(stable.length, 1);
+  assert.ok(stable[0].pages[0].regions.length > 0);
+}));
+
+test('unknown protection fails closed', () => withFixture(1, async ({ browser }) => {
+  await assert.rejects(measureBrowserProtection(browser, { values: [], targets: [], unknown: true }));
+  assert.equal(await fenceBrowserCapture(browser, { values: [], targets: [], unknown: true }, async protection => protection), null);
+}));
+
+test('a visible browser-internal page (settings, extensions, DevTools) fails closed', () => withFixture(1, async ({ browser, connection, sessionId }) => {
+  await connection.send('Page.navigate', { url: 'chrome://version/' }, sessionId);
+  for (let i = 0; i < 50 && (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree.frame.url !== 'chrome://version/'; i++) await new Promise(resolve => setTimeout(resolve, 50));
+  await assert.rejects(measureBrowserProtection(browser, policy()), /browser-internal page/);
+}));
