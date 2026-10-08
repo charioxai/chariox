@@ -447,7 +447,8 @@ impl CommandRouter {
         if is_workflow_command(request) {
             let response = self
                 .workflow_runtime
-                .dispatch_workflow_command(command.clone(), request.clone())
+                .with_command_authority(&self.runtime_state)
+                        .dispatch_workflow_command(command.clone(), request.clone())
                 .await?;
             return self
                 .redact_workflow_result_for_user(Ok(response), caller_user_id, request)

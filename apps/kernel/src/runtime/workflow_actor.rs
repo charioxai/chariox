@@ -19,14 +19,13 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 
 pub(crate) const WORKFLOW_COMMAND_QUEUE_LIMIT: usize = 128;
 
-#[derive(Debug)]
 struct WorkflowCommandEnvelope {
     command_id: String,
     command_type: String,
     telemetry: LaneCommandTrace,
     caller_user_id: String,
     caller_metaagent_id: Option<String>,
-    external_grant_id: Option<String>,
+    command_state: KernelRuntimeState,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -67,6 +66,12 @@ impl WorkflowRuntime {
         }
     }
 
+    pub(crate) fn with_command_authority(&self, state: &KernelRuntimeState) -> Self {
+        let mut runtime = self.clone();
+        runtime.store.state = state.clone();
+        runtime
+    }
+
     pub(crate) async fn dispatch_workflow_command(
         &self,
         command: KernelCommand,
@@ -77,6 +82,11 @@ impl WorkflowRuntime {
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_workflow_actor_user_id(&command);
         let caller_metaagent_id = command.caller.metaagent_id.clone();
+        let grant_id = command.external_grant_id();
+        let command_state = self.store.state
+            .with_room_provider_origin(caller_metaagent_id.as_deref(), command.provider_run_id.as_deref())
+            .with_room_request_origin(caller_metaagent_id.as_deref(), &request)
+            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
         let telemetry = LaneCommandTrace::new(
             CommandTrace::from_command(&command),
             crate::runtime::command_latency::now_ms(),
@@ -88,7 +98,7 @@ impl WorkflowRuntime {
             telemetry: telemetry.clone(),
             caller_user_id,
             caller_metaagent_id,
-            external_grant_id: command.external_grant_id(),
+            command_state,
             request,
             result_tx,
         }) {
@@ -248,32 +258,14 @@ async fn run_workflow_command_lane(
                 "command_type": envelope.command_type,
             }),
         );
-        let authorization = envelope
-            .external_grant_id
-            .as_deref()
-            .map(|id| {
-                executor
-                    .store
-                    .state
-                    .authorize_external_request(id, &envelope.request)
-            })
-            .transpose();
-        let result = match authorization {
+        let command_state = envelope.command_state;
+        let result = match command_state.authorize_current_external_command() {
             Err(error) => Err(error),
-            Ok(_) => {
-                executor
-                    .with_external_command_authority(
-                        envelope
-                            .external_grant_id
-                            .as_deref()
-                            .map(|id| (id, &envelope.request)),
-                    )
-                    .execute(
-                        envelope.request,
-                        envelope.caller_user_id,
-                        envelope.caller_metaagent_id,
-                    )
-                    .await
+            Ok(()) => {
+                let result = executor.with_command_state(command_state.clone()).execute(
+                    envelope.request, envelope.caller_user_id, envelope.caller_metaagent_id,
+                ).await;
+                command_state.authorize_current_external_command().and(result)
             }
         };
         log_lane_completed(
@@ -295,12 +287,9 @@ struct WorkflowRuntimeCommandExecutor {
 }
 
 impl WorkflowRuntimeCommandExecutor {
-    fn with_external_command_authority(
-        &self,
-        authority: Option<(&str, &LocalDaemonRequest)>,
-    ) -> Self {
+    fn with_command_state(&self, state: KernelRuntimeState) -> Self {
         let mut executor = self.clone();
-        executor.store.state = self.store.state.with_external_command_authority(authority);
+        executor.store.state = state;
         executor
     }
 
