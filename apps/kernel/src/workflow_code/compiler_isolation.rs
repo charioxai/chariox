@@ -308,7 +308,6 @@ pub(super) fn compiler_command(
         .env_clear()
         .args([
             "--unshare-all",
-            "--disable-userns",
             "--die-with-parent",
             "--new-session",
             "--cap-drop",
