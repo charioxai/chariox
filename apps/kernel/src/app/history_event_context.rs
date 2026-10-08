@@ -1,12 +1,17 @@
+//! MP-08 / MP-10 / MP-11: trusted local and admitted worker history provenance.
+use crate::agent::AgentServiceStore;
 use crate::app::{ActiveTurnState, ActiveTurnStore};
 use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
-use crate::provider::ProviderProcessServiceStore;
+use crate::provider::{ProviderProcessServiceStore, RuntimeProviderRun};
+use crate::runtime::projection::ProviderRunProjectionStore;
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 
 #[derive(Clone)]
 pub(crate) struct HistoryEventContextResolver {
     providers: ProviderProcessServiceStore,
+    agents: AgentServiceStore,
+    projections: ProviderRunProjectionStore,
     sessions: SessionStateStore,
     prompt_state_owner: PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -18,9 +23,13 @@ impl HistoryEventContextResolver {
         sessions: SessionStateStore,
         prompt_state_owner: PromptStateOwner,
         active_turns: ActiveTurnStore,
+        agents: AgentServiceStore,
+        projections: ProviderRunProjectionStore,
     ) -> Self {
         Self {
             providers,
+            agents,
+            projections,
             sessions,
             prompt_state_owner,
             active_turns,
@@ -45,14 +54,18 @@ impl HistoryEventContextResolver {
         overrides: HistoryEventContextOverrides<'_>,
         active_turn: Option<&ActiveTurnState>,
     ) -> HistoryEventTurnContext {
-        let provider_run = entry
-            .provider_run_id
-            .as_deref()
-            .and_then(|provider_run_id| self.providers.get_run(provider_run_id).ok());
+        let provider_run = self.provider_run(entry);
         let agent_id = entry.agent_id.clone().or_else(|| {
             provider_run
                 .as_ref()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        // Worker counters may collide with local counters. Never inherit another
+        // agent's active turn merely because its raw provider-run ID matches.
+        let active_turn = active_turn.filter(|turn| {
+            turn.session_id == entry.session_id
+                && agent_id.as_deref() == Some(turn.agent_id.as_str())
+                && entry.provider_run_id.as_deref() == Some(turn.provider_run_id.as_str())
         });
         let session = self.sessions.get_session(&entry.session_id).ok();
         let active_prompt = session.as_ref().and_then(|session| {
@@ -112,6 +125,45 @@ impl HistoryEventContextResolver {
             ..HistoryEventTurnContext::default()
         }
     }
+
+    fn provider_run(&self, entry: &SessionHistoryEntry) -> Option<RuntimeProviderRun> {
+        let run_id = entry.provider_run_id.as_deref()?;
+        let agent = match entry.agent_id.as_deref() {
+            Some(id) => Some(self.agents.get_agent(id).ok()?),
+            None => None,
+        };
+        if agent
+            .as_ref()
+            .is_some_and(|agent| agent.session_id() != entry.session_id)
+        {
+            return None;
+        }
+        let run = match agent.as_ref().and_then(|agent| agent.remote_execution()) {
+            Some(remote) => {
+                if remote.execution_lease_id.is_empty() || remote.leased_agent_id.is_empty() {
+                    return None;
+                }
+                let worker_run_id = remote.active_worker_provider_run_id.as_deref()?;
+                let projected_id = crate::provider::projected_leased_provider_run_id(
+                    &remote.leased_agent_id,
+                    worker_run_id,
+                );
+                if run_id != worker_run_id && run_id != projected_id {
+                    return None;
+                }
+                // This store is populated only after authenticated peer/lease
+                // admission. Unknown or stale projections never fall back local.
+                self.projections.get(&projected_id)?
+            }
+            None => self.providers.get_run(run_id).ok()?,
+        };
+        (run.session_id() == entry.session_id
+            && entry
+                .agent_id
+                .as_deref()
+                .is_none_or(|id| run.agent_instance_id() == Some(id)))
+        .then_some(run)
+    }
 }
 
 #[derive(Default)]
@@ -120,3 +172,6 @@ pub(crate) struct HistoryEventContextOverrides<'a> {
     pub(crate) workflow_run_id: Option<&'a str>,
     pub(crate) workflow_node_run_id: Option<&'a str>,
 }
+
+#[cfg(test)]
+mod tests;

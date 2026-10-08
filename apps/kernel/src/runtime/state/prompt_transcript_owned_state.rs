@@ -676,6 +676,8 @@ impl KernelRuntimeOwnedState {
             self.session_store.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve_with_overrides(
             entry,

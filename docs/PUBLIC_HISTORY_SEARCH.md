@@ -105,9 +105,12 @@ the index revision once per stream key in a writer batch, so any growth can
 restart pagination and post-query revalidation. Clients must retry after streaming
 settles if concurrent growth repeatedly invalidates a result.
 
-MP-08 / MP-11: projection version3 indexes whole messages and admits only
-provider-native tools. Upgrading from an earlier version fences and removes
-predecessor public projections before reads or rebuilds; it never reimports raw
+MP-08 / MP-10 / MP-11: projection version4 indexes whole messages and admits only
+provider-native tools. Worker tool classification uses the authenticated lease
+projection and validates its home session, agent and admitted worker run. A raw
+worker run ID never selects a colliding home provider run; missing or stale
+worker provenance excludes the tool record. Upgrading from an earlier version
+fences and removes predecessor public projections before reads or rebuilds; it never reimports raw
 records that may contain private MCP output. A batch coalesces matching stream keys into one projection and FTS mutation.
 Across batches, only the retained suffix bounded by the longest secret variant
 minus one byte is re-projected with the new text; split secret variants remain

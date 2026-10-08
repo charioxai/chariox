@@ -11,8 +11,9 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 
 // Version 1 may contain MCP records admitted without their private server
 // identity; version 2 indexed streamed deltas and allowed unknown tools. The
-// existing version fence removes those projections on upgrade.
-pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 3;
+// Version 3 could misclassify worker MCP calls using colliding local run IDs.
+// The existing version fence removes those projections on upgrade.
+pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 4;
 // Internal projection input only; never serialized into operational events.
 pub(crate) const PUBLIC_HISTORY_BATCH_REFS: &str = "_public_history_batch_refs";
 pub(crate) type PublicHistoryProjector =

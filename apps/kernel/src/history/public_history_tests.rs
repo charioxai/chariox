@@ -233,40 +233,45 @@ fn public_history_interrupted_rebuild_resumes_sanitized_source_after_restart() {
 
 #[test]
 fn public_history_version_change_and_unknown_legacy_have_no_raw_fallback() {
-    let f = Fixture::new();
-    f.append("room", "known_public_text");
-    f.store
-        .connection
-        .lock()
-        .unwrap()
-        // MP-08 / MP-10 / MP-11: version 1 can contain private MCP server
-        // records admitted before server-identity classification was added.
-        .execute("UPDATE public_history_version SET version=1", [])
-        .unwrap();
-    let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf()).unwrap();
-    // No installed projection means raw events remain unknown and unindexed.
-    reopened
-        .append_operational_event(
-            HistoryEventKind::UserPrompt,
-            Some(HistoryEventRole::User),
-            Some("unknown_legacy_text".into()),
-            Default::default(),
-            HistoryEventTurnContext {
-                public_history_owner_user_id: Some("owner".into()),
-                session_id: Some("room".into()),
-                agent_id: Some("peer".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let _guard = reopened.lock_public_history().unwrap();
-    for query in ["known_public_text", "unknown_legacy_text"] {
-        let result = reopened
-            .search_public_history_locked("owner", "room", None, query, 50, None)
+    // MP-08 / MP-10 / MP-11: every predecessor, including colliding-worker v3.
+    for predecessor in [1, 2, 3] {
+        let f = Fixture::new();
+        f.append("room", "known_public_text");
+        f.store
+            .connection
+            .lock()
+            .unwrap()
+            // Old projections can contain private MCP records.
+            .execute(
+                "UPDATE public_history_version SET version=?1",
+                [predecessor],
+            )
             .unwrap();
-        assert!(result.hits.is_empty());
-        assert!(!result.coverage.complete);
-        assert_eq!(result.coverage.excluded_events, 2);
+        let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf()).unwrap();
+        // No installed projection means raw events remain unknown and unindexed.
+        reopened
+            .append_operational_event(
+                HistoryEventKind::UserPrompt,
+                Some(HistoryEventRole::User),
+                Some("unknown_legacy_text".into()),
+                Default::default(),
+                HistoryEventTurnContext {
+                    public_history_owner_user_id: Some("owner".into()),
+                    session_id: Some("room".into()),
+                    agent_id: Some("peer".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let _guard = reopened.lock_public_history().unwrap();
+        for query in ["known_public_text", "unknown_legacy_text"] {
+            let result = reopened
+                .search_public_history_locked("owner", "room", None, query, 50, None)
+                .unwrap();
+            assert!(result.hits.is_empty());
+            assert!(!result.coverage.complete);
+            assert_eq!(result.coverage.excluded_events, 2);
+        }
     }
 }
 
@@ -298,8 +303,18 @@ fn public_history_protocol_453_result_shape_hash() {
     f.append("room", "compiler");
     let mut wire = serde_json::to_value(f.search("room", "compiler", 50, None).unwrap()).unwrap();
     wire["hits"][0]["event_ref"] = serde_json::json!("evt_fixture");
-    // MP-08 / MP-10 / MP-11: projection version 3 changes coverage values,
-    // not the protocol453 shape.
+    // MP-08 / MP-10 / MP-11: the index fence is an internal revision;
+    // keep the protocol453 shape hash independent of its value.
+    assert_eq!(
+        wire["coverage"]["index_version"],
+        serde_json::json!(PUBLIC_HISTORY_VERSION)
+    );
+    assert_eq!(
+        wire["coverage"]["redaction_version"],
+        serde_json::json!(PUBLIC_HISTORY_VERSION)
+    );
+    wire["coverage"]["index_version"] = serde_json::json!(3);
+    wire["coverage"]["redaction_version"] = serde_json::json!(3);
     let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap()));
     assert_eq!(
         hash,
