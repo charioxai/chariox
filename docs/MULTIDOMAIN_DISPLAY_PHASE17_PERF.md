@@ -250,7 +250,7 @@ No Cloud checkout is modified by this lane.
 Cloud integration needs only the following existing interfaces:
 
 1. Bundle `apps/browser-display/presenter.mjs`, `stripe-presenter.mjs`,
-   `decoder-worker.mjs`, `tile-cache.mjs`, and `scroll-prediction.mjs` from this
+   `decoder-worker.mjs`, and `scroll-prediction.mjs` from this
    OSS source. The decoder worker must resolve as an actual module-worker asset
    from the built app. WebCodecs requires a secure context (localhost is allowed).
 2. Await `attachBrowserDisplay(canvas, transport, {tab_id,generation}, options)`
