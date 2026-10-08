@@ -1,4 +1,5 @@
 // MP-08/MP-10/MP-11: upstream baseline only; no Selkies product authority.
+import {profileOwnedCpu} from './drill-profile.mjs';
 import {tmpdir} from 'node:os';
 import {createServer} from 'node:http';import {createRequire} from 'node:module';
 import {readFile,writeFile,mkdir,mkdtemp,chmod,chown,rm} from 'node:fs/promises';
@@ -11,7 +12,7 @@ const here=path.dirname(fileURLToPath(import.meta.url)),root=await mkdtemp(path.
 const shortTmp=await mkdtemp(path.join(tmpdir(),'cx-'));await chmod(shortTmp,0o700);await chown(shortTmp,65534,65534);
 const legacy=process.env.MD_BASELINE==='legacy';
 const receipt={item:'MP-08/MP-10/MP-11',...await sourceIdentity(),backend:legacy?'Selkies legacy 17a3d5a GStreamer/WebRTC x264enc':'Selkies 2.0.0 pixelflux/WebSocket x264',geometry:[1920,1080],dpr:1,gpu_requested:process.env.MD_BASELINE_GPU==='1'||process.env.MD_BASELINE_ENCODER==='vah264enc',budget_bps:Number(process.env.MD_BITRATE||8000000),workload:process.env.MD_WORKLOAD||'docs',status:'RED',state_root:root,short_tmp_root:shortTmp,cleanup:[],samples:[]};
-const owned=[];let browser,sourceBrowser,server,pipelineLog='',page;const metrics=new MetricsWorker(tools),cpu=new CpuSampler({root,viewerRoot:path.join(root,'viewer')});cpu.start();let interrupted=false;
+const owned=[];let browser,sourceBrowser,server,pipelineLog='',page,stopProfile;const metrics=new MetricsWorker(tools),cpu=new CpuSampler({root,viewerRoot:path.join(root,'viewer')});cpu.start();let interrupted=false;
 for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>{interrupted=true;void browser?.close().catch(()=>{});void sourceBrowser?.close().catch(()=>{});});
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label,ms=20000){const end=Date.now()+ms;while(Date.now()<end){if(interrupted)throw Error('MP-10 interrupted');const value=await fn();if(value)return value;await pause(20)}throw Error('MP-10 timeout '+label);}
@@ -37,11 +38,12 @@ try{
  async function pair(name){const expected=await source.screenshot({type:'png'}),snapshot=await page.evaluate(()=>mdSnapshot()),actual=Buffer.from(snapshot.png.split(',')[1],'base64'),{diff,...result}=await metrics.compare(expected,actual);await writeFile(path.join(output,name+'-source.png'),expected);await writeFile(path.join(output,name+'-viewer.png'),actual);if(diff)await writeFile(path.join(output,name+'-diff.png'),diff);return {...result,presentation:snapshot.presentation};}
  const idleBefore=await cpu.sample(),idleStats=await page.evaluate(()=>mdStats());await pause(2000);receipt.idle_cpu=cpuSpan(idleBefore,await cpu.sample());const idleAfter=await page.evaluate(()=>mdStats());receipt.idle_video_mbps=(legacy?idleAfter.bytes-idleStats.bytes:idleAfter.frames.slice(idleStats.frames.length).reduce((n,f)=>n+f.bytes,0))*8/receipt.idle_cpu.duration_ms/1000;receipt.settled=await pair('settled');
  if(receipt.workload!=='docs'){
+  stopProfile=await profileOwnedCpu(await cpu.sample(),output);
   const sourceScrollBefore=await source.evaluate(()=>scrollY);const start=await cpu.sample(),before=await page.evaluate(async()=>{const s=await mdStats();return {bytes:s.bytes,frames:s.frames.length,presentations:s.presentations.length}}),at=performance.now(),pairs=[];let wheel;
   if(receipt.workload==='wheel30'||receipt.workload==='wheel60')await page.evaluate(hz=>{window.mdWheel=setInterval(()=>mdInput({kind:'scroll',x:700,y:600,delta_y:120}),1000/hz)},receipt.workload==='wheel60'?60:30);else await page.evaluate(()=>mdInput({kind:'click',x:60,y:88}));
   while(performance.now()-at<10000){if(pairs.length<2&&performance.now()-at>(pairs.length+1)*1000)pairs.push(await pair('moving-live-'+pairs.length));await pause(33);}
   const duration=performance.now()-at,after=await page.evaluate(()=>mdStats());receipt.motion={source_scroll:{before:sourceScrollBefore,after:await source.evaluate(()=>scrollY)},effective_fps:(after.presentations.length-before.presentations)*1000/duration,effective_content_fps:after.presentations.slice(before.presentations).filter(p=>p.content_changed).length*1000/duration,event_mbps:(legacy?after.bytes-before.bytes:after.frames.slice(before.frames).reduce((a,b)=>a+b.bytes,0))*8/duration/1000,application_mbps:(after.bytes-before.bytes)*8/duration/1000,live_pairs:pairs,cpu:cpuSpan(start,await cpu.sample())};
-  if(receipt.workload==='wheel30'||receipt.workload==='wheel60')await page.evaluate(()=>clearInterval(mdWheel));else await page.evaluate(()=>mdInput({kind:'click',x:60,y:88}));await pause(1000);receipt.motion.settled_fidelity=await pair('motion-settled');
+  if(receipt.workload==='wheel30'||receipt.workload==='wheel60')await page.evaluate(()=>clearInterval(mdWheel));else await page.evaluate(()=>mdInput({kind:'click',x:60,y:88}));await pause(1000);receipt.motion.settled_fidelity=await pair('motion-settled');await stopProfile();stopProfile=null;
  }
  const clicks=[],begin=await cpu.sample();for(let i=1;i<=20;i++){
   const probe=await page.evaluate(async expected=>{const at=performance.timeOrigin+performance.now();mdInput({kind:'click',x:1830,y:28});const deadline=at+10000;while(mdPresentation?.step!==expected){if(mdErrors.length)throw Error(mdErrors[0]);if(performance.timeOrigin+performance.now()>deadline)throw Error('pixel acknowledgement timeout');await new Promise(r=>requestAnimationFrame(r));}return {latency_ms:mdPresentation.presented_ms-at,step:mdPresentation.step};},i);clicks.push(probe.latency_ms);
@@ -54,7 +56,7 @@ try{
  receipt.type_latency=distribution(types);receipt.type_cpu=cpuSpan(typeCpu,await cpu.sample());receipt.status='PASS_BASELINE_COMPONENT';
 }catch(error){receipt.error=error.message;receipt.viewer_diagnostic=await page?.evaluate(async()=>({packets:mdPacketMetadata,controls:mdControlKinds,errors:mdErrors,ice_state:window.mdPeer?.iceConnectionState,connection_state:window.mdPeer?.connectionState,signaling_state:window.mdPeer?.signalingState,video:document.querySelector('video')?{readyState:document.querySelector('video').readyState,paused:document.querySelector('video').paused,width:document.querySelector('video').videoWidth}:null,stats:window.mdPeer?[...(await mdPeer.getStats()).values()].filter(r=>['inbound-rtp','transport'].includes(r.type)).map(r=>({type:r.type,kind:r.kind,bytesReceived:r.bytesReceived,packetsReceived:r.packetsReceived,framesReceived:r.framesReceived,framesDecoded:r.framesDecoded,dtlsState:r.dtlsState})):null})).catch(()=>null);process.exitCode=interrupted?130:1;}
 finally{
- await writeFile(path.join(output,'server.log'),pipelineLog);
+ await stopProfile?.().catch(e=>{receipt.cleanup.push(e.name);process.exitCode=1});await writeFile(path.join(output,'server.log'),pipelineLog);
  await browser?.close().catch(()=>{});await sourceBrowser?.close().catch(()=>{});for(const c of owned.reverse())try{await stopGroup(c)}catch(e){receipt.cleanup.push(e.message);process.exitCode=1;}
  await metrics.close();await cpu.close();receipt.cpu_samples=cpu.samples;await new Promise(r=>server?server.close(r):r());
  const remaining=[];for(const name of await (await import('node:fs/promises')).readdir('/proc'))if(/^\d+$/.test(name))try{if((await readFile('/proc/'+name+'/cmdline','utf8')).includes(root))remaining.push(Number(name));}catch{}
