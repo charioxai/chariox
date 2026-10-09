@@ -2,7 +2,7 @@
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { measureBrowserProtection, measurePageProtection, pruneBrowserFillTargets } from './browser-protection-regions.mjs';
 import { fileURLToPath } from 'node:url';
-export async function locateBrowserRegions(targets,browser,values=[],{contentTarget=null,contentScale=1}={}) {
+export async function locateBrowserRegions(targets,browser,values=[],{contentTarget=null,contentScale=1,onPlainField}={}) {
   const policy={targets,values,unknown:false};
   let pages;
   if(contentTarget) {
@@ -10,7 +10,7 @@ export async function locateBrowserRegions(targets,browser,values=[],{contentTar
     const supplied=targets.filter(t=>t.target_id===contentTarget),tracked=[...(browser.fillTargets?.values()??[])].filter(t=>t.target_id===contentTarget);
     const merged=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
     for(const target of tracked)if(!merged.includes(target))merged.push(target);
-    pages=[await measurePageProtection(connection,sessionId,contentTarget,{...policy,targets:merged},{includeHidden:true})];
+    pages=[await measurePageProtection(connection,sessionId,contentTarget,{...policy,targets:merged},{includeHidden:true,onPlainField})];
     pruneBrowserFillTargets(browser,connection);
   } else pages=(await measureBrowserProtection(browser,policy)).pages;
   const regions=[];

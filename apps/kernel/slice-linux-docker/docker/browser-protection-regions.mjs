@@ -59,7 +59,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
   } finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
 }
 
-export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false}={}) {
+export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false,onPlainField}={}) {
   const top=await frameTree(connection,sessionId);
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:top.frame.id,worldName:'chariox-fill-viewport'},sessionId);
   const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,
@@ -102,6 +102,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         const state=await fieldState(connection,entry,{frameId},backendNodeId);
         if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
+        await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
         const map=await toViewport(entry),quad=[];
         for(let i=0;i<8;i+=2)quad.push(...map(model.border.slice(i,i+2)));
