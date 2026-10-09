@@ -226,8 +226,12 @@ function isHostedPublicationGateway() {
 export type KernelTransportDiagnostic = {
   lane: "control" | "event"
   cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "lease_response_refused" | "lease_transport_failed"
+    | "renewal_failed" | "authorization_ended"
   local: boolean
   missedPongs: number
+  operation?: string
+  code?: string | null
+  retryable?: boolean
   closeCode?: number
   retrying?: boolean
   sequenceMatches?: boolean
@@ -1029,7 +1033,11 @@ export class LocalIpcClient {
     if (!claims?.account_id || !claims.user_id) return // Local/operator transports have no Cloud lifetime.
     if (claims.public_key_thumbprint !== this.relayIdentity.publicKeyThumbprint) return
     const renewal: RelayAuthorizationRenewal = new RelayAuthorizationRenewal(claims.exp * 1000,
-      (): Promise<number> => this.renewRelayAuthorization(renewal), message => this.refuseRelayAuthorization(message), message => {
+      (): Promise<number> => this.renewRelayAuthorization(renewal).catch(error => {
+        this.reportTransportDiagnostic("control", "renewal_failed", error instanceof LocalIpcError
+          ? { operation: error.operation, code: error.code, retryable: error.retryable } : {})
+        throw error
+      }), message => this.refuseRelayAuthorization(message), message => {
         this.relayRenewalNotice(message)
       })
     this.relayRenewal = renewal
@@ -1097,6 +1105,7 @@ export class LocalIpcClient {
 
   private refuseRelayAuthorization(upgradeMessage?: string): void {
     if (this.relayAuthorizationFailure) return
+    this.reportTransportDiagnostic("control", "authorization_ended")
     const message = upgradeMessage ?? "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."
     this.relayAuthorizationFailure = new LocalIpcError("renew relay authorization", message, "authorization_denied", false)
     this.destroy()
