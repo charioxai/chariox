@@ -537,12 +537,9 @@ export class LocalIpcClient {
     this.relayAuthRenewal?.stop()
     this.relayRenewal?.stop()
     this.relayRenewal = null
-    this.relayAuthRenewal = new RelayAuthRenewal(expiresAtMs, issue, grant => {
-      this.relayAuthToken = grant.token
-      for (const socket of [this.controlWebsocket, this.eventWebsocket]) {
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(buildRelayConnectFrame(grant.token, this.relayTarget)))
-      }
-    }, () => this.retireRelayAuthorization(), release)
+    this.relayAuthRenewal = new RelayAuthRenewal(expiresAtMs, issue,
+      grant => this.applyRenewedRelayAuthorization(grant.token),
+      () => this.retireRelayAuthorization(), release)
   }
 
   invalidateRelayAuthorization(error: unknown): void {
@@ -1057,17 +1054,21 @@ export class LocalIpcClient {
     if (!grant || grant.relay_url !== this.socketPath) throw new LocalIpcError("renew relay authorization", "Relay authorization renewal targets an invalid relay", "authorization_denied")
     const next = requireRenewedRelayAuthorization(previous, grant.relay_token, target)
     if (this.relayAuthorizationFailure || this.relayRenewal !== renewal) throw new LocalIpcError("renew relay authorization", "Renewal was cancelled", "client_closed")
-    this.relayAuthToken = grant.relay_token
     this.relayIssuerNoticeSent = false
+    await this.applyRenewedRelayAuthorization(grant.relay_token)
+    return next.exp * 1000
+  }
+
+  private async applyRenewedRelayAuthorization(token: string): Promise<void> {
+    this.relayAuthToken = token
     // A lane opening concurrently must finish its handshake, then receive the
     // same grant as the retained lane. Future reconnects use the new token.
     await Promise.all((["control", "event"] as const).map(async lane => {
       const connecting = this.getWebSocketConnectPromise(lane)
       if (connecting) await connecting
       const socket = this.getWebSocket(lane)
-      if (socket?.readyState === WebSocket.OPEN) await reauthenticateRelaySocket(socket, this.relayAuthToken!, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
+      if (socket?.readyState === WebSocket.OPEN) await reauthenticateRelaySocket(socket, token, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
     }))
-    return next.exp * 1000
   }
 
   private relayRenewalNotice(message: string): void {

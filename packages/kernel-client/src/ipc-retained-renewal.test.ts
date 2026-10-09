@@ -193,3 +193,65 @@ test("MP-08/MP-10/MP-11 explicit client-family invalidation closes the visible s
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
+
+// MP-08 / MP-10 / MP-11: retained renewal crosses an initial event handshake.
+test("retained renewal reauthenticates an event lane whose initial handshake is pending", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address(); assert.ok(address && typeof address === "object")
+  const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const originalExpiry = Date.now() + 1_200
+  const initialToken = `fixture:${originalExpiry}`
+  let eventSocket: WebSocket | undefined, releaseHandshake!: () => void
+  let sawEventHandshake!: () => void, issued!: () => void
+  const eventHandshake = new Promise<void>(resolve => { sawEventHandshake = resolve })
+  const renewalIssued = new Promise<void>(resolve => { issued = resolve })
+  const expiryTimers = new Map<WebSocket, ReturnType<typeof setTimeout>>()
+  const authorizations = new Map<WebSocket, number>()
+  let connections = 0, subscriptions = 0, closes = 0
+  server.on("connection", socket => {
+    const eventLane = ++connections === 2
+    socket.on("close", () => { closes++ })
+    socket.on("message", raw => {
+      const frame = JSON.parse(String(raw))
+      if (frame.kind === "client_connect") {
+        const acknowledge = () => {
+          clearTimeout(expiryTimers.get(socket))
+          expiryTimers.set(socket, setTimeout(() => socket.close(), Math.max(0, Number(frame.auth_token.split(":")[1]) - Date.now())))
+          authorizations.set(socket, (authorizations.get(socket) ?? 0) + 1)
+          socket.send(JSON.stringify({ kind: "client_connected", target: frame.target, daemon_public_key: daemon.publicKeyBase64 }))
+        }
+        if (eventLane && !eventSocket) { eventSocket = socket; releaseHandshake = acknowledge; sawEventHandshake() }
+        else acknowledge()
+      }
+      if (frame.kind === "client_request") socket.send(JSON.stringify({ kind: "client_response", request_id: frame.request_id, encrypted_response: daemon.encrypt(frame.encrypted_request.sender_public_key, JSON.stringify({ accepted: true })), error: null }))
+      if (frame.kind === "client_subscribe") {
+        subscriptions++
+        socket.send(JSON.stringify({ kind: "client_response", request_id: frame.request_id, encrypted_response: daemon.encrypt(frame.client_public_key, "null"), error: null }))
+      }
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, { relayAuthToken: initialToken, targetDaemonId: "remote", relayIdentity: identity })
+  try {
+    await client.send({ GetDaemonHealth: null })
+    const subscribed = client.subscribeToKernelEvents("session", "attachment")
+    await eventHandshake
+    client.startRelayAuthRenewal(Date.now() + 120, async () => {
+      issued(); const expiresAtMs = Date.now() + 10_000
+      return { token: `fixture:${expiresAtMs}`, expiresAtMs }
+    })
+    await renewalIssued
+    await new Promise(resolve => setTimeout(resolve, 10))
+    releaseHandshake(); await subscribed
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, originalExpiry - Date.now()) + 100))
+    assert.equal(authorizations.get(eventSocket!), 2, "the newly established event lane must acknowledge the renewed grant")
+    assert.equal(closes, 0, "both sockets must survive the original grant deadline")
+    assert.equal(connections, 2); assert.equal(subscriptions, 1)
+    assert.deepEqual(await client.send({ GetDaemonHealth: null }), { accepted: true })
+  } finally {
+    await client.close(); for (const timer of expiryTimers.values()) clearTimeout(timer)
+    for (const socket of server.clients) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})

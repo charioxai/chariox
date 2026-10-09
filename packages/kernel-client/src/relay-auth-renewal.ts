@@ -11,7 +11,7 @@ export class RelayAuthRenewal {
   private retries = 0
   private renewAt: number
   constructor(private expiry: number, private readonly issue: RelayGrantProvider,
-    private readonly apply: (grant: RenewedRelayGrant) => void,
+    private readonly apply: (grant: RenewedRelayGrant) => void | Promise<void>,
     private readonly revoked: () => void,
     private readonly release?: () => void) { this.renewAt = this.nextRenewal(); this.schedule() }
   private nextRenewal() { return this.expiry - Math.min(60_000, Math.max(10, (this.expiry - Date.now()) / 4)) }
@@ -41,7 +41,8 @@ export class RelayAuthRenewal {
         const grant = await this.issue()
         if (this.stopped) return
         if (!grant.token || !Number.isFinite(grant.expiresAtMs) || grant.expiresAtMs <= Date.now()) throw new Error("renewed relay grant is already expired")
-        this.apply(grant)
+        await this.apply(grant)
+        if (this.stopped) return
         this.expiry = grant.expiresAtMs
         this.renewAt = this.nextRenewal()
         this.retries = 0
