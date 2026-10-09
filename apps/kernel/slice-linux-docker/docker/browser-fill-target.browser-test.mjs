@@ -220,6 +220,12 @@ for(const dpr of [1,2]) {
    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)for(const [label,data] of [['raw',raw],['protected',image.data_base64]])await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`visible-descendant-${label}-dpr${dpr}.png`),Buffer.from(data,'base64'));
    assert.equal(ink(frame.pixels),0,'MP-11 image covers visible filled descendant text beyond its box');
    assert.equal(ink(video),0,'MP-11 decoded production video covers visible filled descendant overflow');
+   await evaluate("document.querySelector('#editor').style.visibility='hidden'");
+   const hidden=decodePng((await browser.captureArtifact(request)).data_base64,dpr),index=(310*dpr*hidden.width+180*dpr)*4;
+   assert.deepEqual([...hidden.pixels.subarray(index,index+3)],[255,255,255],'MP-08 hidden text does not mask ordinary pixels outside its field box');
+   await evaluate(`document.querySelector('#editor').innerHTML='<span style="visibility:visible">${value}</span>'`);
+   const child=await browser.captureArtifact(request);
+   assert.equal(ink(decodePng(child.data_base64,dpr).pixels),0,'MP-11 visible text descendants of a hidden editor stay covered');
  }));
  // MP-08/MP-11: the host's screencast-triggered captures run outside the kernel's Vault
  // input barrier; one landing between recording and the completed value must not retire it.
