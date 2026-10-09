@@ -267,9 +267,14 @@ pub use workspace::*;
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
 /// Version 462 adds user-requested capability grant causes, absolute grant
 /// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
-/// Version 477 combines 452 and 462 (MP-08/MP-10/MP-11 A02 + A05).
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 477 combines 452, 462 and main 472 and adds protected owner
+/// hand-off (MP-08/MP-10/MP-11 A02 + A05 + A07).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 477;

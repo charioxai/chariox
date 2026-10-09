@@ -4,6 +4,7 @@ import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { theme } from "./theme.js"
 import { handoffChangeLines, handoffReasonLabel } from "@chariox/kernel-client/owner-handoff"
 import { interactionHandoff } from "./kernel-handoff-entry.js"
+import { requesterLabels } from "./kernel-access-requester-label.js"
 
 export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   show(): void
@@ -97,6 +98,9 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       })
       panel.add(body)
       text(body, view.interaction.title || "Kernel approval")
+      if (view.interaction.requester) {
+        for (const label of requesterLabels(view.interaction.requester)) text(body, label)
+      }
       const handoff = interactionHandoff(view.interaction)
       if (handoff) {
         // MP-11 A07: safe target metadata and the intended change only.

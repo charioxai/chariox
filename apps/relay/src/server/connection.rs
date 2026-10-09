@@ -365,6 +365,12 @@ pub(crate) async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
+                            if verified_identity.as_ref().is_some_and(|previous| {
+                                !super::client_renewal::retains_client_authority(previous, &identity)
+                            }) {
+                                send_close(&outgoing_tx, "relay authorization renewal changed identity or reduced permissions".into());
+                                break;
+                            }
                             auth_expiry_deadline = relay_auth_expiry_deadline(
                                 &auth_verifier,
                                 identity.expires_at_ms,

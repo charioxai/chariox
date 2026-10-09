@@ -27,10 +27,11 @@ test("MP-07/MP-10/MP-11 protocol 477 retains admitted predecessor contracts and 
     assert.ok(list.includes(367), "the release before release F must stay reciprocal for in-place updates")
     assert.ok(list.includes(376), "the previous release (release F) must stay reciprocal for in-place updates")
     assert.ok(list.includes(416), "released Apps predecessor remains reciprocal")
+    assert.ok(list.includes(472), "released main predecessor remains reciprocal")
     assert.ok(list.includes(477), "new protocol must include itself")
   }
-  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 477])
-  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 477])
+  assert.deepEqual(policy.upgradeFrom, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472, 477])
+  assert.deepEqual(policy.rollbackTo, [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472, 477])
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-477-policy-"))
   try {
@@ -48,7 +49,7 @@ test("MP-07/MP-10/MP-11 protocol 477 retains admitted predecessor contracts and 
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
     // Policy fixtures do not prove real-binary persisted-state migration.
-    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435]) {
+    for (const version of [343, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 410, 411, 415, 416, 435, 472]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.equal(transition(oldRoot, version, newRoot, 477), "")
       assert.equal(transition(newRoot, 477, oldRoot, version), "")

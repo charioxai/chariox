@@ -8,7 +8,7 @@ impl CommandRouter {
     pub(super) fn authorize_external_request(
         &self,
         command: &KernelCommand,
-        request: &mut LocalDaemonRequest,
+        request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
         // These public routes are human frontend channels; agents use the
         // focus-admitted MCP seam. Refuse before generic session-grant lookup
@@ -45,18 +45,8 @@ impl CommandRouter {
             ));
         }
         if let Some(authority) = command.external_grant_id() {
-            let session = self
-                .runtime_state
+            self.runtime_state
                 .authorize_external_request(&authority, request)?;
-            // Resolve once against authority, then dispatch the exact ID. An
-            // alias collision or concurrent rename cannot switch the target.
-            if command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent) {
-                match request {
-                    LocalDaemonRequest::ResolveSession(request) => request.session_ref = session,
-                    LocalDaemonRequest::DeleteSession(request) => request.session_ref = session,
-                    _ => {}
-                }
-            }
         }
         self.runtime_state
             .authorize_prompt_attachment_role(command, request)
@@ -68,26 +58,6 @@ impl CommandRouter {
 
     pub(crate) fn session_id_for_attachment_access(&self, id: &str) -> Option<String> {
         self.session_projection.session_id_for_attachment(id)
-    }
-
-    pub(super) fn filter_external_response(
-        &self,
-        command: &KernelCommand,
-        result: Result<LocalDaemonResponse, DaemonError>,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        if command.caller.connection_class != Some(KernelConnectionClass::ExternalAgent) {
-            return result;
-        }
-        result.and_then(|mut response| {
-            if let LocalDaemonResponse::SessionsListed { sessions } = &mut response {
-                let granted_session = self.runtime_state.authorize_external_request(
-                    &command.caller.caller_id,
-                    &LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
-                )?;
-                sessions.retain(|session| session.id() == granted_session);
-            }
-            Ok(response)
-        })
     }
 
     pub(super) fn audit_access_terminal_attempt(
@@ -126,9 +96,12 @@ impl CommandRouter {
         ) {
             return Ok(None);
         }
-        if command.caller.connection_class != Some(KernelConnectionClass::Terminal) {
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) {
             return Err(error(
-                "only a Chariox terminal can list or revoke access grants",
+                "only a Chariox terminal or local grant holder can list or revoke access grants",
             ));
         }
         let owner = command_caller_user_id(command);

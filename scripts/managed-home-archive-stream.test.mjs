@@ -277,12 +277,21 @@ for (const mode of ["startup", "descendant"]) {
 test("failed capture preserves a concurrently replaced archive name", async t => {
   const { root, destination, run } = await fixture(t)
   const moved = join(root, "our-partial")
+  // MP-07/MP-11: advance inactivity only after actual producer bytes and the
+  // replacement are observed; scheduler load must not race the 150ms deadline.
+  const realTimeout = setTimeout
+  const pause = ms => new Promise(resolve => realTimeout(resolve, ms))
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   const capture = run("process.stdout.write('private');setInterval(()=>{},1000)", { progressTimeoutMs: 150 })
   const observed = capture.catch(error => error)
-  for (let i = 0; i < 100 && (await stat(destination)).size === 0; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  t.after(async () => { t.mock.timers.tick(151); await observed })
+  const deadline = performance.now() + 5000
+  while ((await stat(destination)).size === 0 && performance.now() < deadline) await pause(5)
+  assert.equal(await readFile(destination, "utf8"), "private", "producer must acknowledge its partial archive")
   const { rename } = await import("node:fs/promises")
   await rename(destination, moved)
   await writeFile(destination, "replacement", { mode: 0o600 })
+  t.mock.timers.tick(151)
   assert.match((await observed).message, /made no progress/)
   assert.equal(await readFile(destination, "utf8"), "replacement")
   assert.equal(await readFile(moved, "utf8"), "private")
