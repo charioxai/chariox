@@ -383,7 +383,7 @@ fn validate_destination(destination_root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn valid_transfer_id(transfer_id: &str) -> bool {
+pub(super) fn valid_transfer_id(transfer_id: &str) -> bool {
     transfer_id.len() == 47
         && transfer_id.starts_with("ctx_")
         && transfer_id[4..]
@@ -422,9 +422,8 @@ pub(super) fn prune_expired(state: &mut PersistedTransferState, now_ms: u64) -> 
     expired
 }
 
-// MP-07 / MP-08 / MP-11: keep all replay/launch bindings for owner copies;
-// the disposable target quota counts only Cloud-environment contexts. The
-// existing bounded state-file admission still reserves space for live receipts.
+// MP-08 / MP-11: legacy owner bindings are migrated to per-context history;
+// only disposable-target tombstones remain in the bounded live state.
 pub(super) fn disposable_consumed_contexts(state: &PersistedTransferState) -> usize {
     state
         .consumed_context_ids

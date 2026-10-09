@@ -2319,6 +2319,18 @@ fn commit_owner_copy(
     with_project: bool,
     register: impl FnOnce(&crate::local::ManagedContextLaunchTarget),
 ) -> crate::local::ManagedContextLaunchTarget {
+    commit_owner_copy_with_history_padding(store, root, context_id, now, with_project, 0, register)
+}
+
+fn commit_owner_copy_with_history_padding(
+    store: &ManagedContextTransferStore,
+    root: &std::path::Path,
+    context_id: &str,
+    now: u64,
+    with_project: bool,
+    padding: usize,
+    register: impl FnOnce(&crate::local::ManagedContextLaunchTarget),
+) -> crate::local::ManagedContextLaunchTarget {
     let destination = owner_destination();
     let mut caller = caller(&sha256_bytes(b"source-key"));
     caller.target_destination = destination.clone();
@@ -2368,6 +2380,28 @@ fn commit_owner_copy(
     if !with_project {
         receipt.development =
             crate::managed_context::package::ManagedContextImportedDevelopment::Empty;
+    }
+    if padding > 0 {
+        let crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+            receipt: development,
+            ..
+        } = &mut receipt.development
+        else {
+            panic!("Project receipt required")
+        };
+        let repository = development.repositories[0].clone();
+        for index in 1..32 {
+            let mut extra = repository.clone();
+            extra.repository_id = format!("repository-extra-{index}");
+            extra.role = crate::managed_context::development::DevelopmentRepositoryRole::Supporting;
+            extra.target_directory = format!("linked-{index}-{}", "x".repeat(padding));
+            extra.destination_path = repository
+                .destination_path
+                .parent()
+                .unwrap()
+                .join(&extra.target_directory);
+            development.repositories.push(extra);
+        }
     }
     let target = store
         .launch_target_for_import_receipt(&armed.transfer_id, &receipt)
@@ -2464,4 +2498,277 @@ fn r4_owner_kernel_accepts_more_copies_than_the_disposable_record_limit() {
     let at = now + copies as u64 * hour;
     commit_owner_copy(&store, &root, "context-after-reopen", at, false, |_| {});
     fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn r9_owner_history_exceeds_live_state_byte_capacity_and_survives_retention() {
+    // MP-08 / MP-11: complete 300 real store lifecycles with large typed receipts.
+    // Their retained launch bindings alone cross the actual 16 MiB state limit.
+    let root = test_root("owner-history-byte-capacity");
+    let now = current_time_ms();
+    let hour = 60 * 60 * 1_000;
+    let mut store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let mut historical_bytes = 0;
+    let mut oldest = None;
+    for index in 0..300 {
+        let at = now + index * hour;
+        let target = commit_owner_copy_with_history_padding(
+            &store,
+            &root,
+            &format!("context-large-{index:04}"),
+            at,
+            true,
+            1800,
+            |_| {},
+        );
+        historical_bytes += serde_json::to_vec(&target).unwrap().len();
+        if index == 0 {
+            oldest = Some(target);
+        }
+        if index % 100 == 99 {
+            drop(store);
+            store = ManagedContextTransferStore::open(root.clone()).unwrap();
+        }
+    }
+    assert!(
+        historical_bytes > MAX_STATE_FILE_BYTES as usize,
+        "exercise the byte limit, not just the 256-record quota"
+    );
+    let at = now + 330 * hour;
+    store.prune_expired_transfers(at).unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let oldest = oldest.unwrap();
+    assert_eq!(
+        store
+            .launch_target(&oldest.context_id, &oldest.plan_digest)
+            .unwrap(),
+        oldest
+    );
+    store
+        .authorize_owner_launch_target(
+            &oldest.context_id,
+            "user-1",
+            "realm-1",
+            &sha256_bytes(b"target-key"),
+        )
+        .unwrap();
+    assert!(store
+        .authorize_owner_launch_target(
+            &oldest.context_id,
+            "foreign",
+            "realm-1",
+            &sha256_bytes(b"target-key")
+        )
+        .is_err());
+    let mut replay = arm_request(b"replay", at + 10_000);
+    replay.plan.context_id = oldest.context_id.clone();
+    replay.plan.destination = owner_destination();
+    replay.target_environment_id.clear();
+    replay.destination_parent = root.join("destinations");
+    assert!(
+        store.arm(replay, at).is_err(),
+        "retained history prevents replay"
+    );
+    commit_owner_copy(
+        &store,
+        &root,
+        "context-after-byte-capacity",
+        at,
+        false,
+        |_| {},
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn r9_owner_history_migrates_v5_near_byte_capacity_without_losing_authority() {
+    let root = test_root("owner-history-v5-migration");
+    let mut state = PersistedTransferState {
+        schema_version: 5,
+        ..Default::default()
+    };
+    let mut retained = Vec::new();
+    for index in 0..256 {
+        let context_id = format!("legacy-owner-{index:04}");
+        let mut target = large_launch_target(&context_id);
+        target.destination = owner_destination();
+        target.environment_id.clear();
+        state.consumed_context_ids.insert(context_id.clone());
+        state
+            .applied_contexts
+            .insert(context_id.clone(), target.clone());
+        state.owner_context_authorities.insert(
+            context_id.clone(),
+            OwnerContextAuthority {
+                owner_user_id: "user-1".into(),
+                realm_id: "realm-1".into(),
+                target_key_thumbprint: sha256_bytes(b"target-key"),
+            },
+        );
+        if persisted_state_size(&state).unwrap()
+            > MAX_STATE_FILE_BYTES as usize - STATE_CAPACITY_MARGIN_BYTES
+        {
+            state.consumed_context_ids.remove(&context_id);
+            state.applied_contexts.remove(&context_id);
+            state.owner_context_authorities.remove(&context_id);
+            break;
+        }
+        retained.push(target);
+    }
+    assert!(persisted_state_size(&state).unwrap() > 15 * 1024 * 1024);
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(store.lock_state().owner_context_authorities.is_empty());
+    assert!(store.lock_state().applied_contexts.is_empty());
+    assert!(store.lock_state().consumed_context_ids.is_empty());
+    assert_eq!(
+        store.lock_state().schema_version,
+        6,
+        "old kernels must reject split history"
+    );
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    for target in retained {
+        assert_eq!(
+            store
+                .launch_target(&target.context_id, &target.plan_digest)
+                .unwrap(),
+            target
+        );
+        store
+            .authorize_owner_launch_target(
+                &target.context_id,
+                "user-1",
+                "realm-1",
+                &sha256_bytes(b"target-key"),
+            )
+            .unwrap();
+    }
+    commit_owner_copy(
+        &store,
+        &root,
+        "context-after-legacy-byte-capacity",
+        current_time_ms(),
+        false,
+        |_| {},
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn r9_owner_completion_recovers_after_live_index_persistence_fails() {
+    let root = test_root("owner-history-commit-crash");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let mut target = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        commit_owner_copy(
+            &store,
+            &root,
+            "context-owner-crash",
+            now,
+            false,
+            |created| {
+                target = Some(created.clone());
+                fs::rename(
+                    root.join("state.json"),
+                    root.join("state-before-commit.json"),
+                )
+                .unwrap();
+                fs::create_dir(root.join("state.json")).unwrap();
+            },
+        );
+    }));
+    assert!(result.is_err(), "fixture must fail the live-index write");
+    let target = target.unwrap();
+    assert!(
+        store.owner_history(&target.context_id).unwrap().is_some(),
+        "owner commit survived independently"
+    );
+    fs::remove_dir(root.join("state.json")).unwrap();
+    fs::rename(
+        root.join("state-before-commit.json"),
+        root.join("state.json"),
+    )
+    .unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(store
+        .lock_state()
+        .entries
+        .values()
+        .all(|entry| entry.phase == ManagedContextTransferPhase::Consumed));
+    assert_eq!(
+        store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .unwrap(),
+        target
+    );
+    let entry = store
+        .lock_state()
+        .entries
+        .iter()
+        .next()
+        .map(|(id, entry)| (id.clone(), entry.import_receipt_json.clone().unwrap()))
+        .unwrap();
+    store
+        .commit_import(&entry.0, &entry.1, now + 10)
+        .expect("same receipt idempotently resumes");
+    store
+        .authorize_owner_launch_target(
+            &target.context_id,
+            "user-1",
+            "realm-1",
+            &sha256_bytes(b"target-key"),
+        )
+        .unwrap();
+    let mut replay = arm_request(b"replay", now + 10_000);
+    replay.plan.context_id = target.context_id.clone();
+    replay.plan.destination = owner_destination();
+    replay.target_environment_id.clear();
+    replay.destination_parent = root.join("destinations");
+    assert!(store.arm(replay, now + 20).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn r9_owner_history_rejects_unsafe_directory_and_record_inputs() {
+    let root = test_root("owner-history-unsafe");
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let target = commit_owner_copy(
+        &store,
+        &root,
+        "context-owner-unsafe",
+        current_time_ms(),
+        false,
+        |_| {},
+    );
+    let directory = root.join("owner-contexts");
+    fs::rename(&directory, root.join("history-backup")).unwrap();
+    std::os::unix::fs::symlink(root.join("history-backup"), &directory).unwrap();
+    assert!(store
+        .launch_target(&target.context_id, &target.plan_digest)
+        .is_err());
+    fs::remove_file(&directory).unwrap();
+    fs::rename(root.join("history-backup"), &directory).unwrap();
+    let path = directory.join(format!(
+        "{}.json",
+        sha256_bytes(target.context_id.as_bytes())
+    ));
+    fs::remove_file(&path).unwrap();
+    crate::test_support::assert_fifo_rejected(move |fifo| {
+        std::os::unix::fs::symlink(fifo, &path).unwrap();
+        let rejected = store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .is_err();
+        fs::remove_file(&path).unwrap();
+        rejected
+    });
+    fs::remove_dir_all(root).unwrap();
 }

@@ -10,6 +10,7 @@ use crate::error::DaemonError;
 
 mod cleanup;
 mod model;
+mod owner_history;
 mod policy;
 mod storage;
 
@@ -29,7 +30,7 @@ use storage::{
     write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 5;
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 6;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
@@ -186,7 +187,7 @@ impl ManagedContextTransferStore {
         };
         if !matches!(
             state.schema_version,
-            1 | 2 | 3 | 4 | TRANSFER_STATE_SCHEMA_VERSION
+            1 | 2 | 3 | 4 | 5 | TRANSFER_STATE_SCHEMA_VERSION
         ) {
             return Err(transfer_error(format!(
                 "unsupported managed context transfer state version {}",
@@ -201,7 +202,13 @@ impl ManagedContextTransferStore {
         if store.lock_state().schema_version < TRANSFER_STATE_SCHEMA_VERSION {
             store.migrate_legacy_state(recovery)?;
         }
-        validate_persisted_state(&store.lock_state())?;
+        {
+            let mut state = store.lock_state();
+            validate_persisted_state(&state)?;
+            if store.externalize_owner_history(&mut state)? {
+                store.persist_locked(&state)?;
+            }
+        }
         store.cleanup_failed_transfers();
         store.prune_expired_transfers(current_time_ms())?;
         store.cleanup_interrupted_import_staging()?;
@@ -224,6 +231,7 @@ impl ManagedContextTransferStore {
         if state
             .consumed_context_ids
             .contains(&request.plan.context_id)
+            || self.owner_history(&request.plan.context_id)?.is_some()
         {
             return Err(transfer_error(
                 "managed context launch authorization has already been consumed",
@@ -625,12 +633,22 @@ impl ManagedContextTransferStore {
         } else {
             None
         };
+        let owner_target = if existing.plan.destination.is_some() {
+            self.owner_history(&existing.plan.context_id)?
+                .map(|record| record.target)
+        } else {
+            None
+        };
         if existing.phase == ManagedContextTransferPhase::Consumed {
             return if existing.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
                 && existing.import_receipt_json.as_deref() == Some(import_receipt_json)
                 && launch_target.as_ref().is_none_or(|target| {
                     state.applied_contexts.get(&existing.plan.context_id) == Some(target)
+                        || owner_target.as_ref() == Some(target)
                 }) {
+                if existing.plan.destination.is_some() {
+                    self.persist_locked(&state)?;
+                }
                 drop(state);
                 self.cleanup_transfer_artifacts(transfer_id)
             } else {
@@ -674,21 +692,16 @@ impl ManagedContextTransferStore {
                 "managed context launch target capacity is full",
             ));
         }
+        if existing.plan.destination.is_some() {
+            return self.commit_owner_import(
+                &mut state,
+                transfer_id,
+                launch_target.expect("validated owner launch target"),
+                import_receipt_json,
+                now_ms,
+            );
+        }
         let context_id = existing.plan.context_id.clone();
-        let owner_authority = existing
-            .plan
-            .destination
-            .as_ref()
-            .map(|_| OwnerContextAuthority {
-                owner_user_id: existing.owner_user_id.clone(),
-                realm_id: existing.realm_id.clone(),
-                target_key_thumbprint: existing.target_key_thumbprint.clone(),
-            });
-        let prior_owner_authority = owner_authority.and_then(|authority| {
-            state
-                .owner_context_authorities
-                .insert(context_id.clone(), authority)
-        });
         let entry = state
             .entries
             .get_mut(transfer_id)
@@ -702,13 +715,6 @@ impl ManagedContextTransferStore {
         let prior_launch_target = launch_target
             .and_then(|target| state.applied_contexts.insert(context_id.clone(), target));
         if let Err(error) = self.persist_locked(&state) {
-            if let Some(authority) = prior_owner_authority {
-                state
-                    .owner_context_authorities
-                    .insert(context_id.clone(), authority);
-            } else {
-                state.owner_context_authorities.remove(&context_id);
-            }
             if let Some(entry) = state.entries.get_mut(transfer_id) {
                 entry.phase = ManagedContextTransferPhase::Importing;
                 entry.import_receipt_sha256 = None;
@@ -764,7 +770,12 @@ impl ManagedContextTransferStore {
         plan_digest: &str,
     ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
         let state = self.lock_state();
-        let Some(target) = state.applied_contexts.get(context_id) else {
+        let historical = self.owner_history(context_id)?;
+        let Some(target) = state
+            .applied_contexts
+            .get(context_id)
+            .or_else(|| historical.as_ref().map(|record| &record.target))
+        else {
             if state.entries.values().any(|entry| {
                 entry.plan.context_id == context_id && entry.plan.plan_digest == plan_digest
             }) {
@@ -795,9 +806,11 @@ impl ManagedContextTransferStore {
         target_key: &str,
     ) -> Result<(), DaemonError> {
         let state = self.lock_state();
+        let historical = self.owner_history(context_id)?;
         let authority = state
             .owner_context_authorities
             .get(context_id)
+            .or_else(|| historical.as_ref().map(|record| &record.authority))
             .ok_or_else(|| {
                 authorization_error("owner context has no authoritative completion binding")
             })?;
@@ -859,7 +872,7 @@ impl ManagedContextTransferStore {
                 }
                 self.cleanup_transfer_artifacts(&transfer_id)?;
             }
-        } else {
+        } else if legacy_version < 5 {
             let mut applied_contexts = Vec::new();
             for (transfer_id, entry) in &state.entries {
                 if entry.phase != ManagedContextTransferPhase::Consumed {
@@ -911,6 +924,7 @@ impl ManagedContextTransferStore {
         }
         state.schema_version = TRANSFER_STATE_SCHEMA_VERSION;
         validate_persisted_state(&state)?;
+        self.externalize_owner_history(&mut state)?;
         let removed = compact_consumed_entries_for_state_capacity(&mut state)?;
         for transfer_id in removed {
             self.cleanup_transfer_artifacts(&transfer_id)?;
