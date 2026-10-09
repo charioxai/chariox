@@ -202,6 +202,10 @@ impl KernelRuntimeState {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing meta_trace_supervision_summary operation signature and explicit context arguments"
+    )]
     fn meta_trace_supervision_summary(
         &self,
         session: &crate::session::RuntimeSession,

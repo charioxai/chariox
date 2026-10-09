@@ -766,6 +766,10 @@ impl KernelRuntimeState {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing persist_metaagent_interaction_resolution operation signature and explicit context arguments"
+    )]
     fn persist_metaagent_interaction_resolution(
         &self,
         session: &crate::session::RuntimeSession,

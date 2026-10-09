@@ -602,6 +602,10 @@ pub(crate) fn watch_subscription_state(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing emit_kernel_event operation signature and explicit context arguments"
+)]
 async fn emit_kernel_event(
     runtime: &Arc<KernelTransportRuntime>,
     outgoing_tx: &KernelOutgoingSender,

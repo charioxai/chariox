@@ -460,6 +460,10 @@ mod cli_relay_sender_tests {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ParsedRelayClientMessage typed actor payload layout"
+)]
 enum ParsedRelayClientMessage {
     Request(ParsedRelayClientRequest),
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),

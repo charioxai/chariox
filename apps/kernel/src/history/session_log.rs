@@ -506,6 +506,10 @@ impl SessionHistoryEntry {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed(
         session_id: &str,
         provider_run_id: Option<&str>,
@@ -536,6 +540,10 @@ impl SessionHistoryEntry {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed_with_merge_key operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed_with_merge_key(
         session_id: &str,
         provider_run_id: Option<&str>,
@@ -574,6 +582,10 @@ impl SessionHistoryEntry {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed_state_signal operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed_state_signal(
         session_id: &str,
         provider_run_id: Option<&str>,

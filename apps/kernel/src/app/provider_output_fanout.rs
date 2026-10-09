@@ -75,6 +75,10 @@ impl ProviderOutputFanout {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing fan_out_for_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn fan_out_for_agent(
         &self,
         session_id: &str,

@@ -160,6 +160,10 @@ enum Command {
     /// See `store::reset_after_kernel_start`.
     ResetAfterKernelStart,
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing Reply typed actor payload layout"
+)]
 enum Reply {
     Admitted(ActiveStartAdmission),
     Done,

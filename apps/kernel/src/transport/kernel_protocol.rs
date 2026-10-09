@@ -30,6 +30,10 @@ pub(crate) struct BrowserImportRelayResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing KernelIncomingFrame typed actor payload layout"
+)]
 pub(crate) enum KernelIncomingFrame {
     Request {
         request_id: String,

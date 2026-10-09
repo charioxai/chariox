@@ -13,6 +13,10 @@ impl WorkflowCodeArtifactRegistry {
         chariox_home().map(|home| home.join("workflow-code"))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing save operation signature and explicit context arguments"
+    )]
     pub fn save(
         &self,
         name: &str,
@@ -66,6 +70,10 @@ impl WorkflowCodeArtifactRegistry {
         Ok(stored.into_artifact(path))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update operation signature and explicit context arguments"
+    )]
     pub fn update(
         &self,
         name: &str,

@@ -291,6 +291,10 @@ pub(super) async fn query_remote_queued_steer_receipt(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing query_remote_queued_steer_receipt_with_transport operation signature and explicit context arguments"
+)]
 pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
     state: &KernelRuntimeState,
     agent_id: &str,

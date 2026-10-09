@@ -26,12 +26,20 @@ pub(crate) enum AppPublisherError {
 /// Kernel-only, never deserialized from App code or treated as human approval.
 #[derive(Debug, Clone)]
 pub(crate) enum AppPublisherMutation {
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Enroll {
         publisher: TrustedPublisher,
         expected_revision: u64,
         decision: TrustDecision,
         now_ms: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Revoke {
         publisher_id: String,
         key_id: String,

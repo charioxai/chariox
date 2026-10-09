@@ -12,6 +12,10 @@ pub struct WorkflowRunOutputSubmission {
 }
 
 impl WorkflowRunOutputSubmission {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(output: WorkflowOutputPayload, valid: bool, warning: Option<String>) -> Self {
         Self {
             output,
@@ -60,6 +64,10 @@ impl Default for WorkflowTurnOutputSubmissions {
 }
 
 impl WorkflowTurnOutputSubmissions {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new() -> Self {
         Self {
             intermediate: None,
@@ -99,6 +107,10 @@ pub struct WorkflowIntermediateOutput {
 }
 
 impl WorkflowIntermediateOutput {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: impl Into<String>,
         source_node_run_id: impl Into<String>,
@@ -150,6 +162,10 @@ pub struct WorkflowArtifactRef {
 }
 
 impl WorkflowArtifactRef {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: impl Into<String>,
         kind: impl Into<String>,
@@ -189,6 +205,10 @@ pub struct WorkflowOutputPayload {
 }
 
 impl WorkflowOutputPayload {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(message: impl Into<String>, artifacts: Vec<WorkflowArtifactRef>) -> Self {
         Self {
             message: message.into(),
@@ -213,6 +233,10 @@ pub struct WorkflowCompletionSnapshot {
 }
 
 impl WorkflowCompletionSnapshot {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(summary: impl Into<String>, output: Option<WorkflowOutputPayload>) -> Self {
         Self {
             summary: summary.into(),
@@ -251,6 +275,10 @@ pub struct WorkflowHandoffPayload {
 }
 
 impl WorkflowHandoffPayload {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         workflow_run_id: impl Into<String>,
         workflow_id: impl Into<String>,

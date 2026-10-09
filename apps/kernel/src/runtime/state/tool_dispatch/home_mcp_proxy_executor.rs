@@ -165,6 +165,10 @@ impl KernelRuntimeState {
         })?
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_home_mcp_proxy_result_audit_event operation signature and explicit context arguments"
+    )]
     async fn append_home_mcp_proxy_result_audit_event(
         &self,
         kind: &'static str,

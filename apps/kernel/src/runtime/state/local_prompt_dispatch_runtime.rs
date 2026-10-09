@@ -2962,6 +2962,10 @@ pub(in crate::runtime::state) mod tests {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing dispatch operation signature and explicit context arguments"
+    )]
     fn dispatch(
         session_id: &str,
         agent_id: &str,

@@ -415,6 +415,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent(
         &mut self,
         lease_id: &str,
@@ -479,6 +483,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent_from_base_directory operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent_from_base_directory(
         &mut self,
         base_directory: &Path,

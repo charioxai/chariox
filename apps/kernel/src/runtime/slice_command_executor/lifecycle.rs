@@ -587,6 +587,10 @@ pub(super) async fn execute_start_slice_request(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing execute_start_slice_request_with_relaunch_manifests operation signature and explicit context arguments"
+)]
 async fn execute_start_slice_request_with_relaunch_manifests(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,

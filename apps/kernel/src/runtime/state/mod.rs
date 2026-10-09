@@ -528,6 +528,10 @@ impl KernelRuntimeState {
     }
 
     #[allow(dead_code)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
@@ -606,6 +610,10 @@ impl KernelRuntimeState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state_and_lanes operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state_and_lanes(
         app: Arc<Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,

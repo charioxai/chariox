@@ -475,6 +475,10 @@ impl KernelRuntimeState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_extension_registration_audit_event operation signature and explicit context arguments"
+    )]
     fn append_extension_registration_audit_event(
         &self,
         event_kind: &'static str,
@@ -522,6 +526,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing grant_registered_extension_if_requested operation signature and explicit context arguments"
+    )]
     async fn grant_registered_extension_if_requested(
         &self,
         session: &crate::session::RuntimeSession,

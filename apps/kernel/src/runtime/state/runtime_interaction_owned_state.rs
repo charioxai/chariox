@@ -159,6 +159,10 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing resolve_runtime_interaction_inner operation signature and explicit context arguments"
+    )]
     fn resolve_runtime_interaction_inner(
         &self,
         session_id: &str,

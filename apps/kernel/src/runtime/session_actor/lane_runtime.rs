@@ -273,6 +273,10 @@ impl SessionRuntime {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_session_command_lane operation signature and explicit context arguments"
+)]
 async fn run_session_command_lane(
     store: SessionRuntimeStore,
     focus_projection: FocusedAgentProjection,

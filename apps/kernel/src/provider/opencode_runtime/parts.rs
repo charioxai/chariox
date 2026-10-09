@@ -9,6 +9,10 @@ use super::snapshot::refresh_opencode_message_metadata;
 use super::transcript::render_tool_transcript_update;
 use super::{OpenCodeOutputChunk, OpenCodeRuntimeState};
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_message_part_delta operation signature and explicit context arguments"
+)]
 pub(super) fn handle_message_part_delta(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,

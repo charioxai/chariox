@@ -122,6 +122,10 @@ impl CharioxConnectorRegistry {
         Self::read_yaml(&path).map(Some)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_call operation signature and explicit context arguments"
+    )]
     pub fn prepare_call(
         &self,
         adapters: &CharioxConnectorAdapterRegistry,
@@ -206,6 +210,10 @@ impl CharioxConnectorRegistry {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_once operation signature and explicit context arguments"
+    )]
     pub fn execute_once(
         &self,
         adapters: &CharioxConnectorAdapterRegistry,

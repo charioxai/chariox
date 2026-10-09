@@ -151,6 +151,10 @@ pub(super) fn reconcile_queued_in(
     installation: &str,
 ) -> rusqlite::Result<Vec<String>> {
     let after:i64=tx.query_row("SELECT queued_after_sequence FROM app_outbox_replay_floors WHERE owner_id=?1 AND installation_id=?2",params![owner,installation],|r|r.get(0))?;
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit read state or return type at the existing boundary"
+    )]
     let read = |after: i64| -> rusqlite::Result<Vec<(i64, String, String, Option<String>)>> {
         let mut statement=tx.prepare("SELECT sequence,receipt_id,queued_prompt_id,queued_session_id FROM app_outbox
          WHERE owner_id=?1 AND installation_id=?2 AND state='queued' AND sequence>?3 AND queued_prompt_id IS NOT NULL

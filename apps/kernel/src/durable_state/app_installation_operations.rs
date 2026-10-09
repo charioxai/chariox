@@ -140,6 +140,10 @@ enum Command {
         digest: String,
         budget: AppOperationBudget,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Begin {
         owner: String,
         request_id: String,

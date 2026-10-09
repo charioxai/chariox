@@ -78,6 +78,10 @@ impl SessionStateProjectionStore {
             .clone()
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit waiting_room_snapshot state or return type at the existing boundary"
+    )]
     pub(crate) fn waiting_room_snapshot(
         &self,
     ) -> (

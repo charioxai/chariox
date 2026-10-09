@@ -711,6 +711,10 @@ fn confirm_registration(
     remove_bound_envelope(config, envelope)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing report_pre_reimage_runtime_identity operation signature and explicit context arguments"
+)]
 fn report_pre_reimage_runtime_identity(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,

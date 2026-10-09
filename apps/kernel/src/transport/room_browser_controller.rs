@@ -44,6 +44,7 @@ impl RoomComputerSecretInput {
         &self.0
     }
 
+    #[cfg(test)]
     pub(crate) fn new(value: String) -> Self {
         Self(value)
     }

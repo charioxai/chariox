@@ -153,6 +153,10 @@ pub(crate) enum Operation {
         cancelled: bool,
         now: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Occur(InboxEvent),
     Send {
         task: String,
@@ -229,9 +233,7 @@ pub(crate) enum Operation {
         revision: u64,
     },
     /// Rolls back an admission whose prompt submission was rejected.
-    Withdraw {
-        task: String,
-    },
+    Withdraw { task: String },
     OwnerResponse {
         task: String,
         revision: u64,

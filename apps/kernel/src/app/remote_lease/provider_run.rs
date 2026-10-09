@@ -6,6 +6,10 @@ use crate::transport::relay_peer::RequiredRemoteMcp;
 use super::mcp_availability::provider_run_mcp_set_matches;
 use super::RemoteLeaseRuntime;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing LeasedProviderRunMatch typed actor payload layout"
+)]
 pub(crate) enum LeasedProviderRunMatch {
     Ready(String),
     LaunchRequired(LaunchProviderRequest),

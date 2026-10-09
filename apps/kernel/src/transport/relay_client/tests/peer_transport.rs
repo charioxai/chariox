@@ -11,6 +11,10 @@ enum ControlledWorkspaceLiveSyncAction {
     Success,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_controlled_workspace_live_sync_target operation signature and explicit context arguments"
+)]
 async fn run_controlled_workspace_live_sync_target(
     relay_url: String,
     registration: chariox_relay::protocol::DaemonRegistration,

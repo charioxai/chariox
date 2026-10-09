@@ -28,6 +28,10 @@ pub struct CodexThread {
 }
 
 impl CodexClient {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing thread_start operation signature and explicit context arguments"
+    )]
     pub fn thread_start(
         &self,
         socket: &mut CodexSocket,
@@ -112,6 +116,10 @@ impl CodexClient {
         Ok(params)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing thread_resume operation signature and explicit context arguments"
+    )]
     pub fn thread_resume(
         &self,
         socket: &mut CodexSocket,
@@ -176,6 +184,10 @@ impl CodexClient {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing turn_start operation signature and explicit context arguments"
+    )]
     pub fn turn_start(
         &self,
         socket: &mut CodexSocket,

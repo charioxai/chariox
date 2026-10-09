@@ -729,6 +729,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_home_extension_manifest_audit_event operation signature and explicit context arguments"
+    )]
     fn append_home_extension_manifest_audit_event(
         &self,
         kind: &'static str,
@@ -900,6 +904,10 @@ impl KernelRuntimeState {
             .update_session_config(session_id, attachment_id, values, requires_idle)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
+    )]
     pub(crate) async fn update_agent_config(
         &self,
         session_id: &str,
@@ -991,6 +999,10 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_profile operation signature and explicit context arguments"
+    )]
     pub(crate) async fn update_agent_profile(
         &self,
         session_id: &str,

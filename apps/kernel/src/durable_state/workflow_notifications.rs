@@ -182,6 +182,10 @@ impl DurableKernelStateStore {
             .recv()
             .map_err(|_| error("notification writer unavailable"))?
     }
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit notification_inventory state or return type at the existing boundary"
+    )]
     pub(crate) fn notification_inventory(
         &self,
         owner: &str,

@@ -4,6 +4,10 @@ use std::hash::{Hash, Hasher};
 const TERMINAL_STREAM_SHARD_COUNT: usize = 64;
 
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit TerminalStreamStore state or return type at the existing boundary"
+)]
 pub struct TerminalStreamStore {
     shards: Arc<[StdMutex<TerminalStreamService>]>,
     health_store: TerminalStreamHealthStore,

@@ -13,6 +13,10 @@ pub struct UserConfigSchemaEntry {
     pub description: String,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing entry operation signature and explicit context arguments"
+)]
 fn entry(
     path: &str,
     value_type: &str,

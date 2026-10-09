@@ -11,10 +11,22 @@ use crate::{
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FirstInstallControlError {
     #[error("app_install_busy")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Busy,
     #[error("app_install_invalid")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Invalid,
     #[error("app_install_preparation:{0:?}")]
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Preparation(PreparationError),
     #[error(transparent)]
     Operation(#[from] InstallOperationError),

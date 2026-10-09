@@ -29,21 +29,30 @@ pub(crate) enum AppVerifiedInstallationError {
 /// existing kernel operation; these requests do not assert human approval.
 #[derive(Debug, Clone)]
 pub(crate) enum AppVerifiedInstallationMutation {
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     CreateAndStage {
         installation_id: String,
         candidate: VerifiedInstallCandidate,
         now_ms: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Stage {
         installation_id: String,
         expected_generation: u64,
         candidate: VerifiedInstallCandidate,
         now_ms: u64,
     },
-    Commit {
-        token: StageToken,
-        now_ms: u64,
-    },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
+    Commit { token: StageToken, now_ms: u64 },
 }
 
 #[derive(Debug)]

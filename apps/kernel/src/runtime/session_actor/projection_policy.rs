@@ -5,6 +5,10 @@ use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalStreamStore;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing SessionProjectionAction typed actor payload layout"
+)]
 pub(super) enum SessionProjectionAction {
     Update(RuntimeSession),
     Remove { session_id: String },

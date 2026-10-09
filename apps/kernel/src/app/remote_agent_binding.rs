@@ -633,6 +633,10 @@ impl DaemonApp {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit remote_prompt_capabilities_for_agent state or return type at the existing boundary"
+    )]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
         agent: &AgentInstance,

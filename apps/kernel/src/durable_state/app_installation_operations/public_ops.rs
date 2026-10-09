@@ -21,6 +21,10 @@ pub(crate) struct InstallApprovalChallenge {
     review: serde_json::Value,
     reinstall: bool,
     /// The deployment a copy installation serves, named in its prompt.
+    #[allow(
+        dead_code,
+        reason = "Retain deployment context in the existing approval object"
+    )]
     deployment_id: Option<String>,
 }
 impl InstallApprovalChallenge {
@@ -49,11 +53,19 @@ impl InstallApprovalChallenge {
         &self.review
     }
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing InstallReviewDisposition typed actor payload layout"
+)]
 pub(crate) enum InstallReviewDisposition {
     Prompt(InstallApprovalChallenge),
     Approved,
     Terminal,
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing PublicCommand typed actor payload layout"
+)]
 pub(super) enum PublicCommand {
     Reserve {
         owner: String,

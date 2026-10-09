@@ -202,6 +202,10 @@ impl RelayOutgoingSender {
         (Self::new(priority_tx, event_tx), priority_rx, event_rx)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_send typed error contract"
+    )]
     pub(crate) fn try_send(
         &self,
         envelope: RelayEnvelope,

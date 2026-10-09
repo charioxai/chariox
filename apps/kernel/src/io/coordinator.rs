@@ -118,6 +118,10 @@ impl ArtifactEditCoordinator {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing prepare_edit typed error contract"
+    )]
     pub fn prepare_edit(
         &self,
         request: ArtifactWriteRequest,
@@ -154,6 +158,10 @@ impl ArtifactEditCoordinator {
         self.active_reservations.remove(&artifact_id);
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_reserve_ranges typed error contract"
+    )]
     pub fn try_reserve_ranges(
         &mut self,
         workspace_identity: &WorkspaceIdentity,
@@ -225,6 +233,10 @@ impl ArtifactEditCoordinator {
             .collect()
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing prepare_edit_inner typed error contract"
+    )]
     fn prepare_edit_inner(
         &self,
         request: ArtifactWriteRequest,
@@ -243,6 +255,10 @@ impl ArtifactEditCoordinator {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing apply_whole_artifact_edit typed error contract"
+    )]
     fn apply_whole_artifact_edit(
         &self,
         artifact_id: ArtifactId,
@@ -315,6 +331,10 @@ impl ArtifactEditCoordinator {
         })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing apply_text_edit typed error contract"
+    )]
     fn apply_text_edit(
         &self,
         artifact_id: ArtifactId,
@@ -403,6 +423,10 @@ impl ArtifactEditCoordinator {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing commit_prepared_edit_inner typed error contract"
+    )]
     fn commit_prepared_edit_inner(
         &mut self,
         prepared: PreparedArtifactEdit,

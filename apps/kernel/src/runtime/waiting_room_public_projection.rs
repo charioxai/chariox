@@ -327,6 +327,10 @@ fn cached_session_sources_match(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -360,6 +364,10 @@ pub(crate) fn build_waiting_room_public_snapshot(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     metaagent_events: &MetaagentEventStore,
@@ -395,6 +403,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_cached_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     session_revision: u64,
@@ -434,6 +446,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing waiting_room_snapshot_auxiliary_fingerprint operation signature and explicit context arguments"
+)]
 fn waiting_room_snapshot_auxiliary_fingerprint(
     runtime_projects: &[RuntimeProject],
     slices: &[SliceRecord],
@@ -461,6 +477,10 @@ fn waiting_room_snapshot_auxiliary_fingerprint(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_summaries operation signature and explicit context arguments"
+)]
 fn build_waiting_room_public_snapshot_from_summaries(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
     projects: Vec<WaitingRoomPublicProjectSummary>,

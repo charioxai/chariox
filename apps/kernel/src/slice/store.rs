@@ -502,6 +502,10 @@ impl SliceStore {
         Ok(transaction)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing resolve_backup_restore_transactionally operation signature and explicit context arguments"
+    )]
     pub(crate) fn resolve_backup_restore_transactionally(
         &self,
         transaction_id: &str,

@@ -1292,6 +1292,10 @@ impl ProviderAccountProfileRegistry {
             .map(|profile| profile.public.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_observation operation signature and explicit context arguments"
+    )]
     pub fn update_observation(
         &self,
         owner_user_id: &str,

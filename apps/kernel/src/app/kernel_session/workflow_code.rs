@@ -1,6 +1,10 @@
 use super::*;
 
 impl<'a> KernelSessionService<'a> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_rebindings_and_alias_base operation signature and explicit context arguments"
+    )]
     pub(super) fn apply_workflow_code_definition_with_rebindings_and_alias_base(
         &mut self,
         session_id: &str,
@@ -353,6 +357,10 @@ impl<'a> KernelSessionService<'a> {
         Ok((definition, validation))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_javascript_with_rebindings operation signature and explicit context arguments"
+    )]
     pub(crate) fn compile_and_apply_workflow_code_javascript_with_rebindings(
         &mut self,
         session_id: &str,
@@ -377,6 +385,10 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_source_with_rebindings operation signature and explicit context arguments"
+    )]
     pub(crate) fn compile_and_apply_workflow_code_source_with_rebindings(
         &mut self,
         session_id: &str,

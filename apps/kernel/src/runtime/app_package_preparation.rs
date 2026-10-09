@@ -52,6 +52,10 @@ type Result<T> = std::result::Result<T, PreparationError>;
 pub(crate) struct PreparedAppPackage {
     owner: String,
     candidate: VerifiedInstallCandidate,
+    #[allow(
+        dead_code,
+        reason = "Keep the owned release directory pinned with its verified candidate until installation"
+    )]
     release: StagedRelease,
 }
 

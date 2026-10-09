@@ -69,6 +69,10 @@ impl WorkflowRun {
         self
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: impl Into<String>,
         workflow_id: impl Into<String>,

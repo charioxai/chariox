@@ -312,6 +312,10 @@ fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatu
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing active_turn_projection operation signature and explicit context arguments"
+)]
 fn active_turn_projection(
     prompt_id: String,
     provider_run_id: Option<String>,
