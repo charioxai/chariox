@@ -19,10 +19,10 @@ use crate::error::DaemonError;
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
 #[cfg(test)]
-use super::state::BootstrapReceiptStatus;
+use super::{managed_provider_topology, state::BootstrapReceiptStatus};
 use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{
-    jittered, managed_provider_topology, ManagedProviderTopology, PendingConfirmation,
+    jittered, ManagedProviderTopology, PendingConfirmation,
     MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
 };
 

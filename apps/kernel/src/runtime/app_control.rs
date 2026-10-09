@@ -30,8 +30,6 @@ pub(crate) use workers::AppWorkerPublisher;
 mod catalog;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod first_install;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-pub(crate) use first_install::FirstInstallControlError;
 
 /// See `AppControlService::admit_reply`.
 const REPLY_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
