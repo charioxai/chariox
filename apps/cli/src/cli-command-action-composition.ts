@@ -227,6 +227,7 @@ export type CliCommandActionCompositionDeps = {
   appendNotice: AnyFn
   readSecret?: AnyFn
   showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  providerLoginInteractions?: { track: (login: { login_id: string; provider: string; account_profile: string }) => void }
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
@@ -566,6 +567,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
     ...(readSecret ? { readSecret } : {}),
     ...(deps.showProviderLoginLink ? { showProviderLoginLink: deps.showProviderLoginLink } : {}),
+    ...(deps.providerLoginInteractions ? { trackProviderLogin: deps.providerLoginInteractions.track } : {}),
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),

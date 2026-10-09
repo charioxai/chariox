@@ -53,6 +53,13 @@ export type FocusedInteractionChoiceControllerDeps = {
   applySessionState: (session: RuntimeSession) => void
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError?: (error: unknown) => string
+  /** Provider login interactions: link actions and the kernel's result. */
+  providerLogin?: {
+    stripState: (interaction: RuntimeInteraction) => { view: { url: string | null } } | null
+    codeSent: (interaction: RuntimeInteraction) => boolean
+    openLink: (interaction: RuntimeInteraction) => Promise<void>
+    copyLink: (interaction: RuntimeInteraction) => Promise<void>
+  }
 }
 
 export type FocusedInteractionChoiceController = {
@@ -86,9 +93,11 @@ export function createFocusedInteractionChoiceController(
     if (submitDecision.action === "unavailable") {
       return false
     }
+    const providerLogin = Boolean(interaction.provider_login)
     if (submitDecision.action === "edit_custom") {
       deps.setCustomEditing(interaction.id, true)
       repaintInteractions()
+      if (deps.providerLogin?.stripState(interaction)) deps.flashFooter("Paste the code from the provider's page first", "info")
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
@@ -114,7 +123,12 @@ export function createFocusedInteractionChoiceController(
         deps.clearCustomReply(interaction.id)
         deps.setCustomEditing(interaction.id, false)
       }
-      deps.flashFooter("interaction answered", "info")
+      // A sent code is answered by the kernel's login status, not here.
+      if (!(providerLogin && submitDecision.choiceId === interaction.custom_choice?.id && deps.providerLogin?.codeSent(interaction))) {
+        deps.flashFooter(providerLogin
+          ? submitDecision.choiceId === "cancel" ? "Cancelling the sign-in…" : "Sign-in continues; waiting for the kernel…"
+          : "interaction answered", "info")
+      }
       return true
     } catch (error) {
       deps.flashFooter(formatError(error), "error")
@@ -144,6 +158,18 @@ export function createFocusedInteractionChoiceController(
     const interaction = deps.getFocusedInteraction()
     if (!interaction || event.eventType === "release") {
       return false
+    }
+    // O and C act on a login link while its code field is focused and empty.
+    if (
+      (event.name === "o" || event.name === "c") && !event.ctrl && !event.meta && !event.alt
+      && deps.isCustomEditing(interaction.id) && !deps.getCustomReply(interaction.id)
+      && deps.providerLogin?.stripState(interaction)?.view.url
+    ) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void (event.name === "o" ? deps.providerLogin.openLink(interaction) : deps.providerLogin.copyLink(interaction))
+        .catch((error) => deps.flashFooter(formatError(error), "error"))
+      return true
     }
     const keyAction = resolveInteractionChoiceKeyAction({
       interaction,

@@ -53,6 +53,7 @@ export type CliInputRoutingCompositionDeps = {
   clearCommandCenter: AnyFn
   flashFooter: AnyFn
   appendNotice: AnyFn
+  providerLoginInteractions: import("./provider-login-interaction-controller.js").ProviderLoginInteractionController
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   promptStopController: {
@@ -502,6 +503,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applySessionState: deps.applySessionState,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
+    providerLogin: deps.providerLoginInteractions,
   })
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
