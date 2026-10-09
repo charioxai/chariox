@@ -267,6 +267,8 @@ export class LocalIpcClient {
   private reconnectDelayMs = 250
   private lastReceivedEventId: number | null = null
   private lastKernelEventAtMs = 0
+  private readonly relaySubscriptionSockets = new WeakMap<KernelSubscriptionState, WebSocket>()
+  private readonly pendingRelaySubscribes = new WeakMap<KernelSubscriptionState, Promise<void>>()
   private kernelEventWatchdog: NodeJS.Timeout | null = null
   private controlHeartbeat: NodeJS.Timeout | null = null
   private eventHeartbeat: NodeJS.Timeout | null = null
@@ -397,6 +399,12 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
+    const previous = this.activeKernelSubscription
+    if (this.isRelayMode() && previous?.scope === "session"
+      && previous.sessionId === sessionId && previous.attachmentId === attachmentId) {
+      await this.sendRelaySubscribe(previous, this.lastReceivedEventId)
+      return
+    }
     const start = createKernelSessionSubscriptionStart({
       previous: this.activeKernelSubscription,
       lastReceivedEventId: this.lastReceivedEventId,
@@ -410,7 +418,7 @@ export class LocalIpcClient {
     this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(sessionId, attachmentId, start.resumeFromEventId)
+        await this.sendRelaySubscribe(start.subscription, start.resumeFromEventId)
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
           buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
@@ -429,6 +437,11 @@ export class LocalIpcClient {
     if (!this.supportsKernelEvents()) {
       return
     }
+    const previous = this.activeKernelSubscription
+    if (this.isRelayMode() && previous?.scope === "waiting_room_inventory") {
+      await this.sendRelaySubscribe(previous, null)
+      return
+    }
     const start = createWaitingRoomInventorySubscriptionStart({
       previous: this.activeKernelSubscription,
       lastReceivedEventId: this.lastReceivedEventId,
@@ -441,10 +454,8 @@ export class LocalIpcClient {
     try {
       if (this.isRelayMode()) {
         await this.sendRelaySubscribe(
-          start.subscription.sessionId,
-          start.subscription.attachmentId,
+          start.subscription,
           start.resumeFromEventId,
-          kernelSubscriptionScopeValue(start.subscription),
         )
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
@@ -678,21 +689,32 @@ export class LocalIpcClient {
     return this.nextReconnectDelayMs(delayMs)
   }
 
-  private async sendRelaySubscribe(
-    sessionId: string,
-    attachmentId: string,
+  private sendRelaySubscribe(subscription: KernelSubscriptionState, resumeFromEventId: number | null): Promise<void> {
+    const pending = this.pendingRelaySubscribes.get(subscription)
+    if (pending) return pending
+    const attempt = this.sendRelaySubscribeOnce(subscription, resumeFromEventId).finally(() => {
+      if (this.pendingRelaySubscribes.get(subscription) === attempt) this.pendingRelaySubscribes.delete(subscription)
+    })
+    this.pendingRelaySubscribes.set(subscription, attempt)
+    return attempt
+  }
+
+  private async sendRelaySubscribeOnce(
+    subscription: KernelSubscriptionState,
     resumeFromEventId: number | null,
-    subscriptionScope?: string,
   ): Promise<void> {
     const lane: KernelSocketLane = "event"
     const socket = await this.ensureWebSocket(lane)
     const daemonPublicKey = this.relayDaemonPublicKeyForSocket(lane, socket)
+    if (subscription.relayDecryptEvent && this.relaySubscriptionSockets.get(subscription) === socket) return
     const requestId = randomUUID()
-    const subscription = this.activeKernelSubscription
-    if (!subscription?.relaySubscriptionId) {
+    if (this.activeKernelSubscription !== subscription) {
       throw new LocalIpcError("write relay subscribe", "relay subscription state is missing")
     }
-    const subscriptionId = subscription.relaySubscriptionId
+    const subscriptionId = randomUUID()
+    subscription.relaySubscriptionId = subscriptionId
+    const { sessionId, attachmentId } = subscription
+    const subscriptionScope = kernelSubscriptionScopeValue(subscription)
     const keypair = this.relayIdentity ? null : createRelayKeypair()
     const identity = this.relayIdentity
     const clientPublicKey = this.relayIdentity?.publicKeyBase64
@@ -707,6 +729,7 @@ export class LocalIpcClient {
     }
     subscription.relayPublicKey = clientPublicKey
     subscription.relayDecryptEvent = decryptEvent
+    this.relaySubscriptionSockets.set(subscription, socket)
 
     const pending = this.pendingRequests.register<void>(requestId, lane)
     pending.setRelayDecryptResponse(decryptEvent)
@@ -727,7 +750,15 @@ export class LocalIpcClient {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
     }
 
-    await pending.promise
+    try {
+      await pending.promise
+    } catch (error) {
+      if (subscription.relayDecryptEvent === decryptEvent) {
+        subscription.relayDecryptEvent = null
+        subscription.relayPublicKey = null
+      }
+      throw error
+    }
   }
 
   private async sendRelayUnsubscribe(
@@ -1296,10 +1327,8 @@ export class LocalIpcClient {
     try {
       if (this.isRelayMode()) {
         await this.sendRelaySubscribe(
-          subscription.sessionId,
-          subscription.attachmentId,
+          subscription,
           this.lastReceivedEventId,
-          kernelSubscriptionScopeValue(subscription),
         )
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
