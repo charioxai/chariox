@@ -4528,6 +4528,16 @@ impl KernelRuntimeState {
                 .await?;
             let provider_run = owned
                 .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+            if owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return Ok(());
+            }
             if provider_run.state() != crate::provider::ProviderRunState::Running {
                 return Err(DaemonError::InvalidProviderRunState {
                     provider_run_id: dispatch.provider_run_id.clone(),
@@ -4542,6 +4552,7 @@ impl KernelRuntimeState {
                 return owned.provider_store.enqueue_structured_prompt_abort(
                     dispatch.session_id.clone(),
                     dispatch.provider_run_id.clone(),
+                    dispatch.prompt_id.clone(),
                 );
             }
             owned.terminal_stream.record_input(
@@ -4574,6 +4585,16 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
+            if owned
+                .cancelling_prompt_for_abort(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.prompt_id,
+                )
+                .is_none()
+            {
+                return Ok(());
+            }
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);
@@ -4662,37 +4683,36 @@ impl KernelRuntimeState {
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
                     Ok(()) if !structured => {
-                        if let Ok(provider_run) = state
-                            .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                        {
-                            if let Some(agent_id) = provider_run.agent_instance_id() {
-                                if let Ok(session) =
-                                    state.owned.session_store.get_session(&dispatch.session_id)
-                                {
-                                    if let Some(prompt) = state
-                                        .owned
-                                        .prompt_state_owner
-                                        .active_prompt_for_agent(&session, agent_id)
-                                    {
-                                        let _ = state
-                                            .owned
-                                            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-                                    }
-                                }
-                                let _ = state
-                                    .owned
-                                    .finalize_local_prompt_cancellation_with_queued_advance(
-                                        &dispatch.session_id,
-                                        agent_id,
-                                        Some(&dispatch.provider_run_id),
-                                    );
-                            }
+                        if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
+                            &dispatch.session_id,
+                            &dispatch.provider_run_id,
+                            &dispatch.prompt_id,
+                        ) {
+                            let _ = state
+                                .owned
+                                .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+                            let _ = state
+                                .owned
+                                .finalize_local_prompt_cancellation_with_queued_advance(
+                                    &dispatch.session_id,
+                                    &agent_id,
+                                    Some(&dispatch.provider_run_id),
+                                );
                         }
                         PromptAbortDispatchOutcome::Done
                     }
                     Ok(()) => loop {
+                        if state
+                            .owned
+                            .cancelling_prompt_for_abort(
+                                &dispatch.session_id,
+                                &dispatch.provider_run_id,
+                                &dispatch.prompt_id,
+                            )
+                            .is_none()
+                        {
+                            break PromptAbortDispatchOutcome::Done;
+                        }
                         let completion_signal = completion_signal
                             .as_ref()
                             .expect("structured abort should have a completion signal");
@@ -4703,26 +4723,12 @@ impl KernelRuntimeState {
                         state.reap_structured_prompt_jobs_and_dispatch();
                         let prompt_is_still_cancelling = state
                             .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                            .ok()
-                            .and_then(|run| run.agent_instance_id().map(str::to_string))
-                            .and_then(|agent_id| {
-                                state
-                                    .owned
-                                    .session_store
-                                    .get_session(&dispatch.session_id)
-                                    .ok()
-                                    .and_then(|session| {
-                                        state
-                                            .owned
-                                            .prompt_state_owner
-                                            .active_prompt_for_agent(&session, &agent_id)
-                                    })
-                            })
-                            .is_some_and(|prompt| {
-                                prompt.status() == crate::session::PromptStatus::Cancelling
-                            });
+                            .cancelling_prompt_for_abort(
+                                &dispatch.session_id,
+                                &dispatch.provider_run_id,
+                                &dispatch.prompt_id,
+                            )
+                            .is_some();
                         if !prompt_is_still_cancelling {
                             state.spawn_workflow_prompt_dispatches(
                                 state.owned.workflow_retry_blocked_claims(),

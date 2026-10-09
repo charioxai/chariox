@@ -1011,7 +1011,8 @@ async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_
         .session_store
         .get_session(&turn.session_id)
         .unwrap();
-    turn.runtime
+    let cancelling_prompt = turn
+        .runtime
         .owned
         .prompt_state_owner
         .begin_cancelling_active_prompt(&session, &turn.agent_id)
@@ -1025,7 +1026,11 @@ async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_
     turn.runtime
         .owned
         .provider_store
-        .enqueue_structured_prompt_abort(turn.session_id.clone(), substitute.clone())
+        .enqueue_structured_prompt_abort(
+            turn.session_id.clone(),
+            substitute.clone(),
+            cancelling_prompt.id().to_string(),
+        )
         .expect("the abort is sent");
     tokio::time::timeout(
         std::time::Duration::from_secs(10),

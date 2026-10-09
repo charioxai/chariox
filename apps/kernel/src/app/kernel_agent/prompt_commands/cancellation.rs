@@ -111,9 +111,11 @@ impl<'a> KernelAgentService<'a> {
             .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
         if uses_structured_prompt_io {
-            self.app
-                .providers
-                .enqueue_structured_prompt_abort(session_id.to_string(), provider_run_id.clone())?;
+            self.app.providers.enqueue_structured_prompt_abort(
+                session_id.to_string(),
+                provider_run_id.clone(),
+                prompt.id().to_string(),
+            )?;
         }
         let recipients = match attachment_id {
             Some(attachment_id) => self.app.other_attachment_ids(session_id, attachment_id),

@@ -372,6 +372,7 @@ pub(crate) struct KernelQueuedPromptUpdate {
 pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
+    pub(crate) prompt_id: String,
     pub(crate) source_attachment_id: String,
 }
 
@@ -624,8 +625,23 @@ impl DaemonApp {
         &mut self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
         result: Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
+        let provider_run = self.providers.get_run(&provider_run_id)?;
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
+        if provider_run.session_id() != session_id
+            || !self
+                .prompt_owner_active_prompt_for_agent(&session_id, agent_id)?
+                .is_some_and(|prompt| {
+                    prompt.id() == prompt_id
+                        && prompt.status() == crate::session::PromptStatus::Cancelling
+                })
+        {
+            return Ok(());
+        }
         if let Err(error) = result {
             self.record_notice(
                 &session_id,
@@ -721,6 +737,7 @@ impl DaemonApp {
             let _ = self.finish_kernel_prompt_abort(
                 finished.session_id,
                 finished.provider_run_id,
+                finished.prompt_id,
                 finished.result,
             );
         }

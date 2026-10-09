@@ -462,6 +462,7 @@ impl KernelRuntimeOwnedState {
         );
         let session = self.session_snapshot(session_id)?;
 
+        let prompt_id = prompt.id().to_string();
         Ok(Some(crate::app::KernelPromptCancellation {
             cancellation: crate::session::PromptCancellation {
                 prompt,
@@ -471,6 +472,7 @@ impl KernelRuntimeOwnedState {
             dispatch: Some(crate::app::KernelPromptAbortDispatch {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run.id().to_string(),
+                prompt_id,
                 source_attachment_id: attachment_id.to_string(),
             }),
         }))
