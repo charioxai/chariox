@@ -14,6 +14,13 @@ export function pruneBrowserFillTargets(browser,connection) {
 }
 const digest = value => createHash('sha256').update(value).digest('hex');
 const frameTree = async (connection, sessionId) => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
+// CDP sends have the connection's request bound. Always release our temporary
+// page session, including a failed/expired presentation promise.
+async function withSession(connection, targetId, run) {
+  const {sessionId}=await connection.send('Target.attachToTarget',{targetId,flatten:true});
+  try {return await run(sessionId);}
+  finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
+}
 const visit = (tree, id) => tree.frame.id === id ? tree.frame : (tree.childFrames ?? []).map(child => visit(child,id)).find(Boolean);
 const rect = quad => {
   if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw Error('MP-11: fill geometry unavailable');
