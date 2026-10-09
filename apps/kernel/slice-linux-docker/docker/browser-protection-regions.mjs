@@ -133,7 +133,7 @@ async function isolatedFrames(connection, top, frameIds) {
 }
 
 async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children, withheld) {
-  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: policy.values.length ? RENDER_ORDER_STYLES : [] }, entry.sessionId);
+  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: policy.values.length ? RENDER_ORDER_STYLES : [], includeTextColorOpacities: policy.values.length > 0 }, entry.sessionId);
   const pending = [{ index: 0, origin, clip }];
   const ownersBySession = new Map(children.map(child => [child.ownerBackendNodeId, child]));
   while (pending.length) {

@@ -11,7 +11,7 @@ import { DEFAULT_RENDER_STYLE } from './browser-protection-fixture.mjs';
 function snapshot(kind) {
   const strings = [], id = value => { const at = strings.indexOf(value); return at < 0 ? strings.push(value) - 1 : at; };
   const n = kind === 'huge' ? 1 : 2000;
-  const big = kind === 'huge' ? [-1e6, -1e6, 2e6, 2e6] : kind === 'cells' ? [0, 0, 800, 700] : [10, 10, 10, 20];
+  const big = kind === 'huge' ? [-1e6, -1e6, 2e6, 2e6] : kind === 'cells' ? [0, 0, 800, 100] : [10, 10, 10, 20];
   const names = ['#document', 'DIV', ...Array(n).fill('#text'), 'P', '#text'];
   const parentIndex = [-1, 0, ...Array(n).fill(1), 0, n + 2];
   const ordinary = [900, 20, 100, 30], container = kind === 'huge' ? big : [0, 0, 800, 700];

@@ -70,7 +70,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate
           // value-bearing inputs using raw, trusted layout; never retry insertion.
-          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
+          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true, includeTextColorOpacities: true }, sessionId);
           const document = snapshot.documents?.[0], strings = snapshot.strings ?? [];
           const nodes = document?.nodes ?? {}, layout = document?.layout ?? {};
           const input = nodes.inputValue ?? {};
@@ -86,7 +86,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
       // Raw page strings and rendered layout text are checked before any truncation. Also
       // mask opaque media (canvas/SVG/images/video) that can render copied secrets without DOM text.
       if (values.length) {
-        snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
+        snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true, includeTextColorOpacities: true }, sessionId);
         const strings = snapshot.strings ?? [];
         for (const document of snapshot.documents ?? []) {
           const nodes = document.nodes ?? {}, layout = document.layout ?? {};

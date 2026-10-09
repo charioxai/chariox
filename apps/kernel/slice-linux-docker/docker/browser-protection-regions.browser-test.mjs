@@ -82,6 +82,47 @@ for(const dpr of [1,2])test(`MP-08/MP-11 DPR ${dpr}: reversed flex overflow and 
   assert.deepEqual(exposed,[],'MP-11 both collectors cover all overflowing value pixels');
 }));
 
+for (const dpr of [1, 2]) for (const collector of ['documentProtection', 'locateBrowserRegions']) {
+  test(`MP-08/MP-11 DPR ${dpr} ${collector}: scaled 2px text and ordinary text share value protection`, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
+    const [first, second] = [VAULT_VALUE.slice(0, 12), VAULT_VALUE.slice(12)];
+    const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: `{
+      document.body.replaceChildren(); document.body.style.margin='0';
+      const control=document.createElement('div'); control.style.cssText='position:fixed;left:20px;top:20px;width:180px;height:80px;background:#00ffff'; document.body.append(control);
+      const line=document.createElement('div'); line.style.cssText='position:fixed;left:550px;top:100px;width:350px;height:80px;display:flex;flex-direction:row-reverse;justify-content:flex-end;align-items:flex-start;color:#ff00ff;white-space:nowrap;font:20px monospace';
+      const ordinary=document.createElement('span');ordinary.textContent=${JSON.stringify(second)};
+      const small=document.createElement('span'); small.textContent=${JSON.stringify(first)};
+      small.style.cssText='font-size:2px;transform:scale(10);transform-origin:top left;margin-right:'+(${first.length}*12-${first.length}*1.2)+'px';
+      line.append(ordinary,small);document.body.append(line);
+      const bounds=node=>{const range=document.createRange();range.selectNodeContents(node);const r=range.getBoundingClientRect();return [r.left,r.top,r.width,r.height];};
+      const r=line.getBoundingClientRect(); ({line:[r.left,r.top,r.width,r.height],pieces:[bounds(small),bounds(ordinary)]});
+    }` }, sessionId);
+    const pixels = await shot(), box = result.value.line.map(v => Math.round(v*dpr));
+    const [x,y,w,h] = box;
+    const crop = { width:w, pixels:Buffer.concat(Array.from({length:h}, (_,row) => pixels.pixels.subarray(((y+row)*pixels.width+x)*4,((y+row)*pixels.width+x+w)*4))) };
+    const collect = collector === 'documentProtection'
+      ? async values => (await measureBrowserProtection(browser,policy(values))).pages[0].regions
+      : values => locateBrowserRegions([],browser,values,{contentTarget:targetId,contentScale:dpr});
+    const without = await collect([]), start = performance.now(), regions = await collect([VAULT_VALUE]), elapsed = performance.now()-start;
+    const local = masks => masks.map(([rx,ry,rw,rh]) => [Math.floor(rx)-x,Math.floor(ry)-y,Math.ceil(rx+rw)-Math.floor(rx),Math.ceil(ry+rh)-Math.floor(ry)]);
+    const before=census(crop,local(without)).magenta, exposed=census(crop,local(regions)).magenta;
+    const pieces=result.value.pieces.map(([left,top,width,height])=>{
+      const x0=Math.floor(left*dpr),y0=Math.floor(top*dpr),x1=Math.ceil((left+width)*dpr),y1=Math.ceil((top+height)*dpr);
+      const part={width:x1-x0,pixels:Buffer.concat(Array.from({length:y1-y0},(_,row)=>pixels.pixels.subarray(((y0+row)*pixels.width+x0)*4,((y0+row)*pixels.width+x1)*4)))};
+      return census(part).magenta;
+    });
+    if (process.env.CHARIOX_PROTECTION_TEST_EVIDENCE) {
+      const root=process.env.CHARIOX_PROTECTION_TEST_EVIDENCE, data=encodePng(pixels.width,pixels.height,pixels.pixels);
+      await writeFile(path.join(root,`scaled-dpr${dpr}-${collector}-raw.png`),Buffer.from(data,'base64'));
+      await writeFile(path.join(root,`scaled-dpr${dpr}-${collector}-masked.png`),Buffer.from(maskPng(data,regions,dpr),'base64'));
+      await writeFile(path.join(root,`scaled-dpr${dpr}-${collector}.json`),JSON.stringify({items:['MP-08','MP-11'],dpr,collector,before,pieces,exposed,elapsed,regions}));
+    }
+    assert(pieces.every(count=>count>50*dpr*dpr),'MP-11 scaled and ordinary value pieces are each visible');
+    assert(before>100*dpr*dpr,'MP-11 value is rendered without protection');
+    assert(census(pixels,regions).cyan>=180*80*dpr*dpr*.95,'MP-08 unrelated content remains visible');
+    assert.equal(exposed,0,'MP-11 scaled and ordinary value pieces are covered');
+  }));
+}
+
 // Vault policy: whole-page DOMSnapshot path (echoes, markers incl. frame owners).
 // No policy on a fields-only page: selector-search path, no DOMSnapshot.
 for (const dpr of [1, 2]) for (const [label, values, query] of [['snapshot', [VAULT_VALUE], ''], ['search', [], '?novault&nomarkers']]) {
