@@ -63,7 +63,7 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+            &self.provider_account_authority_owner_for_agent(&target_agent)?,
             &target_agent,
             "submit prompt",
         )?;

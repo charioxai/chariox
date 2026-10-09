@@ -12,8 +12,10 @@ impl DaemonApp {
     ) -> Result<String, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
+        let account_owner =
+            self.provider_account_owner_for_execution(session_id, Some(agent_id))?;
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config,
+            &account_owner,
             &agent,
             "ensure prompt provider run for agent",
         )?;

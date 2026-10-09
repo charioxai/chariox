@@ -267,9 +267,12 @@ impl<'a> KernelAgentService<'a> {
         }
         let remote_execution = target_agent.remote_execution().cloned();
         if remote_execution.is_none() {
+            let account_owner = self
+                .app
+                .provider_account_owner_for_execution(&session_id, Some(&target_agent_id))?;
             self.app
                 .provider_account_profile_registry()
-                .require_agent_authenticated(&self.app.config, &target_agent, "submit prompt")?;
+                .require_agent_authenticated(&account_owner, &target_agent, "submit prompt")?;
         }
         let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {
             (None, false)

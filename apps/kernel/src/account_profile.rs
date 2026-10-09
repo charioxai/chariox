@@ -1262,16 +1262,15 @@ impl ProviderAccountProfileRegistry {
 
     pub(crate) fn require_agent_authenticated(
         &self,
-        config: &crate::config::DaemonConfig,
+        owner_user_id: &str,
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
         self.require_authenticated(
-            &owner_user_id,
+            owner_user_id,
             provider,
             agent.provider_account_profile(),
             agent.model(),

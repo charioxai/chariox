@@ -1,6 +1,174 @@
 //! MP-08/MP-10/MP-11: execution account namespace regressions.
 use super::*;
 
+// MP-08/MP-10/MP-11: a cold leased launch must admit its first prompt and
+// advance the startup queue using the same account as launch preparation.
+#[tokio::test]
+async fn leased_account_authority_preserves_prompt_admission_and_queue() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("leased-account-admission");
+    std::env::set_var("CHARIOX_HOME", root.path().join("state"));
+    let mut config = crate::config::DaemonConfig::load_from_env();
+    config.accept_remote_leases = true;
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let registry = app.provider_account_profile_registry();
+    let profile = registry
+        .create_managed("cloud-owner", "codex", "selected")
+        .unwrap();
+    registry
+        .update_observation(
+            "cloud-owner",
+            "codex",
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let leased = {
+        let mut leases = crate::app::RemoteLeaseRuntime::new(&mut app);
+        let lease = leases
+            .create_execution_lease("home", "session", "agent", false, "cloud-owner")
+            .unwrap();
+        leases
+            .create_leased_agent_from_base_directory(
+                root.path(),
+                &lease.id,
+                "codex",
+                &profile.profile_id,
+                Some("model".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let request = runtime
+        .prepare_provider_launch_request_with_vault(
+            crate::provider::LaunchProviderRequest::new(
+                &leased.backing_session_id,
+                "codex",
+                "codex",
+                &profile.profile_id,
+                "model",
+            )
+            .with_agent_id(&leased.backing_agent_id)
+            .with_structured_endpoint("ws://127.0.0.1:9"),
+            "MP-08/MP-10/MP-11 admission regression",
+        )
+        .await
+        .unwrap();
+    // This supplementary test supplies no server and starts no provider process.
+    let run = runtime.owned.start_provider_launch(request).unwrap().run;
+    runtime
+        .owned
+        .provider_run_projection
+        .mark_leased_provider_run(run.id());
+    let admitted = crate::app::KernelAgentService::new(&mut *app.lock().await)
+        .submit_prompt_holding_dispatch(
+            &leased.backing_session_id,
+            &leased.backing_attachment_id,
+            Some(&leased.backing_agent_id),
+            "MP-08/MP-10/MP-11 actual cold-start admission guard",
+            "",
+            vec![],
+        );
+    let _ = admitted.expect("leased prompt admission must keep the account");
+    let agent = runtime
+        .owned
+        .agent_store
+        .get_agent(&leased.backing_agent_id)
+        .unwrap();
+    assert!(
+        runtime.owned.provider_account_allows_queued_prompt_advance(
+            &leased.backing_session_id,
+            &agent,
+            "MP-08/MP-10/MP-11 startup queue"
+        ),
+        "leased startup queue must keep the execution account"
+    );
+    let mut wrong_owner = agent.clone();
+    wrong_owner.set_owner_user_id("collaborator");
+    assert!(
+        !runtime.owned.provider_account_allows_queued_prompt_advance(
+            &leased.backing_session_id,
+            &wrong_owner,
+            "MP-11 mismatched lease identity"
+        )
+    );
+    let mut ordinary_profiles = std::collections::BTreeMap::new();
+    for owner in ["local", "collaborator"] {
+        let profile = registry.create_managed(owner, "codex", "selected").unwrap();
+        registry
+            .update_observation(
+                owner,
+                "codex",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        ordinary_profiles.insert(owner, profile.profile_id);
+    }
+    let mut unavailable = agent.clone();
+    unavailable.set_account_profile(Some(ordinary_profiles["local"].clone()));
+    assert!(
+        !runtime.owned.provider_account_allows_queued_prompt_advance(
+            &leased.backing_session_id,
+            &unavailable,
+            "MP-11 no home account fallback"
+        )
+    );
+    for (owner, expected) in [("cloud-owner", "local"), ("collaborator", "collaborator")] {
+        let (session, ordinary) = crate::app::KernelSessionService::new(&mut *app.lock().await)
+            .create_session(root.session_request().with_owner_user_id(owner))
+            .unwrap();
+        let ordinary = runtime
+            .owned
+            .agent_store
+            .set_agent_runtime_profile_with_account_profile(
+                ordinary.id(),
+                "codex",
+                Some("model".into()),
+                None,
+                Some(ordinary_profiles[expected].clone()),
+                Default::default(),
+            )
+            .unwrap();
+        assert!(runtime.owned.provider_account_allows_queued_prompt_advance(
+            session.id(),
+            &ordinary,
+            "MP-08/MP-10/MP-11 ordinary admission control"
+        ));
+        if owner == "collaborator" {
+            let mut isolated = ordinary.clone();
+            isolated.set_account_profile(Some(ordinary_profiles["local"].clone()));
+            assert!(
+                !runtime.owned.provider_account_allows_queued_prompt_advance(
+                    session.id(),
+                    &isolated,
+                    "MP-11 collaborator account isolation"
+                )
+            );
+        }
+    }
+}
+
 // MP-08/MP-10/MP-11: same-owner workers must use the validated lease
 // namespace even when the home account alias exists on this machine.
 #[tokio::test]
