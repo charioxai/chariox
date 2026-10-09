@@ -38,6 +38,10 @@ done
         let mut config = crate::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
         config.provider_runtime_init_delay_ms = 0;
+        // Both the App cold path and owned launch path use this same fixture Vault.
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
         let app = DaemonApp::bootstrap(config).unwrap();
         let registry = app.provider_account_profile_registry();
         let account = if copied {
@@ -556,24 +560,7 @@ async fn review_local_missing_claude_copy_with_registered_token_delivers_prompt(
     let fixture = WorkerFixture::new(true).await;
     let leased = fixture.lease().await;
     std::fs::remove_file(&fixture.credential).unwrap();
-    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
-    let mut config = fixture.runtime.owned.config_projection.snapshot();
-    config.user_config.credential_vault.backend =
-        crate::config::CredentialVaultBackend::ProcessMemory;
-    fixture
-        .runtime
-        .owned
-        .config_projection
-        .update(config.clone());
-    crate::provider::store_provider_account_credential(
-        &config,
-        "owner",
-        "claude",
-        &fixture.account,
-        "synthetic-registered-token",
-        false,
-    )
-    .unwrap();
+    fixture.register_token();
     let run = fixture.local_launch(&leased).await;
     tokio::time::timeout(Duration::from_secs(10), async {
         while fixture
@@ -611,6 +598,196 @@ async fn review_local_missing_claude_copy_with_registered_token_delivers_prompt(
         .owned
         .session_store
         .get_session(&leased.backing_session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+// MP-08/MP-10/MP-11: an ordinary local agent's first prompt launches through the
+// app-level cold path, not `LaunchProviderRun` or leased submission.
+impl WorkerFixture {
+    async fn local_agent(&self) -> (String, String, String) {
+        let mut app = self.app.lock().await;
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(self.root.session_request().with_owner_user_id("owner"))
+            .unwrap();
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "claude")
+                    .with_owner_user_id("owner")
+                    .with_model("sonnet")
+                    .with_account_profile(self.account.clone()),
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::for_user(
+                session.id(),
+                "client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+                "owner",
+            ))
+            .unwrap();
+        drop(app);
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            attachment.id().to_string(),
+        )
+    }
+
+    async fn local_prompt(
+        &self,
+        (session_id, agent_id, attachment_id): &(String, String, String),
+        prompt: &str,
+    ) -> Result<crate::session::PromptSubmissionOutcome, DaemonError> {
+        let response = self
+            .local_request(crate::local::LocalDaemonRequest::SubmitPrompt(
+                crate::local::SubmitPromptRequest {
+                    session_id: session_id.clone(),
+                    attachment_id: attachment_id.clone(),
+                    target_agent_id: Some(agent_id.clone()),
+                    prompt: prompt.into(),
+                    attachments: Vec::new(),
+                },
+            ))
+            .await?;
+        let crate::local::LocalDaemonResponse::PromptSubmitted { outcome, .. } = response else {
+            panic!("prompt response");
+        };
+        Ok(outcome)
+    }
+
+    fn register_token(&self) {
+        let config = self.runtime.owned.config_projection.snapshot();
+        crate::provider::store_provider_account_credential(
+            &config,
+            "owner",
+            "claude",
+            &self.account,
+            "synthetic-registered-token",
+            false,
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn review_local_cold_prompt_missing_claude_copy_requests_login_before_preparation() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let local = fixture.local_agent().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let outcome = fixture.local_prompt(&local, "cold-local-missing").await
+        .expect("an ordinary cold prompt must enter receiving login recovery before credential preparation rejects it");
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
+        .unwrap();
+    let interaction = session
+        .active_interaction_for_agent(&local.1)
+        .expect("human recovery interaction");
+    assert_eq!(
+        interaction.title(),
+        Some("Log in to Claude on this machine")
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, &local.1)
+            .unwrap()
+            .prompt(),
+        "cold-local-missing"
+    );
+    let run = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&local.0, &local.1)
+        .unwrap();
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+    for marker in ["synthetic-process-started", "UNEXPECTED_LOGIN"] {
+        assert!(!fixture.credential.parent().unwrap().join(marker).exists());
+    }
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+#[tokio::test]
+async fn review_local_cold_prompt_missing_claude_copy_with_registered_token_delivers() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let local = fixture.local_agent().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    fixture.register_token();
+    fixture
+        .local_prompt(&local, "cold-local-registered-token")
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("cold-local-registered-token").await;
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+// MP-08/MP-10/MP-11: environment replacement uses this synchronous App launch
+// rather than the detached cold path or the runtime launch-completion service.
+#[tokio::test]
+async fn review_app_missing_claude_copy_token_launch_retains_auth_mode() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let local = fixture.local_agent().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    fixture.register_token();
+    let run = fixture
+        .app
+        .lock()
+        .await
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                &local.0,
+                "claude",
+                "claude",
+                &fixture.account,
+                "sonnet",
+            )
+            .with_agent_id(&local.1),
+        )
+        .unwrap();
+    assert!(fixture
+        .runtime
+        .owned
+        .provider_store
+        .claude_run_uses_setup_token(run.id()));
+    fixture
+        .local_prompt(&local, "app-token-auth-mode")
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("app-token-auth-mode").await;
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
         .unwrap()
         .active_interactions()
         .is_empty());

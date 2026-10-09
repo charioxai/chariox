@@ -237,9 +237,7 @@ impl KernelRuntimeOwnedState {
         let run = self.provider_store.finish_current_launch(
             &started.run,
             binding,
-            started
-                .provider_credential_env
-                .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV),
+            &started.provider_credential_env,
         )?;
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;

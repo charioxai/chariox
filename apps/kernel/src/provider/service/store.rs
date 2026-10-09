@@ -155,7 +155,7 @@ impl ProviderProcessServiceStore {
         &self,
         expected: &RuntimeProviderRun,
         binding: Option<ProviderRuntimeBinding>,
-        uses_claude_setup_token: bool,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let mut service = self.write();
         let current = service.get_run(expected.id())?;
@@ -177,11 +177,7 @@ impl ProviderProcessServiceStore {
             service.apply_runtime_binding(expected.id(), binding)?;
         }
         let run = service.mark_run_running(expected.id())?;
-        // MP-08/MP-10/MP-11: runtime-only auth mode, never a persisted credential.
-        // Track it independently of structured actor I/O and native PTY bindings.
-        if run.adapter_key() == "claude" && uses_claude_setup_token {
-            service.claude_setup_token_runs.insert(run.id().to_string());
-        }
+        service.record_runtime_credentials(&run, credentials);
         Ok(run)
     }
 
@@ -423,10 +419,20 @@ impl ProviderProcessServiceStore {
     ) -> Result<(), DaemonError> {
         let binding =
             ProviderProcessService::initialize_runtime_binding_with_credentials(run, credentials)?;
+        let mut service = self.write();
         if let Some(binding) = binding {
-            self.write().apply_runtime_binding(run.id(), binding)?;
+            service.apply_runtime_binding(run.id(), binding)?;
         }
+        service.record_runtime_credentials(run, credentials);
         Ok(())
+    }
+
+    pub(crate) fn record_runtime_credentials(
+        &self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) {
+        self.write().record_runtime_credentials(run, credentials);
     }
 
     pub(crate) fn apply_runtime_binding(
