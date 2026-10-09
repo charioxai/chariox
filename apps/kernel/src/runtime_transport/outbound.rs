@@ -37,7 +37,7 @@ impl OutboundBoundary {
         }
         let message = match payload {
             Payload::Frame(frame) => {
-                let payload = if self.peer.is_some() {
+                if self.peer.is_some() {
                     if let KernelOutgoingFrame::Event { event, .. } = &frame {
                         classify_event(event);
                     }
@@ -45,7 +45,7 @@ impl OutboundBoundary {
                         Ok(v) => v,
                         Err(_) => return false,
                     };
-                    match project_payload(value) {
+                    let payload = match project_payload(value) {
                         Ok(value) => {
                             match crate::transport::kernel_protocol::serialize_frame_value(value) {
                                 Ok(s) => s,
@@ -66,27 +66,28 @@ impl OutboundBoundary {
                             }
                             KernelOutgoingFrame::Event { .. } => return false,
                         },
-                    }
+                    };
+                    Message::Text(payload.into())
                 } else {
                     // MP-08/MP-10: protocol 466 display events are binary WebSocket
                     // messages with raw payload segments; other frames stay JSON text.
-                    let frame = match frame {
+                    match frame {
                         KernelOutgoingFrame::Event { event, .. }
                             if matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
                         {
-                            return match crate::transport::kernel_browser_display::encode_display_event(*event) {
-                                Ok(bytes) => writer.send(Message::Binary(bytes.into())).await.is_ok(),
-                                Err(_) => false,
-                            };
+                            match crate::transport::kernel_browser_display::encode_display_event(
+                                *event,
+                            ) {
+                                Ok(bytes) => Message::Binary(bytes.into()),
+                                Err(_) => return false,
+                            }
                         }
-                        frame => frame,
-                    };
-                    match serialize_frame(&frame) {
-                        Ok(s) => s,
-                        Err(_) => return false,
+                        frame => match serialize_frame(&frame) {
+                            Ok(s) => Message::Text(s.into()),
+                            Err(_) => return false,
+                        },
                     }
-                };
-                Message::Text(payload.into())
+                }
             }
             Payload::Control(Message::Close(mut frame)) => {
                 if self.peer.is_some() {
