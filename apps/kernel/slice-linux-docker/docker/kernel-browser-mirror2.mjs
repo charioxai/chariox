@@ -169,19 +169,20 @@ export class Mirror2 {
   async next(stream, command, scope, { signal } = {}) {
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
-    // A credit's long-poll deadline counts from its arrival: queued behind
-    // others it must not outlive the client's request timeout.
+    // A queued credit's wait starts when its predecessor is answered (expired
+    // credits do not come back together: one heartbeat per wait), bounded from
+    // its arrival so it never outlives the client's 8 s request timeout.
     // A credit replayed after a reconnect (same command id) gets its original
     // packet: running it again would issue a new sequence and leave a gap.
     const replayKey = typeof command.command_id === 'string' && command.command_id.length <= 128 ? command.command_id : null;
     const replayed = replayKey && stream.replies?.get(replayKey);
     if (replayed) return replayed;
-    const deadline = Date.now() + (command.wait_ms ?? 0);
+    const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     // Credits that arrived before it stop waiting (their hurry count is older).
     if (command.after_sequence === 0) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, 'globalThis.__charioxMirror2.wake()').catch(() => {}); }
     const hurry = stream.hurry;
-    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, deadline, hurry));
+    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
     stream.chain = run.catch(() => {});
     if (replayKey) { (stream.replies ??= new Map()).set(replayKey, run); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
