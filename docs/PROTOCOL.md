@@ -268,6 +268,26 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10: local protocol **422** adds `SteerActivePrompt` with session,
+attachment, agent, required `expected_active_prompt_id`, visible prompt and
+attachments. The home agent actor admits it only against that exact running
+Chariox prompt; stale, cancelled, external or settled targets fail without
+creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
+admission through shared prompt assembly/history and local or leased provider
+dispatch. Relay peer 70 already carries the exact home target and is unchanged.
+Codex native `turn/steer` maps both reply and projected display turn IDs to
+home prompt IDs; its response retains the display turn ID. Utility threads
+keep their provider-native controls. `thread/compact/start` resolves the live
+managed provider conversation rather than the display thread.
+
+The MP-08 / MP-10 focused source drill consists of
+`mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt` in the kernel
+test binary plus the CLI `codex-managed-lifecycle.test` entry-point fixture:
+submit → steer → compact → follow-up, interrupt, cold launch and stale controls.
+Run alongside protocol shape/hash and native proxy utility/projection checks.
+These credential-free fixtures prove routing and admission; signed/live
+provider and ordinary-versus-Path-1 acceptance remain separate gates.
+
 MP-08 / MP-10 / MP-11 (owner decision 2026-10-02): credential copying remains
 unchanged across leased workers, managed-context imports and slices, including
 profile-scoped Claude Keychain export and the Vault setup-token remote path.
@@ -369,7 +389,7 @@ Native TUI hidden context:
 
 Provider-specific transport:
 
-- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Chariox provider run.
+- Codex uses a native WebSocket proxy in front of a kernel-managed Codex app-server launched through the normal provider adapter (MP-08 / MP-10). Local, remote-worker, and slice placement all materialize agent grants through that adapter before the provider TUI connects. The proxy routes native prompts into the home kernel and projects kernel-managed turns into the native TUI; the existing leased-agent path selects worker execution. `--server-in-kernel` remains accepted for compatibility.
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
@@ -2216,8 +2236,8 @@ Workflow trigger and deployment direction:
   `event_action` refuses it for bindings persisted before 364. Older peers,
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
-- protocol 365: direct workflow event bindings are retired. Events reach
-  workflows only through Apps: an App inbox route (protocol 358) receives the
+- protocol 365: direct workflow event bindings are retired. Initially events reached
+  workflows only through Apps (protocol 437 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -3177,3 +3197,30 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### Workflow completion notifications — local 437 / relay peer 82 (MP-08 / MP-10 / MP-11)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+Peer 82 adds owner-bound `ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.

@@ -663,6 +663,18 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
+            match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
+                &self.durable_state,
+                &self.sessions,
+                &finished,
+            ) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(_) => {
+                    self.providers.schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let retry_acknowledgement = finished.result.as_ref().ok().cloned();
             let retry_session_id = finished.session_id.clone();

@@ -43,6 +43,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -78,6 +79,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -257,4 +259,6 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;
+/// Version 483 restores workflow notifications, Room workflow inventory/controls,
+/// and opt-in Cloud device denial on the consolidated main contract (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 483;

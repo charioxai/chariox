@@ -1,0 +1,149 @@
+{
+  "mpItem": "MP-11",
+  "guards": [
+    {
+      "path": "apps/kernel/slice-linux-docker/owned-process-signals.mjs",
+      "sha256": "c13d140538bffbb99e2675a244ed0cfd6e3fa7e10f519b86425882a3aa60264b",
+      "reason": "MP-11 canonical Node guard; opaque generation handles required for PID/group signals, subgroups retain launch generation, all members verified immediately before signalling; no numeric fallback. Darwin census excludes only the exact reaped inspection PID."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/owned_process_signals.py",
+      "sha256": "b20d7dd25d90cab449580a3256ebfde3cf96be8dab8f459ddee67d1ad0f71af4",
+      "reason": "MP-11 canonical Python guard; generation handles required, explicit subgroup IDs bound to the launch generation, PID/start/all member identities verified before os.killpg/os.kill."
+    },
+    {
+      "path": "scripts/lint-process-signals.mjs",
+      "sha256": "2aba7e00d52d6deec9b00c51a90f07db72f6a2e1ab05451a29bb860cceb6b469",
+      "reason": "MP-11 lint rule definitions mention forbidden constructs as inert regular expressions; no signal is executed."
+    },
+    {
+      "path": "scripts/lint-process-signals.test.mjs",
+      "sha256": "c667fc903a2c1ce6ba186f8fc650ed7d0e051055e1cb9812798dbd86bc7488bf",
+      "reason": "MP-11 inert fail-first lint fixtures deliberately contain forbidden signal source text; strings are never executed."
+    },
+    {
+      "path": "apps/cli/scripts/lib/computer-input-process.py",
+      "sha256": "a3b69e215f80adf054fad1458f9ab002ec666445cafe1bdc8b98eb1619e9ef87",
+      "reason": "MP-08/MP-10/MP-11 physical fixture guard validates PID >1, captured start, leader/group identity, all member ancestry and a final leader recheck before its sole group send; no process names or unverified groups are signalled."
+    },
+    {
+      "path": "scripts/mp11-relay-signal-adapters.test.mjs",
+      "sha256": "fd73fe3b5e2818e40ef13826bb6528deba6070147e9795eeea472335a97081ef",
+      "reason": "MP-11 source-only regression strings and regular expressions identify forbidden signal patterns; these strings are never executed."
+    }
+  ],
+  "sites": [
+    {
+      "path": "apps/cli/scripts/lib/browser-computer-red-cap.mjs",
+      "kind": "name-signal",
+      "text": "...plan.docker([\"pkill\", \"-TERM\", \"-f\", processPattern]),",
+      "count": 1,
+      "reason": "MP-11 intentional fault injection executes only via docker exec in the drill-owned named slice PID namespace; the fixed pattern targets services spawned within that disposable slice, whose image init is sleep infinity."
+    },
+    {
+      "path": "apps/cli/scripts/lib/browser-computer-red-cap.mjs",
+      "kind": "name-signal",
+      "text": "args: [\"exec\", \"-u\", \"slice\", plan.containerName, \"pkill\", \"-TERM\", \"-f\", processPattern],",
+      "count": 1,
+      "reason": "MP-11 intentional fault injection executes only via docker exec in the drill-owned named slice PID namespace; the fixed pattern targets services spawned within that disposable slice, whose image init is sleep infinity."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/slice-browser-supervisor.test.mjs",
+      "kind": "name-signal",
+      "text": "await writeFile(path.join(root, \"bin/pkill\"), `#!/bin/sh",
+      "count": 1,
+      "reason": "MP-11 fixture installs an inert mock name-signal executable under its temporary bin directory; it records calls and never sends a signal."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/slice-screen.sh",
+      "kind": "name-signal",
+      "text": "pkill -TERM -f \"$pattern\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 legacy desktop service cleanup runs inside the slice PID namespace; selected X11/desktop services are descendants of that slice runtime, whose init cannot match these fixed desktop patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/slice-screen.sh",
+      "kind": "name-signal",
+      "text": "pkill -KILL -f \"$pattern\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 legacy desktop service cleanup runs inside the slice PID namespace; selected X11/desktop services are descendants of that slice runtime, whose init cannot match these fixed desktop patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/start-providers.sh",
+      "kind": "name-signal",
+      "text": "pkill -f \"codex app-server.*$CODEX_PORT\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 slice-local startup replaces only provider servers with this slice\u2019s selected ports, within its isolated namespace; the image init sleep infinity is PID 1 and cannot match either provider pattern."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/start-providers.sh",
+      "kind": "name-signal",
+      "text": "pkill -f \"opencode serve.*$OPENCODE_PORT\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 slice-local startup replaces only provider servers with this slice\u2019s selected ports, within its isolated namespace; the image init sleep infinity is PID 1 and cannot match either provider pattern."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
+      "kind": "name-signal",
+      "text": "pkill -f \"$ROOT/provider-port-bridge.mjs\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
+      "kind": "name-signal",
+      "text": "pkill -TERM -f \"^$ROOT/bin/chariox-kernel\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/docker/start-runtime.sh",
+      "kind": "name-signal",
+      "text": "pkill -TERM -f \"codex[^ ]* app-server\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 slice-local initialization/probe cleanup targets only bridge/kernel/provider descendants in the container namespace; PID 1 is the image init sleep infinity and does not match the fixed patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+      "kind": "name-signal",
+      "text": "command[2] === \"screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true; screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true\"",
+      "count": 2,
+      "reason": "MP-11 inert exact command admission comparison for a broker-owned container; this source line sends no signal, and the admitted command executes in that container\u2019s PID namespace."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/provision-resource-limits.test.mjs",
+      "kind": "name-signal",
+      "text": "assert.match(source, /pkill -TERM -f \"codex\\[\\^ \\]\\* app-server\"/)",
+      "count": 1,
+      "reason": "MP-11 source-only assertion of the slice probe cleanup command; no signal is executed by this assertion."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/slice-browser-profile.drill.mjs",
+      "kind": "name-signal",
+      "text": "else await exec(\"pkill\", [\"-KILL\", \"-f\", \"^/usr/lib/chromium/chromium( |$)\"]);",
+      "count": 1,
+      "reason": "MP-11 intentional browser crash runs through docker exec in a newly created drill-owned container; anchored Chromium executable pattern cannot match its sleep infinity init."
+    },
+    {
+      "path": "apps/kernel/slice-linux-lume/scripts/provision-linux-lume-slice.sh",
+      "kind": "name-signal",
+      "text": "pkill -f \"codex app-server.*$CODEX_PORT\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 generated startup executes in this slice\u2019s isolated Lume VM and replaces only provider servers on its selected ports; the VM init is systemd, outside those provider patterns."
+    },
+    {
+      "path": "apps/kernel/slice-linux-lume/scripts/provision-linux-lume-slice.sh",
+      "kind": "name-signal",
+      "text": "pkill -f \"opencode serve.*$OPENCODE_PORT\" >/dev/null 2>&1 || true",
+      "count": 1,
+      "reason": "MP-11 generated startup executes in this slice\u2019s isolated Lume VM and replaces only provider servers on its selected ports; the VM init is systemd, outside those provider patterns."
+    },
+    {
+      "path": "scripts/managed-home-archive-stream.test.mjs",
+      "kind": "node-alias",
+      "text": "const original = process.kill",
+      "count": 1,
+      "reason": "MP-11 test-only mock forwards the already guarded shared helper\u2019s call to the original process.kill and counts sends; it creates no independent signal target."
+    }
+  ]
+}

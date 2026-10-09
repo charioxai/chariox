@@ -22,7 +22,7 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let Some(envelope) = run
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         else {
             continue;
         };
@@ -47,12 +47,43 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
         }
         let queued: WorkflowQueuedPrompt = serde_json::from_str(&encoded.payload_json)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        if queued.status() != WorkflowQueuedPromptStatus::Cancelled {
+        let injected = queued.publication_invocation().is_some_and(|i| {
+            i.caller
+                .get("delivery_mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("inject")
+        });
+        if !injected
+            && queued
+                .publication_invocation()
+                .is_some_and(|i| i.caller.get("notification_steer").is_some())
+        {
+            // A confirmed fallback did not steer this run. Keep its original
+            // lineage; the queued retry will obtain its own normal run lineage.
+            tx.execute("UPDATE app_outbox SET invocation_json=json_remove(invocation_json,'$.injected_run_id') WHERE queued_session_id=?1 AND queued_prompt_id=?2 AND source_kind='workflow_completion'",
+                params![session_id,queued.id()])?;
+        }
+        if injected
+            && matches!(
+                queued.status(),
+                WorkflowQueuedPromptStatus::Running | WorkflowQueuedPromptStatus::Completed
+            )
+        {
+            // Record causal lineage before provider I/O; retain it independently
+            // of receipt payload expiry and queue reclamation.
+            if let Some(run) = queued.workflow_run_id() {
+                tx.execute("UPDATE app_outbox SET invocation_json=json_set(coalesce(invocation_json,'{}'),'$.injected_run_id',?1) WHERE queued_session_id=?2 AND queued_prompt_id=?3 AND source_kind='workflow_completion'",
+                    params![run,session_id,queued.id()])?;
+            }
+        }
+        if queued.status() != WorkflowQueuedPromptStatus::Cancelled
+            && !(injected && queued.status() == WorkflowQueuedPromptStatus::Completed)
+        {
             continue;
         }
         let Some(envelope) = queued
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         else {
             continue;
         };
@@ -63,7 +94,17 @@ pub(in crate::durable_state) fn record_workflow_transition_in(
         if actual.as_deref() != Some(encoded.payload_json.as_str()) {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        settle(tx, session_id, queued.id(), envelope, "failed")?;
+        settle(
+            tx,
+            session_id,
+            queued.id(),
+            envelope,
+            if queued.status() == WorkflowQueuedPromptStatus::Completed {
+                "delivered"
+            } else {
+                "failed"
+            },
+        )?;
     }
     Ok(())
 }
@@ -77,11 +118,7 @@ fn settle(
     let Some(owner) = envelope.caller.get("owner_id").and_then(|v| v.as_str()) else {
         return Err(rusqlite::Error::InvalidQuery);
     };
-    let Some(installation) = envelope
-        .caller
-        .get("installation_id")
-        .and_then(|v| v.as_str())
-    else {
+    let Some(installation) = installation(envelope) else {
         return Err(rusqlite::Error::InvalidQuery);
     };
     // An already terminal/pruned receipt is a normal replay of workflow history.
@@ -89,7 +126,7 @@ fn settle(
     // from acknowledging another run. Current App/publisher activation is not
     // required to record work which was already durably queued under authority.
     tx.execute(
-        "UPDATE app_outbox SET state=?1,payload_json=NULL,invocation_json=NULL,
+        "UPDATE app_outbox SET state=?1,payload_json=NULL,invocation_json=CASE WHEN source_kind='workflow_completion' THEN invocation_json ELSE NULL END,
          revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END
          WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND state='queued'
          AND queued_session_id=?5 AND queued_prompt_id=?6",
@@ -184,14 +221,10 @@ fn matches_envelope(
     installation: &str,
     receipt: &str,
 ) -> bool {
-    envelope.transport == "app_event"
+    is_notification_transport(envelope)
         && envelope.invocation_id == receipt
         && envelope.caller.get("owner_id").and_then(|v| v.as_str()) == Some(owner)
-        && envelope
-            .caller
-            .get("installation_id")
-            .and_then(|v| v.as_str())
-            == Some(installation)
+        && self::installation(envelope) == Some(installation)
 }
 
 /// An authoritative normalized replacement can explicitly remove a formerly
@@ -237,10 +270,31 @@ pub(in crate::durable_state) fn record_queue_removals_in(
         }
         if let Some(envelope) = queued
             .publication_invocation()
-            .filter(|value| value.transport == "app_event")
+            .filter(|value| is_notification_transport(value))
         {
             settle(tx, session, &id, envelope, "failed")?;
         }
     }
     Ok(())
+}
+
+fn is_notification_transport(envelope: &WorkflowPublicationInvocationEnvelope) -> bool {
+    matches!(
+        envelope.transport.as_str(),
+        "app_event" | "workflow_notification"
+    )
+}
+
+// Pre-release workflow notifications stored the source in input, before the
+// shared App receipt adapter added installation_id to its kernel-built caller.
+fn installation(envelope: &WorkflowPublicationInvocationEnvelope) -> Option<&str> {
+    envelope
+        .caller
+        .get("installation_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            (envelope.transport == "workflow_notification")
+                .then(|| envelope.input.get("source_id").and_then(|v| v.as_str()))
+                .flatten()
+        })
 }

@@ -34,11 +34,12 @@ export function startCloudRelayLoginRequest(apiUrl: string, input: {
   }
 }
 
-export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string) {
+export function pollCloudRelayLoginRequest(apiUrl: string, deviceCode: string, supportsAccessDenied = false) {
   return {
     PollCloudRelayLogin: {
       api_url: apiUrl,
       device_code: deviceCode,
+      ...(supportsAccessDenied ? { supports_access_denied: true } : {}),
     },
   }
 }

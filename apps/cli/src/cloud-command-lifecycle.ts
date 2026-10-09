@@ -42,6 +42,7 @@ export type CloudCommandLifecycleDeps = {
   ) => Promise<
     | { status: "authorization_pending"; intervalSeconds: number; expiresAtMs: number }
     | { status: "expired_token" }
+    | { status: "access_denied" }
     | { status: "approved"; profile: RelayCloudProfile }
   >
   openExternalUrl?: (url: string) => Promise<boolean>
@@ -219,6 +220,10 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
       }
       await deps.refreshWaitingRoomData?.()
       appendCloudNotice(deps, `cloud linked: ${profile.accountSlug}`)
+      return
+    }
+    if (polled.status === "access_denied") {
+      appendCloudNotice(deps, "cloud login denied by the account owner")
       return
     }
     if (polled.status === "expired_token") {

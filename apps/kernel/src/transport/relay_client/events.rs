@@ -201,6 +201,7 @@ async fn emit_relay_replay_gap_snapshot(
                 event_runtime,
                 &event_stream_id,
                 KernelEvent::SessionSnapshot {
+                    room_workflows: projection.room_workflows,
                     session: Box::new(projection.session),
                     provider_run: Box::new(
                         projection

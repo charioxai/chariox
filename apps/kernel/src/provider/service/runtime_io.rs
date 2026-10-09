@@ -23,6 +23,10 @@ pub(crate) enum ProviderRuntimeBinding {
 }
 
 impl ProviderProcessService {
+    pub(crate) fn structured_submit_epoch(&self) -> u64 {
+        self.run_actor_mailbox.submit_epoch
+    }
+
     pub fn initialize_runtime(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         if let Some(binding) = Self::initialize_runtime_binding(run)? {
             self.apply_runtime_binding(run.id(), binding)?;

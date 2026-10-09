@@ -314,6 +314,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::SteerActivePrompt(request) => {
+            LocalRequestMetadata::new("prompt.active.steer", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
+        }
         LocalDaemonRequest::SteerQueuedPrompt(request) => {
             LocalRequestMetadata::new("prompt.queued.steer", Interactive)
                 .session(&request.session_id)
@@ -543,6 +549,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("workflow_run.cancel", Normal)
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
+        }
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
+            LocalRequestMetadata::new("room_workflow_runs.control", Normal)
+                .session(&request.session_id)
         }
         LocalDaemonRequest::PauseWorkflowRun(request) => {
             LocalRequestMetadata::new("workflow_run.pause", Normal)
@@ -879,6 +889,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
+            "workflow.notifications.register"
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
+        LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
+        LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
@@ -990,6 +1006,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AckWorkflowTurn(_) => "workflow_turn.ack",
         LocalDaemonRequest::ValidateWorkflowHandoff(_) => "workflow_handoff.validate",
         LocalDaemonRequest::CancelWorkflowRun(_) => "workflow_run.cancel",
+        LocalDaemonRequest::ControlRoomWorkflowRuns(_) => "room_workflow_runs.control",
         LocalDaemonRequest::PauseWorkflowRun(_) => "workflow_run.pause",
         LocalDaemonRequest::ResumeWorkflowRun(_) => "workflow_run.resume",
         LocalDaemonRequest::ListWorkflowPromptQueues(_) => "workflow_prompt_queue.list",
@@ -1015,6 +1032,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
+        | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
         | LocalDaemonRequest::UpdateQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)

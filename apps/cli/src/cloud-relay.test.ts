@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { pairCloudRelayClient, pairCloudRelayMachine } from "./cloud-relay.js"
+import { pairCloudRelayClient, pairCloudRelayMachine, pollCloudDeviceLogin } from "./cloud-relay.js"
 import type { RelayCloudProfile } from "./preferences.js"
 
 function profile(): RelayCloudProfile {
@@ -72,4 +72,72 @@ test("denied pairing-token admission does not redeem a token or replace a linked
   await assert.rejects(pairCloudRelayMachine(linked, "new-machine"), /account operate access denied/)
   assert.equal(requests, 2, "each denied admission stops before token redemption")
   assert.deepEqual(linked, before)
+})
+
+test("device denial is a terminal direct CLI poll result without an approval profile", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    assert.deepEqual(JSON.parse(String(init?.body)), { deviceCode: "synthetic-device-code", supportsAccessDenied: true })
+    return Response.json({ status: "access_denied" })
+  })
+  assert.deepEqual(await pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code"), { status: "access_denied" })
+})
+
+test("device login completes against a legacy Cloud poll schema", async (t) => {
+  const bodies: Record<string, unknown>[] = []
+  let legacyPolls = 0
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    bodies.push(body)
+    // Cloud before denial negotiation rejects additionalProperties before polling.
+    if ("supportsAccessDenied" in body) {
+      return Response.json({ error: { code: "invalid_request", message: "Request validation failed" } }, { status: 400 })
+    }
+    assert.deepEqual(body, { deviceCode: "synthetic-device-code" })
+    legacyPolls++
+    return Response.json(legacyPolls === 1
+      ? { status: "authorization_pending", intervalSeconds: 1, expiresAt: "2030-01-01T00:00:00Z" }
+      : { status: "approved", profile: profile(), cloudSessionToken: "synthetic-cloud-session",
+          cloudSessionExpiresAt: "2030-01-01T00:00:00Z" })
+  })
+  assert.equal((await pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code")).status, "authorization_pending")
+  const approved = await pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code")
+  assert.equal(approved.status, "approved")
+  if (approved.status === "approved") assert.equal(approved.profile.accountId, "fixture-account")
+  assert.deepEqual(bodies, [true, false, true, false].map((advertised) => ({
+    deviceCode: "synthetic-device-code", ...(advertised ? { supportsAccessDenied: true } : {}),
+  })))
+})
+
+test("poll fallback is bounded and limited to legacy schema rejection", async (t) => {
+  for (const [status, code, message, expectedRequests] of [
+    [401, "invalid_request", "Request validation failed", 1],
+    [403, "authorization_denied", "Forbidden", 1],
+    [500, "invalid_request", "Request validation failed", 1],
+    [400, "authorization_denied", "Request validation failed", 1],
+    [400, "invalid_request", "Invalid device code", 1],
+    [400, "invalid_request", "Request validation failed", 2],
+  ] as const) {
+    let requests = 0
+    const fetch = t.mock.method(globalThis, "fetch", async () => {
+      requests++
+      return Response.json({ error: { code, message } }, { status })
+    })
+    await assert.rejects(pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code"), (error: unknown) => {
+      assert.equal((error as Error).message, message)
+      return true
+    })
+    assert.equal(requests, expectedRequests, `${status} ${code}: ${message}`)
+    fetch.mock.restore()
+  }
+})
+
+test("poll transport failure does not downgrade the capability request", async (t) => {
+  const failure = new Error("synthetic network failure")
+  let requests = 0
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++
+    throw failure
+  })
+  await assert.rejects(pollCloudDeviceLogin("https://cloud.example.test", "synthetic-device-code"), (error) => error === failure)
+  assert.equal(requests, 1)
 })

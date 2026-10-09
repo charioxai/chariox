@@ -1,3 +1,5 @@
+import { createCliRoomWorkflowsComposition } from "./cli-room-workflows-composition.js"
+import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -10,7 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, onCleanup } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -165,6 +167,7 @@ import { createTranscriptSyntaxStyleController } from "./transcript-syntax-style
 import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
 
 export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
+  const [roomWorkflowWidth, setRoomWorkflowWidth] = createSignal(0)
   const {
     client, options, supportsKernelEventStream, initialBinding,
     initialSession, initialEntries, initialPromptDraft, initialWorkspaceTarget,
@@ -709,7 +712,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     rebuildTranscript: () => rebuildTranscript(),
     focusedStatusBadge, runtimeDebugLogger, logFocusedBadgeChange, splitAgentResponseMode,
     responsePaneRows, responsePaneSelection, workspaceScreenMode, multiAgentResponseLayout,
-    terminalWidth: () => dimensions().width,
+    terminalWidth: () => dimensions().width - roomWorkflowWidth(),
     responsePaneAgentSignature,
     clearAuxiliaryAgentPane: (agentId) => clearAuxiliaryAgentPane(agentId),
     unregisterAgentScrollbox: agentPaneRuntimeStore.unregisterScrollbox,
@@ -874,11 +877,25 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     updateSessionChrome, appendNotice, flashFooter, logProviderRunDebug,
   })
 
+  const roomWorkflows = createCliRoomWorkflowsComposition({
+    client, clientId: options.clientId, preferences: props.bootstrap.preferences,
+    session: sessionState, attached: isAttached, connected: kernelConnected,
+    manage: id => workflowActions.openWorkflowTerminalPanel(id, "edit"),
+    narrow: () => dimensions().width < 110, workflowScreenActive: workflowActions.workflowScreenActive, dialogOverlayOpen,
+    showRoom: () => { if (workflowActions.workflowScreenActive()) workflowActions.toggleWorkspaceScreen() },
+    focusAgents: () => promptInputRefController.focus(), blurAgents: () => promptInputRefController.blur(),
+  })
+  promptInputRefController.setFocusGuard(() => !roomWorkflows.ownsInput() || kernelApprovals.ownsInput())
+  const roomWorkflowsVisible = roomWorkflows.visible
+  createEffect(() => setRoomWorkflowWidth(roomWorkflowsVisible() && dimensions().width >= 110 ? 36 : 0))
+
   const {
     cycleFocusedInteractionChoice, executeCommandCenterCommand, handleCloudCommand, handlePromptKeyDown,
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    handleRoomWorkflowsKey: roomWorkflows.handleKey,
+    roomWorkflowsOwnsInput: roomWorkflows.ownsInput,
     appHostTerminal: createAppHostTerminal(renderer),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
@@ -1010,6 +1027,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   return (
     <CliAppWorkspaceView
+      roomWorkflowsVisible={roomWorkflowsVisible}
+      roomWorkflowsAvailable={() => { roomWorkflows.revision(); return roomWorkflows.controller.available }}
+      roomWorkflowsOpen={roomWorkflows.open}
+      roomWorkflowsFocused={roomWorkflows.ownsInput}
+      roomWorkflowsPane={() => <RoomWorkflowsPane controller={roomWorkflows.controller} revision={roomWorkflows.revision} width={dimensions().width >= 110 ? 36 : dimensions().width}
+        onFocus={() => { roomWorkflows.controller.focus(true); promptInputRefController.blur() }}
+        onAgents={() => { roomWorkflows.controller.focus(false); promptInputRefController.focus() }} />}
       width={dimensions().width}
       height={dimensions().height}
       fatalError={fatalError() !== null}
@@ -1018,7 +1042,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !roomWorkflows.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}

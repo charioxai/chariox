@@ -59,6 +59,9 @@ export type CloudDeviceLoginPollResult =
     status: "expired_token"
   }
   | {
+    status: "access_denied"
+  }
+  | {
     status: "approved"
     profile: RelayCloudProfile
   }
@@ -118,15 +121,24 @@ export async function pollCloudDeviceLogin(
   apiUrl: string,
   deviceCode: string,
 ): Promise<CloudDeviceLoginPollResult> {
-  const payload = await postJson<{
-    status: "authorization_pending" | "expired_token" | "approved"
+  type PollResponse = {
+    status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
     intervalSeconds?: number
     expiresAt?: string
     profile?: RelayCloudProfile & { email: string }
     cloudSessionToken?: string
     cloudSessionExpiresAt?: string
     machineCredential?: string
-  }>(apiUrl, "/auth/device/poll", { deviceCode })
+  }
+  const payload = await postJson<PollResponse>(apiUrl, "/auth/device/poll", { deviceCode, supportsAccessDenied: true }).catch((error: unknown) => {
+    // Legacy Cloud hides the rejected field behind its generic schema error.
+    // Retry once with the legacy schema; all other errors retain their meaning.
+    if (error instanceof CloudRequestError && error.status === 400
+      && error.code === "invalid_request" && error.message === "Request validation failed") {
+      return postJson<PollResponse>(apiUrl, "/auth/device/poll", { deviceCode })
+    }
+    throw error
+  })
   if (payload.status === "authorization_pending") {
     return {
       status: "authorization_pending",
@@ -136,6 +148,9 @@ export async function pollCloudDeviceLogin(
   }
   if (payload.status === "expired_token") {
     return { status: "expired_token" }
+  }
+  if (payload.status === "access_denied") {
+    return { status: "access_denied" }
   }
   if (!payload.profile || !payload.cloudSessionToken || !payload.cloudSessionExpiresAt) {
     throw new Error("cloud device login approval response was incomplete")
@@ -276,9 +291,15 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
     const message = typeof body?.error?.message === "string"
       ? body.error.message
       : `cloud relay request failed with ${response.status}`
-    throw new Error(message)
+    throw new CloudRequestError(message, response.status, body?.error?.code)
   }
   return body as TResponse
+}
+
+class CloudRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code: unknown) {
+    super(message)
+  }
 }
 
 function normalizeApiUrl(apiUrl: string): string {

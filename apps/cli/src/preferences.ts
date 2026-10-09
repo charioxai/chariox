@@ -7,6 +7,7 @@ export type CharioxPreferences = {
   providers?: Record<string, ProviderPreferences>
   relay?: RelayPreferences
   ui?: UiPreferences
+  roomWorkflowPaneDismissed?: Record<string, boolean>
   sessions?: Record<string, SessionPreferences>
 }
 
@@ -229,4 +230,12 @@ function normalizePromptDraftEntry(entry: unknown) {
   return entry
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
+}
+export async function saveRoomWorkflowPaneDismissed(key: string, closed: boolean) {
+  await updatePreferences(current => {
+    const dismissed = { ...current.roomWorkflowPaneDismissed }
+    if (closed) dismissed[key] = true
+    else delete dismissed[key]
+    return { ...current, roomWorkflowPaneDismissed: dismissed }
+  })
 }

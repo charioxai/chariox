@@ -127,6 +127,24 @@ impl KernelRuntimeOwnedState {
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
+        if let crate::session::PromptSubmissionOutcome::Queued { prompt } = &outcome {
+            let current_state = provider_run_id
+                .as_deref()
+                .and_then(|id| self.provider_store.get_run(id).ok())
+                .map(|run| format!("{:?}", run.state()));
+            crate::logging::debug_with_fields(
+                "daemon.prompt_queue",
+                "local prompt queued admission trace",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": target_agent_id,
+                    "prompt_id": prompt.id(),
+                    "provider_run_id": provider_run_id,
+                    "starting_observed": provider_run_is_starting,
+                    "current_provider_state": current_state,
+                }),
+            );
+        }
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {

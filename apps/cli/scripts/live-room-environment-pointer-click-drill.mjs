@@ -4,6 +4,8 @@ import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-l
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import assert from "node:assert/strict"
+import { signalOwnedDrillChild } from "./lib/drill-owned-child-signal.mjs"
+import { createOwnedDrillProcessGroup } from "./lib/drill-owned-process-group.mjs"
 import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
 import { roomWebFaultHandlers } from "./lib/room-web-fault-runtime.mjs"
 import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
@@ -2528,8 +2530,8 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   })
-  tui.killProcessGroup = true
   children.push(tui)
+  tui.ownedProcessGroup = createOwnedDrillProcessGroup(tui)
   tui.stdout.on("data", (chunk) => {
     tuiOutput[kind] = `${tuiOutput[kind]}${chunk}`.slice(-16_000)
   })
@@ -3296,6 +3298,7 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  const childCleanupFailures = []
   let leakedEvidence = false
   try { localForwarding?.assertHealthy() } catch (error) { failure ??= error }
   if (failure) {
@@ -3359,7 +3362,17 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   if (localForwarding) await localForwarding.close().catch((error) => { failure ??= error })
-  for (const child of children.toReversed()) await terminateChild(child)
+  for (const child of children.toReversed()) {
+    try { await terminateChild(child) } catch (error) {
+      // Keep a refused group unsignaled, but continue tearing down independent
+      // children and resources. Cleanup remains failed even if removals succeed.
+      failure ??= error
+      childCleanupFailures.push({
+        pid: child?.pid ?? null,
+        message: redactDrillSecrets(error?.message ?? String(error)),
+      })
+    }
+  }
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
@@ -3413,6 +3426,7 @@ async function cleanup() {
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
     occupiedPorts,
+    childCleanupFailures,
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
@@ -3471,23 +3485,23 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child) return
-  if (child.killProcessGroup) {
-    signalProcessGroup(child.pid, "SIGTERM")
+  if (child.ownedProcessGroup) {
+    child.ownedProcessGroup.signal("SIGTERM")
     await waitForChildExit(child, 5_000)
-    if (await waitForProcessGroupExit(child.pid, 500)) return
-    signalProcessGroup(child.pid, "SIGKILL")
-    await waitForProcessGroupExit(child.pid, 1_000)
+    if (await waitForProcessGroupExit(child.ownedProcessGroup, 500)) return
+    child.ownedProcessGroup.signal("SIGKILL")
+    await waitForProcessGroupExit(child.ownedProcessGroup, 1_000)
     return
   }
-  if (child.exitCode != null) return
-  signalOwnedProcess(child, "SIGTERM")
+  if (child.exitCode != null || child.signalCode != null) return
+  signalOwnedDrillChild(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  signalOwnedProcess(child, "SIGKILL")
+  signalOwnedDrillChild(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
 function waitForChildExit(child, timeoutMs) {
-  if (child.exitCode != null) return Promise.resolve(true)
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve(true)
   return new Promise((resolve) => {
     let settled = false
     const finish = (exited) => {
@@ -3503,30 +3517,13 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-async function waitForProcessGroupExit(processGroupId, timeoutMs) {
+async function waitForProcessGroupExit(group, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (!processGroupExists(processGroupId)) return true
+    if (!group.exists()) return true
     await sleep(50)
   }
-  return !processGroupExists(processGroupId)
-}
-
-function processGroupExists(processGroupId) {
-  try {
-    return signalOwnedProcessGroup(processGroupId, 0)
-  } catch (error) {
-    if (error?.code === "ESRCH") return false
-    throw error
-  }
-}
-
-function signalProcessGroup(processGroupId, signal) {
-  try {
-    signalOwnedProcessGroup(processGroupId, signal)
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error
-  }
+  return !group.exists()
 }
 
 async function waitFor(operation, timeoutMs, message) {
@@ -3552,7 +3549,9 @@ function runCommand(command, args, timeoutMs) {
     const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => {
+      if (Number.isSafeInteger(child.pid) && child.pid > 1) signalOwnedDrillChild(child, "SIGTERM")
+    }, timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3574,7 +3573,9 @@ function runCommandWithStdin(command, args, stdin, timeoutMs) {
     const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => signalOwnedProcess(child, "SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => {
+      if (Number.isSafeInteger(child.pid) && child.pid > 1) signalOwnedDrillChild(child, "SIGTERM")
+    }, timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)

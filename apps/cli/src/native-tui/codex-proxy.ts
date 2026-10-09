@@ -4,12 +4,14 @@ import { setTimeout as sleep } from "node:timers/promises"
 import WebSocket, { WebSocketServer } from "ws"
 
 import {
+  type AgentRuntimeActivity,
   type RuntimeProviderRun,
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
+import { bindCodexDisplayTurn, handleCodexNativeTurnSteer, mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import {
   type CodexJsonRpcMessage,
   extractCodexThreadId,
@@ -19,6 +21,7 @@ import {
 import { resolveCodexNativePermissionResponse } from "./codex-permission.js"
 import {
   handleCodexNativeTurnStart,
+  handleCodexNativeTurnInterrupt,
   type CodexNativeBindingState,
 } from "./codex-turn-submission.js"
 import {
@@ -48,6 +51,7 @@ type CodexProxyOptions = {
 
 export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
+  projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => void
 }
 
 export function createCodexProjectionThreadTracker(options: {
@@ -213,6 +217,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
     debug: options.debug,
+    onTurnMapped: (threadId, turnId, promptId) => bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId),
   })
   const projectionThreadTracker = createCodexProjectionThreadTracker({
     setThreadId: kernelOutputProjection.setThreadId,
@@ -323,9 +328,26 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (message.method === "turn/start" && downstream.kind !== "kernel" && !ephemeral) {
         void handleCodexNativeTurnStart(
           message,
-          options,
+          { ...options, onPromptStarted: kernelOutputProjection.startPrompt },
           (response) => sendDownstream(downstream, response),
         )
+        return
+      }
+      if (message.method === "turn/interrupt" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnInterrupt(message, options,
+          (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "turn/steer" && downstream.kind !== "kernel" && !ephemeral) {
+        void handleCodexNativeTurnSteer(message, options, (response) => sendDownstream(downstream, response))
+        return
+      }
+      if (message.method === "thread/compact/start" && downstream.kind !== "kernel" && !ephemeral) {
+        void mapCodexNativeCompaction(message, options).then((mapped) => {
+          forwardRequest(downstream, mapped)
+        }).catch((error) => {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: formatError(error) } })
+        })
         return
       }
       forwardRequest(downstream, message)
@@ -362,7 +384,8 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project })
+  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project,
+    projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity })
 }
 
 function bindObservedThread(options: CodexProxyOptions, threadId: string) {

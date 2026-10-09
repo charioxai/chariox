@@ -130,6 +130,12 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        RoomWorkflowRunsControlled,
+        ActivePromptSteered,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,

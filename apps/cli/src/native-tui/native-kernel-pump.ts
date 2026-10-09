@@ -1,6 +1,7 @@
-import type { TerminalOutputRecord } from "../cli-types.js"
+import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
+  getSessionStateRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
 } from "../ipc-requests.js"
@@ -10,6 +11,7 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
+    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
@@ -23,11 +25,25 @@ export function startNativeKernelPumpLoop(
     if (stopped || inFlight) return
     inFlight = true
     try {
-      if (options.onTerminalRecords) {
+      // Read settlement before draining output: all final records admitted by
+      // this snapshot must reach the TUI before its turn/completed notification.
+      const state = options.onAgentActivity
+        ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(sessionId))
+        : undefined
+      if (stopped) return
+      let outputDrained = !options.onTerminalRecords
+      // TerminalOutput is size bounded. Keep each tick bounded too, and defer
+      // settlement to a later tick if the attachment still has output pages.
+      const maxPages = options.onAgentActivity ? 8 : 1
+      for (let page = 0; options.onTerminalRecords && !stopped && page < maxPages; page++) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
         if ("TerminalOutput" in response) {
           const records = (response.TerminalOutput as { records?: unknown[] }).records
-          if (Array.isArray(records) && records.length > 0) {
+          if (Array.isArray(records) && records.length === 0) {
+            outputDrained = true
+            break
+          }
+          if (!stopped && Array.isArray(records) && records.length > 0) {
             const terminalRecords = records as TerminalOutputRecord[]
             options.debug?.("pump_terminal_records", {
               sessionId,
@@ -39,7 +55,8 @@ export function startNativeKernelPumpLoop(
           }
         }
       }
-      if (options.pollRuntimeNotices !== false) {
+      if (!stopped && outputDrained && state?.SessionState?.agent_activity) options.onAgentActivity?.(state.SessionState.agent_activity)
+      if (!stopped && options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }
     } catch (error) {
