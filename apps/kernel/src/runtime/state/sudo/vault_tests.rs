@@ -606,9 +606,12 @@ async fn queued_generation_loses_authority(expire: bool) {
             .unwrap();
     }
     drop(guard);
+    let error = pending
+        .await
+        .expect_err("generation committed after original sudo authority ended");
     assert!(
-        pending.await.is_err(),
-        "generation committed after original sudo authority ended"
+        error.to_string().contains("sudo"),
+        "storage must reject the ended sudo authority"
     );
     assert!(crate::credential::load_user_credentials()
         .unwrap()

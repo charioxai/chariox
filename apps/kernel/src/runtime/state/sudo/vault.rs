@@ -115,7 +115,13 @@ impl KernelRuntimeState {
             }),
         };
         let secret = zeroize::Zeroizing::new(generate_password(args.length, args.symbols));
-        let stored = self
+        // MP-08/MP-10/MP-11 review #937 P1: retain the submitting turn across
+        // lifecycle/barrier/app waits; the shared pre-write check sees this binding.
+        let authority = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+        let bound = self
+            .with_external_command_authority(Some((&turn.entry_id, &authority)))
+            .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()));
+        let stored = bound
             .upsert_observed_vault_credential(
                 &self.home_runtime_secret_service()?,
                 &registry,
