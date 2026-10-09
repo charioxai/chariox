@@ -34,8 +34,9 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
 export function scheduleHostRequest(request) {
-  return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string'
+  // MP-08/MP-10: mirror v2 credits long-poll; they never hold the barrier.
+  return request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
+    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;

@@ -527,7 +527,14 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
-        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
+        // MP-08/MP-10: a protocol 482 mirror credit long-polls in the host;
+        // it never holds the backend lock while it waits for a page change.
+        let long_poll =
+            method == "host.browser" && params["op"] == "mirror_next" && params["wait_ms"].is_u64();
+        let mut result = if display
+            || long_poll
+            || (method == "host.browser" && params["op"] == "input")
+        {
             let signal = cancellation
                 .clone()
                 .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));

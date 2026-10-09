@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { respondToInteractionRequest } from "./ipc-terminal-runtime-requests.js"
 
 test("protocol 392: a critical approval carries the passkey and an optional remember window", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 475)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 482)
   assert.deepEqual(respondToInteractionRequest("s", "i", "deny"), {
     RespondToInteraction: { session_id: "s", interaction_id: "i", choice_id: "deny", custom_reply: null },
   })

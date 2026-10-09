@@ -11,16 +11,17 @@ import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
+import { Mirror2,MirrorInputEpochRefusal } from './kernel-browser-mirror2.mjs';
+export { MirrorInputEpochRefusal };
 
 const lifetime=60000,maxWire=4*1024*1024;
+// Fixed labels only: page/CDP strings never leave as free text.
+const observerReasons=[['mirror snapshot bounds','wire_bound'],['mirror node bounds','records_bound'],['mirror text bounds','text_bound'],['mirror stylesheet bounds','rules_bound'],['mirror form bounds','form_bound'],['mirror bounds','visited_bound']];
+const observerReason=description=>observerReasons.find(([text])=>typeof description==='string'&&description.includes(text))?.[1]??'observer_exception';
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:1280,height:800},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
-// Trusted admission error: never constructed from page/CDP error strings.
-export class MirrorInputEpochRefusal extends Error {
-  constructor() { super('MP-11: stale mirror input epoch'); }
-}
 export class MirrorService {
-  constructor(host) {this.host=host;this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
-  invalidate() {for(const stream of this.streams.values()){stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
+  constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
+  invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){stream.policy=null;stream.resources.clear();continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
   clear() {this.streams.clear();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.streams.delete(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.streams.delete(id);}
@@ -49,22 +50,24 @@ export class MirrorService {
   }
   async evaluate(world,expression) {
     const reply=await world.connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true},world.sessionId);
-    if(reply.exceptionDetails||!Object.hasOwn(reply.result??{},'value')) throw new Error('MP-11: mirror observation unavailable');
+    if(reply.exceptionDetails||!Object.hasOwn(reply.result??{},'value')) {const error=new Error('MP-11: mirror observation unavailable');error.mirrorReason=observerReason(reply.exceptionDetails?.exception?.description);throw error;}
     return reply.result.value;
   }
   async subscribe(command,scope) {
-    this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor))throw new Error('MP-11: mirror negotiation bounds');
+    this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
     await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
+    if(command.wire===2){this.streams.set(subscription_id,this.v2.stream({scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null}));return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor};
   }
   async next(command,scope,options={}) {
     const stream=this.require(command.subscription_id,scope,command.generation);
+    if(stream.wire===2)return this.v2.next(stream,command,scope,options);
     if(stream.busy)throw new Error('MP-11: mirror credit already outstanding');
     stream.busy=true;
     try{return await this.readPacket(command,scope,options);}finally{stream.busy=false;}
@@ -86,7 +89,9 @@ export class MirrorService {
     const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
     mark('regions');
     let source;stream.fullFallback=false;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
+    let fallbackReason=null;
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch(error) {
+      fallbackReason=error.mirrorReason??'observer_unavailable';
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
       // Synthetic tile IDs never authorize element input into the original page.
@@ -131,8 +136,10 @@ export class MirrorService {
     delete source.resources;delete source.revision;source.selection??=null;
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
-    if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
-    if(['tile','mask'].includes(source.nodes.find(n=>n.id===source.root)?.kind)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
+    if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;fallbackReason='tile_under_transform';}
+    if(['tile','mask'].includes(source.nodes.find(n=>n.id===source.root)?.kind)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;fallbackReason='root_tile';}
+    // MP-10 (phase 0.2): a fixed label per tripped bound, on the private timing channel.
+    if(fallbackReason)this.host.timing?.(`mirror_fallback_${fallbackReason}`,timestamp());
     // A tile is an opaque subtree. Descendants must not remain in the wire/map.
     const byId=new Map(source.nodes.map(n=>[n.id,n])),hidden=new Set();
     const hide=id=>{hidden.add(id);for(const child of byId.get(id)?.children??[])hide(child);};
@@ -145,7 +152,7 @@ export class MirrorService {
     const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
     const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
-    if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
+    if(tiles.length>64){this.host.timing?.('mirror_fallback_visible_tile_limit',timestamp());throw new Error('MP-11: visible tile limit; use display fallback');}
     mark('sanitize');
     let tileFrame=null;
     if(tiles.length) {
@@ -192,7 +199,8 @@ export class MirrorService {
     const removed=reset?[]:[...previous.keys()].filter(id=>!byId.has(id)||hidden.has(id));
     const resources=[...material.resources.values()].filter(r=>reset||!stream.resources.has(r.resource_id));
     const packet={subscription_id:command.subscription_id,tab_id:tab.tab_id,generation:command.generation,document_id:tab.document_id,sequence:stream.sequence+1,base_sequence:reset?null:stream.sequence,reset,hash,root:source.root,nodes:changed,removed,fonts:source.fonts,scroll:source.scroll,focused:source.focused,selection:source.selection??null,resources,tiles:tileFrame??[],css_width:1280,css_height:800,device_scale_factor:this.host.scales.get(tab.tab_id)??1};
-    if(JSON.stringify(packet).length>maxWire)throw new Error('MP-11: mirror packet exceeds bound; use display fallback');
+    if(JSON.stringify(packet).length>maxWire){this.host.timing?.('mirror_fallback_packet_bound',timestamp());throw new Error('MP-11: mirror packet exceeds bound; use display fallback');}
+    if(fallbackReason)packet.fallback_reason=fallbackReason;
     stream.sequence++;stream.previous=source;stream.document_id=tab.document_id;stream.policy=policy;stream.resources=material.resources;
     // MP-11: only committed/issued epochs are eligible; no future or guessed input.
     stream.epochs.push({sequence:stream.sequence,issuedAt:this.now(),nodes:new Map(source.nodes.map(n=>[n.id,JSON.stringify(n)])),focused:source.focused,fullFallback:stream.fullFallback});
@@ -202,6 +210,7 @@ export class MirrorService {
   }
   async resolveInput(tab,input,scope,signal) {
     this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
+    if(stream.wire===2)return this.v2.resolveInput(stream,tab,input,scope,signal);
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
     if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);

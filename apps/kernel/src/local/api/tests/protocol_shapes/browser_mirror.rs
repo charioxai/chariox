@@ -1,12 +1,12 @@
-//! MP-08/MP-10/MP-11: protocol 447 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 447/482 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
     KernelBrowserRequest,
 };
 #[test]
-fn browser_mirror_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+fn browser_mirror_protocol_482_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 482);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96
@@ -24,12 +24,27 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             tab_id: "t".into(),
             generation: 2,
             device_scale_factor: 2,
+            wire: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
+            wait_ms: None,
+        },
+        C::MirrorSubscribe {
+            tab_id: "t".into(),
+            generation: 2,
+            device_scale_factor: 2,
+            wire: Some(2),
+        },
+        C::MirrorNext {
+            subscription_id: "s".into(),
+            generation: 2,
+            after_sequence: 3,
+            drift_nodes: vec![],
+            wait_ms: Some(1500),
         },
         C::MirrorClose {
             subscription_id: "s".into(),
@@ -37,18 +52,36 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         },
         binding(A::Click {
             node_id: "n1".into(),
+            x: None,
+            y: None,
+        }),
+        binding(A::Click {
+            node_id: "n1".into(),
+            x: Some(4.5),
+            y: Some(2.0),
         }),
         binding(A::Focus {
             node_id: "n1".into(),
         }),
         binding(A::Text {
-            node_id: "n1".into(),
+            node_id: Some("n1".into()),
+            text: "fixture".into(),
+        }),
+        binding(A::Text {
+            node_id: None,
             text: "fixture".into(),
         }),
         binding(A::Scroll {
             node_id: "n1".into(),
             delta_x: 0,
             delta_y: 10,
+            x: None,
+            y: None,
+        }),
+        binding(A::ScrollTo {
+            node_id: None,
+            x: 0.0,
+            y: 640.5,
         }),
         binding(A::Key { key: "Tab".into() }),
         binding(A::Selection {
@@ -58,7 +91,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             focus_offset: 3,
         }),
         binding(A::Composition {
-            node_id: "n1".into(),
+            node_id: Some("n1".into()),
             text: "abc".into(),
             selection_start: 0,
             selection_end: 3,
@@ -80,11 +113,11 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-443.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-482.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "132d2e5e41482d79c1aadf1b6b89b80f5185163f540eb7ebbffb17efc29ad5f8"
+        "8ec146f5fa2b9f4a992eaf2c4e0a0c2666ffd35dafd06a5d7a8b0d30692ddf80"
     );
     let next = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
         command: C::MirrorNext {
@@ -92,6 +125,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            wait_ms: Some(1500),
         },
     });
     assert!(

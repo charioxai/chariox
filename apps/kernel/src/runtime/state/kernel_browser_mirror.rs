@@ -52,7 +52,70 @@ impl KernelRuntimeState {
             .owned
             .kernel_browser_host
             .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
-        self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
-            .await
+        let result = self
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
+            .await?;
+        if result.get("wire").and_then(Value::as_u64) == Some(2) {
+            return compress_mirror_packet(result);
+        }
+        Ok(result)
+    }
+}
+
+/// MP-08/MP-10: a protocol 482 packet travels gzip-compressed after the Vault
+/// scrub (the relay has no permessage-deflate). Already-encoded resource and
+/// region bytes stay outside the compressed body.
+fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let object = packet
+        .as_object_mut()
+        .ok_or_else(|| host_error("MP-11: invalid mirror packet".into()))?;
+    let resources = object.remove("resources").unwrap_or_else(|| json!([]));
+    let tiles = object.remove("tiles").unwrap_or_else(|| json!([]));
+    let body = serde_json::to_vec(&packet)
+        .map_err(|_| host_error("MP-11: invalid mirror packet".into()))?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&body)
+        .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
+    Ok(json!({
+        "wire": 2,
+        "encoding": "gzip",
+        "packet_bytes": body.len(),
+        "packet_base64": base64::engine::general_purpose::STANDARD.encode(compressed),
+        "resources": resources,
+        "tiles": tiles,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read as _;
+
+    #[test]
+    fn mirror_v2_packet_compresses_body_and_keeps_media_outside() {
+        let packet = json!({"wire":2,"sequence":4,"ops":[{"op":"text","id":"n2","text":"a".repeat(4096)}],
+            "resources":[{"key":"r1","data_base64":"AAAA"}],"tiles":[]});
+        let wire = compress_mirror_packet(packet.clone()).unwrap();
+        assert_eq!(wire["encoding"], "gzip");
+        assert_eq!(wire["resources"], packet["resources"]);
+        use base64::Engine as _;
+        let compressed = base64::engine::general_purpose::STANDARD
+            .decode(wire["packet_base64"].as_str().unwrap())
+            .unwrap();
+        assert!(compressed.len() < 512, "MP-10: DOM text compresses");
+        let mut body = String::new();
+        flate2::read::GzDecoder::new(&compressed[..])
+            .read_to_string(&mut body)
+            .unwrap();
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["ops"], packet["ops"]);
+        assert!(body.get("resources").is_none());
+        assert_eq!(wire["packet_bytes"].as_u64().unwrap() as usize, serde_json::to_vec(&body).unwrap().len());
     }
 }

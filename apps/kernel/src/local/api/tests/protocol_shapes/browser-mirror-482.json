@@ -25,6 +25,29 @@
   {
     "KernelBrowser": {
       "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 2,
+        "device_scale_factor": 2,
+        "wire": 2
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_next",
+        "subscription_id": "s",
+        "generation": 2,
+        "after_sequence": 3,
+        "drift_nodes": [],
+        "wait_ms": 1500
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
         "op": "mirror_close",
         "subscription_id": "s",
         "generation": 2
@@ -43,6 +66,24 @@
         "action": {
           "kind": "click",
           "node_id": "n1"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "click",
+          "node_id": "n1",
+          "x": 4.5,
+          "y": 2.0
         }
       }
     }
@@ -90,10 +131,43 @@
         "subscription_id": "s",
         "sequence": 3,
         "action": {
+          "kind": "text",
+          "text": "fixture"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
           "kind": "scroll",
           "node_id": "n1",
           "delta_x": 0,
           "delta_y": 10
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "scroll_to",
+          "x": 0.0,
+          "y": 640.5
         }
       }
     }
