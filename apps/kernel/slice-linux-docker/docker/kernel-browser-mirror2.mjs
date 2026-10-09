@@ -95,10 +95,13 @@ export function dedupeMirrorSheets(packet, sent) {
   if (Object.keys(sheets).length) packet.sheets = sheets;
 }
 
+// The subscription's own observer instance in a (shared) isolated world.
+const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(String(stream.id))})`;
+
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); }
   parentWorld(stream) { return stream.world; }
-  async world(tab) {
+  async world(tab, stream) {
     const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
     const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
@@ -109,7 +112,7 @@ export class Mirror2 {
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
-    return { connection, sessionId, contextId: world.contextId, frame: frameTree.frame };
+    return { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
   }
   async evaluate(world, expression, awaitPromise = false) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
@@ -120,6 +123,11 @@ export class Mirror2 {
     if (!Object.hasOwn(reply.result ?? {}, 'value')) throw new Error('MP-11: mirror observation unavailable');
     return reply.result.value;
   }
+  // A closed subscription's observers stop (best effort: a gone world has none).
+  dispose(stream) {
+    const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
+    for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
+  }
   stream(stream) {
     this.host.timing?.(`mirror2_subscribe ${this.service.streams.size}`, timestamp());
     Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0, movedAt: 0, ownScrolls: new Map() });
@@ -128,7 +136,7 @@ export class Mirror2 {
   // Closed shadow roots (owner decision: opaque regions): a trusted DOMSnapshot
   // pass finds their hosts before the snapshot, only when custom elements exist.
   async markClosedHosts(world) {
-    if (!await this.evaluate(world, 'globalThis.__charioxMirror2.customHosts()')) return 0;
+    if (!await this.evaluate(world, `${world.ref}.customHosts()`)) return 0;
     const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
     const nodes = snapshot.documents?.[0]?.nodes, strings = snapshot.strings ?? [], types = nodes?.shadowRootType;
     let marked = 0;
@@ -138,7 +146,7 @@ export class Mirror2 {
       if (!Number.isSafeInteger(backendNodeId)) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-        await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function(){return globalThis.__charioxMirror2.markClosedHost.call(this)}', returnByValue: true }, world.sessionId);
+        await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.markClosedHost.call(this)}`, returnByValue: true }, world.sessionId);
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
         marked++;
       } catch {}
@@ -149,7 +157,7 @@ export class Mirror2 {
   // Fields the kernel filled from the Vault, by node identity: top-level refs
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
   async protectTargets(world, tab, policy, prefix = '') {
-    await this.evaluate(world, 'globalThis.__charioxMirror2.resetTargets()');
+    await this.evaluate(world, `${world.ref}.resetTargets()`);
     for (const target of policy.targets) {
       if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
       if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;
@@ -157,7 +165,7 @@ export class Mirror2 {
       if (!match) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId: Number(match[1]), executionContextId: world.contextId }, world.sessionId);
-        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function(){return globalThis.__charioxMirror2.protect.call(this)}', returnByValue: true }, world.sessionId);
+        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this)}`, returnByValue: true }, world.sessionId);
         if (marked.exceptionDetails || marked.result?.value !== true) throw new Error('MP-11: protected target unavailable');
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
       } catch (error) {
@@ -180,7 +188,7 @@ export class Mirror2 {
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     // Credits that arrived before it stop waiting (their hurry count is older).
-    if (command.after_sequence === 0) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, 'globalThis.__charioxMirror2.wake()').catch(() => {}); }
+    if (command.after_sequence === 0) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
     const hurry = stream.hurry;
     const run = stream.chain.then(() => this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
     stream.chain = run.catch(() => {});
@@ -193,7 +201,7 @@ export class Mirror2 {
     this.service.require(command.subscription_id, scope, command.generation);
     const tab = await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
     this.service.assertWebTab(tab); assertNotCancelled(signal);
-    const world = await this.world(tab), policy = this.host.protection;
+    const world = await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
     mark('world');
     const after = command.after_sequence;
@@ -210,14 +218,14 @@ export class Mirror2 {
       if (reset) {
         await this.protectTargets(world, tab, policy);
         await this.markClosedHosts(world);
-        const snap = await this.evaluate(world, 'globalThis.__charioxMirror2.snapshot()');
+        const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;
         // Cross-origin frames: child DOM under the owner, or an opaque region.
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.opaque(snap.nodes, frames.opaque);
         return { ...snap, nodes: [...snap.nodes, ...frames.records], ops: frames.ops, resources: [...snap.resources, ...(frames.resources ?? [])] };
       }
-      return processDelta(await this.evaluate(world, 'globalThis.__charioxMirror2.drain()'));
+      return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
     const processDelta = async delta => {
       if (delta.resync) return delta;
@@ -246,7 +254,7 @@ export class Mirror2 {
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
-        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
+        const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
@@ -317,7 +325,7 @@ export class Mirror2 {
   // A URL a stylesheet merely mentions waits until the page loads it.
   async materialize(main, stream, kind) {
     const worlds = new Map([[0, main], ...[...stream.frameSlots].map(([slot, entry]) => [slot, entry.child])]);
-    let counts = 0; for (const world of worlds.values()) counts += await this.evaluate(world, 'globalThis.__charioxMirror2.loadedCount()').catch(() => 0);
+    let counts = 0; for (const world of worlds.values()) counts += await this.evaluate(world, `${world.ref}.loadedCount()`).catch(() => 0);
     const recheck = counts !== stream.loadedCount; stream.loadedCount = counts;
     const out = [];
     for (const [slot, world] of worlds) {
@@ -334,13 +342,13 @@ export class Mirror2 {
       // an idle long poll does not walk the page's images twice a second.
       stamp = `${stream.pageScroll}|${stream.issued}|${stream.loadedCount}|${stream.resources.size}|${Date.now() - stream.movedAt < SETTLE_MS}`;
       if (stamp === stream.nearStamp) return [];
-      const view = await this.evaluate(world, `globalThis.__charioxMirror2.nearImages(${NEAR_PX})`);
+      const view = await this.evaluate(world, `${world.ref}.nearImages(${NEAR_PX})`);
       near = new Map(view.near.map(([key, width, height]) => [key, [width, height]])); const elements = new Set(view.all);
       due = due.filter(entry => !elements.has(entry.key) || near.has(entry.key)).sort((a, b) => near.has(b.key) - near.has(a.key));
       moving = Date.now() - stream.movedAt < SETTLE_MS;
     }
     if (!due.length) { if (stamp) stream.nearStamp = stamp; return []; }
-    const loaded = new Set((await this.evaluate(world, 'globalThis.__charioxMirror2.loaded()')).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
+    const loaded = new Set((await this.evaluate(world, `${world.ref}.loaded()`)).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
     let tree = null;
     const frames = async () => {
       if (tree) return tree;
@@ -367,7 +375,7 @@ export class Mirror2 {
       const size = near?.get(entry.key);
       if (size && moving && entry.resource.data_base64.length > PREVIEW_MIN_BASE64 && PREVIEW_TYPES.has(entry.resource.mime_type)) {
         if (entry.previewed) continue; // exact bytes once the view settles
-        const svg = await this.evaluate(world, `globalThis.__charioxMirror2.preview(${JSON.stringify(entry.resource.data_base64)},${JSON.stringify(entry.resource.mime_type)},${size[0]},${size[1]})`, true).catch(() => null);
+        const svg = await this.evaluate(world, `${world.ref}.preview(${JSON.stringify(entry.resource.data_base64)},${JSON.stringify(entry.resource.mime_type)},${size[0]},${size[1]})`, true).catch(() => null);
         if (typeof svg === 'string') {
           const data = Buffer.from(svg, 'utf8');
           entry.previewed = true; bytes += data.length * 4 / 3;
@@ -402,12 +410,12 @@ export class Mirror2 {
     const reply = await world.connection.send('Page.getResourceContent', { frameId, url }, world.sessionId);
     const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
     if (typeof text !== 'string' || text.length > 16 * 1024 * 1024) return null;
-    return this.evaluate(world, `(()=>{const sheet=new CSSStyleSheet();sheet.replaceSync(${JSON.stringify(text)});let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return globalThis.__charioxMirror2.sanitize(out,${JSON.stringify(url)});})()`);
+    return this.evaluate(world, `(()=>{const sheet=new CSSStyleSheet();sheet.replaceSync(${JSON.stringify(text)});let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return ${world.ref}.sanitize(out,${JSON.stringify(url)});})()`);
   }
   // Opaque regions (canvas/video/foreign frames) as masked lossless stills,
   // refreshed at most once a second until phase 3 binds them to video rows.
   async tiles(world, tab, stream, reset) {
-    const boxes = [...(await this.evaluate(world, 'globalThis.__charioxMirror2.opaqueBoxes()')).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
+    const boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the
     // whole page to protected video (labelled; the client retries later).
@@ -447,10 +455,10 @@ export class Mirror2 {
     if (action.kind === 'composition' && (!Number.isInteger(action.selection_start) || !Number.isInteger(action.selection_end) || action.selection_start < 0 || action.selection_end < action.selection_start || action.selection_end > action.text.length)) throw new Error('MP-11: invalid mirror input');
     // A target whose attributes changed after the viewer's view is refused (re-sync).
     for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (stream.attrSequence.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
-    const world = await this.world(tab);
+    const world = await this.world(tab, stream);
     const assertEpoch = () => { if (this.service.require(input.subscription_id, scope, generation) !== stream || stream.policy !== this.host.protection || stream.document_id !== tab.document_id || stream.fallback) throw new Error('MP-11: stale mirror protection policy or admitted input'); };
     const call = async expression => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertEpoch(); const value = await this.evaluate(world, expression); assertEpoch(); return value; };
-    const m = 'globalThis.__charioxMirror2';
+    const m = world.ref;
     // Nodes of a mirrored cross-origin frame live in that frame's own world.
     const frameOf = id => { const slot = id ? slotOf(id) : 0; if (!slot) return null; const entry = stream.frameSlots.get(slot); if (!entry) throw new Error('MP-11: changed mirror input target'); return entry; };
     const inFrame = async (entry, expression) => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); const value = await this.evaluate(entry.child, expression); assertEpoch(); return value; };

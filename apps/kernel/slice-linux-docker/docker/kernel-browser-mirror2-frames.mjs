@@ -51,7 +51,7 @@ export class MirrorFrames {
       try {
         const { backendNodeId } = await world.connection.send('DOM.getFrameOwner', { frameId: frame.id }, world.sessionId);
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function(){return globalThis.__charioxMirror2.idOfNode.call(this)}', returnByValue: true }, world.sessionId);
+        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.idOfNode.call(this)}`, returnByValue: true }, world.sessionId);
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
         const id = reply.result?.value;
         if (typeof id === 'string' && /^n[1-9][0-9]*$/.test(id)) owners.set(id, frame); else this.failed('owner_id', id);
@@ -63,7 +63,7 @@ export class MirrorFrames {
   async world(world, frame) {
     const sessionId = this.mirror.host.browser.frameSession?.(frame.id, world.connection) ?? world.sessionId;
     const { executionContextId } = await world.connection.send('Page.createIsolatedWorld', { frameId: frame.id, worldName: WORLD, grantUniveralAccess: false }, sessionId);
-    const child = { connection: world.connection, sessionId, contextId: executionContextId, frame };
+    const child = { connection: world.connection, sessionId, contextId: executionContextId, frame, ref: world.ref };
     const installed = await world.connection.send('Runtime.evaluate', { expression: mirror2ObserverExpression(), contextId: executionContextId, returnByValue: true }, sessionId);
     if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: frame observer unavailable');
     return child;
@@ -78,7 +78,7 @@ export class MirrorFrames {
   // Child snapshot with the frame's Vault fill targets protected by identity.
   async snapshot(child, loaderId, policy, tab) {
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
-    return this.mirror.evaluate(child, 'globalThis.__charioxMirror2.snapshot()');
+    return this.mirror.evaluate(child, `${child.ref}.snapshot()`);
   }
   async attach(world, stream, foreignIds, policy, tab) {
     const out = { records: [], ops: [], opaque: [] };
@@ -110,7 +110,7 @@ export class MirrorFrames {
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
-        const delta = await this.mirror.evaluate(entry.child, 'globalThis.__charioxMirror2.drain()');
+        const delta = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (delta.resync) throw new Error('resync');
         out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)));
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
@@ -137,8 +137,8 @@ export class MirrorFrames {
     const out = [];
     for (const [owner, entry] of stream.frames) {
       try {
-        const origin = await this.mirror.evaluate(parent, `globalThis.__charioxMirror2.frameOrigin(${JSON.stringify(owner)})`);
-        const boxes = await this.mirror.evaluate(entry.child, 'globalThis.__charioxMirror2.opaqueBoxes()');
+        const origin = await this.mirror.evaluate(parent, `${parent.ref}.frameOrigin(${JSON.stringify(owner)})`);
+        const boxes = await this.mirror.evaluate(entry.child, `${entry.child.ref}.opaqueBoxes()`);
         for (const { id, box } of boxes) out.push({ id: rebaseId(id, entry.slot), box: [box[0] + origin[0], box[1] + origin[1], box[2], box[3]] });
       } catch {}
     }

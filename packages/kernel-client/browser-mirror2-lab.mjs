@@ -276,9 +276,10 @@ if (process.argv[2] !== 'child') {
           const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
           const world = await host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
           const evalWorld = async expression => (await connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true }, sessionId)).result?.value;
-          row.c_text = await evalWorld('globalThis.__charioxMirror2?.textCoverage()');
+          const observer = `globalThis.__charioxMirror2?.get(${JSON.stringify([...host.mirror.streams.entries()].find(([, s]) => s.wire === 2)?.[0] ?? '')})`;
+          row.c_text = await evalWorld(`${observer}.textCoverage()`);
           const attached = new Set([...host.mirror.streams.values()].filter(s => s.wire === 2).flatMap(s => [...s.frames.keys()]));
-          const opaque = (await evalWorld('globalThis.__charioxMirror2?.opaqueBoxes()') ?? []).filter(b => !b.foreign || !attached.has(b.id));
+          const opaque = (await evalWorld(`${observer}.opaqueBoxes()`) ?? []).filter(b => !b.foreign || !attached.has(b.id));
           row.frames_attached = attached.size; row.frame_failures = host.mirror.v2.frames.failures.slice(-8);
           let area = 0; for (const { box } of opaque) { const w = Math.max(0, Math.min(1280, box[0] + box[2]) - Math.max(0, box[0])), h = Math.max(0, Math.min(800, box[1] + box[3]) - Math.max(0, box[1])); area += w * h; }
           row.c_area = 1 - Math.min(1, area / (1280 * 800)); row.opaque_regions = opaque.length;

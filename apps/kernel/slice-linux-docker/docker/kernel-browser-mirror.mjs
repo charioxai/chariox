@@ -23,8 +23,9 @@ export class MirrorService {
   constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
   invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){stream.policy=null;stream.resources.clear();continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
   clear() {this.streams.clear();}
-  removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.streams.delete(id);}
-  expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.streams.delete(id);}
+  drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2)this.v2.dispose(stream);}
+  removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
+  expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.drop(id);}
   require(id,scope,generation) {
     this.expire();const stream=this.streams.get(id);
     if(!stream || stream.scope!==scope || generation!==this.host.generation) throw new Error('MP-11: stale or foreign mirror');
@@ -61,7 +62,7 @@ export class MirrorService {
     await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
-    if(command.wire===2){this.streams.set(subscription_id,this.v2.stream({scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null}));return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor,wire:2};}
+    if(command.wire===2){this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null}));return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:command.device_scale_factor};
   }

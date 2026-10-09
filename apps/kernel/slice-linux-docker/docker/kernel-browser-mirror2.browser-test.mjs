@@ -28,11 +28,15 @@ async function mirrored(html, run, routes = {}) {
     };
     for (let i = 0; i < 200 && await evaluate("document.readyState").catch(() => "") !== "complete"; i++) await new Promise(resolve => setTimeout(resolve, 25));
     await host.request({ op: "state" });
-    const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
-    let applied = 0;
-    const next = async (wait_ms = 0) => { const packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: applied, drift_nodes: [], wait_ms }); applied = packet.sequence; return packet; };
-    const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
-    await run({ next, evaluate, host, input });
+    const subscribe = async () => {
+      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
+      let applied = 0;
+      const next = async (wait_ms = 0, reset = false) => { const packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence; return packet; };
+      const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
+      return { next, input };
+    };
+    const { next, input } = await subscribe();
+    await run({ next, evaluate, host, input, subscribe });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -79,4 +83,20 @@ test("MP-10: a node added and removed before the drain sends no children op", ()
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
   const started = Date.now(), packet = await next(600);
   assert.deepEqual(packet.ops, []); assert(Date.now() - started >= 500);
+}));
+
+// Compact snapshot rows: [idDelta, parentBack, tag | kindCode, ...]; kind code 0 = text (4th item).
+const texts = packet => { const out = new Map(); let id = 0; for (const row of packet.nodes) { id += row[0]; if (row[2] === 0) out.set(row[3], `n${id}`); } return out; };
+test("MP-10/MP-11: two viewers of one tab keep independent snapshots and deltas (one resets)", () => mirrored('<p id="x">one</p><p id="y">two</p>', async ({ evaluate, subscribe }) => {
+  const a = await subscribe(), b = await subscribe();
+  const idsA = texts(await a.next()), idsB = texts(await b.next());
+  await evaluate("document.querySelector('#x').firstChild.data='uno';true");
+  const textOps = packet => packet.ops.filter(op => op.op === "text").map(op => [op.id, op.text]);
+  assert.deepEqual(textOps(await a.next(600)), [[idsA.get("one"), "uno"]], "MP-10: viewer A gets the change under its own ids");
+  assert.deepEqual(textOps(await b.next(600)), [[idsB.get("one"), "uno"]], "MP-10: viewer B gets the same change under its own ids");
+  // Only B resets; A's next delta still names A's nodes.
+  const idsB2 = texts(await b.next(0, true));
+  await evaluate("document.querySelector('#y').firstChild.data='dos';true");
+  assert.deepEqual(textOps(await a.next(600)), [[idsA.get("two"), "dos"]]);
+  assert.deepEqual(textOps(await b.next(600)), [[idsB2.get("two"), "dos"]]);
 }));
