@@ -40,11 +40,14 @@ function paeth(a, b, c) {
 }
 export function decodePng(data, scale = 1, viewport = null) {
   // MP-08/MP-11: controller artifacts have a negotiated viewport distinct
-  // from the host display. Bind their header before allocating/inflating.
+  // from the host display and supply their trusted artifact byte bound.
+  // Bind their header before allocating/inflating; keep host defaults.
+  const maxBytes = viewport?.maxBytes ?? 4 * 1024 * 1024;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('MD-5: invalid frame byte bound');
   if (viewport && (![viewport.width, viewport.height].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isSafeInteger((viewport.width * 4 + 1) * viewport.height))) throw new Error('MD-5: invalid frame viewport');
   const png = Buffer.from(data, "base64");
-  if (!png.subarray(0, 8).equals(signature) || png.length > 4 * 1024 * 1024) throw new Error("MD-5: unsupported frame");
+  if (!png.subarray(0, 8).equals(signature) || png.length > maxBytes) throw new Error("MD-5: unsupported frame");
   let width, height, channels, ended = false;
   const compressed = [];
   for (let offset = 8; offset + 12 <= png.length;) {

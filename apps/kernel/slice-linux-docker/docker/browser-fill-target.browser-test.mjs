@@ -15,6 +15,7 @@ import { launchChromium } from './browser-protection-fixture.mjs';
 import * as regions from './browser-protection-regions.mjs';
 const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
+import { MAX_BROWSER_ARTIFACT_BYTES } from './browser-controller-artifacts.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
 async function videoPixels(png,dpr,label,required=false,regions=[]) {
@@ -86,6 +87,30 @@ for(const dpr of [1,2]) {
    assert.equal((await gate.step()).verified,gate.protectionSerial);
  }));
  for (const field of ['plain', 'password']) {
+   test(`MP-08/MP-11 DPR${dpr}: controller validates 4-to-8 MiB PNG after ${field} fill`, () => setup(dpr, async ({browser,connection,sessionId,targetId,documentId,fill,evaluate}) => {
+     connection.browserInstanceId='MP11-large-artifact-fixture';
+     const viewport={css_width:1920,css_height:1080,device_scale_factor:dpr,desktop_pixel_width:1920*dpr,desktop_pixel_height:1080*dpr,revision:1,last_actor_id:null};
+     await browser.reconcile(viewport,{browserBarVisible:false});
+     const noiseWidth=dpr===1?1800:2200,noiseHeight=dpr===1?1000:1200;
+     const painted=await evaluate(`(()=>{const canvas=document.createElement('canvas');canvas.width=${noiseWidth};canvas.height=${noiseHeight};canvas.style.cssText='position:absolute;left:0;top:0;width:${noiseWidth/dpr}px;height:${noiseHeight/dpr}px;image-rendering:pixelated';document.body.prepend(canvas);const ctx=canvas.getContext('2d'),image=ctx.createImageData(canvas.width,canvas.height);let seed=123456789;for(let i=0;i<image.data.length;i+=4){for(let c=0;c<3;c++){seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;image.data[i+c]=seed&255;}image.data[i+3]=255;}ctx.putImageData(image,0,0);return true})()`);
+     assert.equal(painted.result.value,true);
+     const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport};
+     const before=await browser.captureArtifact(request);
+     assert(before.size_bytes>4*1024*1024&&before.size_bytes<MAX_BROWSER_ARTIFACT_BYTES,`actual Chromium PNG crosses the old cap: ${before.size_bytes}`);
+     await fill(`#${field}`);
+     const image=await browser.captureArtifact(request),bytes=Buffer.from(image.data_base64,'base64');
+     assert(image.size_bytes>4*1024*1024&&image.size_bytes<MAX_BROWSER_ARTIFACT_BYTES);
+     assert.equal(image.size_bytes,bytes.length);assert.equal(image.sha256,hash(bytes));
+     const frame=decodePng(image.data_base64,dpr,{width:1920*dpr,height:1080*dpr,maxBytes:MAX_BROWSER_ARTIFACT_BYTES});
+     assert.equal(frame.width,1920*dpr);assert.equal(frame.height,1080*dpr);
+     const top=field==='plain'?90:180,index=(top*dpr*frame.width+280*dpr)*4;
+     assert.deepEqual([...frame.pixels.subarray(index,index+4)],field==='plain'?[0,0,0,255]:[0,255,255,255]);
+     assert.equal(image.redaction,field==='plain'?'fill_targets':'none');
+     const unfilled=(400*dpr*frame.width+400*dpr)*4;
+     const baseline=decodePng(before.data_base64,dpr,{width:frame.width,height:frame.height,maxBytes:MAX_BROWSER_ARTIFACT_BYTES});
+     assert.deepEqual(frame.pixels.subarray(unfilled,unfilled+4),baseline.pixels.subarray(unfilled,unfilled+4),'ordinary canvas pixels survive');
+     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`large-${field}-dpr${dpr}.png`),bytes);
+   }));
    test(`MP-08/MP-11 DPR${dpr}: canonical 1920x1080 image survives ${field} fill`, () => setup(dpr, async ({browser,connection,sessionId,targetId,documentId,fill}) => {
      connection.browserInstanceId='MP11-canonical-artifact-fixture';
      const viewport={css_width:1920,css_height:1080,device_scale_factor:dpr,desktop_pixel_width:1920*dpr,desktop_pixel_height:1080*dpr,revision:1,last_actor_id:null};
