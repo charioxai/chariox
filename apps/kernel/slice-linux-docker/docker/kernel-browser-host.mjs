@@ -38,7 +38,9 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
 export function scheduleHostRequest(request) {
-  return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
+  // MP-08/MP-10/MP-11: scoped desktop credits share the browser wait lane;
+  // mutation/lifecycle/policy commands keep their existing barriers.
+  return ['host.browser','host.computer'].includes(request.method) && request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string'
     ? {kind:'bridge'} : {kind:'barrier'};
 }

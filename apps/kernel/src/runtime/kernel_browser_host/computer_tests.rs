@@ -178,3 +178,68 @@ fn mp11_fast_close_reopen_and_second_viewer_keep_desktop_ownership_correct() {
     model.finish(&action, EnvironmentActionTerminal::Completed);
     assert!(!model.desktop_owner_is("terminal:new"));
 }
+
+#[test]
+fn mp10_desktop_display_wait_does_not_block_input_or_cross_responses() {
+    use std::time::Instant;
+    let root = std::env::temp_dir().join(format!(
+        "culinux-desktop-wait-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf 'health\n' >> "$root/health"; result='{"state":"ready","process_id":'$$'}' ;;
+ *'"method":"host.protect"'*) printf 'policy\n' >> "$root/policy"; result='{}' ;;
+ *'"method":"host.browser"'*) result='{"generation":1,"tabs":[]}' ;;
+ *'"op":"state"'*) result='{"surface_id":"s","generation":"g"}' ;;
+ *'"op":"screenshot"'*)
+   printf 'started\n' > "$root/capture"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"frame_sent":false}}\n' "$id") &
+   continue ;;
+ *'"op":"input"'*) result='{"input_completed":true}' ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id"; exit 0 ;;
+ esac
+ printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let startup_health = std::fs::read(root.join("health")).unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture=scope.spawn(|| host.protected_request("alice",None,"host.computer",json!({"op":"screenshot","surface_id":"s","generation":"g","display_subscription_id":"view"}),policy.clone()));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("capture").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capture").exists());
+        let input=scope.spawn(|| {tx.send(host.protected_request("alice",None,"host.computer",json!({"op":"input","surface_id":"s","generation":"g","observed_by":"terminal:human","input":{"kind":"key","key":"PageDown"}}),policy.clone())).unwrap();});
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(capture.join().unwrap().unwrap()["frame_sent"], false);
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    assert_eq!(std::fs::read(root.join("health")).unwrap(), startup_health);
+    assert_eq!(std::fs::read(root.join("policy")).unwrap(), b"policy\n");
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early
+            .expect("MP-10: input waited behind desktop frame")
+            .unwrap()["input_completed"],
+        true
+    );
+}

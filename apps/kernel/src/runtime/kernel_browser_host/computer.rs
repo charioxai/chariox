@@ -107,8 +107,9 @@ impl KernelBrowserHost {
             .map_err(|_| "MP-11: desktop operation lock unavailable")?;
         self.check_admission(admission)?;
         self.require_running()?;
-        let ready =
-            matches!(backend.health(),Ok(h) if h.state==BrowserControllerProcessState::Ready);
+        // The supervised child validates health at startup. Warm operations
+        // use the same liveness check as browser credits, outside its barriers.
+        let ready = backend.host_is_live()?;
         if params["op"] == "start"
             && admission
                 .and_then(|a| a.agent.as_deref())
@@ -153,7 +154,9 @@ impl KernelBrowserHost {
                 .into();
             params["observed_by"] = format!("agent:{}", a.agent.as_deref().unwrap()).into();
         }
-        backend.host_request_classified("host.protect", policy)?;
+        // Changed policy remains a controller barrier; cache only the exact
+        // successfully applied policy on this supervised child.
+        backend.protect_host(policy)?;
         self.check_admission(admission)?;
         if params["op"] == "start" {
             let state = backend.host_request_cancellable(
@@ -247,6 +250,31 @@ impl KernelBrowserHost {
             (None, Some(a)) => Some(a.cancellation.clone()),
             _ => None,
         };
+        // MP-08/MP-10/MP-11: desktop capture credits may park on a native
+        // frame. As with browser display, release the backend while waiting
+        // so human input can reach the same controller. The pending request
+        // retains its admission cancellation and response identity.
+        if params["op"] == "screenshot" && params["display_subscription_id"].is_string() {
+            let signal = cancellation
+                .clone()
+                .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+            let pending = backend.begin_cancellable_mutation("host.computer", &params, &signal)?;
+            drop(backend);
+            let result = pending
+                .wait(&signal)
+                .map_err(crate::error::HostFailure::Other)
+                .and_then(|response| response.into_host_result("host.computer"));
+            self.check_admission(admission)?;
+            if result.is_ok() {
+                self.resource_notice(
+                    admission,
+                    UserDomainResource::Desktop {
+                        surface_id: surface.into(),
+                    },
+                );
+            }
+            return result;
+        }
         // MP-08/MP-11: a human desktop video subscription starts a viewer lease.
         let viewer = (params["op"] == "display_subscribe")
             .then(|| browser_actor(admission, &params).actor_id);
