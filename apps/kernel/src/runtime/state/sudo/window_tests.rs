@@ -365,11 +365,17 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
         .prompt_state_owner
         .sudo_work_held(&session(&f), &agent));
     assert!(outcomes(&f, &window.entry_id).contains(&"expired".to_owned()));
-    assert!(!f
+    // MP-08/MP-10/MP-11: main advertises the dormant interface before the
+    // first provider turn; expiry must revoke authority, not discovery.
+    assert!(f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(f.router.dispatch_authenticated_runtime_tool_call(
+        "sudo-fixture-bearer", "chariox_kernel_request",
+        serde_json::json!({"request":{"ListSessions":null}})
+    ).await.is_err());
 }
 
 #[tokio::test]

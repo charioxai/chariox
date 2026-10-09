@@ -210,6 +210,7 @@ async fn sudo_window_never_changes_the_catalog_change_signature() {
         (
             name,
             listed,
+            f.state.sudo_for_auth_token("sudo-fixture-bearer").is_ok(),
             f.state.runtime_catalog_signature_for_agent(&agent),
         )
     };
@@ -236,19 +237,19 @@ async fn sudo_window_never_changes_the_catalog_change_signature() {
     seen.push(checkpoint("ended"));
     let listed: Vec<_> = seen
         .iter()
-        .map(|(name, listed, _)| (*name, *listed))
+        .map(|(name, listed, authorized, _)| (*name, *listed, *authorized))
         .collect();
     assert_eq!(
         listed,
         [
-            ("before", false),
-            ("pending", false),
-            ("pending revoked", false),
-            ("bound", true),
-            ("ended", false)
+            ("before", true, false),
+            ("pending", true, false),
+            ("pending revoked", true, false),
+            ("bound", true, true),
+            ("ended", true, false)
         ]
     );
-    for (name, _, signature) in &seen {
+    for (name, _, _, signature) in &seen {
         assert_eq!(signature, &seen[0].2, "{name}: catalog signature changed");
     }
 }
