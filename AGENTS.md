@@ -67,6 +67,28 @@ Do not merge protocol shape changes without the version bump and test update.
 - Store persistent local development and drill state under `~/.chariox/dev/<task-or-kernel>/`. Set `CHARIOX_HOME` to an explicit absolute subdirectory there; use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, `CHARIOX_LOG_DIR`, kernel state, or drill scratch roots inside a repository.
 - Never create `.arroba` directories or other paths using the retired product name. A workspace `.chariox/` directory is allowed only for explicit user-authored workspace-scoped capabilities or source; automatic logs, runtime mailboxes, generated workflow code, test state, and drill artifacts must remain outside repositories.
 
+## Validation: real live drills
+
+Validation means **real live drills: the exact scenarios real users encounter, with real providers and real everything**:
+- real public sites, services and accounts;
+- real official provider agents (Codex, Claude, OpenCode);
+- real clients (the web app in a real desktop browser, including Retina/DPR 2, and the real TUI);
+- the real hosted relay and real networks with realistic uplink and latency;
+- real machines;
+- realistic durations.
+
+Synthetic fixtures, local mocks (mail catchers, local OIDC, fixture pages, stub agents) and component tests are supplementary regression checks only. They never count as acceptance.
+
+A feature is done only when its real live drills pass with explicit usability thresholds:
+- coverage of the listed real sites and services;
+- input-to-visible latency;
+- smoothness;
+- success on every listed case.
+
+Every drill must be shown to fail before the change and pass after, with screenshots and logs. Treat any fallback, degraded mode or "known limitation" as a blocker until it is checked under real conditions. If a real resource is missing (account, credential, machine), report the feature as blocked and name the exact owner action; never substitute a mock and call it accepted.
+
+Nothing is staged or handed to the owner for testing until the feature is completely finished and validated this way.
+
 ## Provider-Native Permission Visibility
 
 Native provider permission prompts are surfaced to the user out-of-band through Chariox runtime interactions. Do not infer that no approval prompt appeared just because a shell/tool result lacks `approval requested` or `approved` metadata. The result visible to the agent normally contains only the provider tool execution outcome, such as stdout/stderr, exit code, and status after the user has already answered the prompt.

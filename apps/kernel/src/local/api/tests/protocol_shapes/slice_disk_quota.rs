@@ -3,7 +3,7 @@ use crate::local::{LocalDaemonResponse, LOCAL_DAEMON_PROTOCOL_VERSION};
 
 #[test]
 fn paired_slice_disk_quota_config_fields_are_versioned_and_serialized() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
 
     let mut config = CharioxUserConfig::default();
     config.slices.linux.disk_layer_mb = Some(512);

@@ -7,8 +7,8 @@ use crate::transport::room_browser_controller::{
 use sha2::{Digest, Sha256};
 
 #[test]
-fn mp08_mp10_mp11_computer_hold_wire_is_bound_to_protocol452() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 452);
+fn mp08_mp10_mp11_computer_hold_wire_is_bound_to_protocol472() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let cases = [
         (
             serde_json::json!({"kind":"keyboard_hold","key":"shift+Left","duration_ms":750}),
