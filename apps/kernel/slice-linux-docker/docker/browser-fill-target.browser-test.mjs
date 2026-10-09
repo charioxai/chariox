@@ -100,6 +100,41 @@ for(const dpr of [1,2]) {
      }finally{await connection.send('Target.closeTarget',{targetId:target});}
    }finally{clearInterval(service.expiry);service.clear();await rm(root,{recursive:true,force:true});}
  }));
+ test(`MP-08/MP-11 DPR${dpr}: hidden filled fields remain tracked across production image video and mirror capture`,()=>setup(dpr,async context=>{
+   const {browser,fill,evaluate,collect,capture,connection,sessionId,targetId,documentId}=context;
+   const service=new MirrorService(mirrorHost(context));
+   try {
+     const sub=await service.subscribe({tab_id:'fixture-tab',generation:1,device_scale_factor:dpr},'test');let sequence=0;
+     const mirror=async()=>{const packet=await service.next({subscription_id:sub.subscription_id,generation:1,after_sequence:sequence,drift_nodes:[]},'test');sequence=packet.sequence;return packet};
+     for(const selector of ['#plain','#editor']) {
+       await fill(selector);assert.equal((await collect()).length,1);
+       for(const ancestor of [false,true]) {
+         await evaluate(`(()=>{const field=document.querySelector(${JSON.stringify(selector)});if(${ancestor}){const wrapper=document.createElement('section');field.before(wrapper);wrapper.append(field);wrapper.style.display='none'}else field.style.display='none'})()`);
+         const hidden=await capture(`hidden-${selector.slice(1)}-${ancestor}`);
+         assert.deepEqual(await collect(),[],'MP-11 confirmed non-rendered field contributes no pixels');
+         assert.equal(browser.fillTargets.size,1,'MP-11 hidden retained value is not retired');
+         assert.equal((await mirror()).nodes.filter(n=>n.kind==='mask').length,0,'MP-11 hidden field has no mirror mask');
+         const video=await videoPixels((await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr,`hidden-${selector.slice(1)}-${ancestor}`,true);
+         assert.equal(video.length,hidden.width*hidden.height*4);
+         await evaluate(`(()=>{const field=document.querySelector(${JSON.stringify(selector)});(${ancestor}?field.parentElement:field).style.display=''})()`);
+         const revealed=await capture(`revealed-${selector.slice(1)}-${ancestor}`);
+         assert.equal((await collect()).length,1,'MP-11 reveal remasks the same retained fill');
+         assert.equal((await mirror()).nodes.filter(n=>n.kind==='mask').length,1);
+         const y=selector==='#plain'?90:310,i=((y*dpr)*revealed.width+100*dpr)*4;
+         assert.deepEqual([...revealed.pixels.subarray(i,i+3)],[0,0,0]);
+         const protectedPng=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},context.policy.values,context.policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr);
+         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true);
+         assert([...revealedVideo.subarray(i,i+3)].every(channel=>channel<5),'MP-11 revealed field stays covered in decoded production video');
+       }
+       await evaluate(`document.querySelector(${JSON.stringify(selector)}).${selector==='#editor'?'textContent':'value'}=''`);assert.deepEqual(await collect(),[]);
+     }
+     // Layout presence is not proof of an available measurement: still refuse
+     // a genuine box failure for a visible, filled field.
+     await fill('#plain');const send=connection.send.bind(connection);
+     connection.send=(method,...args)=>method==='DOM.getBoxModel'?Promise.reject(Error('fixture box failure')):send(method,...args);
+     try {await assert.rejects(capture('unknown-box'),/unavailable/);await assert.rejects(mirror(),/fixture box failure/);}finally{connection.send=send;}
+   }finally{clearInterval(service.expiry);service.clear();}
+ }));
  test(`MP-08/MP-11 DPR${dpr}: overflowing filled contenteditable text is covered in image and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,url})=>{
    await evaluate("Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'magenta',background:'white'})");
    await fill('#editor');
