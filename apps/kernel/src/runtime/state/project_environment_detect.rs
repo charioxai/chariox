@@ -100,11 +100,24 @@ impl KernelRuntimeState {
             }
         }
         let id = environment.lineage.environment_id.clone();
-        let detection = tokio::task::spawn_blocking(move || detect_environment(&roots, &id))
+        let mut detection = tokio::task::spawn_blocking(move || detect_environment(&roots, &id))
             .await
             .map_err(|_| environment_error("Detect index task failed"))??;
         let model_folders =
             detection.model_folders(previous.as_ref(), &request.allow_model_folders, &folders);
+        if model_folders.is_empty() {
+            if let Some(cache) = previous.as_ref().filter(|cache| {
+                cache.evidence_digest == detection.evidence_digest
+                    && cache.operation.phase == EnvironmentOperationPhase::Ready
+            }) {
+                let reusable = environment
+                    .folders
+                    .iter()
+                    .map(|f| f.folder_id.clone())
+                    .collect();
+                detection.reuse_model_metadata(cache, &reusable);
+            }
+        }
         let now = crate::session::unix_epoch_ms();
         let mut results = detection.skips.clone();
         if model_folders.is_empty() {
@@ -151,6 +164,11 @@ impl KernelRuntimeState {
             let utility_result = self
                 .detect_environment_utility(&project, primary, request.provider.as_ref(), &input)
                 .await;
+            if let Ok(manifest) = &utility_result {
+                let old_skips = detection.skips.len();
+                detection.merge_manifest(&environment.lineage.environment_id, &input, manifest);
+                results.extend(detection.skips[old_skips..].iter().cloned());
+            }
             let error_text = utility_result
                 .as_ref()
                 .err()

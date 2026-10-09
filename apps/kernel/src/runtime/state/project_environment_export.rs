@@ -286,7 +286,7 @@ impl KernelRuntimeState {
         folder: &EnvironmentFolder,
         provider: Option<&EnvironmentProvider>,
         input: &ProjectEnvironmentDiscoveryInput,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<ProjectEnvironmentManifest, DaemonError> {
         let provider = match provider {
             Some(EnvironmentProvider::Codex) => "codex",
             Some(EnvironmentProvider::Claude) => "claude",
@@ -323,9 +323,9 @@ impl KernelRuntimeState {
         if cleanup.is_ok() {
             cleanup_guard.session = None;
         }
-        result?;
+        let manifest = result?;
         cleanup?;
-        Ok(())
+        Ok(manifest)
     }
 
     pub(super) async fn discover_project_environment(
