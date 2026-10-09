@@ -121,8 +121,8 @@ credential handle plus observed tab/generation/document/node reference, never
 secret text. Only the host owner (local or configured Cloud identity) can use
 the host Vault. Collaborators keep separate browser profiles. The existing Room
 Vault service, unlock RuntimeInteraction and lifecycle read lock authorize the
-observed frame URL; focus, metadata and the editable password target are checked
-again after waits. The existing controller Fill enforces document/URL/masking
+observed frame URL; focus, metadata and the editable fill target are checked
+again after waits. The existing controller Fill enforces document/URL/fill-target binding
 and native-form submission. `submit=false` is the default. Browser profiles remain private kernel
 state. Arbitrary JavaScript and CDP are internal implementation seams only.
 
