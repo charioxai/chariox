@@ -1,5 +1,7 @@
 /* MP-08/MP-10/MP-11: owned-window XShm readback. Events wake, exact bytes
- * authorize damage reuse. No desktop/root pixels, no provider state. */
+ * authorize damage reuse. Owner 0 reads the root of the kernel-owned desktop
+ * X server (never a login session); the kernel masks it before any encode.
+ * No provider state. */
 #include <stdint.h>
 #include <time.h>
 static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
@@ -25,7 +27,7 @@ struct Capture {
     Damage damage;
     XImage *image;
     XShmSegmentInfo shm;
-    int attached, event, width, height, window_height, offset, redirected, redirect_mode;
+    int attached, event, width, height, window_height, offset, redirected, redirect_mode, desktop;
     unsigned long owner;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
@@ -55,7 +57,7 @@ static int dimensions(Display *d, Window w, unsigned *width, unsigned *height) {
 }
 void cx_capture_close(struct Capture *c) {
     if (!c) return;
-    if (c->display && c->pixmap) XFreePixmap(c->display,c->pixmap);
+    if (c->display && c->pixmap && !c->desktop) XFreePixmap(c->display,c->pixmap);
     if (c->display && c->redirected) XCompositeUnredirectWindow(c->display,c->window,c->redirect_mode);
     if (c->display && c->damage) XDamageDestroy(c->display,c->damage);
     if (c->display && c->attached) { XShmDetach(c->display,&c->shm); XSync(c->display,False); }
@@ -95,6 +97,14 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     if (!c->display || !XShmQueryExtension(c->display) || !XDamageQueryExtension(c->display,&c->event,&error)) {open_refused("x_extensions");goto fail;}
     Window root,parent,*children=NULL; unsigned count=0, found=0, owned=0;
     char seen[256]="";
+    if (!owner) {
+        /* MP-08/MP-11: the whole owned desktop; its root is never redirected. */
+        unsigned w,h;
+        c->desktop=1;c->window=DefaultRootWindow(c->display);
+        if (!dimensions(c->display,c->window,&w,&h) || w!=(unsigned)width || h!=(unsigned)height) {open_refused("desktop_geometry");goto fail;}
+        c->window_height=height;c->pixmap=c->window;
+        goto image;
+    }
     if (!XQueryTree(c->display,DefaultRootWindow(c->display),&root,&parent,&children,&count)) {open_refused("x_tree");goto fail;}
     for (unsigned i=0;i<count;i++) {
         unsigned w,h;
@@ -115,6 +125,7 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
     if(!redirect_window(c,CompositeRedirectManual)&&!redirect_window(c,CompositeRedirectAutomatic)){open_refused("composite_redirect");goto fail;}
     c->pixmap=XCompositeNameWindowPixmap(c->display,c->window); XSync(c->display,False);
     if (!c->pixmap) {open_refused("composite_pixmap");goto fail;}
+image:
     c->image=XShmCreateImage(c->display,DefaultVisual(c->display,0),DefaultDepth(c->display,0),ZPixmap,NULL,&c->shm,width,height);
     if (!c->image || c->image->bits_per_pixel!=32 || c->image->byte_order!=LSBFirst || c->image->bytes_per_line!=width*4 || c->image->red_mask!=0xff0000 || c->image->green_mask!=0xff00 || c->image->blue_mask!=0xff) goto fail;
     size_t size=(size_t)width*height*4;
@@ -292,7 +303,7 @@ int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
     unsigned w,h;
-    if (window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
+    if ((!c->desktop && window_pid(c->display,c->window)!=c->owner) || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,0,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
@@ -367,6 +378,7 @@ int cx_shift_plan(const uint8_t *raw,const uint8_t *base,int width,int height,in
  * server, so Chromium applies native smooth scrolling (CDP wheel deltas are
  * precise and unanimated). Callers fence the document and actor first. */
 int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
+    if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
     if(x<0||y<0||x>=c->width||y>=c->height||dx<-10||dx>10||dy<-10||dy>10||(!dx&&!dy))return -1;
     if(window_pid(c->display,c->window)!=c->owner)return -1;
     Window child;int rx,ry;
@@ -380,6 +392,7 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
 /* MP-08/MP-10: a primary-button click into the owned window (no renderer
  * acknowledgement round trip); the caller fenced document and actor first. */
 int cx_capture_click(struct Capture *c,int x,int y){
+    if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
     if(x<0||y<0||x>=c->width||y>=c->height)return -1;
     if(window_pid(c->display,c->window)!=c->owner)return -1;
     Window child;int rx,ry;
@@ -393,6 +406,7 @@ int cx_capture_click(struct Capture *c,int x,int y){
  * (no renderer acknowledgement round trip); the caller fenced document,
  * actor and text target. A keysym outside the private keymap is refused. */
 int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
+    if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
     if(window_pid(c->display,c->window)!=c->owner)return -1;
     KeyCode code=XKeysymToKeycode(c->display,(KeySym)keysym),shifter=XKeysymToKeycode(c->display,XK_Shift_L);
     if(!code||!shifter)return -1;

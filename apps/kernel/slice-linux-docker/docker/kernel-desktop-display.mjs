@@ -1,6 +1,6 @@
 // MP-08 / MP-10 / MP-11: desktop viewer leases use shared codecs and frame transport.
 import { randomUUID } from 'node:crypto';
-import { DesktopSource } from './kernel-desktop-source.mjs';
+import { DesktopSource, nativeDesktopWorker } from './kernel-desktop-source.mjs';
 import { DisplayStream } from './kernel-browser-display.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
@@ -29,7 +29,8 @@ export class DesktopDisplay {
   }
   async subscribe(command,scope) {
     const binding=this.binding(command);
-    const codec=command.codecs?.find(value=>['avc1.420033','vp8','vp09.00.10.08'].includes(value));
+    // MP-08/MP-10: the kernel's native x264 encoder serves H.264 offers first.
+    const codec=nativeDesktopWorker()&&command.codecs?.includes('avc1.420033')?'avc1.420033':command.codecs?.find(value=>['avc1.420033','vp8','vp09.00.10.08'].includes(value));
     if(command._agent_input||!codec||![1,2].includes(command.device_scale_factor)||!Number.isSafeInteger(command.bitrate)||command.bitrate<500000||command.bitrate>20000000||this.host.displays.size>=8)throw new UserDomainRefusal('not_granted');
     await this.ensureSource();
     if(this.host.chromium.desktop?.binding()!==binding)throw new UserDomainRefusal('stale_reference');
@@ -52,7 +53,10 @@ export class DesktopDisplay {
     const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(id)===stream&&this.host.chromium.desktop?.binding()===binding;
     if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,valid:lifetimeValid,timing:this.host.timing});}
     const valid=()=>!signal?.aborted&&lifetimeValid();
-    await stream.producer.waitReady(20,signal);
+    // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
+    // briefly for the next frame (the kernel pump paces the stream).
+    if(command.push?.reset)stream.invalidate();
+    await stream.producer.waitReady(command.push?100:20,signal);
     if(!valid())throw new UserDomainRefusal('not_granted');
     const sample=stream.producer.take();if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>valid(),valid);

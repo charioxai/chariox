@@ -20,6 +20,10 @@ struct Config {
     width: i32,
     height: i32,
     pool: PathBuf,
+    /// MP-08/MP-11: read the kernel-owned desktop root instead of an owned
+    /// browser window; the kernel masks every frame before encode.
+    #[serde(default)]
+    desktop: bool,
 }
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -132,7 +136,8 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
-    let capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+    let owner = if config.desktop { 0 } else { config.pid };
+    let capture = Capture(unsafe { ffi::cx_capture_open(owner as libc::c_ulong, w, h) });
     if capture.0.is_null() {
         return Err("MP-10: native capture unavailable".into());
     }
