@@ -27,7 +27,27 @@ pub(super) struct PendingAgentContextHandoffStore {
     inner: Arc<StdMutex<BTreeMap<String, PendingAgentContextHandoff>>>,
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
-    conversation_runs: Arc<StdMutex<BTreeMap<String, String>>>,
+    conversation_runs: Arc<StdMutex<BTreeMap<String, ConversationRun>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationRun {
+    run_id: String,
+    provider_session_id: Option<String>,
+}
+
+impl ConversationRun {
+    fn from_run(run: &RuntimeProviderRun) -> Self {
+        Self {
+            run_id: run.id().to_string(),
+            provider_session_id: native_session_id(run).map(str::to_string),
+        }
+    }
+}
+
+fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
+    run.provider_session_id()
+        .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
 }
 
 impl PendingAgentContextHandoffStore {
@@ -64,21 +84,31 @@ impl PendingAgentContextHandoffStore {
             .cloned()
     }
 
-    fn run_holds_conversation(&self, session_id: &str, agent_id: &str, run_id: &str) -> bool {
+    fn run_holds_conversation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run: &RuntimeProviderRun,
+    ) -> bool {
         self.conversation_runs
             .lock()
             .expect("agent conversation run mutex poisoned")
             .get(&pending_handoff_key(session_id, agent_id))
-            .is_some_and(|holder| holder == run_id)
+            .is_some_and(|holder| holder == &ConversationRun::from_run(run))
     }
 
-    fn note_run_holds_conversation(&self, session_id: &str, agent_id: &str, run_id: &str) {
+    fn note_run_holds_conversation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run: &RuntimeProviderRun,
+    ) {
         self.conversation_runs
             .lock()
             .expect("agent conversation run mutex poisoned")
             .insert(
                 pending_handoff_key(session_id, agent_id),
-                run_id.to_string(),
+                ConversationRun::from_run(run),
             );
     }
 
@@ -298,11 +328,9 @@ impl super::KernelRuntimeOwnedState {
         }
         if target_run.workflow_fresh_context_node_run_id().is_some()
             || target_run.turn_substitute().is_some()
-            || self.pending_agent_context_handoffs.run_holds_conversation(
-                session_id,
-                agent_id,
-                target_run.id(),
-            )
+            || self
+                .pending_agent_context_handoffs
+                .run_holds_conversation(session_id, agent_id, target_run)
         {
             return None;
         }
@@ -321,12 +349,7 @@ impl super::KernelRuntimeOwnedState {
                 );
             })
             .ok()?;
-        let run_sessions = [
-            target_run.provider_session_id(),
-            target_run
-                .resume_state()
-                .provider_session_id(target_run.adapter_key()),
-        ];
+        let run_session = native_session_id(target_run);
         // Output recorded without a provider session id is the target
         // session's own only when the same provider family answered it.
         let answered_without_session_id = |latest: &crate::history::HistoryEvent, run_session| {
@@ -357,9 +380,16 @@ impl super::KernelRuntimeOwnedState {
         // run started is its own. A session another session answered after
         // receives the turns it missed.
         let holds_conversation = |latest: &crate::history::HistoryEvent| {
-            (latest.provider_run_id.as_deref() == Some(target_run.id())
+            // Native /clear can replace the session without replacing the run.
+            let same_session = latest
+                .provider_session_id
+                .as_deref()
+                .zip(run_session)
+                .is_none_or(|(latest, current)| latest == current);
+            (same_session
+                && latest.provider_run_id.as_deref() == Some(target_run.id())
                 && latest.timestamp_ms >= target_run.started_at_ms())
-                || run_sessions.into_iter().flatten().any(|run_session| {
+                || run_session.is_some_and(|run_session| {
                     latest.provider_session_id.as_deref() == Some(run_session)
                         || answered_without_session_id(latest, run_session)
                 })
@@ -372,7 +402,7 @@ impl super::KernelRuntimeOwnedState {
         };
         let Some(conversation) = conversation else {
             self.pending_agent_context_handoffs
-                .note_run_holds_conversation(session_id, agent_id, target_run.id());
+                .note_run_holds_conversation(session_id, agent_id, target_run);
             return None;
         };
         let latest = latest.as_ref();
@@ -428,7 +458,7 @@ impl super::KernelRuntimeOwnedState {
             .consume_matching(session_id, agent_id, target_run);
         if target_run.turn_substitute().is_none() {
             self.pending_agent_context_handoffs
-                .note_run_holds_conversation(session_id, agent_id, target_run.id());
+                .note_run_holds_conversation(session_id, agent_id, target_run);
         }
     }
 }
@@ -912,6 +942,49 @@ mod tests {
             fixture.dispatch(&returning, 5).is_none(),
             "deliver intervening history once"
         );
+    }
+
+    #[tokio::test]
+    async fn a_native_session_reset_invalidates_the_cached_run_conversation() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "accepted decision: preserve native sessions");
+        fixture.output(2, "run-native", "claude", Some("session-old"), "recorded");
+        let old = fixture.run("run-native", "claude", Some("session-old"));
+        assert!(fixture.dispatch(&old, 3).is_none());
+        // Native /clear changes the session while retaining the kernel run.
+        let reset = fixture.run("run-native", "claude", Some("session-reset"));
+        let handoff = fixture
+            .dispatch(&reset, 3)
+            .expect("the fresh native session lost the old conversation");
+        assert!(handoff.contains("preserve native sessions"), "{handoff}");
+        fixture.runtime.owned.consume_pending_context_handoff(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &reset,
+        );
+        assert!(
+            fixture.dispatch(&reset, 4).is_none(),
+            "transfer once to this native session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_session_reset_does_not_inherit_same_run_output() {
+        let fixture = DerivedHandoffFixture::new().await;
+        let reset = fixture.run("run-native", "claude", Some("session-reset"));
+        fixture.user(1, "accepted decision: preserve native sessions");
+        fixture.output_at(
+            2,
+            reset.id(),
+            "claude",
+            Some("session-old"),
+            "recorded",
+            Some(reset.started_at_ms().saturating_add(1)),
+        );
+        assert!(fixture
+            .dispatch(&reset, 3)
+            .expect("run identity alone cannot prove native continuity")
+            .contains("preserve native sessions"));
     }
 
     #[tokio::test]
