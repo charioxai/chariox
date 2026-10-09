@@ -11,6 +11,8 @@ type Grant = {
   paired_origin: string; expires_at_ms: number
 }
 type Lease = { socket: WebSocket; grant: Grant; sequence: number; key: string }
+type LeaseDiagnostic = { cause: "lease_response_refused" | "lease_transport_failed";
+  retrying?: boolean; sequenceMatches?: boolean; expired?: boolean }
 const endpointPattern = /^ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/v1\/browser$/
 
 export class TerminalLocalDirect {
@@ -27,6 +29,7 @@ export class TerminalLocalDirect {
   constructor(private readonly input: {
     relayUrl: string; token: string; target: RelayTarget; identity: RelayClientIdentity
     eligible(): boolean; retryCarrier(): void; onTokenRefreshed?(token: string): void
+    onDiagnostic?(diagnostic: LeaseDiagnostic): void
   }) {
     this.identityKeeper = new TerminalRelayIdentity({ token: input.token, relayUrl: input.relayUrl,
       kernelId: input.target.daemon_id ?? "", thumbprint: input.identity.publicKeyThumbprint,
@@ -102,15 +105,24 @@ export class TerminalLocalDirect {
       for (const [index, lease] of leases.entries()) {
         const reply = replies[index]?.LocalTerminalLeaseRenewed as { expires_at_ms?: number; next_sequence?: number } | undefined
         if (lease.key !== leases[0]!.key || reply?.next_sequence !== attempts[index]! + 1
-          || !reply.expires_at_ms || reply.expires_at_ms <= Date.now()) lease.socket.terminate()
+          || !reply.expires_at_ms || reply.expires_at_ms <= Date.now()) {
+          this.diagnose({ cause: "lease_response_refused", sequenceMatches: reply?.next_sequence === attempts[index]! + 1,
+            expired: !reply?.expires_at_ms || reply.expires_at_ms <= Date.now() })
+          lease.socket.terminate()
+        }
       }
       this.scheduleRenewal(10_000)
     } catch {
+      this.diagnose({ cause: "lease_transport_failed", retrying })
       if (!retrying && !this.closed) {
         this.timer = setTimeout(() => { this.timer = null; void this.renew(true) }, 1_000)
         this.timer.unref()
       } else for (const lease of leases) lease.socket.terminate()
     }
+  }
+
+  private diagnose(diagnostic: LeaseDiagnostic): void {
+    try { this.input.onDiagnostic?.(diagnostic) } catch { /* Observation must not change lease handling. */ }
   }
 
   private authorize(bodies: readonly unknown[], expectedKey: string): Promise<Record<string, unknown>[]> {

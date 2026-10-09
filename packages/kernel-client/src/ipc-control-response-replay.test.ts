@@ -5,7 +5,7 @@ import WebSocket, { WebSocketServer } from "ws"
 
 import { LocalIpcClient, LocalIpcError } from "./ipc.js"
 
-test("LocalIpcClient reconnects and replays a command when its response stalls", async (t) => {
+test("MP-08 LocalIpcClient replays a stalled command and records the retired lane", async (t) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>((resolve) => server.once("listening", resolve))
 
@@ -31,7 +31,9 @@ test("LocalIpcClient reconnects and replays a command when its response stalls",
     })
   })
 
+  const diagnostics: Array<{ cause: string; lane: string }> = []
   const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    onTransportDiagnostic: (event) => diagnostics.push(event),
     controlRequestRetryDeadlineMs: 2_000,
     controlResponseStallMs: 25,
     reconnectJitterMs: 0,
@@ -48,6 +50,7 @@ test("LocalIpcClient reconnects and replays a command when its response stalls",
 
   assert.deepEqual(response, { ok: true })
   assert.equal(received.length, 2)
+  assert(diagnostics.some(event => event.cause === "request_replay" && event.lane === "control"), "MP-08 replay must expose the serving lane retirement")
   assert.equal(received[0]?.request_id, received[1]?.request_id)
   assert.equal(received[0]?.command_id, received[1]?.command_id)
 })

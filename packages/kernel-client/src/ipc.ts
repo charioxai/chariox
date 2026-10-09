@@ -219,7 +219,20 @@ function isHostedPublicationGateway() {
   return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
 }
 
+/** MP-08/MP-10: fixed transport metadata only; never auth or packet contents. */
+export type KernelTransportDiagnostic = {
+  lane: "control" | "event"
+  cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "lease_response_refused" | "lease_transport_failed"
+  local: boolean
+  missedPongs: number
+  closeCode?: number
+  retrying?: boolean
+  sequenceMatches?: boolean
+  expired?: boolean
+}
+
 export type LocalIpcClientOptions = {
+  onTransportDiagnostic?: ((diagnostic: KernelTransportDiagnostic) => void) | undefined
   /** State directory of a private local kernel; never used for relay connections. */
   localAuthEnvironment?: NodeJS.ProcessEnv | undefined
   localAuthToken?: string | undefined
@@ -237,6 +250,7 @@ export type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  private readonly transportObserver: LocalIpcClientOptions["onTransportDiagnostic"]
   readonly socketPath: string
   private readonly localAuthEnvironment: NodeJS.ProcessEnv
   private readonly localAuthEndpoint: string | null
@@ -277,6 +291,7 @@ export class LocalIpcClient {
   private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
+    this.transportObserver = options.onTransportDiagnostic
     if (!isWebSocketEndpoint(endpoint)) {
       if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
       endpoint = `ws+unix://${endpoint.replace(/^unix:\/\//, "")}`
@@ -345,6 +360,7 @@ export class LocalIpcClient {
     this.terminalLocalDirect = this.relayAuthToken && this.relayTarget && this.relayIdentity
       ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: this.relayAuthToken, target: this.relayTarget,
         onTokenRefreshed: token => { this.relayAuthToken = token },
+        onDiagnostic: diagnostic => this.reportTransportDiagnostic("control", diagnostic.cause, diagnostic),
         identity: this.relayIdentity, eligible: () => this.localDirectEligible(this.relayTarget!),
         retryCarrier: () => {
           for (const lane of ["control", "event"] as const) {
@@ -584,7 +600,7 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        this.destroyWebSocket(lane)
+        this.destroyWebSocket(lane, "kernel websocket reset", "request_replay")
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
         continue
       }
@@ -637,7 +653,7 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        this.destroyWebSocket(lane)
+        this.destroyWebSocket(lane, "kernel websocket reset", "request_replay")
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
     }
@@ -859,6 +875,7 @@ export class LocalIpcClient {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
+            this.reportTransportDiagnostic(lane, "socket_close", { closeCode: code })
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
             const closeMessage = reason.length > 0
@@ -882,6 +899,7 @@ export class LocalIpcClient {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
+            this.reportTransportDiagnostic(lane, "socket_error")
             const message = formatTransportError(error, this.socketPath)
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
@@ -1145,7 +1163,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat missed; reconnecting",
           })
         }
-        this.destroyWebSocket(lane, "kernel websocket heartbeat missed")
+        this.destroyWebSocket(lane, "kernel websocket heartbeat missed", "heartbeat_missed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1161,7 +1179,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat failed; reconnecting",
           })
         }
-        this.destroyWebSocket(lane, "kernel websocket heartbeat failed")
+        this.destroyWebSocket(lane, "kernel websocket heartbeat failed", "heartbeat_failed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1375,7 +1393,17 @@ export class LocalIpcClient {
     })
   }
 
-  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset"): void {
+  private reportTransportDiagnostic(lane: KernelSocketLane, cause: KernelTransportDiagnostic["cause"],
+    details: Partial<KernelTransportDiagnostic> = {}): void {
+    try {
+      this.transportObserver?.({ lane, cause, local: this.terminalLocalDirect?.isLocal(this.getWebSocket(lane)) === true,
+        missedPongs: this.getMissedKernelPongs(lane), ...details })
+    } catch { /* Observers cannot change transport behavior. */ }
+  }
+
+  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset",
+    cause: KernelTransportDiagnostic["cause"] = "reset"): void {
+    if (this.getWebSocket(lane)) this.reportTransportDiagnostic(lane, cause)
     // Retiring the lane makes its asynchronous close/error callbacks stale.
     // Settle requests here, including untimed human authorization waits.
     this.rejectPending(message, lane)

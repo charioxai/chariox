@@ -32,12 +32,14 @@ try:
   if child.poll() is not None:raise RuntimeError('TUI exited')
   time.sleep(.1)
  assert rpc({'action':'connect_detached_kernel'}).get('ok') is True
+ result['transportWindow']={'startedAtMs':int(time.time()*1000)}
  deadline=time.monotonic()+spec['durationMs']/1000
  while time.monotonic()<deadline:
   snapshot=rpc({'action':'snapshot'});assert snapshot.get('ok') is True
   data=snapshot['data'];status=data.get('statusLine','');result['checkpoints'].append({'at':time.time(),'statusLine':status,'disconnected':data.get('daemonDisconnected')})
   assert not data.get('daemonDisconnected'),'TUI disconnected'
   time.sleep(1)
+ result['transportWindow']['finishedAtMs']=int(time.time()*1000)
  text=stream.decode('utf8','replace').replace(spec['token'],'[redacted]')
  # Keep real terminal output; no auth values, tokens or environment are retained.
  text=re.sub(r'\x1b\][^\x07]*(?:\x07|\x1b\\)','',text);text=re.sub(r'\x1bP.*?\x1b\\','',text,flags=re.S)

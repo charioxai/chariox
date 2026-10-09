@@ -3,7 +3,7 @@
 // pairing and drives the real TUI's detached attach action, never a mock client.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, rm, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LocalIpcClient } from '../dist/ipc.js'
@@ -44,9 +44,29 @@ try {
     expectLocal: env.CHARIOX_LOCAL_DIRECT_EXPECT_LOCAL !== '0', durationMs: Number(env.CHARIOX_LOCAL_DIRECT_DURATION_MS ?? 35_000) }))
   const code = await new Promise(resolve => child.once('exit', resolve))
   result.driverExit = code
-  result.status = code === 0 ? 'PASS' : 'FAIL'
   result.summary = output.trim().slice(0, 200)
   assert.equal(code, 0, 'MP-08 built detached TUI carrier drill failed; inspect retained evidence')
+  // MP-10: a control lane can reconnect between UI snapshots. The owned
+  // kernel's session records must also show no close during the live interval.
+  const driver = JSON.parse(await readFile(evidence + '/terminal-driver.json', 'utf8'))
+  result.transportWindow = driver.transportWindow
+  const logDir = env.CHARIOX_LOCAL_DIRECT_KERNEL_LOG_DIR ?? path.join(kernelHome, 'chariox/logs')
+  const logs = (await readdir(logDir)).filter(name => /-daemon-\d+\.ndjson$/.test(name))
+  assert(logs.length > 0, 'MP-10 owned kernel logs required for strict serving-session checks')
+  result.kernelSessionClosures = []
+  for (const name of logs) {
+    for (const line of (await readFile(path.join(logDir, name), 'utf8')).split('\n')) {
+      let event
+      try { event = JSON.parse(line) } catch { continue }
+      if (event.message === 'local browser session closed'
+        && event.timestamp_ms >= driver.transportWindow.startedAtMs
+        && event.timestamp_ms <= driver.transportWindow.finishedAtMs) {
+        result.kernelSessionClosures.push({ at: event.timestamp_ms, reason: event.reason })
+      }
+    }
+  }
+  assert.equal(result.kernelSessionClosures.length, 0, 'MP-10 unexpected serving-session closure despite a connected TUI snapshot')
+  result.status = 'PASS'
 } finally {
   await bootstrap?.close(); await local.close()
   for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete env[key]; else env[key] = value }

@@ -1,6 +1,7 @@
 export * from "@chariox/kernel-client/ipc"
 export type * from "@chariox/kernel-client/ipc"
 
+import { recordKernelTransportDiagnostic } from "./kernel-transport-diagnostics.js"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import type { LocalIpcClientOptions } from "@chariox/kernel-client/ipc"
 import { LocalIpcClient as KernelClient } from "@chariox/kernel-client/ipc"
@@ -14,8 +15,9 @@ export class LocalIpcClient extends KernelClient {
   private protocolLookup: Promise<AdvertisedProtocol> | undefined
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
-    super(endpoint, options.relayAuthToken && !options.relayIdentity
-      ? { ...options, relayIdentity: createCliRelayIdentityStore().load() ?? undefined } : options)
+    const resolved = options.relayAuthToken && !options.relayIdentity
+      ? { ...options, relayIdentity: createCliRelayIdentityStore().load() ?? undefined } : options
+    super(endpoint, { ...resolved, onTransportDiagnostic: options.onTransportDiagnostic ?? recordKernelTransportDiagnostic })
   }
 
   protected override localDirectEligible(target: { daemon_id?: string | null }): boolean {
