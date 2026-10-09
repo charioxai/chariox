@@ -133,7 +133,7 @@ select_supervisor_service() {
   fi
 }
 
-assert_path1_units_have_no_dropins() {
+assert_path1_service_overrides() {
   [ "$managed_provider_topology" = path1 ] || return 0
   path1_preflight_failure=0
   path1_drop_in_failure=0
@@ -163,7 +163,10 @@ assert_path1_units_have_no_dropins() {
       path1_drop_in_failure=1
       continue
     }
-    if [ -n "$drop_in_paths" ]; then
+    # MP-07/MP-10/MP-11: admit only the exact root-owned observation setting
+    # installed by the signed campaign installer; reject every other override.
+    if [ -n "$drop_in_paths" ] && ! node "$script_root/path1-campaign-diagnostics-policy.mjs" \
+      "$install_root" "$unit" "$drop_in_paths"; then
       path1_drop_in_failure=1
       path1_preflight_failure=1
       echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
@@ -707,7 +710,7 @@ rollback_transaction() {
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
-  assert_path1_units_have_no_dropins || return 1
+  assert_path1_service_overrides || return 1
   start_path1_runtime_services || return 1
   start_managed_app_storage || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
@@ -918,7 +921,7 @@ fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
-assert_path1_units_have_no_dropins
+assert_path1_service_overrides
 if [ "$recover_only" -eq 1 ]; then
   for recovery_journal in "$transaction_root" "$terminal_transaction"; do
     if path_exists "$recovery_journal"; then
@@ -1175,7 +1178,7 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
 fi
 write_phase activated
 if ! systemctl daemon-reload \
-  || ! assert_path1_units_have_no_dropins \
+  || ! assert_path1_service_overrides \
   || ! start_path1_runtime_services \
   || ! start_managed_app_storage \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \

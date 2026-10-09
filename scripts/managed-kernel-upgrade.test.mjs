@@ -84,15 +84,15 @@ test("managed kernel upgrade requires an explicit valid provider topology before
 
 test("Path-1 upgrade drop-in guard checks reload freshness and both effective services", async (context) => {
   const source = await readFile(upgrade, "utf8")
-  const guard = source.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  const guard = source.match(/assert_path1_service_overrides\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard)
   assert.match(guard, /systemctl show --property=NeedDaemonReload --value "\$unit"/)
   assert.match(guard, /systemctl show --property=DropInPaths --value "\$unit"/)
   assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
-  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
-  assert.ok(source.indexOf("\nassert_path1_units_have_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
-  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  start_managed_app_storage \|\| return 1\n  health_not_before_ms=/)
-  assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
+  assert.match(source, /select_supervisor_service\nassert_path1_service_overrides\nif \[ "\$recover_only" -eq 1 \]; then/)
+  assert.ok(source.indexOf("\nassert_path1_service_overrides\n") < source.indexOf("\nrecover_transaction\n"))
+  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_service_overrides \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  start_managed_app_storage \|\| return 1\n  health_not_before_ms=/)
+  assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_service_overrides \\\n  \|\| ! start_path1_runtime_services \\\n/)
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -105,7 +105,7 @@ case "$*" in
   *--property=DropInPaths*chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;
 esac
 `, 0o755)
-  const command = `managed_provider_topology=path1\n${guard}\nassert_path1_units_have_no_dropins\n`
+  const command = `managed_provider_topology=path1\n${guard}\nassert_path1_service_overrides\n`
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }
   const clean = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env })
   assert.equal(clean.status, 0, clean.stderr)
@@ -369,6 +369,42 @@ test("Path-1 upgrade refuses an unreloaded on-disk drop-in before pending transa
       assert.ok(calls.includes("show --property=DropInPaths --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
       assert.deepEqual(await treeSnapshot(transactionRoot), beforeTransaction)
       assert.deepEqual(await treeSnapshot(harness.installRoot), beforeInstall)
+    }
+  }
+})
+
+test("MP-07/MP-10/MP-11 installed diagnostics permit upgrade but an unrelated override still blocks it", async (context) => {
+  for (const unrelated of [false, true]) {
+    const harness = await makeHarness(context, { path1Release: true })
+    let installer = await readFile(join(repositoryRoot, "deploy/managed-kernel/enable-campaign-diagnostics.sh"), "utf8")
+    for (const path of ["/etc/systemd/system", "/home/chariox/.chariox", "/usr/lib/chariox"]) {
+      installer = installer.replaceAll(path, `${harness.installRoot}${path}`)
+    }
+    installer = installer.replace(`Environment=CHARIOX_RUNTIME_DIAGNOSTICS_DIR=${harness.installRoot}`, "Environment=CHARIOX_RUNTIME_DIAGNOSTICS_DIR=")
+    installer = installer.replace("-o chariox -g chariox", `-o ${harness.charioxIdentity.uid} -g ${harness.charioxIdentity.gid}`)
+    // Root-mapped installer; only the fixture systemctl activity check differs.
+    installer = installer.replace("systemctl is-active --quiet", "false is-active --quiet")
+    const installed = spawnSync("/bin/sh", ["-s", "--", "https://observer.example/path1-diagnostics/round-20261009c"], {
+      input: installer, encoding: "utf8", env: harness.env,
+    })
+    assert.equal(installed.status, 0, installed.stderr)
+    const config = join(harness.installRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service.d/path1-campaign-diagnostics.conf")
+    await put(join(harness.state, "campaign-drop-in-path"), `${config}\n`)
+    if (unrelated) await put(join(harness.state, "home-drop-in"), "present\n")
+    const result = harness.run({
+      CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+      CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
+    })
+    assert.equal(result.status, unrelated ? 1 : 0, result.stderr)
+    const calls = await readFile(join(harness.state, "systemctl.log"), "utf8")
+    if (unrelated) {
+      assert.match(result.stderr, /has systemd drop-ins/)
+      assert.doesNotMatch(calls, /stop chariox-path1-managed-bootstrap.service/)
+    } else {
+      assert.match(calls, /stop chariox-path1-managed-bootstrap.service/)
+      assert.match(calls, /start chariox-path1-managed-bootstrap.service/)
+      assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+        `releases/${harness.target.digest.slice("sha256:".length)}`)
     }
   }
 })

@@ -136,6 +136,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const sourceCommit = createHash("sha1").update(`commit-${label}`).digest("hex")
   const sourceTree = createHash("sha1").update(`tree-${label}`).digest("hex")
   if (builderKeys) {
+    const diagnostics = "deploy/managed-kernel/runtime-diagnostics.py"
+    await put(join(context, diagnostics), await readFile(join(repositoryRoot, diagnostics)))
     for (const sourceFile of [
       "chariox-data-volume-admission.mjs",
       "slice-data-volume-device.mjs",
@@ -446,6 +448,9 @@ if [ "$1" = "show" ]; then
       fi
       ;;
     *--property=DropInPaths*chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/campaign-drop-in-path" ]; then
+        cat "$HARNESS_STATE/campaign-drop-in-path"
+      fi
       if [ -f "$HARNESS_STATE/home-drop-in" ] \
         || { [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
@@ -716,7 +721,7 @@ exec /usr/bin/stat "$@"
     spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
-    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
+    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, env, run,
   }
 }
 

@@ -354,14 +354,14 @@ test("upgrade recovers interrupted phases and rolls back failed migration or hea
 })
 
 test("Path-1 upgrade checks both effective units before recovery and after reload", async (context) => {
-  const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  const guard = upgradeSource.match(/assert_path1_service_overrides\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
 
-  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
+  const initialGuard = indexOf(upgradeSource, "assert_path1_service_overrides\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
   const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
   assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
-  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
-  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_units_have_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
+  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_service_overrides \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
+  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_service_overrides \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -396,7 +396,7 @@ case "$2" in
 esac
 `)
   await chmod(systemctl, 0o755)
-  const command = `${guard}\nassert_path1_units_have_no_dropins\n`
+  const command = `${guard}\nassert_path1_service_overrides\n`
   const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
   for (const [name, overrides, expectedExit, expectedError] of [
     ["clean", {}, 0, null],

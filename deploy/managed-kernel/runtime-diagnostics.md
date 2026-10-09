@@ -17,7 +17,12 @@ MP-07/MP-10: prepare `/home/chariox/.chariox/runtime-diagnostics` with owner
 through the signed `enable-campaign-diagnostics.sh <exact-HTTPS-observer-url>`
 campaign-image installer after signed image installation and before enrollment.
 It refuses a running guest or existing campaign configuration and enables a
-separate, bounded shipping unit on first boot. The
+separate, bounded shipping unit on first boot. MP-07/MP-11: the signed upgrade
+policy admits only its exact bootstrap drop-in path and bytes: the single
+diagnostics-directory assignment. The file must be root-owned, mode 0644,
+single-linked and regular, under root-owned directories without symlinks or
+group/world write permission. Additional, changed or worker-service drop-ins
+remain rejected, as does an unreloaded systemd configuration. The
 supervisor inherits it into the kernel; the kernel passes it as a literal
 systemd argument to its detached upgrade unit. Ordinary kernels may enable the
 same variable. With no variable, the kernel does no diagnostic I/O. Upgrade

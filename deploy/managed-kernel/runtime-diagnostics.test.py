@@ -71,6 +71,65 @@ class Diagnostics(unittest.TestCase):
             self.assertEqual(result.returncode,1)
             config.unlink()
             self.assertEqual(subprocess.run(['/bin/sh','-c',script,'guard',a],capture_output=True).returncode,0)
+    def campaign_preflight(self, root, mutate=None):
+        # MP-07/MP-10: run installer primitives in an owned root mapping, then
+        # the exact upgrade preflight. systemd is supplementary fixture wiring.
+        import subprocess
+        source_dir=pathlib.Path(__file__).resolve().parent
+        installer=(source_dir/'enable-campaign-diagnostics.sh').read_text()
+        for path in ('/etc/systemd/system','/home/chariox/.chariox','/usr/lib/chariox'):
+            installer=installer.replace(path,str(root)+path)
+        installer=installer.replace('Environment=CHARIOX_RUNTIME_DIAGNOSTICS_DIR='+str(root)+'/home/chariox/.chariox/runtime-diagnostics','Environment=CHARIOX_RUNTIME_DIAGNOSTICS_DIR=/home/chariox/.chariox/runtime-diagnostics')
+        installer=installer.replace('-o chariox -g chariox','-o root -g root').replace('User=chariox','User=root').replace('Group=chariox','Group=root')
+        tool=root/'usr/lib/chariox/slice-build-context/deploy/managed-kernel/runtime-diagnostics.py'
+        tool.parent.mkdir(parents=True);tool.write_text('# fixture presence only')
+        bin_dir=root/'bin';bin_dir.mkdir()
+        systemctl=bin_dir/'systemctl'
+        systemctl.write_text("""#!/bin/sh
+case "$1" in
+  is-active) exit 3 ;;
+  show)
+    case "$2" in
+      --property=NeedDaemonReload) printf no ;;
+      --property=DropInPaths)
+        for file in "$CAMPAIGN_TEST_ROOT/etc/systemd/system/$4.d/"*.conf; do
+          if [ -e "$file" ] || [ -L "$file" ]; then printf '%s ' "$file"; fi
+        done ;;
+    esac ;;
+esac
+""")
+        systemctl.chmod(0o755)
+        env=dict(os.environ,PATH=str(bin_dir)+':'+os.environ['PATH'],CAMPAIGN_TEST_ROOT=str(root))
+        installed=subprocess.run(['/bin/sh','-s','--','https://observer.example/path1-diagnostics/round-20261009c'],input=installer,text=True,capture_output=True,env=env)
+        self.assertEqual(installed.returncode,0,installed.stderr)
+        if mutate:mutate(root)
+        upgrade=(source_dir/'upgrade-image.sh').read_text()
+        guard=upgrade.split('assert_path1_service_overrides() {',1)[1].split('\n}',1)[0]
+        command='managed_provider_topology=path1\ninstall_root=$1\nscript_root=$2\nassert_path1_service_overrides() {'+guard+'\n}\nassert_path1_service_overrides\n'
+        return subprocess.run(['/bin/sh','-c',command,'preflight',str(root),str(source_dir)],text=True,capture_output=True,env=env)
+    def test_mp07_installed_campaign_diagnostics_pass_upgrade_preflight(self):
+        with tempfile.TemporaryDirectory() as a:
+            result=self.campaign_preflight(pathlib.Path(a))
+            self.assertEqual(result.returncode,0,result.stderr)
+    def test_mp11_diagnostics_do_not_admit_unrelated_dropins(self):
+        def unrelated(root):
+            (root/'etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf').write_text('[Service]\nProtectHome=yes\n')
+        with tempfile.TemporaryDirectory() as a:
+            result=self.campaign_preflight(pathlib.Path(a),unrelated)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('has systemd drop-ins',result.stderr)
+    def test_mp11_campaign_override_rejects_tampering_links_and_writable_files(self):
+        def tamper(root):config(root).write_text('[Service]\nEnvironment=HOME=/tmp\n')
+        def writable(root):config(root).chmod(0o666)
+        def link(root):
+            file=config(root);outside=root/'outside';file.rename(outside);file.symlink_to(outside)
+        def hardlink(root):os.link(config(root),root/'outside')
+        def parent(root):config(root).parent.chmod(0o777)
+        def config(root):return root/'etc/systemd/system/chariox-path1-managed-bootstrap.service.d/path1-campaign-diagnostics.conf'
+        for mutate in (tamper,writable,link,hardlink,parent):
+            with self.subTest(mutate=mutate.__name__),tempfile.TemporaryDirectory() as a:
+                result=self.campaign_preflight(pathlib.Path(a),mutate)
+                self.assertNotEqual(result.returncode,0)
     def test_mp07_phase_diagnostic_never_masks_failed_durable_write(self):
         import subprocess
         source=pathlib.Path(__file__).with_name('upgrade-image.sh').read_text()
