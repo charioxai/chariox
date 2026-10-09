@@ -25,7 +25,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                     .filter(|id| !id.is_empty())
                     .map(str::to_string)
             })
-            .last();
+            .next_back();
         let Some(session) = session else {
             return Ok(());
         };
