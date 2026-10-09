@@ -705,11 +705,13 @@ export class BrowserCdpClient {
         signal,
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, async options => {
+        let target;
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+          target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
         }
-        return performBrowserAction(options);
+        try { return await performBrowserAction(options); }
+        finally { if(target)target.pending=false; }
       });
       return {
         browser_generation: this.browserGeneration,

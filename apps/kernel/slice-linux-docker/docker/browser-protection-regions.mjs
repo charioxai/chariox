@@ -42,7 +42,7 @@ export async function recordBrowserFill(connection, options, value, revision) {
   finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},sessionId).catch(()=>{});}
   const target={kind:'browser',target_id:targetId,document_id:options.trackingDocumentId??documentId,node_ref:options.trackingNodeRef??nodeRef,
     frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
-    value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
+    value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision,pending:true};
   retired.get(connection)?.delete(fillKey(target));return target;
 }
 async function fieldState(connection,entry,document,backendNodeId) {
@@ -70,7 +70,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const {cssVisualViewport:visual}=await connection.send('Page.getLayoutMetrics',{},sessionId);
   const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
-  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(fillKey(t)));
+  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&typeof t.value_hash==='string'&&!t.echo_only&&!dead.has(fillKey(t)));
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
@@ -93,6 +93,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       if(!candidates.length)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
       for(const target of candidates) {
+        if(target.pending)throw Error('MP-11: Vault fill in progress');
         const key=fillKey(target),backendNodeId=targetNode(target,entry);
         const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
         if(!raw)continue;
@@ -100,7 +101,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
         const state=await fieldState(connection,entry,{frameId},backendNodeId);
-        if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
+        if(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
         const map=await toViewport(entry),quad=[];

@@ -67,6 +67,22 @@ for(const dpr of [1,2]) {
    await evaluate("document.querySelector('#area').remove();document.querySelector('#editor').remove()");assert.deepEqual(await collect(),[]);
    await connection.send('Page.navigate',{url:'about:blank'},sessionId);assert.deepEqual(await collect(),[],'navigation retires targets');assert.equal(browser.fillTargets.size,0,'MP-11 retired targets leave the tracking registry');
  }));
+ test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
+   const send=connection.send.bind(connection);let intercepted=false;
+   connection.send=async(method,params,session)=>{
+     if(!intercepted&&method==='Runtime.callFunctionOn'&&params.functionDeclaration?.includes('expectedDocumentUrl')){
+       intercepted=true;
+       await assert.rejects(collect(),/fill in progress/,'MP-11 pending fill capture is refused, never retired');
+     }
+     return send(method,params,session);
+   };
+   await fill('#plain');assert(intercepted);assert.equal((await collect()).length,1,'completed fill remains tracked');
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: registering a target without a Vault fill never masks it`,()=>setup(dpr,async({evaluate,ref,policy,targetId,documentId,collect})=>{
+   const node_ref=await ref('#plain');policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref});
+   await evaluate("document.querySelector('#plain').value="+JSON.stringify(value));
+   assert.deepEqual(await collect(),[],'user-authored matching field is not a Vault fill');
+ }));
  test(`MP-08/MP-11 DPR${dpr}: Vault fill in cross-origin renderer masks its own field`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,policy,collect,capture,url,evaluate})=>{
    const child=(await connection.send('Target.getTargets')).targetInfos.find(t=>t.type==='iframe');assert(child);
    const {sessionId:cs}=await connection.send('Target.attachToTarget',{targetId:child.targetId,flatten:true});
