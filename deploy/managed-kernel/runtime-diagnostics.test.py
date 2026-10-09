@@ -21,6 +21,22 @@ class Diagnostics(unittest.TestCase):
             with self.assertRaises(ValueError):diag.ship(guest,'https://observer.example/',set(),lambda raw:{'sha256':'wrong'})
             with self.assertRaises(ValueError):diag.ship(guest,'http://observer.example/',set(),post)
             with self.assertRaises(ValueError):diag.ship(guest,'https://secret@observer.example/',set(),post)
+    def test_mp10_snapshot_hash_is_observer_verifiable_and_deduplicates_replay(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:
+            guest,observer=pathlib.Path(a),pathlib.Path(b)
+            first=diag.canonical({'schema':1,'atMs':1,'pid':20,'event':'heartbeat_sent'})
+            second=None
+            for stamp in range(2,100):
+                value=diag.canonical({'schema':1,'atMs':stamp,'pid':30,'event':'cloud_presence_acknowledged'})
+                if hashlib.sha256(first).hexdigest()>hashlib.sha256(value).hexdigest():second=value;break
+            self.assertIsNotNone(second)
+            for name,data in [('runtime-20-1.jsonl',first+first),('runtime-30-1.jsonl',second)]:
+                path=guest/name;path.write_bytes(data);path.chmod(0o600)
+            result=diag.ship(guest,'https://observer.example/path1-diagnostics/round-20261009',set(),lambda raw:{'sha256':diag.accept(observer,raw)})
+            identifiers=sorted(path.stem for path in observer.glob('*.json'))
+            self.assertEqual(result['records'],len(identifiers))
+            self.assertEqual(result['snapshotSha256'],hashlib.sha256('\n'.join(identifiers).encode()).hexdigest())
     def test_mp11_links_permissions_and_partial_record_fail_closed(self):
         with tempfile.TemporaryDirectory() as a,tempfile.TemporaryDirectory() as b:
             guest=pathlib.Path(a);outside=pathlib.Path(b)/'outside';outside.write_text('SECRET')

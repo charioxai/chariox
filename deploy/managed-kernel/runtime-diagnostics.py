@@ -140,7 +140,7 @@ def ship(directory, url, acknowledged, post=None):
                 raise ValueError('MP-10 observer did not acknowledge exact record')
             acknowledged.add(digest)
     return {'MP': ['MP-07', 'MP-08', 'MP-10', 'MP-11'], 'status': 'ACKNOWLEDGED_SNAPSHOT',
-            'records': len(observed), 'snapshotSha256': hashlib.sha256('\n'.join(observed).encode()).hexdigest(),
+            'records': len(set(observed)), 'snapshotSha256': hashlib.sha256('\n'.join(sorted(set(observed))).encode()).hexdigest(),
             'atMs': time.time_ns() // 1_000_000, 'acceptance': False}
 
 

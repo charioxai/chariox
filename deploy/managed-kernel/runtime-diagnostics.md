@@ -53,8 +53,10 @@ retains the guest journal and retries; no acknowledgement is manufactured.
 MP-07/MP-09/MP-10: before teardown, capture the failing real client screenshot and
 product state, run `ship --once` through the real guest provider shell while
 that shell is still alive, and save its ACKNOWLEDGED_SNAPSHOT receipt on b3.
-Compare its record count and snapshot hash against the corresponding canonical
-observer records. This proves the collected cutoff, not records written later.
+The count is distinct canonical records, not event multiplicity; identical
+records are replay-equivalent. The snapshot hashes the sorted distinct record
+SHA256s, so b3 can recompute it from the corresponding receipt filenames. Compare
+its count and snapshot hash against those observer records. This proves the collected cutoff, not records written later.
 Keep continuous shipping alive until actual provider deletion. For a final
 snapshot with producers stopped, arm a detached validation unit through the
 real provider first; that unit must stop bootstrap/update/ship, run `ship --once`
