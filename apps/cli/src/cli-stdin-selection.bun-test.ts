@@ -33,3 +33,27 @@ test("MP-08 / MP-10 F6 is distinct from Ctrl+C with the legacy keyboard protocol
   assert.equal(interrupt?.ctrl, true)
   assert.equal(interrupt?.shift, false)
 })
+
+// MP-08 / MP-10: these real parser inputs must release retained selection so
+// the root's clearTextSelection callback can flush waiting-room rebuilds.
+for (const [label, raw] of [
+  ["bracketed paste", "\x1b[200~pasted text\x1b[201~"],
+  ["batched text", "ab"],
+] as const) {
+  test(`MP-08 / MP-10 ${label} clears retained selection before returning`, () => {
+    for (const chunk of [raw, Buffer.from(raw)]) {
+      let clears = 0
+      let shortcuts = 0
+      const controller = createCliStdinKeyController({
+        parseKeypress,
+        clearTextSelection: () => { clears++ },
+        handleSessionBrowserKey: () => { shortcuts++; return true },
+      } as unknown as CliStdinKeyControllerDeps)
+
+      assert.equal(parseKeypress(chunk, { useKittyKeyboard: true })?.name, "")
+      assert.equal(controller.handleData(chunk), false)
+      assert.equal(clears, 1)
+      assert.equal(shortcuts, 0)
+    }
+  })
+}

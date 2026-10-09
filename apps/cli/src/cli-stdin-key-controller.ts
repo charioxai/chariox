@@ -54,9 +54,10 @@ export function createCliStdinKeyController(
   return {
     handleData(chunk) {
       const event = deps.parseKeypress(chunk, { useKittyKeyboard: true })
-      // Raw stdin may batch several mouse reports. OpenTUI parses those as an
-      // unnamed event here; its own stdin parser handles the individual reports.
+      // MP-08 / MP-10: OpenTUI leaves batched mouse reports, pasted text and
+      // batched typing unnamed. Only mouse input should retain the selection.
       if (!event?.name) {
+        if (!/\x1b\[</.test(String(chunk))) deps.clearTextSelection?.()
         return false
       }
       // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals

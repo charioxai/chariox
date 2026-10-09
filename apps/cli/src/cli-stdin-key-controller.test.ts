@@ -14,11 +14,11 @@ test("cli stdin key controller ignores unparsable input", () => {
   assert.deepEqual(harness.calls(), ["parse:x:true"])
 })
 
-test("MP-08 / MP-10 only named key presses clear text selection", () => {
+test("MP-08 / MP-10 named presses and unnamed text clear selection; key releases preserve it", () => {
   for (const [event, shouldClear] of [
     [keyEvent("x", { eventType: "press" }), true],
     [keyEvent("x", { eventType: "release" }), false],
-    [keyEvent("", { eventType: "press" }), false],
+    [keyEvent("", { eventType: "press" }), true],
   ] as const) {
     let clears = 0
     const harness = createHarness({ parsedEvent: event, clearTextSelection: () => { clears++ } })

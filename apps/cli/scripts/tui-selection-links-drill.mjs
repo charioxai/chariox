@@ -178,14 +178,16 @@ try {
       message(_socket, data) { tui?.terminal.write(String(data)) },
     },
   })
-  const tuiArgs = options.attached
+  const tuiArgs = options['waiting-room-paste']
+    ? ['--kernel-url', kernelUrl]
+    : options.attached
     ? ['--kernel-url', options['fleet-kernel-url'], '--create-session', '--alias', sessionAlias, '--workspace', process.cwd(), '--worktree', process.cwd(),
       '--provider', options.provider ?? 'codex', '--account-profile', options['account-profile'], '--model', options.model]
     : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
   tui = Bun.spawn(['bun', cli, ...tuiArgs], {
     cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
       ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
-      ...(options.attached ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
+      ...(options.attached || options['waiting-room-paste'] ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
     terminal: { cols: 100, rows: 35, data(_terminal, chunk) { const data = new TextDecoder().decode(chunk); output += data; for (const c of clients) c.send(data) } },
   })
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], executablePath: options.chromium })
@@ -223,13 +225,74 @@ try {
     return rowOf(needle)
   }
   const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
-  if (options.attached) {
+  // MP-08 / MP-10: send text in one PTY write, matching paste/SSH batching.
+  const pasteCases = async (needle, beforePaste) => {
+    const cells = []
+    for (const [kind, text, sequence] of [
+      ['bracketed-paste', 'pasted text', '\x1b[200~pasted text\x1b[201~'],
+      ['batched-text', 'ab', 'ab'],
+    ]) {
+      await press('\x15')
+      const at = await settledRowOf(needle)
+      assert.ok(at, 'paste selection target visible')
+      const before = await cellColors(at, needle.length)
+      await dragSelect(at, needle.length + 1)
+      const highlighted = JSON.stringify(await cellColors(at, needle.length)) !== JSON.stringify(before)
+      assert.ok(highlighted, 'paste begins with a retained selection')
+      const deferred = await beforePaste?.(kind)
+      await capture(`${kind}-selected`)
+      await press(sequence)
+      await sleep(700)
+      const cleared = JSON.stringify(await cellColors(at, needle.length)) === JSON.stringify(before)
+      const inserted = await promptShows(text)
+      const rebuilt = deferred ? await deferred() : null
+      await capture(`${kind}-after`)
+      cells.push({kind, highlighted, cleared, inserted, rebuilt})
+      // Settle for the next case only AFTER observing paste without a named key.
+      await press('\x15')
+    }
+    return cells
+  }
+  if (options['waiting-room-paste']) {
+    // Real owned kernel inventory changes while the user retains a selection.
+    // Empty profiles need no login/credential and vanish with the owned home.
+    await waitFor(async () => (await rowOf('Provider Accounts')) !== null, 60_000)
+    await sleep(12_000)
+    let count = await page.evaluate(() => {
+      const row = terminalScreen().split('\n').find(row => row.includes('Provider Accounts'))
+      return Number(row.match(/(\d+) profiles/)[1])
+    })
+    const client = new KernelClient(kernelUrl, {})
+    let cells
+    try {
+      cells = await pasteCases('Workspace', async kind => {
+        const response = await client.send({CreateProviderAccountProfile: {provider: 'codex', label: `tuifix-paste-${kind}`}})
+        assert.ok(response.ProviderAccountProfile, 'real profile creation')
+        count++
+        await sleep(12_000)
+        const expected = `${count} profiles`
+        const inventoryVisible = () => page.evaluate(text => terminalScreen().split('\n').some(row => row.includes('Provider Accounts') && row.includes(text)), expected)
+        assert.equal(await inventoryVisible(), false, 'inventory rebuild held during retained selection')
+        return inventoryVisible
+      })
+    } finally { await client.close() }
+    result = {items: ['MP-08','MP-10'], mode: 'waiting-room-paste', source: options.source,
+      cli, cliSha256: await hashClient(path.dirname(cli)), kernelSha256: await hashFile(options['kernel-binary']),
+      dpr: Number(options.dpr ?? 1), cells}
+    const green = cells.every(cell => cell.cleared && cell.rebuilt)
+    console.log(JSON.stringify(result))
+    if (options['expect-red']) assert.ok(!green, 'base must fail paste selection/refresh')
+    else assert.ok(green, 'paste clears selection and flushes real waiting-room inventory')
+  } else if (options.attached) {
     // MP-08/MP-11 attached transcript: real provider turns, then the user's
     // select/click-then-type, Meta+C with a queued prompt, and deletion elsewhere.
     const marker = 'TUIFIX MARKER SEVEN'
     await waitFor(async () => (await page.evaluate(() => terminalScreen().trim().length)) > 0, 60_000)
     await sleep(8000)
     await capture('a01-attached')
+    if (options.provider?.startsWith('claude')) {
+      await typeText('/permissions required'); await press('\r'); await sleep(1000)
+    }
     await typeText('Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
     await press('\r')
     await waitFor(async () => (await rowOf(marker)) !== null, 240_000)
@@ -250,6 +313,7 @@ try {
       await press(copySequence)
       const keyboardCopy = (await copiedTexts()).slice(copiesBeforeKey).some(text => text.startsWith('TUIFIX MARKER'))
       await capture('a04-legacy-copy')
+      const pasted = options['paste-review'] ? await pasteCases(marker) : []
       await typeText('zq'); await sleep(500)
       const typedAfterDrag = await promptShows('zq')
       const clearedByTyping = JSON.stringify(await cellColors(at, 13)) === JSON.stringify(before)
@@ -260,9 +324,10 @@ try {
         cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
         dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), copyKey: options['copy-key'] ?? 'f6',
-        highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive,
+        highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
         acceptance: 'real provider and built TUI via PTY; desktop Terminal.app and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
+        && pasted.every(cell => cell.cleared && cell.inserted)
       console.log(JSON.stringify(result))
       if (options['expect-red']) assert.ok(!green, 'baseline must fail selection/copy review')
       else assert.ok(green, 'real-provider batched selection and legacy copy')
