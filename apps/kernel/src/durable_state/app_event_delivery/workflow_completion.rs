@@ -115,6 +115,8 @@ impl PreparedNotification {
     }
 }
 pub(crate) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Result<(), DaemonError> {
+    // Grant retirement disables the row; a stale accepted candidate stops here.
+    require_attached(tx, &p.subscription, &p.envelope.source_id)?;
     p.target
         .require_current(tx, &p.subscription.owner_user_id)
         .map_err(|e| error(e.to_string()))?;

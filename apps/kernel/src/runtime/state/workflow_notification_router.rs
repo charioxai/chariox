@@ -303,72 +303,75 @@ impl KernelRuntimeOwnedState {
                 if !matches!(
                     route(&home, &sub.target_kernel_id),
                     NotificationRoute::Local
-                ) || !self.notification_grant_live(&sub)
-                {
+                ) {
                     continue;
                 }
                 let operation = self
                     .durable_state_store
                     .with_workflow_runtime_transition_lock(|| {
-                        let mut sessions = self.session_store.write();
-                        let (sources, _, _) = self
-                            .durable_state_store
-                            .notification_inventory(&sub.owner_user_id)?;
-                        // Deletion/transfer leave pending rows alone; they naturally expire.
-                        if !accepted
-                            && !sources.iter().any(|s| {
-                                s.source_id == env.source_id && source_available(&sessions, s)
-                            })
-                        {
-                            return Ok(false);
-                        }
-                        let target = WorkflowNotificationTarget::resolve(
-                            &sessions,
-                            &sub.owner_user_id,
-                            &sub.session_id,
-                            &sub.publication_id,
-                            Some(&sub.queue_id),
-                        )
-                        .map_err(|e| store::error(e.to_string()))?;
-                        if sessions.get_session(&sub.session_id)?.owner_user_id()
-                            != sub.owner_user_id
-                            || target.target().endpoint_id != sub.endpoint_id
-                        {
-                            return Err(store::error("notification target changed"));
-                        }
-                        if accepted {
-                            let prepared = PreparedNotification::prepare(
-                                &mut sessions,
-                                sub.clone(),
-                                env.clone(),
-                            )?;
-                            let after = prepared.after.clone();
-                            self.durable_state_store
-                                .notify(NotificationOperation::Queue(Box::new(prepared)))?;
-                            sessions.restore_session(after);
-                            Ok(true)
-                        } else {
-                            match self.durable_state_store.notify(
-                                NotificationOperation::Accept {
-                                    subscription: sub.clone(),
-                                    envelope: env.clone(),
-                                },
-                            )? {
-                                NotificationOutcome::Ack(_) => {
-                                    // Local acceptance shares the source receipt: Accepted
-                                    // already promoted it. Terminal ACKs must retire any
-                                    // remaining retryable source work, just like peer ACKs.
-                                    self.durable_state_store.notify(
-                                        NotificationOperation::Acknowledge {
-                                            subscription_id: sub.subscription_id.clone(),
-                                            occurrence_id: env.occurrence_id.clone(),
-                                        },
-                                    )?;
-                                    Ok(false)
-                                }
-                                _ => Err(store::error("unexpected notification ACK")),
+                        self.with_live_notification_grant(&sub, |require_grant| {
+                            let mut sessions = self.session_store.write();
+                            let (sources, _, _) = self
+                                .durable_state_store
+                                .notification_inventory(&sub.owner_user_id)?;
+                            // Deletion/transfer leave pending rows alone; they naturally expire.
+                            if !accepted
+                                && !sources.iter().any(|s| {
+                                    s.source_id == env.source_id && source_available(&sessions, s)
+                                })
+                            {
+                                return Ok(false);
                             }
-                        }
+                            let target = WorkflowNotificationTarget::resolve(
+                                &sessions,
+                                &sub.owner_user_id,
+                                &sub.session_id,
+                                &sub.publication_id,
+                                Some(&sub.queue_id),
+                            )
+                            .map_err(|e| store::error(e.to_string()))?;
+                            if sessions.get_session(&sub.session_id)?.owner_user_id()
+                                != sub.owner_user_id
+                                || target.target().endpoint_id != sub.endpoint_id
+                            {
+                                return Err(store::error("notification target changed"));
+                            }
+                            if accepted {
+                                let prepared = PreparedNotification::prepare(
+                                    &mut sessions,
+                                    sub.clone(),
+                                    env.clone(),
+                                )?;
+                                let after = prepared.after.clone();
+                                require_grant()?;
+                                self.durable_state_store
+                                    .notify(NotificationOperation::Queue(Box::new(prepared)))?;
+                                sessions.restore_session(after);
+                                Ok(true)
+                            } else {
+                                require_grant()?;
+                                match self.durable_state_store.notify(
+                                    NotificationOperation::Accept {
+                                        subscription: sub.clone(),
+                                        envelope: env.clone(),
+                                    },
+                                )? {
+                                    NotificationOutcome::Ack(_) => {
+                                        // Local acceptance shares the source receipt: Accepted
+                                        // already promoted it. Terminal ACKs must retire any
+                                        // remaining retryable source work, just like peer ACKs.
+                                        self.durable_state_store.notify(
+                                            NotificationOperation::Acknowledge {
+                                                subscription_id: sub.subscription_id.clone(),
+                                                occurrence_id: env.occurrence_id.clone(),
+                                            },
+                                        )?;
+                                        Ok(false)
+                                    }
+                                    _ => Err(store::error("unexpected notification ACK")),
+                                }
+                            }
+                        })
                     });
                 if matches!(operation, Ok(true)) {
                     queued_sessions.insert(sub.session_id.clone());
@@ -836,6 +839,98 @@ mod tests {
             drop(kernel);
             cleanup(f);
         }
+    }
+    // MP-08 / MP-10 / MP-11 (review 914 @c8bf9ce1e P2): an accepted candidate
+    // selected before its grant is revoked must not reach the target queue.
+    #[tokio::test]
+    async fn revoked_grant_fences_an_already_selected_accepted_notification() {
+        let mut f = Fixture::new();
+        let (a, _, _) = f.workflow("source");
+        let (_, _, granted) = f.workflow("granted-target");
+        let kernel = runtime(&mut f);
+        let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: f.session.clone(),
+                        workflow_ref: a.clone(),
+                        enabled: true,
+                        output_fields: None,
+                    },
+                ),
+                "local",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let external =
+            LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                delivery_mode: NotificationDeliveryMode::Queue,
+                session_id: f.session.clone(),
+                source_id: source.source_id.clone(),
+                publication_ref: granted,
+                queue_ref: None,
+                ttl_days: 7,
+                events: WorkflowNotificationEvents::Both,
+                filters: serde_json::Value::Null,
+            });
+        let grant = kernel.insert_access_grant_for_test(&f.session);
+        kernel
+            .with_external_command_authority(Some((grant.as_str(), &external)))
+            .execute_workflow_notification_command(external.clone(), "local")
+            .await
+            .unwrap();
+        f.complete(
+            &a,
+            "selected-before-revoke",
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "kernel output",
+        );
+        let store = kernel.owned.durable_state_store.clone();
+        let now = crate::session::unix_epoch_ms();
+        for (subscription, envelope) in store.notification_candidates(false, now, 8).unwrap() {
+            store
+                .notify(NotificationOperation::Accept {
+                    subscription,
+                    envelope,
+                })
+                .unwrap();
+        }
+        let [(sub, env)]: [_; 1] = store
+            .notification_candidates(true, now, 8)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let prepared = {
+            let mut sessions = kernel.owned.session_store.write();
+            PreparedNotification::prepare(&mut sessions, sub.clone(), env).unwrap()
+        };
+        kernel
+            .revoke_kernel_access(Some("local"), Some(&grant), "owner")
+            .unwrap();
+        let live = kernel.owned.notification_grant_live(&sub);
+        let queued = store
+            .notify(NotificationOperation::Queue(Box::new(prepared)))
+            .is_ok();
+        assert_eq!(
+            (live, queued),
+            (false, false),
+            "retired authority must reject even an already prepared queue write"
+        );
+        let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
+        let receipt: (String, Option<String>) = db
+            .query_row(
+                "SELECT state,queued_prompt_id FROM app_outbox WHERE automation_id=?1",
+                [&sub.subscription_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(receipt, ("accepted".into(), None));
+        drop(db);
+        drop(kernel);
+        cleanup(f);
     }
     #[tokio::test]
     async fn a02_security_g11_retained_workflow_run_without_live_registration_is_reconciled() {

@@ -438,12 +438,8 @@ fn apply(
                 rows.map(|r| decode(&r.map_err(sql)?))
                     .collect::<Result<Vec<_>, _>>()?
             };
+            // The binding stays: a stale candidate of a retired grant never reads as owner-attached.
             tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND (?1 IS NULL OR g.grant_id=?1))",[&grant]).map_err(sql)?;
-            tx.execute(
-                "DELETE FROM workflow_notification_grants WHERE ?1 IS NULL OR grant_id=?1",
-                [&grant],
-            )
-            .map_err(sql)?;
             Ok(NotificationOutcome::Retired(retired))
         }
         NotificationOperation::Detach {
@@ -634,12 +630,13 @@ pub(super) fn insert_receipt_row(
     tx.execute("INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,source_kind) VALUES (?1,?2,?3,?4,1,?5,?6,'workflow_completion','kernel',?7,1,0,?8,?6,?9,?10,1,0,0,'workflow_completion')",params![sub.owner_user_id,env.source_id,receipt_id,sub.subscription_id,env.occurrence_id,now as i64,digest,bytes,env.deadline_ms as i64,state]).map_err(sql)?;
     Ok(())
 }
-fn accept(
+/// Admission and queue commit both require the exact subscription to be active.
+pub(crate) fn require_attached(
     tx: &Transaction<'_>,
     sub: &WorkflowNotificationSubscription,
-    env: &WorkflowNotificationEnvelope,
-) -> Result<NotificationOutcome, DaemonError> {
-    let current:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND installation_id=?3 AND status='active'",params![sub.subscription_id,sub.owner_user_id,env.source_id],|r|r.get(0)).optional().map_err(sql)?;
+    source_id: &str,
+) -> Result<(), DaemonError> {
+    let current:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND installation_id=?3 AND status='active'",params![sub.subscription_id,sub.owner_user_id,source_id],|r|r.get(0)).optional().map_err(sql)?;
     let current: WorkflowNotificationSubscription = decode(
         current
             .as_deref()
@@ -648,6 +645,14 @@ fn accept(
     if current != *sub {
         return Err(error("notification subscription changed"));
     }
+    Ok(())
+}
+fn accept(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+) -> Result<NotificationOutcome, DaemonError> {
+    require_attached(tx, sub, &env.source_id)?;
     let bytes = encode_notification_envelope(env)?;
     if env.subject.as_ref().is_some_and(|s| s.len() > 512)
         || !env.fields.is_object()

@@ -74,19 +74,39 @@ impl KernelRuntimeState {
 
 impl KernelRuntimeOwnedState {
     pub(super) fn notification_grant_live(&self, sub: &WorkflowNotificationSubscription) -> bool {
-        match self
+        self.with_live_notification_grant(sub, |require_live| require_live())
+            .is_ok()
+    }
+
+    /// Keep grant retirement serialized with admission through the durable commit.
+    pub(super) fn with_live_notification_grant<T>(
+        &self,
+        sub: &WorkflowNotificationSubscription,
+        admit: impl FnOnce(&dyn Fn() -> Result<(), DaemonError>) -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let Some(id) = self
             .durable_state_store
-            .notification_grant(&sub.owner_user_id, &sub.subscription_id)
-        {
-            Ok(None) => true,
-            Ok(Some(id)) => self
-                .kernel_access
-                .lock()
-                .expect("access state poisoned")
+            .notification_grant(&sub.owner_user_id, &sub.subscription_id)?
+        else {
+            return admit(&|| Ok(()));
+        };
+        let state = self.kernel_access.lock().expect("access state poisoned");
+        let require_live = || {
+            if state
                 .grants
                 .get(&id)
-                .is_some_and(|grant| Instant::now() < grant.deadline && grant.holder.alive()),
-            Err(_) => false,
-        }
+                .is_some_and(|grant| Instant::now() < grant.deadline && grant.holder.alive())
+            {
+                Ok(())
+            } else {
+                Err(crate::durable_state::workflow_notifications::error(
+                    "notification grant revoked or expired",
+                ))
+            }
+        };
+        require_live()?;
+        let result = admit(&require_live);
+        drop(state);
+        result
     }
 }
