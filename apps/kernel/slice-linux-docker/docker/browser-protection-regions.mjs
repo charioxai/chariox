@@ -144,6 +144,8 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
   }
 }
 
+// CDP's errors for a node without a layout box (hidden, detached).
+const NOT_RENDERED = /Could not compute box model|No node found for given backend id/;
 const SECRET_FIELDS = 'input[type=password i],[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],[autocomplete*=password i],[autocomplete*=one-time-code i],[autocomplete*=cc- i]';
 async function search(connection, sessionId, query) {
   const { searchId, resultCount } = await connection.send('DOM.performSearch', { query }, sessionId);
@@ -166,7 +168,8 @@ async function searchedRegions(connection, entry, dpr, regions, children, withhe
   if (secrets.some(node => node.localName !== 'input')) return false;
   const owners = await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe));
   const place = rect => { const placed = intersect([rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]], clip); if (placed) regions.push(placed); return placed; };
-  const box = async node => { try { return await nodeBox(connection, sessionId, node.backendNodeId, dpr); } catch { return null; } }; // No layout: no pixels.
+  // No layout: no pixels. Any other failure fails the measurement closed.
+  const box = async node => { try { return await nodeBox(connection, sessionId, node.backendNodeId, dpr); } catch (error) { if (NOT_RENDERED.test(error?.message ?? '')) return null; throw error; } };
   const isolated = new Map(children.map(child => [child.ownerBackendNodeId, child]));
   for (const node of secrets) { const found = await box(node); if (found) place(found.border); }
   for (const node of owners) {
@@ -195,16 +198,17 @@ function policyTargets(policy, targetId, prefix, documentId) {
 }
 
 // One visible page: device-pixel regions relative to its content viewport.
-// Returns null for a hidden page (no pixels). Throws when the top document
+// Returns null for a hidden page (no pixels) unless the caller renders hidden
+// pages itself (CDP screenshots: `hidden`). Throws when the top document
 // cannot be bound; an uninspectable child frame protects its owner box.
-export async function measurePageProtection(connection, sessionId, targetId, policy) {
+export async function measurePageProtection(connection, sessionId, targetId, policy, { hidden = false } = {}) {
   const top = await frameTree(connection, sessionId);
   const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frame.id, worldName: 'chariox-protection-regions' }, sessionId);
   const { result } = await connection.send('Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
     expression: '[document.visibilityState, devicePixelRatio, innerWidth, innerHeight]' }, sessionId);
   const [visibility, dpr, innerWidth, innerHeight] = result?.value ?? [];
-  if (visibility === 'hidden') return null;
-  if (visibility !== 'visible' || !(dpr > 0) || !(innerWidth > 0) || !(innerHeight > 0)) throw new Error('MP-11: unbound page');
+  if (visibility === 'hidden' && !hidden) return null;
+  if (!['visible', ...(hidden ? ['hidden'] : [])].includes(visibility) || !(dpr > 0) || !(innerWidth > 0) || !(innerHeight > 0)) throw new Error('MP-11: unbound page');
   // DevTools, settings/password pages and extensions render page or browser
   // data outside page markers: a visible one is never partially revealed.
   if (top.frame.url !== 'about:blank' && !/^(https?:|file:|chrome-error:)/.test(top.frame.url)) throw new Error('MP-11: browser-internal page');

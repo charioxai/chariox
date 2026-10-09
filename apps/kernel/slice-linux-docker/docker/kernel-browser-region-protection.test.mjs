@@ -247,3 +247,27 @@ test("MP-11 native measurement survives another inspector's getDocument; stale s
   assert.deepEqual(await masks.afterCapture(), [{ x: 0, y: 0, width: 1280, height: 800 }]);
   assert.equal(masks.failed, true);
 });
+
+test("MP-11 CDP capture fence uses agreeing shared measurements and fails closed otherwise", async () => {
+  const { captureProtectionFence } = await import("./kernel-browser-region-protection.mjs");
+  const policy = { unknown: false, values: [], targets: [] };
+  const page = (regions, extra = {}) => ({ url: "https://x/", document_id: "d", dpr: 1, scale: 1, viewport: [1280, 800], regions, withheld: [], ...extra });
+  // A second attached session would reset the page's DPR emulation.
+  const connection = { async send(method) { throw new Error("unexpected " + method); } };
+  const run = async (results, raster = { width: 1280, height: 800 }, options = {}) => {
+    let n = 0; const recorded = [];
+    const fence = await captureProtectionFence(connection, "page-session", "target", options.policy ?? policy, { record: r => recorded.push(r), measure: async (c, sessionId, targetId, p, o) => {
+      assert.equal(targetId, "target"); assert.equal(sessionId, "page-session"); assert.deepEqual(o, { hidden: true });
+      const result = results[n++]; if (result instanceof Error) throw result; return result; } });
+    return { masks: await fence.afterCapture(raster), recorded };
+  };
+  const full = [{ x: 0, y: 0, width: 1280, height: 800 }];
+  assert.deepEqual((await run([page([[10, 20, 30, 40]], { withheld: ["uninspected_frame"] }), page([[10, 20, 30, 40]], { withheld: ["uninspected_frame"] })])),
+    { masks: [{ x: 10, y: 20, width: 30, height: 40 }], recorded: ["uninspected_frame"] });
+  assert.deepEqual((await run([page([[10, 20, 30, 40]]), page([[11, 20, 30, 40]])])).masks, full, "layout changed during the capture");
+  assert.deepEqual(await run([page([]), new Error("MP-11: frame changed during protection")]), { masks: full, recorded: ["fence_unbound frame changed during protection", "fence_unbound"] }, "failed re-measurement");
+  assert.deepEqual((await run([null, null])).masks, full, "unbound page");
+  assert.deepEqual((await run([page([[10.25, 20, 30, 40]]), page([[10.25, 20, 30, 40]])], { width: 2560, height: 1600 })).masks, [{ x: 20, y: 40, width: 61, height: 80 }], "uniform view-image scale maps outward");
+  assert.deepEqual((await run([page([]), page([])], { width: 2560, height: 800 })).masks, [{ x: 0, y: 0, width: 2560, height: 800 }], "raster not uniformly bound to the measured viewport");
+  assert.deepEqual((await run([], undefined, { policy: { ...policy, unknown: true } })).masks, full, "unknown policy");
+});

@@ -14,7 +14,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureProtectionFence, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
@@ -299,7 +299,7 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId, { frames: frameId => this.browser.frameSession?.(frameId, connection), record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
+    const regionMasks = protectedCapture ? await captureProtectionFence(connection, sessionId, tab.target_id, this.protection, { record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();

@@ -35,8 +35,14 @@ function fixture(root) {
       if (method === 'DOM.getDocument') return {root:{nodeId:1}};
       if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
       if (method === "Page.captureScreenshot") return { data: encodePng(1280,800,Buffer.alloc(1280*800*4,255)) };
-      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: pages.get(session?.replace("session-", ""))?.document_id ?? `doc-${session?.replace("session-", "")}` } } };
+      const target = session?.replace("session-", "");
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
+      if (method === "Runtime.evaluate" && params.expression.includes("visibilityState")) return { result: { value: ["visible", chromium.scale ?? 1, 1280, 800] } };
+      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 } };
+      if (method === "DOM.performSearch") return { searchId: "search", resultCount: fixture.protectedField && params.query.includes("password") ? 1 : 0 };
+      if (method === "DOM.getSearchResults") return { nodeIds: [2] };
+      if (method === "DOM.describeNode") return { node: { localName: "input", backendNodeId: 7 } };
       if (method === "Runtime.evaluate") return { result: { value: fixture.secretFocused ?? false } };
       return {};
     },
@@ -56,7 +62,7 @@ function fixture(root) {
 async function using(callback) {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-md2-test-"));
   const context = fixture(root);
-  try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
+  try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
 test('MP-08/MP-10/MP-11 agent wheel awaits Chromium even with an attached display',()=>using(async({host,connection})=>{
@@ -614,11 +620,11 @@ for (const change of ['stable','layout','metadata','unavailable']) {
   const send=connection.send;let captured=false;
   connection.send=async(method,params,session)=>{
    if(method==='DOM.getDocument'){if(change==='unavailable'||captured&&change==='metadata')throw Error('metadata unavailable');return {root:{nodeId:1}};}
-   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
-   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900;return {model:{border:[x,200,x+150,200,x+150,280,x,280]}};}
+   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900,q=[x,200,x+150,200,x+150,280,x,280];return {model:{border:q,content:q,width:150,height:80}};}
    if(method==='Page.captureScreenshot'){captured=true;return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))};}
    return send(method,params,session);
   };
+  fixture.protectedField=true;
   const opened=await host.request({op:'open',url:'about:blank'});
   const frame=await host.request({op:'screenshot',tab_id:opened.tab_id,generation:opened.generation});
   const pixels=decodePng(frame.data_base64).pixels;
@@ -631,6 +637,7 @@ for (const change of ["stable", "layout", "metadata"]) {
   test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
     const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
     process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
+    fixture.protectedField = true;
     const send = connection.send;
     let captured = false;
     connection.send = async (method, params, session) => {
@@ -638,10 +645,9 @@ for (const change of ["stable", "layout", "metadata"]) {
         if (captured && change === "metadata") throw Error("metadata unavailable");
         return { root: { nodeId: 1 } };
       }
-      if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
       if (method === "DOM.getBoxModel") {
-        const x = captured && change === "layout" ? 150 : 100;
-        return { model: { border: [x,100,x+20,100,x+20,120,x,120] } };
+        const x = captured && change === "layout" ? 150 : 100, quad = [x,100,x+20,100,x+20,120,x,120];
+        return { model: { border: quad, content: quad, width: 20, height: 20 } };
       }
       if (method === "Page.captureScreenshot") {
         captured = true;

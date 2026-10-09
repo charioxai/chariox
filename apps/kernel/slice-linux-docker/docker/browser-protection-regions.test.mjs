@@ -76,3 +76,25 @@ test('stream gate adopts only stable protection and releases only verified frame
   ]);
   assert.equal(gate.protection, null);
 });
+
+// MP-11: only CDP's "no layout box" errors mean no pixels on the search path;
+// any other box failure fails the whole measurement closed.
+test('MP-11 search path: an unknown box failure fails closed, an unrendered field is skipped', async () => {
+  const { measurePageProtection } = await import('./browser-protection-regions.mjs');
+  const connection = boxError => ({ async send(method, params) {
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'f', loaderId: 'l', url: 'https://example.test/' } } };
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 1 };
+    if (method === 'Runtime.evaluate') return { result: { value: ['visible', 1, 1280, 800] } };
+    if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { scale: 1, zoom: 1 } };
+    if (method === 'Target.getTargets') return { targetInfos: [] };
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.performSearch') return { searchId: 's', resultCount: params.query.includes('password') ? 1 : 0 };
+    if (method === 'DOM.getSearchResults') return { nodeIds: [2] };
+    if (method === 'DOM.describeNode') return { node: { localName: 'input', backendNodeId: 7 } };
+    if (method === 'DOM.getBoxModel') throw new Error(boxError);
+    return {};
+  } });
+  const policy = { values: [], targets: [] };
+  assert.deepEqual((await measurePageProtection(connection('Could not compute box model.'), 's', 't', policy)).regions, []);
+  await assert.rejects(measurePageProtection(connection('Session closed'), 's', 't', policy), /Session closed/);
+});
