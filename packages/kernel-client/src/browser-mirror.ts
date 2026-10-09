@@ -249,7 +249,7 @@ export class BrowserMirrorRenderer {
         if(!image.hasAttribute('style')||entry.placement!==imageStyle){image.style.cssText=imageStyle;entry.placement=imageStyle}
         this.doc.documentElement.append(image);this.overlays.push(image)
       }
-      for(const record of next.values())if(record.box&&(record.kind==='mask'||['cross_origin_frame','opaque_shadow'].includes(record.reason??''))) {
+      for(const record of next.values())if(record.box&&record.kind==='mask') {
         const doc=this.doc,box=globalBox(record),scale=this.dpr
         const left=Math.floor(box.x*scale)-4,top=Math.floor(box.y*scale)-4,right=Math.ceil((box.x+box.width)*scale)+4,bottom=Math.ceil((box.y+box.height)*scale)+4
         const mask=doc.createElement('div');mask.setAttribute('aria-label','Protected content')

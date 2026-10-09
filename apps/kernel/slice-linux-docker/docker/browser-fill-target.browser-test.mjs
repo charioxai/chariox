@@ -12,19 +12,21 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { PortableEncoder } from './kernel-browser-display.mjs';
 import { launchChromium } from './browser-protection-fixture.mjs';
-import { measureBrowserProtection } from './browser-protection-regions.mjs';
+import * as regions from './browser-protection-regions.mjs';
+const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
-async function videoPixels(png,dpr,label) {
-  if(process.env.CHARIOX_FILL_VIDEO!=='1')return null;
+async function videoPixels(png,dpr,label,required=false) {
+  if(!required&&process.env.CHARIOX_FILL_VIDEO!=='1')return null;
   const encoder=new PortableEncoder();
   try {
     const packet=await encoder.encode(png,8000000,true,'avc1.420033');
-    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.h264`),Buffer.from(packet.data_base64,'base64'));
+    const data=typeof packet==='string'?packet:packet.data_base64,codec=typeof packet==='string'?'vp9':'h264';
+    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.${codec}`),Buffer.from(data,'base64'));
     return await new Promise((resolve,reject)=>{
-      const child=execFile(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON??'python3',['-c',"import av,sys; frame=av.CodecContext.create('h264','r').decode(av.Packet(sys.stdin.buffer.read()))[0];sys.stdout.buffer.write(frame.to_ndarray(format='rgba').tobytes())"],{encoding:'buffer',maxBuffer:2560*1600*4+4096,timeout:10000},(error,stdout)=>error?reject(Error('MP-11 video decode failed')):resolve(stdout));
-      child.stdin.end(Buffer.from(packet.data_base64,'base64'));
+      const child=execFile(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON??'python3',['-c',"import av,sys; frame=av.CodecContext.create(sys.argv[1],'r').decode(av.Packet(sys.stdin.buffer.read()))[0];sys.stdout.buffer.write(frame.to_ndarray(format='rgba').tobytes())",codec],{encoding:'buffer',maxBuffer:2560*1600*4+4096,timeout:10000},(error,stdout)=>error?reject(Error('MP-11 video decode failed')):resolve(stdout));
+      child.stdin.end(Buffer.from(data,'base64'));
     });
   }finally{await encoder.close();}
 }
@@ -55,6 +57,50 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: overflowing filled contenteditable text is covered in image and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,url})=>{
+   await evaluate("Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'magenta',background:'white'})");
+   await fill('#editor');
+   const raw=decodePng((await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr);
+   const ink=(pixels,frame,[left,top,width,height]=[130,300,300,30])=>{let count=0;for(let y=top*dpr;y<(top+height)*dpr;y++)for(let x=left*dpr;x<(left+width)*dpr;x++){const i=(y*frame.width+x)*4;if(pixels[i]>120&&pixels[i+1]<80&&pixels[i+2]>120)count++;}return count;};
+   assert(ink(raw.pixels,raw)>100,'MP-11 baseline exposes actual field glyphs outside its border box');
+   connection.browserInstanceId='MP11-overflow-artifact-fixture';
+   const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};
+   await browser.reconcile(request.viewport,{browserBarVisible:false});
+   const image=await browser.captureArtifact(request),frame=decodePng(image.data_base64,dpr);
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`overflow-image-dpr${dpr}.png`),Buffer.from(image.data_base64,'base64'));
+   const video=await videoPixels(image.data_base64,dpr,'overflow',true);
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`overflow-analysis-dpr${dpr}.json`),JSON.stringify({items:['MP-08','MP-11'],dpr,raw_overflow_ink:ink(raw.pixels,raw),image_overflow_ink:ink(frame.pixels,frame),video_overflow_ink:ink(video,frame)}));
+   assert.equal(ink(frame.pixels,frame),0,'MP-11 image covers visible text belonging to the exact filled editor');
+   assert.equal(ink(video,frame),0,'MP-11 decoded production video covers the same overflow glyphs');
+   await evaluate("document.querySelector('#editor').style.overflow='hidden'");
+   const clipped=await browser.captureArtifact(request),clippedFrame=decodePng(clipped.data_base64,dpr),i=((310*dpr)*clippedFrame.width+180*dpr)*4;
+   assert.deepEqual([...clippedFrame.pixels.subarray(i,i+3)],[255,255,255],'MP-11 clipped text does not mask adjacent unfilled page content');
+   await evaluate(`document.querySelector('iframe').src=${JSON.stringify(url+'frame')};Object.assign(document.querySelector('iframe').style,{top:'450px',height:'200px',transform:'rotate(4deg)'})`);
+   for(let n=0;n<100;n++){const {result}=await evaluate("!!document.querySelector('iframe').contentDocument?.querySelector('#editor')");if(result.value)break;await new Promise(r=>setTimeout(r,30));}
+   const nested=await connection.send('Runtime.evaluate',{expression:`(()=>{const doc=document.querySelector('iframe').contentDocument;doc.body.innerHTML='<div id=editor contenteditable style="position:absolute;left:20px;top:30px;width:40px;height:24px;white-space:nowrap;overflow:visible;font:20px monospace;color:magenta"></div>';return doc.querySelector('#editor')})()`,returnByValue:false},sessionId);
+   const {node}=await connection.send('DOM.describeNode',{objectId:nested.result.objectId},sessionId);
+   await browser.performAction({target_id:targetId,document_id:documentId,node_ref:`backend:${node.backendNodeId}`,action:{kind:'fill',text:value,expected_document_url:url+'frame'}});
+   const nestedRaw=decodePng((await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr),bounds=[450,400,650,340];
+   assert(ink(nestedRaw.pixels,nestedRaw,bounds)>100,'MP-11 baseline includes the transformed child-field text');
+   const nestedImage=await browser.captureArtifact(request),nestedFrame=decodePng(nestedImage.data_base64,dpr);
+   const nestedVideo=await videoPixels(nestedImage.data_base64,dpr,'overflow-frame',true);
+   assert.equal(ink(nestedFrame.pixels,nestedFrame,bounds),0,'MP-11 child CSS text bounds map through the frame transform once');
+   assert.equal(ink(nestedVideo,nestedFrame,bounds),0,'MP-11 child text is covered in decoded video');
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`overflow-frame-image-dpr${dpr}.png`),Buffer.from(nestedImage.data_base64,'base64'));
+ }));
+ // MP-08/MP-11: the host's screencast-triggered captures run outside the kernel's Vault
+ // input barrier; one landing between recording and the completed value must not retire it.
+ test(`MP-08/MP-11 DPR${dpr}: a capture during an in-flight fill keeps the field tracked`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate})=>{
+   const node_ref=await ref('#plain');
+   policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});
+   const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef:node_ref,browserGeneration:browser.browserGeneration,action:{kind:'fill'}},value,1);
+   browser.fillTargets.set(`${targetId}:${node_ref}`,target);
+   assert.equal((await collect()).length,1,'MP-11 an in-flight fill stays covered');
+   await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
+   regions.finishBrowserFill?.(connection,target);
+   assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
+ }));
+
  test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
    connection.browserInstanceId='MP11-public-artifact-fixture';
    const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};
@@ -77,6 +123,8 @@ for(const dpr of [1,2]) {
    for(let i=0;i<100;i++){const {result}=await evaluate("!!document.querySelector('iframe').contentDocument?.querySelector('#plain')");if(result.value)break;await new Promise(r=>setTimeout(r,30));}
    await evaluate("document.querySelector('#plain').style.left='550px';document.querySelector('#plain').style.top='160px'");
    await evaluate("document.querySelector('#password').style.appearance='none'");
+   const foreign=new URL(url+'frame');foreign.hostname='localhost';
+   await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{const frame=document.createElement('iframe');frame.id='foreign';frame.style.cssText='position:absolute;left:1000px;top:350px;width:240px;height:300px;border:0';const loaded=new Promise(resolve=>frame.onload=resolve);frame.src=${JSON.stringify(foreign.href)};document.body.append(frame);await loaded;const widget=document.createElement('mp11-widget');widget.style.cssText='position:absolute;display:block;left:1000px;top:70px;width:150px;height:80px';widget.attachShadow({mode:'closed'}).innerHTML='<div style="width:150px;height:80px;background:cyan"></div>';document.body.append(widget);return true})()`},sessionId);
    const tab={tab_id:'t',target_id:targetId,document_id:documentId};
    const host={generation:1,scales:new Map(),protection:policy,browser,async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',...(clip?{clip}:{}),captureBeyondViewport:false},sessionId)).data,dpr,clip),protected_regions:[]}}};
    const service=new MirrorService(host);
@@ -110,12 +158,17 @@ for(const dpr of [1,2]) {
          const passwordTile=packet.nodes.find(n=>n.tag==='input'&&n.box?.x===80&&n.box?.y===150);
          assert.equal(passwordTile.kind,'tile','MP-11 password dots use a native control tile even with custom appearance');
          assert.equal(passwordTile.attributes,undefined);assert.equal(passwordTile.form,undefined);
-         const opaque=packet.nodes.filter(n=>['cross_origin_frame','opaque_shadow'].includes(n.reason)).length;
-         assert.equal(render.result.value.overlays,2+opaque);
+         const opaque=packet.nodes.filter(n=>['cross_origin_frame','opaque_shadow'].includes(n.reason));
+         assert.equal(opaque.length,2,'MP-11 fixture includes actual foreign-frame and closed-shadow tiles');
+         assert(opaque.every(node=>packet.tiles.some(tile=>tile.node_id===node.id)),'MP-11 ordinary opaque subtrees have protected compositor pixels');
          assert(render.result.value.masked.every(color=>color==='black'));
          await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false},clientSession);
          const screenshot=(await connection.send('Page.captureScreenshot',{format:'png'},clientSession)).data;
          const rendered=decodePng(screenshot,dpr);
+         if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-opaque-client-dpr${dpr}.png`),Buffer.from(screenshot,'base64'));
+         assert.equal(render.result.value.overlays,2,'MP-11 only actual filled-field mask records receive black overlays');
+         {const index=((90*dpr)*rendered.width+1020*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,255,255],'MP-11 ordinary closed-shadow pixels remain visible');}
+         {const index=((440*dpr)*rendered.width+1110*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[255,0,255],'MP-11 ordinary foreign-frame pixels remain visible');}
          for(const [x,y] of [[560,170],[790,660]]){const index=((y*dpr)*rendered.width+x*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,0,0],'MP-11 client pixels cover top and child fields');}
          {const index=((440*dpr)*rendered.width+790*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[255,0,255],'MP-11 unfilled child field stays visible');}
          {const index=((170*dpr)*rendered.width+280*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,255,255],'MP-11 filled password control remains visible');}
@@ -149,7 +202,7 @@ for(const dpr of [1,2]) {
    connection.send=async(method,params,session)=>{
      if(!intercepted&&method==='Runtime.callFunctionOn'&&params.functionDeclaration?.includes('expectedDocumentUrl')){
        intercepted=true;
-       await assert.rejects(collect(),/fill in progress/,'MP-11 pending fill capture is refused, never retired');
+       assert.equal((await collect()).length,1,'MP-11 pending plain fill is covered, never retired');
      }
      return send(method,params,session);
    };

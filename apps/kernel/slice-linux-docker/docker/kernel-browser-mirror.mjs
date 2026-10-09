@@ -149,10 +149,10 @@ export class MirrorService {
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
     if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
-    // MP-10/MP-11: permanently opaque foreign/closed regions render protected
-    // placeholders; they need no source pixels or compositor crop bandwidth.
+    // MP-08/MP-11: opaque subtrees use protected compositor tiles.
+    // Ordinary foreign-frame and closed-shadow pixels remain visible.
     const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
-    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
+    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
     if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
     mark('sanitize');
