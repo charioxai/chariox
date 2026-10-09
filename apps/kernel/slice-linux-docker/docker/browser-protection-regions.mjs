@@ -67,7 +67,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
 // Range geometry belongs only to the recorded field, including ordinary text overflow.
 // Refuse ambiguous positioned clipping rather than release pixels with unproved coverage.
 function contenteditableTextGeometry() {
-  const range=this.ownerDocument.createRange();range.selectNodeContents(this);
+  const range=this.ownerDocument.createRange();
   const viewport=[this.ownerDocument.defaultView.innerWidth,this.ownerDocument.defaultView.innerHeight];
   let clips=[0,0,...viewport],positioned=false;
   for(let element=this;element;element=element.parentElement??element.getRootNode().host) {
@@ -88,9 +88,16 @@ function contenteditableTextGeometry() {
     positioned ||= style.position==='absolute'||style.position==='fixed';
   }
   const rects=[];
-  for(const box of range.getClientRects()) {
-    const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
-    if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
+  const text=this.ownerDocument.createTreeWalker(this,NodeFilter.SHOW_TEXT);
+  while(text.nextNode()) {
+    // Visibility may be restored at any descendant. Only painted text adds
+    // overflow coverage; hidden runs must not cover neighboring ordinary pixels.
+    if(this.ownerDocument.defaultView.getComputedStyle(text.currentNode.parentElement).visibility!=='visible')continue;
+    range.selectNodeContents(text.currentNode);
+    for(const box of range.getClientRects()) {
+      const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
+      if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
+    }
   }
   return {rects,viewport};
 }
