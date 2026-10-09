@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets } from './kernel-browser-mirror2.mjs';
+import { mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -90,4 +90,11 @@ test('MP-10: a repeated large stylesheet travels once per snapshot epoch', () =>
   assert.equal(packet.nodes[1].css_ref, digest); assert.deepEqual(packet.nodes[2].adopted, [{ ref: digest }, '.b{}']); assert.equal(packet.nodes[3].css, '.small{}');
   const next = { ops: [{ op: 'css', id: 'n5', css: big }] }; dedupeMirrorSheets(next, sent);
   assert.equal(next.sheets, undefined); assert.deepEqual(next.ops[0], { op: 'css', id: 'n5', css_ref: digest });
+});
+
+test('MP-10: opaque region area is clipped to the viewport for the 25% handoff budget', () => {
+  assert.equal(regionArea([{ box: [0, 0, 640, 400] }]), 256000);
+  assert.equal(regionArea([{ box: [-100, 700, 400, 400] }]), 300 * 100);
+  assert.ok(regionArea([{ box: [0, 0, 1280, 300] }]) > 0.25 * 1280 * 800);
+  assert.ok(regionArea([{ box: [10, 10, 300, 168] }]) < 0.25 * 1280 * 800);
 });

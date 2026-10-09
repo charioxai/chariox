@@ -40,6 +40,9 @@ function dataUrlBytes(url) {
   try { return match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8'); } catch { return null; }
 }
 
+// Union-free upper bound is enough for the budget: overlap only overstates.
+export const regionArea = boxes => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(1280, x + w) - Math.max(0, x)) * Math.max(0, Math.min(800, y + h) - Math.max(0, y)), 0);
+
 // Compact wire records (pre-order): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
 // parentBack 0 = the context parent (null for a snapshot root, the op id for
 // children ops); kind codes: 0 text (4th item = text), 1 document, 2 shadow,
@@ -238,7 +241,11 @@ export class Mirror2 {
     mark('observe_resources');
     const sheets = [];
     for (const sheet of source?.sheets ?? []) { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); if (text !== null) sheets.push({ op: 'css', id: sheet.id, css: text }); }
-    const tiles = fallback ? [] : await this.tiles(world, tab, stream, reset);
+    let tiles = [];
+    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset); } catch (error) {
+      if (error.mirrorReason !== 'region_area') throw error;
+      fallback = 'region_area'; this.host.timing?.('mirror2_fallback_region_area', timestamp()); source = null; reset = true; resources = [];
+    }
     mark('tiles');
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertNotCancelled(signal);
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {
@@ -349,6 +356,9 @@ export class Mirror2 {
   async tiles(world, tab, stream, reset) {
     const boxes = [...(await this.evaluate(world, 'globalThis.__charioxMirror2.opaqueBoxes()')).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
+    // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the
+    // whole page to protected video (labelled; the client retries later).
+    if (regionArea(boxes) > 0.25 * 1280 * 800) { const error = new Error('MP-10: opaque regions exceed the mirror budget'); error.mirrorReason = 'region_area'; throw error; }
     if (!boxes.length || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     const scale = this.host.scales.get(tab.tab_id) ?? 1;

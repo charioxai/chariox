@@ -116,6 +116,7 @@ if (process.argv[2] !== 'child') {
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
   const fixtureServer = createServer((req, res) => {
     if (req.url.startsWith('/img.png')) { res.setHeader('content-type', 'image/png'); res.end(png); return; }
+    if (req.url === '/canvas-small' || req.url === '/canvas-large') { const h = req.url.endsWith('large') ? 420 : 120; res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><body style="margin:0"><p>canvas page</p><canvas width="1200" height="${h}"></canvas><script>const c=document.querySelector('canvas').getContext('2d');let t=0;setInterval(()=>{c.fillStyle='hsl('+(t++%360)+',80%,50%)';c.fillRect(0,0,1200,${h})},50)</script></body>`); return; }
     res.setHeader('content-type', 'text/html');
     res.end(`<!doctype html><html><head><style>.css-secret::after{content:"${SECRET}"} .bg{width:20px;height:20px;background:url("/img.png?${SECRET}")}</style></head><body>
 <p id="plain">before ${SECRET} after</p><p id="split">SECRET-<b>VALUE</b>-123</p><p class="css-secret">css</p>
@@ -127,6 +128,7 @@ if (process.argv[2] !== 'child') {
   });
   await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
   if (siteList.split(',').includes('protection-fixture')) labSites.push({ id: 'protection-fixture', url: `http://127.0.0.1:${fixtureServer.address().port}/` });
+  for (const kind of ['canvas-small', 'canvas-large']) if (siteList.split(',').includes(kind)) labSites.push({ id: kind, url: `http://127.0.0.1:${fixtureServer.address().port}/${kind}` });
   const { observationProtectedVariants } = await import(path.join(root, 'controller/browser-controller-snapshot.mjs'));
   const browser = await chromium.launch({ executablePath: CHROME, headless: true, ignoreDefaultArgs: ['--hide-scrollbars'], args: ['--disable-frame-rate-limit'] });
   const sites = labSites.filter(s => siteList.split(',').includes(s.id));
