@@ -18,5 +18,10 @@ try{
  cc('-c',join(source,'openh264.c'),'-o',join(root,'openh264.o'));
  cc(harness,join(root,'codec.o'),join(root,'openh264.o'),...libraries,
     '-Wl,-Bstatic','-lyuv','-Wl,-Bdynamic','-ldl','-lpthread','-lm','-o',join(root,'regression'));
- execFileSync(join(root,'regression'),[],{stdio:'inherit',env:{...process.env,CHARIOX_BROWSER_DISPLAY_SOFTWARE:'1'}});
+ const env={...process.env,CHARIOX_BROWSER_DISPLAY_SOFTWARE:'1'};
+ delete env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER;
+ const missing={...env,CHARIOX_BROWSER_DISPLAY_OPENH264:join(root,'missing-openh264.so.8')};
+ execFileSync(join(root,'regression'),['missing'],{stdio:'inherit',env:missing});
+ execFileSync(join(root,'regression'),['x264'],{stdio:'inherit',env:{...missing,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:'libx264'}});
+ execFileSync(join(root,'regression'),[],{stdio:'inherit',env});
 }finally{rmSync(root,{recursive:true,force:true});}

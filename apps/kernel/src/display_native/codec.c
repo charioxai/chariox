@@ -65,7 +65,12 @@ static void runtime_load(void) {
     CX_AV_FUNCTIONS(CX_RESOLVE_AV)
     runtime_av=ready;
 }
-static int runtime_available(void){pthread_once(&runtime_once,runtime_load);return runtime_av&&(cx_openh264_available()||runtime_x264);}
+static int runtime_available(void) {
+    pthread_once(&runtime_once,runtime_load);
+    const char *encoder=getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER");
+    /* MP-08/MP-10: a missing default must not silently opt into x264. */
+    return runtime_av&&(encoder&&!strcmp(encoder,"libx264")?runtime_x264:cx_openh264_available());
+}
 #undef x264_encoder_open
 #define CX_CALL(name) (*cx_##name)
 #define x264_param_default_preset CX_CALL(x264_param_default_preset)
