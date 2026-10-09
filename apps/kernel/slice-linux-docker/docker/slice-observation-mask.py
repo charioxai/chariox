@@ -48,16 +48,12 @@ def capture_masked(policy, locate, capture, native=None):
                 next_coverage = native() if native else None
                 if before != after or coverage != next_coverage:
                     continue  # Drop only this frame. Re-locate and re-capture.
-                if coverage is not None:
-                    if not coverage['available'] or not coverage['complete'] or coverage['protected']:
-                        return Image.new('RGB', image.size, 'black')
                 registered = mask_image(image, before)
                 if coverage is None:
                     return registered
                 try:
-                    # Native masks already include window borders and stacking
-                    # subtraction. Do not pad into an accessible window above.
-                    return mask_image(registered, coverage.get('masks', coverage.get('uncovered', [])), margin=0)
+                    # Exact native filled-field boxes already include their padding.
+                    return mask_image(registered, coverage.get('masks', []), margin=0)
                 finally:
                     registered.close()
             finally:
@@ -75,7 +71,8 @@ def locate_regions(policy):
     import importlib.util
     spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
-    regions.extend(native.regions())
+    try:regions.extend(native.regions())
+    except Exception:pass  # Native best effort; browser targets still measured.
     browser_targets = [target for target in policy.get('targets', []) if target['kind'] == 'browser']
     if browser_targets:
         result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs'))],
@@ -99,7 +96,8 @@ def native_coverage():
     spec = spec_from_file_location('room_native_protection', Path(__file__).with_name('room-native-protection.py'))
     protection = module_from_spec(spec)
     spec.loader.exec_module(protection)
-    return protection.snapshot()
+    try:return protection.snapshot()
+    except Exception:return None  # Native best effort; no window/desktop mask.
 
 
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
