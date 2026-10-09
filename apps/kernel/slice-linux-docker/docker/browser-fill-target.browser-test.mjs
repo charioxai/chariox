@@ -102,6 +102,7 @@ for(const dpr of [1,2]) {
          const png=(await connection.send('Page.captureScreenshot',{format:'png'},client)).data,frame=decodePng(png,dpr);let ink=0;
          for(let y=400*dpr;y<440*dpr;y++)for(let x=80*dpr;x<500*dpr;x++){const i=(y*frame.width+x)*4;if(frame.pixels[i]>120&&frame.pixels[i+1]<80&&frame.pixels[i+2]>120)ink++;}
          assert(ink>100,'MP-08 ordinary matching paragraph stays visibly rendered');
+         for(const [x,y] of [[100,540],[700,600]]){const i=((y*dpr)*frame.width+x*dpr)*4;assert.deepEqual([...frame.pixels.subarray(i,i+3)],[255,255,255],'MP-08 positioned tiles must not leave displaced black placeholders in ordinary content');}
          if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-wire-dpr${dpr}-${index}.png`),Buffer.from(png,'base64'));
        }
        await connection.send('Runtime.evaluate',{expression:'renderer.close()'},client);
