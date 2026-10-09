@@ -339,6 +339,11 @@ async fn setup_token_verified_cold_prompt_does_not_repeat_credential_check() {
     pasted_setup_token_fixture("verified-cold-prompt").await;
 }
 
+#[tokio::test]
+async fn setup_token_pre_upgrade_native_observation_inventory_is_unknown() {
+    pasted_setup_token_fixture("legacy-native-observed-inventory").await;
+}
+
 async fn pasted_setup_token_fixture(scenario: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -527,6 +532,73 @@ exit 90
             false,
         )
         .unwrap();
+        if scenario.ends_with("-inventory") {
+            // Web/TUI account lists are often the first read after upgrade.
+            // They must not borrow the native login's identity or verified state.
+            let native = router
+                .provider_account_profiles
+                .get("local", "claude", &profile.profile_id)
+                .unwrap();
+            let restore_native_observation = |router: &CommandRouter| {
+                router
+                    .provider_account_profiles
+                    .update_observation(
+                        "local",
+                        "claude",
+                        &profile.profile_id,
+                        native.auth_state,
+                        native.identity_summary.clone(),
+                        native.plan.clone(),
+                        None,
+                        Some(native.usage.clone()),
+                    )
+                    .unwrap();
+            };
+            for provider in [Some("claude"), None] {
+                restore_native_observation(&router);
+                let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+                    "ListProviderAccountProfiles": { "provider": provider }
+                }))
+                .unwrap();
+                let command =
+                    KernelCommand::from_local_request("legacy-list", None, None, &request);
+                let LocalDaemonResponse::ProviderAccountProfilesListed { profiles } =
+                    router.dispatch(command, request).await.unwrap()
+                else {
+                    panic!("expected account inventory");
+                };
+                let listed = profiles
+                    .iter()
+                    .find(|p| p.profile_id == profile.profile_id)
+                    .unwrap();
+                assert_eq!(
+                    listed.auth_state,
+                    crate::account_profile::ProviderAccountAuthState::Unknown,
+                    "MP-08/MP-10/MP-11 account inventory must not authenticate an unchecked legacy Vault token",
+                );
+                assert_eq!((&listed.identity_summary, &listed.plan), (&None, &None));
+                assert_eq!(listed.usage, profile.usage);
+            }
+            restore_native_observation(&router);
+            let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+                "GetProviderAccountProfile": {
+                    "provider": "claude", "account_profile": profile.profile_id
+                }
+            }))
+            .unwrap();
+            let command = KernelCommand::from_local_request("legacy-get", None, None, &request);
+            let LocalDaemonResponse::ProviderAccountProfile { profile: selected } =
+                router.dispatch(command, request).await.unwrap()
+            else {
+                panic!("expected account profile");
+            };
+            assert_eq!(
+                selected.auth_state,
+                crate::account_profile::ProviderAccountAuthState::Unknown
+            );
+            assert_eq!((selected.identity_summary, selected.plan), (None, None));
+            assert_eq!(selected.usage, profile.usage);
+        }
         if scenario.ends_with("-admission") {
             router
                 .provider_account_profiles
