@@ -14,8 +14,8 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureRegionMasks,regionProtectionChanged,protectionDeclared } from "./kernel-browser-region-protection.mjs";
+import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { DisplayStream } from "./kernel-browser-display.mjs";
@@ -72,13 +72,9 @@ export class KernelBrowserHost {
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
-      stream.latest = policy.unknown || policy.values.length ? this.maskedStreamFrame(stream) : null;
+      stream.latest = null;
     }
     return {};
-  }
-  maskedStreamFrame(stream) {
-    return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
-      width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
   async save() {
     const name = path.join(this.root, "tabs.json");
@@ -239,7 +235,7 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
+    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId, {targetId:tab.target_id,policy:this.protection}) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -261,19 +257,22 @@ export class KernelBrowserHost {
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
-      stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
-      const policy = this.protection, generation = this.generation;
+      const policy = this.protection, generation = this.generation, epoch=stream.regionEpoch??0;
       void this.screenshot(tab).then(frame => {
-        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream) {
+        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream && epoch===(stream.regionEpoch??0)) {
           if (!stream.boundFrames) delete frame.document_id;
           stream.latest = { ...frame, sequence: ++stream.sequence };
         }
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
+      if(regionProtectionChanged(message,sessionId)){
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=null;}
+        captureProtected();return;
+      }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;
       if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {

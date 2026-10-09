@@ -1,0 +1,165 @@
+"""MP-08/MP-11: private, generation-scoped AT-SPI Vault fill targets.
+
+Records only object/window identities, value fingerprints and lengths. Never
+searches window text for echoes. XDG_RUNTIME_DIR belongs to this desktop epoch.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import time
+
+
+def store_path():
+    root = os.environ.get('XDG_RUNTIME_DIR')
+    if not root:
+        home = os.environ.get('CHARIOX_HOME')
+        if not home: return None
+        root = str(Path(home) / 'state' / 'native-fill-targets')
+        Path(root).mkdir(mode=0o700, parents=True, exist_ok=True)
+    display = hashlib.sha256(os.environ.get('DISPLAY','').encode()).hexdigest()[:16]
+    return Path(root) / ('chariox-vault-fill-targets-' + display + '.json')
+
+
+def read():
+    path = store_path()
+    if path is None or not path.exists(): return []
+    return json.loads(path.read_text())
+
+
+def write(targets):
+    path = store_path()
+    if path is None: return
+    temporary = path.with_suffix('.new')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as output: json.dump(targets, output)
+    os.replace(temporary, path)
+
+
+def identity(node):
+    pid = node.get_process_id()
+    stat = Path('/proc/' + str(pid) + '/stat').read_text()
+    return {'pid': pid, 'started': stat[stat.rfind(')')+2:].split()[19], 'path': node.path}
+
+
+def field_value(node):
+    text = node.queryText()
+    return text.getText(0, text.characterCount)
+
+
+def begin(expected_window, value):
+    # The kernel already bound X11 focus; match the owning native application.
+    try:
+        import pyatspi
+        try:
+            from Xlib import X, display
+        except ModuleNotFoundError:
+            from selkies.Xlib import X, display
+        connection = display.Display()
+        try:
+            window = connection.create_resource_object('window', expected_window)
+            pid = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
+            pid = int(pid.value[0]) if pid is not None and len(pid.value) else None
+        finally: connection.close()
+        desktop = pyatspi.Registry.getDesktop(0)
+        pending = [desktop.getChildAtIndex(i) for i in range(desktop.childCount)]
+        candidates = []
+        visited = 0
+        while pending and visited < 8192:
+            node = pending.pop(); visited += 1
+            if not node or node.get_process_id() != pid: continue
+            state = node.getState()
+            if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_EDITABLE): candidates.append(node)
+            pending.extend(node.getChildAtIndex(i) for i in range(min(node.childCount, 8192-visited)))
+        if len(candidates) != 1: return None
+        node = candidates[0]
+        target = {**identity(node), 'window': expected_window, 'pending': True,
+                  'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value)}
+        targets = [t for t in read() if (t['pid'],t['path']) != (target['pid'],target['path'])]
+        targets.append(target); write(targets)
+        return node, target
+    except Exception: return None  # Native best effort: no desktop blackout.
+
+
+def finish(record):
+    if record is None: return
+    node, target = record
+    try:
+        # Physical XTEST input is delivered asynchronously to GTK.
+        for _ in range(20):
+            if node.queryText().characterCount >= target['length']: break
+            time.sleep(.025)
+        import pyatspi
+        if node.getRole() != pyatspi.ROLE_PASSWORD_TEXT:
+            value = field_value(node)
+            target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
+        target['length'] = node.queryText().characterCount
+        target['pending'] = False
+        targets = read()
+        for index, item in enumerate(targets):
+            if (item['pid'],item['path']) == (target['pid'],target['path']): targets[index] = target
+        write(targets)
+    except Exception: pass
+
+
+def matches(node, target):
+    import pyatspi
+    try:
+        if identity(node) != {key:target[key] for key in ('pid','started','path')}: return False
+        if target.get('pending'): return True
+        if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
+            return node.queryText().characterCount == target['length'] and target['length'] > 0
+        value = field_value(node)
+        return bool(value) and hashlib.sha256(value.encode()).hexdigest() == target['value_hash']
+    except Exception: return False
+
+
+def regions():
+    """Mask each still-live filled plain entry, retiring removed/replaced entries."""
+    targets = read()
+    if not targets: return []
+    import pyatspi
+    try:
+        from Xlib import X, display
+    except ModuleNotFoundError:
+        from selkies.Xlib import X, display
+    connection = display.Display()
+    desktop = pyatspi.Registry.getDesktop(0)
+    retained, boxes = [], []
+    try:
+        for target in targets:
+            try:
+                window = connection.create_resource_object('window', target['window'])
+                if window.get_attributes().map_state != X.IsViewable:
+                    retained.append(target); continue
+                app = next((desktop.getChildAtIndex(i) for i in range(desktop.childCount)
+                            if desktop.getChildAtIndex(i).get_process_id() == target['pid']), None)
+                pending = [app]; node = None; visited = 0
+                while pending and visited < 8192:
+                    item = pending.pop(); visited += 1
+                    if not item: continue
+                    if item.path == target['path']: node = item; break
+                    pending.extend(item.getChildAtIndex(i) for i in range(min(item.childCount,8192-visited)))
+                if node is None or not matches(node, target): continue
+                retained.append(target)
+                if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT: continue
+                if not node.getState().contains(pyatspi.STATE_SHOWING): continue
+                bounds = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+                # GTK screen coordinates are DIP at scale2; match its owning
+                # frame to the actual X11 client extent before placing pixels.
+                frame = node
+                while frame and frame.getRoleName() not in ('frame','window','dialog'): frame = frame.parent
+                scale = 1
+                if frame:
+                    logical = frame.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+                    geometry = window.get_geometry()
+                    if logical.width > 0:
+                        ratio = geometry.width/logical.width
+                        if abs(ratio-2) < .02: scale = 2
+                x,y,w,h = [round(v*scale) for v in (bounds.x,bounds.y,bounds.width,bounds.height)]
+                pad = 2*scale
+                if w > 0 and h > 0: boxes.append([max(0,x-pad),max(0,y-pad),w+2*pad,h+2*pad])
+            except Exception: continue  # Native best effort, never a window mask.
+    finally: connection.close()
+    if retained != targets: write(retained)
+    return boxes

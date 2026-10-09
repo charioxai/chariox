@@ -21,7 +21,7 @@ struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable password field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -308,17 +308,20 @@ impl KernelRuntimeState {
             .dom_nodes
             .iter()
             .find(|node| node.node_ref == args.node_ref)
-            .ok_or_else(|| host_error("MD-5: rediscover the password field".into()))?;
-        if !node.node_name.eq_ignore_ascii_case("input")
-            || node
-                .attributes
-                .get("type")
-                .is_none_or(|kind| !kind.eq_ignore_ascii_case("password"))
+            .ok_or_else(|| host_error("MD-5: rediscover the fill field".into()))?;
+        let editable = node.node_name.eq_ignore_ascii_case("input")
+            || node.node_name.eq_ignore_ascii_case("textarea")
+            || node.attributes.get("contenteditable").is_some_and(|value| {
+                value.is_empty()
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("plaintext-only")
+            });
+        if !editable
             || node.attributes.contains_key("disabled")
             || node.attributes.contains_key("readonly")
         {
             return Err(host_error(
-                "MD-5: Vault input requires an editable password field".into(),
+                "MD-5: Vault input requires an editable text field".into(),
             ));
         }
         snapshot

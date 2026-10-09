@@ -229,29 +229,18 @@ test("MD-2: failed child spawn has no PID to kill or await", async () => {
   assert.equal(chromium.child, null);
 });
 
-test("MD-5: protection flushes old frames and masks new/retired frames across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  const session = sent.find(call => call.method === "Page.startScreencast").session;
-  const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
-  emit();
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
-  const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
-  await host.protect(policy);
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.mime_type, "image/png");
-  emit();
-  await host.protect(policy); // An unchanged policy must not erase every poll.
-  const protectedFrame = (await host.request({ op: "poll", ...subscription })).frame;
-  assert.equal(protectedFrame.mime_type, "image/png");
-  assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
-  const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(capture.data_base64, protectedFrame.data_base64); // unbound mock layout => full mask
-  const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
-  chromium.child.exitCode = 1;
-  await host.request({ op: "start" });
-  assert(host.browser.protectedValues.has("synthetic-only"));
-  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
+test("MP-08/MP-11 policy retires cached observations without a broad mask", () => using(async ({ host, handlers, sent,connection }) => {
+  const send=connection.send;connection.send=async(method,params,session)=>method==='Page.captureScreenshot'?{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))}:send(method,params,session);
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
+  const session=sent.find(call=>call.method==='Page.startScreencast').session;
+  const emit=()=>{for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:'untrusted-raw',sessionId:1}});};
+  emit();assert.equal((await host.request({op:'poll',...subscription})).frame.data_base64,'untrusted-raw');
+  await host.protect({unknown:false,values:['synthetic-only'],targets:[]});
+  assert.equal((await host.request({op:'poll',...subscription})).frame,null);
+  emit();let frame;
+  for(let n=0;n<100;n++){frame=(await host.request({op:'poll',...subscription})).frame;if(frame)break;await new Promise(r=>setTimeout(r,5));}
+  assert.equal(decodePng(frame.data_base64).pixels[0],255,'value registration without a fill does not mask pixels');
 }));
 
 test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
@@ -528,46 +517,20 @@ for (const kind of ["key", "click"]) {
   }));
 }
 
-for (const change of ["stable", "layout", "metadata"]) {
-  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
-    const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
-    process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
-    const send = connection.send;
-    let captured = false;
-    connection.send = async (method, params, session) => {
-      if (method === "DOM.getDocument") {
-        if (captured && change === "metadata") throw Error("metadata unavailable");
-        return { root: { nodeId: 1 } };
-      }
-      if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
-      if (method === "DOM.getBoxModel") {
-        const x = captured && change === "layout" ? 150 : 100;
-        return { model: { border: [x,100,x+20,100,x+20,120,x,120] } };
-      }
-      if (method === "Page.captureScreenshot") {
-        captured = true;
-        return { data: encodePng(2560,1600,Buffer.alloc(2560*1600*4,255)) };
-      }
-      return send(method, params, session);
-    };
-    try {
-      const opened = await host.request({ op: "open", url: "about:blank" });
-      const binding = { tab_id: opened.tab_id, generation: opened.generation };
-      await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
-      const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
-      assert.equal(frame.width,2560); assert.equal(frame.height,1600);
-      assert.deepEqual(frame.protected_regions, change === "stable"
-        ? [{x:200,y:200,width:40,height:40}]
-        : [{x:0,y:0,width:2560,height:1600}]);
-      const masked = decodePng(maskPng(frame.data_base64, frame.protected_regions.map(r=>[r.x,r.y,r.width,r.height]),2),2);
-      assert.equal(masked.pixels[(210*2560+210)*4],0,"native protected pixels must be opaque");
-      assert.equal(masked.pixels[(1599*2560+2559)*4],change === "stable" ? 255 : 0,"fallback covers the complete native image");
-    } finally {
-      if (original === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
-      else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = original;
-    }
-  }));
-}
+test('MP-08/MP-11 unfilled password/media metadata never masks DPR2 captures', () => using(async ({host,connection}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});host.scales.set(opened.tab_id,2);
+  const send=connection.send;
+  connection.send=async(method,params,session)=>{
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Runtime.evaluate'&&params.expression.includes('dpr:devicePixelRatio'))return {result:{value:{dpr:2,width:1280,height:800,visible:true}}};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Page.captureScreenshot')return {data:encodePng(2560,1600,Buffer.alloc(2560*1600*4,255))};
+    return send(method,params,session);
+  };
+  const frame=await host.screenshot(host.tabs.get(opened.tab_id),null,true);
+  assert.equal(frame.width,2560);assert.equal(frame.height,1600);assert.deepEqual(frame.protected_regions,[]);
+  assert.equal(decodePng(frame.data_base64,2).pixels[0],255);
+}));
 
 test("display subscription captures the current document after navigation", () => using(async ({host,connection,pages}) => {
   const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;

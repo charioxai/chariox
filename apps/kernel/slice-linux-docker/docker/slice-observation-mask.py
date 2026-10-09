@@ -49,8 +49,8 @@ def capture_masked(policy, locate, capture, native=None):
                 if before != after or coverage != next_coverage:
                     continue  # Drop only this frame. Re-locate and re-capture.
                 if coverage is not None:
-                    if not coverage['available'] or not coverage['complete'] or coverage['protected']:
-                        return Image.new('RGB', image.size, 'black')
+                    if not coverage['available'] or not coverage['complete']:
+                        continue
                 registered = mask_image(image, before)
                 if coverage is None:
                     return registered
@@ -72,40 +72,24 @@ def locate_regions(policy):
     if policy.get('unknown'):
         raise ObservationRedacted(RETRY_MESSAGE)
     regions = []
-    for target in list(policy.get('targets', [])):
-        if target['kind'] == 'native':
-            try:
-                from Xlib import display, error
-            except ModuleNotFoundError:
-                from selkies.Xlib import display, error
-            connection = display.Display()
-            try:
-                # Re-locate this exact approved control even if focus now differs.
-                window = connection.create_resource_object('window', target['target']['focus_window'])
-                root = connection.screen().root
-                if window.get_attributes().map_state != 2:
-                    continue  # A confirmed unmapped control contributes no desktop pixels.
-                geometry = window.get_geometry()
-                translated = root.translate_coords(window, 0, 0)
-                ancestors = []
-                for _ in range(64):
-                    ancestors.append(window.id)
-                    parent = window.query_tree().parent
-                    if parent.id == root.id:
-                        break
-                    window = parent
-                if target['target']['active_window'] not in ancestors:
-                    raise ObservationRedacted(RETRY_MESSAGE)
-                regions.append([translated.x, translated.y, geometry.width, geometry.height])
-            except error.BadWindow:
-                # X confirms that this exact approved window no longer exists.
-                policy['targets'].remove(target)
-            finally:
-                connection.close()
-        elif target['kind'] != 'browser':
-            raise ObservationRedacted(RETRY_MESSAGE)
+    native_targets = [target for target in policy.get('targets', []) if target['kind'] == 'native']
+    if native_targets:
+        try:
+            from Xlib import display, error
+        except ModuleNotFoundError:
+            from selkies.Xlib import display, error
+        connection = display.Display()
+        try:
+            for target in native_targets:
+                try: connection.create_resource_object('window', target['target']['focus_window']).get_attributes()
+                except error.BadWindow: policy['targets'].remove(target)
+        finally: connection.close()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+    native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+    regions.extend(native.regions())
     browser_targets = [target for target in policy.get('targets', []) if target['kind'] == 'browser']
-    if browser_targets or policy.get('values'):
+    if browser_targets:
         result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs'))],
                                 input=json.dumps({'targets': browser_targets, 'values': policy.get('values', [])}), text=True, capture_output=True,
                                 timeout=2, check=True)
@@ -123,11 +107,10 @@ def capture_pixels():
 
 
 def native_coverage():
-    from importlib.util import spec_from_file_location, module_from_spec
-    spec = spec_from_file_location('room_native_protection', Path(__file__).with_name('room-native-protection.py'))
-    protection = module_from_spec(spec)
-    spec.loader.exec_module(protection)
-    return protection.snapshot()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+    fills = importlib.util.module_from_spec(spec); spec.loader.exec_module(fills)
+    return {'available': True, 'complete': True, 'protected': False, 'masks': fills.regions()}
 
 
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,

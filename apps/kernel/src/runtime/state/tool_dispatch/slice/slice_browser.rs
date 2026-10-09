@@ -123,7 +123,7 @@ pub(super) fn ensure_browser_fill_target(
     })
 }
 
-pub(super) fn ensure_browser_secret_target_is_masked(
+pub(super) fn ensure_browser_secret_target_is_editable(
     status: &serde_json::Value,
     target: Option<&str>,
 ) -> Result<(), DaemonError> {
@@ -144,26 +144,29 @@ pub(super) fn ensure_browser_secret_target_is_masked(
             }),
         None => status.get("focusedElement"),
     };
-    let is_editable_password = field.is_some_and(|field| {
+    let is_editable_field = field.is_some_and(|field| {
         field.get("kind").and_then(serde_json::Value::as_str) == Some("field")
             && field
                 .get("tag")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-            && field
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|kind| kind.eq_ignore_ascii_case("password"))
+                .is_some_and(|tag| {
+                    tag.eq_ignore_ascii_case("input")
+                        || tag.eq_ignore_ascii_case("textarea")
+                        || field
+                            .get("contentEditable")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                })
             && field.get("disabled").and_then(serde_json::Value::as_bool) != Some(true)
             && field.get("readOnly").and_then(serde_json::Value::as_bool) != Some(true)
     });
-    if is_editable_password {
+    if is_editable_field {
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
         operation: "runtime_tool_paste_secret_to_slice",
         message:
-            "paste_secret_to_slice requires an editable password field so the secret remains masked"
+            "paste_secret_to_slice requires an editable text field tracked for capture protection"
                 .to_string(),
     })
 }
@@ -271,15 +274,16 @@ mod tests {
             ]
         });
 
-        ensure_browser_secret_target_is_masked(&status, None)
+        ensure_browser_secret_target_is_editable(&status, None)
             .expect("focused password field should be accepted");
-        ensure_browser_secret_target_is_masked(&status, Some("#password"))
+        ensure_browser_secret_target_is_editable(&status, Some("#password"))
             .expect("password selector should be accepted");
-        ensure_browser_secret_target_is_masked(&status, Some("field:password"))
+        ensure_browser_secret_target_is_editable(&status, Some("field:password"))
             .expect("opaque password field id should be accepted");
-        assert!(ensure_browser_secret_target_is_masked(&status, Some("field:email")).is_err());
+        ensure_browser_secret_target_is_editable(&status, Some("field:email"))
+            .expect("plain field admitted and tracked");
         assert!(
-            ensure_browser_secret_target_is_masked(&status, Some("field:readonly-password"))
+            ensure_browser_secret_target_is_editable(&status, Some("field:readonly-password"))
                 .is_err()
         );
     }

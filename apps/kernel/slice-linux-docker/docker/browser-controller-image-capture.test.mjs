@@ -8,7 +8,7 @@ const viewport = { css_width: 8, css_height: 6, device_scale_factor: 1,
   desktop_pixel_width: 8, desktop_pixel_height: 6 };
 
 for (const scenario of ["isolated_password", "nested_password", "local_password", "foreign_password", "unprotected",
-  "child_navigation", "local_navigation", "reparented", "new_child", "child_unavailable", "late_password"]) {
+  "child_navigation", "local_navigation", "reparented", "new_child", "late_password"]) {
   test(`MP-08/MP-10/MP-11 same-tab image ${scenario}`, async () => {
     const { browser, connection, request, source } = fixture(scenario);
     if (["child_navigation", "local_navigation", "reparented", "new_child"].includes(scenario)) {
@@ -17,7 +17,7 @@ for (const scenario of ["isolated_password", "nested_password", "local_password"
       await assert.rejects(browser.captureArtifact(request), { code: "browser_artifact_unavailable" });
     } else {
       const capture = await browser.captureArtifact(request);
-      const protectedFrame = ["isolated_password", "nested_password", "local_password", "late_password"].includes(scenario);
+      const protectedFrame = false; // MP-11 password fields render dots; no generic mask.
       assert.equal(capture.redaction, protectedFrame ? "full_viewport" : "none");
       assert.deepEqual(Buffer.from(capture.data_base64, "base64"), protectedFrame ? blackPng(8, 6) : source);
       assert.equal(capture.document_id, "doc-root");

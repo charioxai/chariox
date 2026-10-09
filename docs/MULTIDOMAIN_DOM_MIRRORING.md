@@ -77,13 +77,14 @@ scripts, and enforces CSP with no origin connections, forms or active content.
 Only kernel-created image/font Blob URLs are permitted. The client independently
 validates tree shape, CSS, attributes, bounds and resource hashes before rendering.
 
-The existing observation policy supplies Vault values and registered target
-regions. Text is scanned before truncation across adjacent nodes, open shadows
-and same-origin frames. Protected fields/regions become opaque placeholders,
-with no descendants, values, attributes, pseudo content or resources. Password,
-OTP/payment autocomplete and explicit observation-protected regions are also
-masked. An unknown registry refuses packets. Resources are refused whenever
-Vault values are registered; images become protected fallback regions.
+MP-08/MP-11: Miguel's 2026-10-09 visual policy supplies only exact Vault-filled
+plain-field regions, with no descendants or values in those placeholders.
+Password controls retain their dot rendering; their raw values are omitted.
+The collector rechecks type, value and frame/document identity on every capture.
+Cleared/replaced, removed and navigated targets retire. There is no page-text,
+container/order/bidi/budget, iframe or media masking. Registering a value alone
+leaves the whole viewport visible, including image/font resources. Unknown
+policy refuses packets.
 
 The kernel reads only already-loaded, CDP-listed resource bodies. It never fetches
 an arbitrary client URL and sends no URL, cookies or request headers. Resource
@@ -104,13 +105,10 @@ Same-origin frame tile bounds are translated into root compositor coordinates.
 All tiles and masks paint in the root mirror document. Tile crops round outward
 to CSS-pixel boundaries, keeping DPR2 image origins exact and avoiding child-frame
 compositor resampling. Layout boxes remain local and fractional.
-Trusted CDP frame origins and exposed documents permit nested protection scans;
-explicitly protected frames retain their masks. Password/payment attribute checks
-are ASCII case insensitive, including nested trusted CDP metadata. Closed page roots and foreign or
-unavailable frame regions remain masked under the conservative protection contract.
-Fully opaque regions use placeholders without source readback. Nested and shadow
-images are decoded before apply completes. Thus cross-origin frame content is currently an opaque
-protected fallback, not an independently authorized subframe observation channel.
+Trusted CDP frame origins place exact Vault fill boxes in the composited page,
+including cross-origin targets. Closed-shadow and foreign-frame tiles use source
+readback with those same field masks; they are not whole-region placeholders.
+Nested and shadow images are decoded before apply completes.
 
 ## MP-08 input and client integration
 

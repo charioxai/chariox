@@ -85,7 +85,7 @@ export class MirrorService {
     const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
     mark('regions');
     let source;stream.fullFallback=false;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify([])},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
       // Synthetic tile IDs never authorize element input into the original page.
@@ -159,7 +159,7 @@ export class MirrorService {
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch;
       const clip=refine?{x:0,y:0,width:1280,height:800,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
-      const masks=await captureRegionMasks(world.connection,world.sessionId,{mirrorStructured:true});
+      const masks=await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy});
       mark('tile_masks_before');
       const captured=await this.host.screenshot(tab,refine?null:clip);
       stream.refinePending=!refine;stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;

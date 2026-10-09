@@ -26,7 +26,8 @@ The source is the existing `KernelBrowserHost.screenshot` protected PNG seam.
 An emulated canonical tab viewport stays 1280×800 CSS pixels with negotiated
 DPR 1 or 2. Different DPR selections on the same live tab are refused. Screenshots
 and Vault region masks follow that geometry, including DPR2 pixel conversion.
-The display never consumes unmasked CDP screencast pixels. Capture checks the
+MP-08/MP-11: the display covers only recorded Vault-filled plain fields;
+password fields already show dots. No other content receives a mask. Capture checks the
 observed document again after screenshot acquisition; replacement documents fail
 that frame instead of attaching old input coordinates to new content.
 

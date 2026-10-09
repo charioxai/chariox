@@ -1,305 +1,131 @@
-// MP-08/MP-10/MP-11: trusted CDP protection regions for every frame of every
-// visible page, in device pixels relative to that page's content viewport.
-// Consumers place them on their own pixels: CDP captures at the viewport
-// origin, desktop capture at the AT-SPI document origin proven by
-// browser-desktop-protection.py. Page JavaScript never participates.
+import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
+// MP-08/MP-10/MP-11: Miguel's Vault fill-target model (2026-10-09).
+// Only the exact filled plain field contributes pixels. No echo/media/frame scans.
 import { createHash } from 'node:crypto';
-import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
-
-const MAX_FRAMES = 64, MAX_REGIONS = 4096, MAX_PAGES = 32, FRAME_TIMEOUT_MS = 500;
-const MARKERS = ['data-chariox-secret', 'data-chariox-observation-protected', 'data-observation-protected'];
-const OPAQUE_MEDIA = new Set(['canvas', 'svg', 'img', 'video']);
-const FRAME_OWNERS = new Set(['iframe', 'frame']);
-const PLUGINS = new Set(['object', 'embed']);
-
-function quadRect(quad) {
-  if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw new Error('MP-11: unknown frame geometry');
-  const xs = quad.filter((_, i) => i % 2 === 0), ys = quad.filter((_, i) => i % 2 === 1);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
-}
-const scaled = ([x, y, w, h], s) => [x * s, y * s, w * s, h * s];
-function intersect(a, b) {
-  const x = Math.max(a[0], b[0]), y = Math.max(a[1], b[1]);
-  const r = Math.min(a[0] + a[2], b[0] + b[2]), bottom = Math.min(a[1] + a[3], b[1] + b[3]);
-  return r > x && bottom > y ? [x, y, r - x, bottom - y] : null;
-}
-// Outward integer rounding: a protected subpixel edge is never left uncovered.
-const outward = ([x, y, w, h]) => {
-  const left = Math.floor(x), top = Math.floor(y);
-  return [left, top, Math.ceil(x + w) - left, Math.ceil(y + h) - top];
+import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
+const FRAME_TIMEOUT_MS = 500;
+const retired = new WeakMap();
+const digest = value => createHash('sha256').update(value).digest('hex');
+const frameTree = async (connection, sessionId) => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
+const visit = (tree, id) => tree.frame.id === id ? tree.frame : (tree.childFrames ?? []).map(child => visit(child,id)).find(Boolean);
+const rect = quad => {
+  if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw Error('MP-11: fill geometry unavailable');
+  const xs=quad.filter((_,i)=>i%2===0),ys=quad.filter((_,i)=>i%2===1);
+  return [Math.min(...xs),Math.min(...ys),Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys)];
 };
-
-// A frame owner maps child coordinates by translation only when its border
-// quad (TL, TR, BR, BL) is its layout box moved: directed edges of the layout
-// size (no mirror or rotation), no skew. Layout sizes are whole CSS pixels.
-export function translatedQuad(q, width, height) {
-  if (!Array.isArray(q) || q.length !== 8 || !q.every(Number.isFinite)) return false;
-  const near = (a, b, tolerance = 0.01) => Math.abs(a - b) < tolerance;
-  return near(q[2] - q[0], width, 0.5) && near(q[7] - q[1], height, 0.5) &&
-    near(q[3], q[1]) && near(q[4], q[2]) && near(q[5], q[7]) && near(q[6], q[0]);
+function targetNode(target, entry) {
+  const ref=entry.prefix ? (target.node_ref?.startsWith(entry.prefix) ? target.node_ref.slice(entry.prefix.length) : '') : target.node_ref;
+  return /^backend:[1-9][0-9]*$/.test(ref??'') ? Number(ref.slice(8)) : null;
 }
 
-// Device-pixel boxes. A child that cannot be placed by translation (plain
-// false) is withheld: its whole owner box is protected.
-async function nodeBox(connection, sessionId, backendNodeId, dpr) {
-  const { model } = await connection.send('DOM.getBoxModel', { backendNodeId }, sessionId);
-  const border = quadRect(model?.border), content = quadRect(model?.content);
-  return { border: scaled(border, dpr), content: scaled(content, dpr), plain: translatedQuad(model.border, model.width, model.height) };
+// Bind before focus/input events; no credential bytes are retained in the target.
+export async function recordBrowserFill(connection, options, value, revision) {
+  const {sessionId,targetId,documentId,nodeRef,browserGeneration}=options;
+  const backendNodeId=Number(nodeRef.slice(8));
+  const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},sessionId);
+  const document=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
+  const tree=await frameTree(connection,sessionId), frame=document && visit(tree,snapshot.strings[document.frameId]);
+  if(!frame)throw new BrowserSnapshotError('stale_element_reference','MP-11: fill document unavailable');
+  const frameDocument={frameId:frame.id};
+  const previous=await fieldState(connection,{sessionId},frameDocument,backendNodeId);
+  const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:frame.id,worldName:'chariox-fill-target'},sessionId);
+  const {object}=await connection.send('DOM.resolveNode',{backendNodeId,executionContextId},sessionId);
+  if(!object?.objectId)throw new BrowserSnapshotError('stale_element_reference','MP-11: fill target removed');
+  try {await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
+    functionDeclaration:`function(){ const fields=globalThis.__charioxFilledFields??=new WeakMap();const state={changed:false};fields.set(this,state);
+      this.addEventListener('input',event=>{if(event.isTrusted)state.changed=true;}); }`},sessionId);}
+  finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},sessionId).catch(()=>{});}
+  return {kind:'browser',target_id:targetId,document_id:documentId,node_ref:nodeRef,
+    frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
+    value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
 }
-
-// Pure: protected layout rectangles of one DOMSnapshot document, in device
-// pixels of that document's viewport. Protection is inherited by descendants
-// (display:contents, overflow, shadow content); markers, password/OTP/payment
-// fields, policy target nodes and Vault value echoes (DOM strings and rendered
-// layout text, which alone holds CSS-generated content) are protected. While
-// Vault values are registered, opaque media are protected too: a page can draw
-// a value into them and delete every DOM echo; so are containers whose visual
-// order may differ from DOM order (renderedTextEchoes). Frame and plugin owners are
-// returned for mapping or withholding (owner decision 2026-10-08: inspectable
-// frames, and media without Vault values, are not masked whole).
-export function documentProtection(snapshot, index, { values = [], targetNodes = new Set(), viewport } = {}) {
-  const document = snapshot.documents[index], strings = snapshot.strings ?? [];
-  const nodes = document.nodes ?? {}, layout = document.layout ?? {};
-  const count = nodes.nodeName?.length ?? 0;
-  const text = i => (typeof strings[i] === 'string' ? strings[i] : '');
-  const echoed = i => values.length > 0 && typeof strings[i] === 'string' && redactObservation(strings[i], values) !== strings[i];
-  const sparse = field => new Map((field?.index ?? []).map((node, i) => [node, field.value[i]]));
-  const inputValue = sparse(nodes.inputValue), textValue = sparse(nodes.textValue), contentDocument = sparse(nodes.contentDocumentIndex);
-  const parent = nodes.parentIndex ?? [];
-  const marked = new Uint8Array(count);
-  for (let i = 0; i < count; i++) {
-    const name = text(nodes.nodeName[i]).toLowerCase();
-    const attributes = nodes.attributes?.[i] ?? [];
-    let own = targetNodes.has(nodes.backendNodeId?.[i]) || echoed(nodes.nodeValue?.[i]) || echoed(inputValue.get(i)) || echoed(textValue.get(i));
-    for (let a = 0; !own && a + 1 < attributes.length; a += 2) {
-      const key = text(attributes[a]).toLowerCase(), value = text(attributes[a + 1]);
-      own = MARKERS.includes(key) || (key === 'autocomplete' && /password|one-time-code|cc-/i.test(value)) ||
-        (name === 'input' && key === 'type' && value.toLowerCase() === 'password') || echoed(attributes[a + 1]);
-    }
-    if (values.length && OPAQUE_MEDIA.has(name)) own = true;
-    const up = parent[i] ?? -1;
-    if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
-    marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
-  }
-  const regions = [], owners = [], overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow, viewport);
-  const scroll = [document.scrollOffsetX ?? 0, document.scrollOffsetY ?? 0];
-  if (!scroll.every(Number.isFinite)) throw new Error('MP-11: unknown document scroll');
-  regions.push(...overflow.regions.map(([x,y,w,h]) => [x-scroll[0],y-scroll[1],w,h]));
-  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
-    const i = layout.nodeIndex[k], bounds = layout.bounds?.[k];
-    if (overflow.unmeasured.has(k)) continue; // Covered by the local clipping ancestor.
-    if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) throw new Error('MP-11: unknown layout region');
-    const rect = [bounds[0] - scroll[0], bounds[1] - scroll[1], bounds[2], bounds[3]];
-    if (marked[i] || rendered.has(k)) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
-    const name = text(nodes.nodeName[i]).toLowerCase();
-    if (FRAME_OWNERS.has(name) || PLUGINS.has(name)) {
-      owners.push({ backendNodeId: nodes.backendNodeId[i], rect, contentDocument: contentDocument.get(i), ...(PLUGINS.has(name) ? { plugin: true } : {}) });
-    }
-  }
-  return { regions, owners };
-}
-
-async function frameTree(connection, sessionId) {
-  return (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
-}
-const treeIdentity = tree => JSON.stringify([tree?.frame?.id, tree?.frame?.loaderId, (tree?.childFrames ?? []).map(treeIdentity)]);
-
-// Isolated (out-of-process) frames of one page, attached for this measurement.
-// A frame that cannot be attached stays uninspected: its owner is protected.
-async function isolatedFrames(connection, top, frameIds) {
-  const { targetInfos = [] } = await connection.send('Target.getTargets');
-  const candidates = targetInfos.filter(target => target.type === 'iframe');
-  if (candidates.length > MAX_FRAMES) return { owned: [], detach: async () => {} };
-  const frames = [];
-  for (const target of candidates) {
-    try {
-      const { sessionId } = await connection.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
-      frames.push({ sessionId, attached: true });
-      const tree = await frameTree(connection, sessionId);
-      Object.assign(frames.at(-1), { tree, frame: tree.frame });
-    } catch {}
-  }
-  const owned = [];
-  for (let changed = true; changed;) {
-    changed = false;
-    for (const entry of frames) {
-      if (!entry.frame || owned.includes(entry) || !frameIds.has(entry.frame.parentId)) continue;
-      owned.push(entry); changed = true;
-      const visit = tree => { frameIds.add(tree.frame.id); (tree.childFrames ?? []).forEach(visit); };
-      visit(entry.tree);
-    }
-  }
-  return { owned, detach: () => Promise.all(frames.map(({ sessionId }) => connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}))) };
-}
-
-async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children, withheld) {
-  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: policy.values.length ? RENDER_ORDER_STYLES : [], includeTextColorOpacities: policy.values.length > 0 }, entry.sessionId);
-  const pending = [{ index: 0, origin, clip }];
-  const ownersBySession = new Map(children.map(child => [child.ownerBackendNodeId, child]));
-  while (pending.length) {
-    const doc = pending.shift();
-    if ((snapshot.documents?.length ?? 0) <= doc.index) throw new Error('MP-11: missing frame document');
-    const document = snapshot.documents[doc.index];
-    const viewport = [doc.clip[0] - doc.origin[0] + (document.scrollOffsetX ?? 0),
-      doc.clip[1] - doc.origin[1] + (document.scrollOffsetY ?? 0), doc.clip[2], doc.clip[3]];
-    const { regions: own, owners } = documentProtection(snapshot, doc.index, { values: policy.values, targetNodes, viewport });
-    const place = rect => { const placed = intersect([rect[0] + doc.origin[0], rect[1] + doc.origin[1], rect[2], rect[3]], doc.clip); if (placed) regions.push(placed); return placed; };
-    own.forEach(place);
-    for (const owner of owners) {
-      const isolated = ownersBySession.get(owner.backendNodeId);
-      let box = null;
-      try { box = await nodeBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
-      // Plugin/PDF content has no inspectable document.
-      const reason = owner.plugin ? 'plugin' : !box ? 'frame_failed' : !box.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
-      if (reason) { if (place(owner.rect)) withheld.push(reason); continue; }
-      const childOrigin = [origin[0] + box.content[0], origin[1] + box.content[1]];
-      const childClip = intersect([childOrigin[0], childOrigin[1], box.content[2], box.content[3]], doc.clip);
-      if (!childClip) continue; // Scrolled out of its parent: no pixels.
-      if (owner.contentDocument !== undefined) pending.push({ index: owner.contentDocument, origin: childOrigin, clip: childClip });
-      else Object.assign(isolated, { origin: childOrigin, clip: childClip, ownerRect: intersect([owner.rect[0] + doc.origin[0], owner.rect[1] + doc.origin[1], owner.rect[2], owner.rect[3]], doc.clip) });
-    }
-  }
-}
-
-// CDP's errors for a node without a layout box (hidden, detached).
-const NOT_RENDERED = /Could not compute box model|No node found for given backend id/;
-const SECRET_FIELDS = 'input[type=password i],[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],[autocomplete*=password i],[autocomplete*=one-time-code i],[autocomplete*=cc- i]';
-async function search(connection, sessionId, query) {
-  const { searchId, resultCount } = await connection.send('DOM.performSearch', { query }, sessionId);
+async function fieldState(connection,entry,document,backendNodeId) {
+  const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
+  const {object}=await connection.send('DOM.resolveNode',{backendNodeId,executionContextId},entry.sessionId);
+  if(!object?.objectId)return {exists:false};
   try {
-    if (!Number.isInteger(resultCount) || resultCount > MAX_REGIONS) throw new Error('MP-11: protection search bound');
-    return resultCount ? (await connection.send('DOM.getSearchResults', { searchId, fromIndex: 0, toIndex: resultCount }, sessionId)).nodeIds : [];
-  } finally { await connection.send('DOM.discardSearchResults', { searchId }, sessionId).catch(() => {}); }
+    const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
+      functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
+        return {exists:this.isConnected,editable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+          value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
+    if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
+    return result.value;
+  } finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
 }
 
-// Without Vault values or targets, one selector search (it pierces shadow
-// roots, closed ones included, and in-process frame documents) finds the
-// secret fields and frame owners, instead of a whole-page DOMSnapshot. A
-// marker protects its descendants, and a failed box lookup does not prove
-// absent layout, which this path cannot bound: false lets the caller measure
-// the session from a DOMSnapshot instead.
-async function searchedRegions(connection, entry, dpr, regions, children, withheld) {
-  const { sessionId, origin, clip } = entry;
-  await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
-  const describe = async nodeId => (await connection.send('DOM.describeNode', { nodeId }, sessionId)).node;
-  const secrets = await Promise.all((await search(connection, sessionId, SECRET_FIELDS)).map(describe));
-  if (secrets.some(node => node.localName !== 'input')) return false;
-  // In-process frame documents were searched; other owners need their box.
-  const owners = (await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe)))
-    .filter(node => !(FRAME_OWNERS.has(node.localName) && node.contentDocument));
-  let secretBoxes, ownerBoxes;
-  try {
-    [secretBoxes, ownerBoxes] = await Promise.all([secrets, owners].map(nodes => Promise.all(nodes.map(node => nodeBox(connection, sessionId, node.backendNodeId, dpr)))));
-  } catch { return false; }
-  const place = rect => { const placed = intersect([rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]], clip); if (placed) regions.push(placed); return placed; };
-  const isolated = new Map(children.map(child => [child.ownerBackendNodeId, child]));
-  secretBoxes.forEach(found => place(found.border));
-  for (const [i, node] of owners.entries()) {
-    const found = ownerBoxes[i], child = isolated.get(node.backendNodeId);
-    if (!child || !found.plain) { // Plugin, uninspected or transformed frame.
-      if (place(found.border)) withheld.push(PLUGINS.has(node.localName) ? 'plugin' : child ? 'transformed_frame' : 'uninspected_frame');
-      continue;
-    }
-    const childOrigin = [origin[0] + found.content[0], origin[1] + found.content[1]];
-    const childClip = intersect([childOrigin[0], childOrigin[1], found.content[2], found.content[3]], clip);
-    if (childClip) Object.assign(child, { origin: childOrigin, clip: childClip, ownerRect: intersect([origin[0] + found.border[0], origin[1] + found.border[1], found.border[2], found.border[3]], clip) });
-  }
-  return true;
-}
-
-function policyTargets(policy, targetId, prefix, documentId) {
-  const ids = new Set();
-  for (const target of policy.targets ?? []) {
-    if (target.target_id !== targetId || typeof target.node_ref !== 'string') continue;
-    const ref = prefix ? (target.node_ref.startsWith(prefix) ? target.node_ref.slice(prefix.length) : null)
-      : (target.node_ref.startsWith('frame:') || target.document_id !== documentId ? null : target.node_ref);
-    if (/^backend:[1-9][0-9]*$/.test(ref ?? '')) ids.add(Number(ref.slice(8)));
-  }
-  return ids;
-}
-
-// One visible page: device-pixel regions relative to its content viewport.
-// Returns null for a hidden page (no pixels) unless the caller renders hidden
-// pages itself (CDP screenshots: `hidden`). Throws when the top document
-// cannot be bound; an uninspectable child frame protects its owner box.
-export async function measurePageProtection(connection, sessionId, targetId, policy, { hidden = false } = {}) {
-  const top = await frameTree(connection, sessionId);
-  const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frame.id, worldName: 'chariox-protection-regions' }, sessionId);
-  const { result } = await connection.send('Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
-    expression: '[document.visibilityState, devicePixelRatio, innerWidth, innerHeight]' }, sessionId);
-  const [visibility, dpr, innerWidth, innerHeight] = result?.value ?? [];
-  if (visibility === 'hidden' && !hidden) return null;
-  if (!['visible', ...(hidden ? ['hidden'] : [])].includes(visibility) || !(dpr > 0) || !(innerWidth > 0) || !(innerHeight > 0)) throw new Error('MP-11: unbound page');
-  // DevTools, settings/password pages and extensions render page or browser
-  // data outside page markers: a visible one is never partially revealed.
-  if (top.frame.url !== 'about:blank' && !/^(https?:|file:|chrome-error:)/.test(top.frame.url)) throw new Error('MP-11: browser-internal page');
-  const { cssVisualViewport: visual } = await connection.send('Page.getLayoutMetrics', {}, sessionId);
-  if (visual?.scale !== 1 || !(visual?.zoom > 0)) throw new Error('MP-11: pinch-zoomed page'); // Visual offsets are not mapped.
-  const viewport = [0, 0, Math.round(innerWidth * dpr), Math.round(innerHeight * dpr)];
-  const regions = [], withheld = [];
-  const frameIds = new Set(); const visit = tree => { frameIds.add(tree.frame.id); (tree.childFrames ?? []).forEach(visit); }; visit(top);
-  const { owned = [], detach = async () => {} } = await isolatedFrames(connection, top, frameIds);
-  try {
-    const root = { sessionId, frame: top.frame, tree: top, origin: [0, 0], clip: viewport };
-    const entries = [root, ...owned];
-    const contains = (tree, id) => (tree.childFrames ?? []).some(child => child.frame.id === id || contains(child, id));
-    for (const entry of owned) {
-      entry.parent = entries.find(candidate => candidate.frame.id === entry.frame.parentId || contains(candidate.tree, entry.frame.parentId));
-      try { entry.ownerBackendNodeId = (await connection.send('DOM.getFrameOwner', { frameId: entry.frame.id }, entry.parent.sessionId)).backendNodeId; } catch {}
-    }
-    for (const entry of entries) {
-      if (entry !== root && !entry.origin) continue; // Owner protected, uninspected or scrolled away.
-      const children = owned.filter(child => child.parent === entry && Number.isInteger(child.ownerBackendNodeId));
-      const prefix = entry === root ? '' : `frame:${entry.frame.id}:${entry.frame.loaderId}:`;
-      try {
-        const targetNodes = policyTargets(policy, targetId, prefix, top.frame.loaderId);
-        const searched = !policy.values.length && !targetNodes.size && await searchedRegions(connection, entry, dpr, regions, children, withheld);
-        if (!searched) await sessionRegions(connection, entry, dpr, entry.origin, entry.clip, policy, targetNodes, regions, children, withheld);
-      } catch (error) {
-        if (entry === root || !entry.ownerRect) throw error;
-        regions.push(entry.ownerRect); withheld.push('frame_failed'); // MP-11: fail closed for this frame only.
-        for (const child of owned) if (child.parent === entry) child.origin = null;
+export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false}={}) {
+  const top=await frameTree(connection,sessionId);
+  const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:top.frame.id,worldName:'chariox-fill-viewport'},sessionId);
+  const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,
+    expression:'({dpr:devicePixelRatio,width:innerWidth,height:innerHeight,visible:document.visibilityState==="visible"})'},sessionId);
+  const metrics=result?.value;
+  if(!metrics||!(metrics.dpr>0)||!(metrics.width>0)||!(metrics.height>0))throw Error('MP-11: capture viewport unavailable');
+  if(!includeHidden&&!metrics.visible)return null;
+  const {cssVisualViewport:visual}=await connection.send('Page.getLayoutMetrics',{},sessionId);
+  const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
+  const dead=retired.get(connection)??new Set();retired.set(connection,dead);
+  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(JSON.stringify(t)));
+  if(!targets.length)return page;
+  await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
+    const seen=new Set(),origins=new Map([[frames[0],[0,0]]]);
+    for(const entry of frames) {
+      if(entry.parent) {
+        const owner=await connection.send('DOM.getFrameOwner',{frameId:entry.frame.id},entry.parent.sessionId);
+        const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.parent.sessionId);
+        const box=rect(model.content),up=origins.get(entry.parent);
+        origins.set(entry,[up[0]+box[0],up[1]+box[1]]);
+      }
+      const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
+      if(!candidates.length)continue;
+      const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
+      for(const target of candidates) {
+        const key=JSON.stringify(target),backendNodeId=targetNode(target,entry);
+        const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
+        if(!raw)continue;
+        const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
+        if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
+        seen.add(key);
+        const state=await fieldState(connection,entry,{frameId},backendNodeId);
+        if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
+        if(state.password)continue; // Rechecked even for a previously plain field.
+        const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
+        const [x,y,w,h]=rect(model.border),origin=origins.get(entry),s=metrics.dpr;
+        if(w<=0||h<=0)continue;
+        const left=Math.max(0,Math.floor((x+origin[0])*s)),upper=Math.max(0,Math.floor((y+origin[1])*s));
+        const right=Math.min(page.viewport[0],Math.ceil((x+origin[0]+w)*s)),bottom=Math.min(page.viewport[1],Math.ceil((y+origin[1]+h)*s));
+        if(right>left&&bottom>upper)page.regions.push([left,upper,right-left,bottom-upper]);
       }
     }
-    for (const entry of entries) {
-      if (entry !== root && !entry.origin) continue;
-      if (treeIdentity(await frameTree(connection, entry.sessionId)) !== treeIdentity(entry.tree)) throw new Error('MP-11: frame changed during protection');
-    }
-  } finally { await detach(); }
-  // withheld: why whole frames were masked (fixed labels, never page data).
-  // zoom: page zoom (CSS to DIP); devicePixelRatio is screen scale x zoom unless emulated.
-  const page = { url: top.frame.url, document_id: top.frame.loaderId, dpr, zoom: visual.zoom, viewport: viewport.slice(2) };
-  if (regions.length > MAX_REGIONS) return { ...page, regions: [viewport], withheld: ['region_bound'] };
-  return { ...page, regions: regions.map(outward), withheld };
+    for(const target of targets)if(!seen.has(JSON.stringify(target)))dead.add(JSON.stringify(target));
+    await assertBrowserFramesUnchanged(connection,frames);
+  });
+  return page;
 }
 
-// A private session per measurement: its DOM agent state (document node ids,
-// searches, isolated worlds) never invalidates the controller's page session.
+export async function measureBrowserProtection(browser,policy) {
+  if(policy?.unknown||!Array.isArray(policy?.targets))throw Error('MP-11: fill policy unavailable');
+  const connection=await browser.ensureConnection(),{targetInfos=[]}=await connection.send('Target.getTargets');
+  const pages=[];
+  for(const info of targetInfos.filter(t=>t.type==='page')) {
+    const {bounds,windowId}=await connection.send('Browser.getWindowForTarget',{targetId:info.targetId});
+    if(bounds?.windowState==='minimized')continue;
+    const {sessionId}=await connection.send('Target.attachToTarget',{targetId:info.targetId,flatten:true});
+    try {
+      const supplied=policy.targets.filter(t=>t.target_id===info.targetId);
+      const tracked=[...(browser.fillTargets?.values()??[])].filter(t=>t.target_id===info.targetId);
+      const targets=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
+      for(const target of tracked)if(!targets.includes(target))targets.push(target);
+      const measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets});
+      if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],chrome:false,...measured});
+    } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
+  }
+  return {pages};
+}
+
 async function withSession(connection, targetId, run) {
   const { sessionId } = await connection.send('Target.attachToTarget', { targetId, flatten: true });
-  try { return await run(sessionId); } finally { await connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
-}
-
-// Every visible page target, with its window (screen DIP) for desktop placement.
-export async function measureBrowserProtection(browser, policy) {
-  if (policy?.unknown || !Array.isArray(policy?.values) || !Array.isArray(policy?.targets)) throw new Error('MP-11: browser protection policy unknown');
-  const connection = await browser.ensureConnection();
-  const { targetInfos = [] } = await connection.send('Target.getTargets');
-  const pages = targetInfos.filter(target => target.type === 'page');
-  if (pages.length > MAX_PAGES) throw new Error('MP-11: browser page bound exceeded');
-  const result = [];
-  for (const page of pages) {
-    const { windowId, bounds } = await connection.send('Browser.getWindowForTarget', { targetId: page.targetId });
-    if (bounds?.windowState === 'minimized') continue;
-    const window = [bounds?.left, bounds?.top, bounds?.width, bounds?.height];
-    if (!window.every(Number.isFinite)) throw new Error('MP-11: unknown browser window');
-    // A visible page that cannot be bound fails the whole measurement closed.
-    const measured = await withSession(connection, page.targetId, sessionId => measurePageProtection(connection, sessionId, page.targetId, policy));
-    if (measured === null) continue;
-    // Screen DIP: the X11 client window must be this exact rectangle at one scale.
-    result.push({ target_id: page.targetId, window_id: windowId, window, chrome: Boolean(policy.values.length || policy.targets.length), ...measured });
-  }
-  return { pages: result };
+  try { return await run(sessionId); }
+  finally { await connection.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
 }
 
 export const protectionDigest = measurement => createHash('sha256').update(JSON.stringify(measurement)).digest('hex');

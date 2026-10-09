@@ -4,6 +4,7 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 class Node:
@@ -94,17 +95,19 @@ class TraversalTest(unittest.TestCase):
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
 
-    def test_vault_values_mask_only_native_text_that_shows_them(self):
-        """Vault (Miguel 2026-10-09): no window blackout, best effort per string."""
-        self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [Node('Writer', 'frame', [
-            Label('id: v-secret, ok'), Label('V-SECRET'), Label('ordinary'), Label('v-secret', readable=False), Label('xxxxxxxx', name='v-secret'), Label('see v-secret', name='see v-secret')])])])
-        processes = [{'pid': 200, 'started': '1'}]
-        tree = self.driver.snapshot(processes, values=['v-secret'])
-        self.assertTrue(tree['available'] and not tree['protected'])
-        # Text ranges (exact and upper case), the node of a value only its name shows
-        # (a label whose name is its text masks the range only); unreadable text is not checked.
-        self.assertEqual(sorted(tree['masks']), [[10, 20, 56, 14], [10, 20, 56, 14], [38, 20, 56, 14], [38, 20, 56, 14]])
-        self.assertEqual(self.driver.snapshot(processes)['masks'], [])
+    def test_mp11_capture_ignores_echoes_unknown_windows_and_password_dots(self):
+        self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [
+            Label('v-secret'), Node('Password', 'password text', secret=True)])])
+        with patch.object(self.driver._fills, 'regions', return_value=[]):
+            result = self.driver.capture_snapshot([{'pid': 200, 'started': '1'}], values=['v-secret'])
+        self.assertEqual(result['masks'], [])
+        self.assertTrue(result['available'] and result['complete'])
+
+    def test_mp11_capture_uses_only_live_plain_field_ledger(self):
+        with patch.object(self.driver._fills, 'regions', return_value=[[10, 20, 80, 30]]):
+            result = self.driver.capture_snapshot([], values=['value that also appears elsewhere'])
+        self.assertEqual(result['masks'], [[10, 20, 80, 30]])
+        self.assertEqual(result['nodes'], [])
 
     def snapshot(self, applications):
         self.desktop = Node('Desktop', 'desktop', applications)
@@ -125,7 +128,7 @@ class TraversalTest(unittest.TestCase):
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
         self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]})
 
-    def test_mp08_mp11_scaled_native_frame_maps_value_masks_to_x11_pixels(self):
+    def test_mp08_mp11_scaled_frame_geometry_does_not_turn_echoes_into_masks(self):
         self.foreground()
         text=Label('v-secret',name='Plain text')
         text.queryText=lambda:types.SimpleNamespace(characterCount=8,getText=lambda *args:'v-secret',
@@ -135,7 +138,8 @@ class TraversalTest(unittest.TestCase):
         tree=self.driver.snapshot([{'pid':200,'started':'1'}],values=['v-secret'])
         self.assertEqual(tree['uncovered'],[])
         self.assertEqual(tree['nodes'][-1]['bounds'],[10,20,56,14])
-        self.assertEqual(tree['masks'],[[109,129,114,30]])
+        self.assertEqual(tree['masks'],[])
+        self.assertEqual(self.driver.native_frame_scale([50,40,150,100],[100,80,300,200],[100,80,300,200]),2)
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[100,80,300,240],[100,80,300,240]))
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[150,120,450,300],[150,120,450,300]))
 

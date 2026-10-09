@@ -14,7 +14,9 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:1280,height:800,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
@@ -66,7 +68,7 @@ test('MP-11: resource service reads only Chromium-loaded resources, strips URL, 
  const connection={async send(method,params){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'frame'},resources:[{url:'https://fixture/image'},{url:'https://fixture/svg'}]}};if(method==='Page.getResourceContent'){reads++;return {base64Encoded:true,content:params.url.endsWith('/svg')?Buffer.from('<svg onload="alert(1)"/>').toString('base64'):png};}throw Error('unexpected');}};
  const descriptors=[{key:'r0',url:'https://fixture/image',kind:'image'},{key:'r1',url:'https://fixture/svg',kind:'image'},{key:'r2',url:'http://private-address/unloaded',kind:'image'}];
  const result=await materializeMirrorResources(connection,'s',descriptors,[]);assert.equal(reads,2);assert.equal(result.resources.size,1);assert.equal(result.mapped.get('r1'),null);assert.equal(result.mapped.get('r2'),null);assert(!JSON.stringify([...result.resources.values()]).includes('https://fixture'));
- await assert.rejects(materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value']),/protected/);
+ assert.equal((await materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value'])).resources.size,1,'MP-11 value registration does not hide media');
 });
 
 test('MP-11: resource cache is epoch bounded and oversized decoded images never reach the client',async()=>{
