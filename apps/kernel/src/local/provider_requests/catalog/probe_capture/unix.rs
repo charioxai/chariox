@@ -65,8 +65,10 @@ impl Process {
         let cleanup = pipe_owners::terminate(&self.pipe_fds());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let cleanup = Ok(());
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        // Pipe ownership pins escaped writers. Do not signal a numeric process
+        // group: an exited launcher may already have lost that group's ownership.
+        if self.child.id() <= 1 {
+            return Err(io::Error::other("refusing to signal a protected process"));
         }
         let _ = self.child.kill();
         let reaped = self.child.wait().map(|_| ());

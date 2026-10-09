@@ -64,7 +64,7 @@ pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
             .iter()
             .take((count as usize).min(pids.len()))
             .copied()
-            .filter(|pid| *pid > 0 && *pid != own_pid)
+            .filter(|pid| *pid > 1 && *pid != own_pid)
         {
             let bytes = unsafe {
                 libc::proc_pidinfo(

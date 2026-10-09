@@ -17,7 +17,9 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+mod opencode_model_cache;
 mod probe_capture;
+pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
