@@ -13,6 +13,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
 } from "./launch-environment.js"
@@ -196,6 +197,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -223,7 +225,14 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
         options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -312,7 +321,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
 function printNativeCodexUsage() {
   process.stdout.write([
     "usage: chariox codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
-    "       chariox codex [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "       chariox codex [session-ref] --relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
     "  --machine, --kernel-ref REF       Run the Chariox agent/provider on a remote worker kernel",

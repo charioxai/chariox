@@ -15,6 +15,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
   reserveLocalPort as reservePort,
@@ -224,6 +225,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
 
   for (let index = 0; index < args.length; index += 1) {
@@ -255,7 +257,14 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
         options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -355,7 +364,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 function printNativeOpenCodeUsage() {
   process.stdout.write([
     "usage: chariox opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--model MODEL] [--mode build|plan] [--permissions required|yolo]",
-    "       chariox opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "       chariox opencode [session-ref] --relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
     "  --machine, --kernel-ref REF       Run the Chariox agent/provider on a remote worker kernel",
