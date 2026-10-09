@@ -59,9 +59,11 @@ export class DesktopDisplay {
     if(command.push?.reset)stream.invalidate();
     await stream.producer.waitReady(command.push?100:20,signal);
     if(!valid())throw new UserDomainRefusal('not_granted');
-    const sample=stream.producer.take()??this.refine(stream,source,policy,lifetimeValid);
+    const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
-    const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>valid(),valid);
+    // A newer published sample abandons a link-paced repair batch (motion first).
+    const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
+    const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>current(),current);
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
   }
   // MP-08/MP-10: a quiet lossy desktop settles to exact repair tiles of the
@@ -69,7 +71,9 @@ export class DesktopDisplay {
   refine(stream,source,policy,valid) {
     const sample=source.sample();
     if(!sample?.raw?.nativeExact||!stream.previous||(stream.exact&&!stream.repair))return null;
-    stream.refiner??=new NativeRefiner(binding=>binding.sample,{timing:this.host.timing});
+    // Interactive use stays video: a repair batch occupies a constrained link
+    // (~375 KB at 8 Mbit/s), so refine only after 1 s without a new sample.
+    stream.refiner??=new NativeRefiner(binding=>binding.sample,{quietNativeMs:1000,timing:this.host.timing});
     const binding={source,document:stream.desktop_generation,policy,epoch:0,serial:sample.serial,native:true,sample,
       repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
     const exact=stream.refiner.request(binding,source.changedAt??-Infinity,()=>valid()&&source.sample()===sample);

@@ -143,3 +143,14 @@ test('MP-08/MP-11 each step publishes the newest frame captured before it began;
     assert.equal(f.published.length,2,'a changed measurement verifies nothing');
   }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
 });
+test('MP-08/MP-11 a withheld kernel-browser window keeps the gate re-measuring on a still desktop',async()=>{
+  const f=fixture(),{steps}=gated(f);
+  f.source.withheld=true;
+  const loop=f.source.verify();
+  try{
+    await until(()=>steps.length===1,1000);steps[0].finish(1,false);
+    await until(()=>steps.length===2,1000);
+    f.source.withheld=false;steps[1].finish(1,false);
+    await delay(400);assert.equal(steps.length,2,'a bound desktop with nothing pending does not measure');
+  }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
+});

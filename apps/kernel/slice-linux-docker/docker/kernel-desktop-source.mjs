@@ -120,6 +120,8 @@ export class DesktopSource {
     const next=await Promise.race([this.answers.next(),new Promise(resolve=>{timer=setTimeout(resolve,5000,{done:true});})]).finally(()=>clearTimeout(timer));
     if(next.done)throw Error('MP-11: desktop protection unavailable');
     const {digest,masks,state}=JSON.parse(next.value);
+    // A measured kernel-browser window the transform could not bind (state[3]).
+    this.withheld=Array.isArray(state)&&state[3]>0;
     if(typeof digest!=='string'||masks!==null&&!validMasks(masks,this.binding.width,this.binding.height))throw Error('MP-11: desktop protection reply');
     // Wall-clock ms like the worker's captured_ms; receipt follows completion.
     const snapshot={scope,digest,masks,start,end:Date.now()+1},now=Date.now();
@@ -201,7 +203,9 @@ export class DesktopSource {
       // Measuring holds the renderer's main thread (DOMSnapshot): only measure
       // to adopt protection or to verify a captured frame, never while idle.
       // A step starts when a readback arrives, alongside its AT-SPI binding.
-      if(!this.pending.length&&!this.next&&!this.inflight&&this.gate.protectionSerial!==0){await delay(4);continue;}
+      // A withheld kernel-browser window may come from a stale measurement on a
+      // still desktop (no readbacks): re-measure calmly until it binds.
+      if(!this.pending.length&&!this.next&&!this.inflight&&!this.withheld&&this.gate.protectionSerial!==0){await delay(4);continue;}
       this.stepStarted=Date.now();
       const {started,verified,changed}=await this.gate.step();
       this.stepStarted=null;this.verifiedStep=verified===null?null:{started,serial:verified};
@@ -209,7 +213,7 @@ export class DesktopSource {
       this.timing(this.latest!==published?'desktop_gate_verified':'desktop_gate_step',started);
       if(changed)await this.wake();
       // Unadopted (no browser, DevTools open, unbindable page): retry calmly.
-      await delay(this.gate.protectionSerial?4:50);
+      await delay(!this.gate.protectionSerial?50:this.withheld&&!this.pending.length&&!this.next?250:4);
     }
   }
   async wake() {
