@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const exec = promisify(execFile);
 const source = fileURLToPath(new URL("../apps/kernel/src/runtime/kernel_browser_assets.rs", import.meta.url));
@@ -23,7 +23,7 @@ test("MP-08/MP-10/MP-11 embedded host imports all controller dependencies outsid
     // Import the real host from only its embedded files. This catches omitted
     // transitive modules before Chrome starts, without launching a fixture browser.
     await exec(process.execPath, ["--input-type=module", "-e", "await import(process.argv[1])",
-      pathToFileURL(path.join(directory, "kernel-browser-host.mjs")).href], { cwd: directory });
+      path.join(directory, "kernel-browser-host.mjs")], { cwd: directory });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
