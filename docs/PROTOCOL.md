@@ -1,5 +1,37 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+Client grants retain the existing 30-minute lifetime, including keyed issuance
+and renewal. Initial `/relay cloud client-token` commands issued by a local
+account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
+The shared client authenticates that local endpoint from the same private CLI
+profile, checks the issuing kernel ID and renewal capability, and renews the
+admitted subject, key, session and target through that kernel. Runtime requests
+and events still travel directly to the target over the encrypted relay lanes.
+A machine-only managed target must never replace the account issuer.
+
+If the original issuer is unavailable, the client displays a notice and retries
+within the existing grant lifetime without changing authority or dropping the
+admission. Recovery resumes renewal; reaching the original expiry ends the
+session with an issuer-unavailable message. Authorization refusal still ends
+admission promptly. The issuer route is public endpoint/ID metadata, not a
+credential, and accepts only local Unix or loopback WebSocket endpoints. Moving
+the launch command to another machine does not transfer the issuing profile or
+make its local endpoint reachable. Legacy launch commands without issuer metadata
+cannot automatically discover an account issuer from a machine-only target;
+they retain their original lifetime with the existing warning/until-expiry path.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,
@@ -2716,9 +2748,10 @@ Workflow trigger and deployment direction:
   automatic mutation replay. Numeric versions never replace capability checks.
   This describes the pre-KA framed Unix transport. KA protocol 404 replaces
   that listener with the shared kernel websocket at `ws+unix://`, admitted by
-  OS process identity and session grants. First-party terminal control uses
-  the authenticated TCP or relay websocket path; an external Unix grant does
-  not authorize global disposable-worker or managed-environment controls.
+  OS process identity and access grants. Protocol 451 grants ordinary authority
+  throughout the local kernel, including its managed execution environments.
+  First-party terminal control uses the authenticated TCP or relay websocket
+  path; external Unix grants cannot attach to another kernel.
 - protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),
@@ -2781,32 +2814,55 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, session, and lifetime.
+  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
+  and extension decisions, established from the same OS-verified holder:
+  `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
+  Linux start ticks or macOS unique process ID), `process_exec_version` (macOS
+  exec version, zero on Linux), and optional `provider_harness` (`codex`,
+  `claude`, or `opencode`). Harness recognition matches the configured native
+  executable (including Codex's official npm native package); unknown paths
+  omit it. This field is attribution, not vendor/signature attestation or new
+  authority. Text remains display-only, with quoted/escaped executable paths;
+  clients must never parse requester identity from it. TUI labels use the
+  structured object and show identity unavailable for old kernels. New access
+  requests and kernel-wide approval replies require protocol 470; refusals
+  remain supported on protocol 451 and legacy session-scoped replies retain
+  their existing route. Other client/relay/native minimums are unchanged.
+  MP-08 / MP-10 / MP-11 focused drill:
+  `python3 apps/cli/scripts/live-kernel-access-requester-drill.py --kernel <built-kernel> --cli <compiled-cli> --codex-profile <approved-product-linked-profile> --source <commit> --output <external-evidence-dir>`.
+  This real outside-Codex drill refuses the grant through TUI keyboard input,
+  never approving access or changing a shared provider login. `--local-cli`
+  is supplementary regression evidence only, not provider acceptance.
+  Approve needs a fresh
   terminal passkey; the critical-approval remember window never applies.
   The owner may choose a lifetime through the approve answer's numeric
   `custom_reply`. Refuse needs no passkey.
 
   `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
-  a credential. A grant authorizes the live holder and its OS descendants
-  for one session. Kernel-launched processes receive no external authority,
-  even if the holder is an ancestor of the kernel. Session IDs, references,
-  attachments, and every session in a batch are checked. `ListSessions`
-  returns only the granted session. Global requests fail closed. Saved workflow
-  artifacts live in kernel/user registries, so direct artifact creation, lookup,
-  enumeration, mutation, import, and artifact-target export are outside external
-  session grants even when their envelopes include a session ID. Session-local source
-  Apply/Run and exports targeting a workflow remain available. The scope
-  match covers every request variant without a fallback, so an undecided new
-  request fails compilation. A grant cannot answer kernel-owned decisions
-  or critical approvals, or submit a passkey.
+  a credential. Protocol 451 removes `session_id` from this metadata. A grant
+  authorizes the live holder and its OS descendants across the whole LOCAL
+  kernel: every ordinary session/global request a terminal can make, including
+  session creation/attachment, agent prompts/spawns, workflows, App installs and
+  bindings, routine approvals and Vault use through kernel-owned flows.
+  Kernel-launched agents receive no external authority even if the holder is
+  their ancestor. Normal ownership and membership checks still apply.
+  The holder cannot answer critical/passkey-required approvals or payments,
+  mint/extend grants, change the passkey/access configuration, read/export
+  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
+  leased-worker execution remains the local kernel’s responsibility.
+  A holder may request `/sudo` for a local agent in any local session; each
+  request requires a fresh terminal popup confirmation. No remember window
+  applies and the holder never submits the passkey or becomes a sudoagent.
 
   `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
-  terminal-only and scoped to the caller's owned grants; a null grant id
-  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  available to terminals and local grant holders and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
   Workflow controls also recheck after provider-lane and cancellation-settlement
@@ -2823,12 +2879,9 @@ Workflow trigger and deployment direction:
   or home binding persistence. Local controller jobs recheck under the supervisor
   ownership lock; computer helpers recheck inside their blocking process queue.
   A Unix connection binds to its first approved or admitted grant and never
-  switches authority. Session references resolve once to an authorized session
-  ID before dispatch. A later approval on that socket creates a grant for
-  use on a fresh connection; existing subscriptions and queued frames keep
-  their original grant. Fresh connections select an eligible grant matching
-  the requested session. For unscoped requests, a holder's own grant takes
-  precedence over inherited grants.
+  switches authority. Fresh connections prefer the holder’s own eligible
+  process grant over an ancestor’s. There is no session-based selection or
+  response filtering. Session end does not revoke a local-kernel grant.
   Grants stay in memory and do not survive a restart. Durable grant events
   record metadata and outcomes; terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
@@ -2836,10 +2889,14 @@ Workflow trigger and deployment direction:
   TCP and relay access requests return a pointer to the Unix socket; neither
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
-  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  `ws+unix:///absolute/socket`. `chariox access request
   [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
-  the popup and prints public grant metadata. The default holder is the
-  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
+  holder is the nearest installed official provider in the CLI launcher's
+  OS-verified ancestry, including native Codex behind its npm launcher. Unknown
+  programs retain the grandparent fallback and the External program label.
+  Selection preserves exact PID/start/exec identity and grant admission fences.
+  Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
@@ -2876,8 +2933,8 @@ Workflow trigger and deployment direction:
   Terminal authority follows the admitted `terminal` connection class, rather
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
-  access; approved external peers keep the process-bound, session-scoped grant
-  path from protocol 404 and cannot answer critical approvals. Relay identities,
+  access; approved external peers keep the process-bound, whole-local-kernel grant
+  path from protocol 404 and cannot answer approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
   also work with older log-mode kernels, and this change adds no request or event
@@ -2904,7 +2961,7 @@ Workflow trigger and deployment direction:
   No spawned/forked agent inherits elevation.
 - protocol 415: a live external grant holder may send
   `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
-  resolves the exact target to the granted session and raises the same `sudo`
+  resolves the exact local target agent and its session and raises the same `sudo`
   popup, naming the OS-established executable/PID, target/session and full
   requester-supplied prompt. Only host terminals answer it. The outcome is
   `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.

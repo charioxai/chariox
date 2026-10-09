@@ -1,6 +1,7 @@
 use super::*;
 
 mod agent_lifetime;
+mod kernel_wide;
 mod maintenance;
 mod registration;
 #[cfg(test)]
@@ -39,23 +40,34 @@ impl KernelRuntimeOwnedState {
         choice_id: &str,
         caller_user_id: Option<&str>,
     ) -> Option<(String, String)> {
-        let owner = self
+        let pending = self
             .pending_interactions
             .write()
             .get(interaction_id)
-            .filter(|pending| pending.session_id == session_id)
+            .filter(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            })
             .filter(|pending| {
                 pending
                     .kernel_operation_deadline
                     .is_none_or(|deadline| std::time::Instant::now() < deadline)
             })
-            .and_then(|pending| pending.kernel_operation_owner.clone())
+            .cloned()?;
+        let owner = pending
+            .kernel_operation_owner
+            .clone()
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
-        let session = self.session_store.get_session(session_id).ok()?;
-        let interaction = session
-            .active_interactions()
-            .iter()
-            .find(|interaction| interaction.id() == interaction_id)?;
+        let interaction = if let Some(interaction) = pending.kernel_wide_interaction {
+            interaction
+        } else {
+            self.session_store
+                .get_session(session_id)
+                .ok()?
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.id() == interaction_id)?
+                .clone()
+        };
         interaction
             .choice(choice_id)
             .filter(|choice| choice.requires_passkey())?;
@@ -216,8 +228,15 @@ impl KernelRuntimeOwnedState {
         }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
-        let mut session = sessions.get_session(session_id)?.clone();
-        if !self.agent_interaction_turn_is_live(&pending, &session) {
+        let mut session = if pending.kernel_wide_interaction.is_some() {
+            None
+        } else {
+            Some(sessions.get_session(session_id)?.clone())
+        };
+        if session
+            .as_ref()
+            .is_some_and(|session| !self.agent_interaction_turn_is_live(&pending, session))
+        {
             drop(sessions);
             drop(activity_mutation);
             self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
@@ -225,15 +244,18 @@ impl KernelRuntimeOwnedState {
                 "Agent interaction was withdrawn because its turn ended",
             ));
         }
-        let interaction = session
-            .active_interactions()
-            .iter()
-            .find(|interaction| interaction.id() == interaction_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: format!("interaction {interaction_id} is not active in session"),
-            })?;
+        let interaction = pending
+            .kernel_wide_interaction
+            .clone()
+            .or_else(|| {
+                session
+                    .as_ref()?
+                    .active_interactions()
+                    .iter()
+                    .find(|interaction| interaction.id() == interaction_id)
+                    .cloned()
+            })
+            .ok_or_else(|| interaction_error("interaction is not active"))?;
         if !passkey_verified
             && interaction
                 .choice(choice_id)
@@ -377,13 +399,17 @@ impl KernelRuntimeOwnedState {
             self.passkey_prompts
                 .record_answered(session_id, interaction_id);
         }
-        let _ = session.remove_active_interaction(interaction_id);
-        sessions.restore_session(session);
+        if let Some(mut session) = session.take() {
+            session.remove_active_interaction(interaction_id);
+            sessions.restore_session(session);
+        }
         activity_mutation.record();
         drop(sessions);
-        self.session_snapshot(session_id)?;
-        self.terminal_stream
-            .notify_terminal_projection_change(session_id);
+        if pending.kernel_wide_interaction.is_none() {
+            self.session_snapshot(session_id)?;
+            self.terminal_stream
+                .notify_terminal_projection_change(session_id);
+        }
         if let Some(sender) = pending
             .responder
             .lock()
@@ -459,6 +485,17 @@ impl KernelRuntimeOwnedState {
         self.pending_interactions.write().remove(interaction_id);
         if pending.passkey_prompt.is_some() {
             self.passkey_prompts.record_change();
+        }
+        if let Some(interaction) = pending.kernel_wide_interaction.as_ref() {
+            if let Some(sender) = pending
+                .responder
+                .lock()
+                .expect("interaction responder")
+                .take()
+            {
+                let _ = sender.send(timeout_runtime_interaction_resolution(interaction));
+            }
+            return Ok(());
         }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();

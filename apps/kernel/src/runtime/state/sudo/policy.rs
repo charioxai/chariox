@@ -213,6 +213,11 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
+            | LocalDaemonRequest::ListCredentials(_)
+            // Sudo must not serialize literal MCP env/header credentials either.
+            | LocalDaemonRequest::GetMcpServer(_)
+            | LocalDaemonRequest::ListMcpServers(_)
+            | LocalDaemonRequest::ImportMcpServers(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::EndSession(_)
@@ -290,6 +295,10 @@ pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
     sudo_arguments(prompt).is_some() && !is_sudo_control(prompt)
 }
 
+pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
+    sudo_arguments(prompt).map(str::trim)
+}
+
 fn sudo_config_forbidden(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
     ["kernel_access", "credential_vault", "relay"]
@@ -303,10 +312,35 @@ pub(super) fn requester_grant_live(
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
         access.grants.get(&requester.grant_id).is_some_and(|grant| {
-            grant.summary.session_id == turn.session_id
-                && grant.summary.owner_user_id == turn.owner_user_id
+            grant.summary.owner_user_id == turn.owner_user_id
                 && std::time::Instant::now() < grant.deadline
                 && grant.holder.alive()
         })
     })
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_refuses_raw_registry_credentials_and_provider_imports() {
+        for request in [
+            LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
+            LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
+                workspace_id: None,
+                name: "literal-secret".into(),
+            }),
+            LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
+                workspace_id: None,
+                provider: "codex".into(),
+                name: None,
+            }),
+        ] {
+            assert!(sudo_request_forbidden(&request));
+        }
+    }
 }
