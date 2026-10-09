@@ -59,7 +59,7 @@ test('rendered layout text is checked for Vault values, joined per element in vi
     ['P', 0], ['#text', 5, [], 'vault-'], ['#text', 5, [], 'value'], ['LI', 0], ['::marker', 8, [], 'vau'], ['::after', 8, [], 'value'], ['#text', 8, [], 'lt-']],
   { rendered: [[2, 'val'], [2, 'ue']] });
   assert.deepEqual(documentProtection(doc, 0).regions, []);
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, [...at(2), [0, 20, 10, 10], [10, 20, 10, 10], ...at(6, 7, 9, 10, 11)]);
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, [...at(2, 6, 7, 9, 10, 11), [0, 20, 10, 10], [10, 20, 10, 10]]);
   // Rendered text that cannot be read fails closed while values are registered.
   delete doc.documents[0].layout.text;
   assert.deepEqual(documentProtection(doc, 0).regions, []);
