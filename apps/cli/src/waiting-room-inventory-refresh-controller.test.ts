@@ -592,6 +592,15 @@ test("a brief directory omission retains machine and kernel rows", async () => {
   assert.deepEqual(harness.remoteKernels().map(kernel => kernel.kernel_id), ["remote-kernel"])
 })
 
+test("cached rows stay visible before the disconnected transport receives its first report", async () => {
+  const cached = inventory("cached", { remoteMachines: [{ machine_id: "cached-machine", display_name: "Cached", online: true, kernel_count: 1 }], remoteKernels: [kernel("cached-kernel")] })
+  const harness = createHarness({ connected: false, cachedInventories: [cached] })
+  await harness.controller.refreshNow()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "cached-machine")
+  assert.equal(harness.remoteKernels()[0]?.kernel_id, "cached-kernel")
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "cached/refreshing")
+})
+
 function createHarness(options: {
   connected?: boolean
   hiddenKernelIds?: Set<string>

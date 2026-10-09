@@ -10,15 +10,18 @@ export function createWaitingRoomRetainedRows<T>(key: (row: T) => string, nowMs:
       for (const row of cached) rows.set(key(row), { row, cached: true })
       return cached.map(row => ({ ...row, displayFreshness: "cached/refreshing" }))
     },
-    reconcile(live: readonly T[]): Array<T & { displayFreshness?: WaitingRoomRowFreshness }> {
+    reconcile(live: readonly T[], { authoritative = true }: { authoritative?: boolean } = {}): Array<T & { displayFreshness?: WaitingRoomRowFreshness }> {
       const liveIds = new Set(live.map(key))
       for (const [id, item] of rows) {
         if (liveIds.has(id)) continue
+        if (item.cached && !authoritative) continue
         item.missingSinceMs ??= nowMs()
         if (item.cached || nowMs() - item.missingSinceMs >= reconnectGraceMs) rows.delete(id)
       }
       for (const row of live) rows.set(key(row), { row, cached: false })
-      return [...rows.values()].map(item => item.missingSinceMs === undefined
+      return [...rows.values()].map(item => item.cached
+        ? { ...item.row, displayFreshness: "cached/refreshing" }
+        : item.missingSinceMs === undefined
         ? item.row : { ...item.row, displayFreshness: "reconnecting" })
     },
   }

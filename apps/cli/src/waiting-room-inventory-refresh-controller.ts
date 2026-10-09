@@ -128,8 +128,8 @@ export function createWaitingRoomInventoryRefreshController(
 
   const refreshNow = async () => {
     if (!options.isKernelConnected()) {
-      options.setRemoteMachines(retainedMachines.reconcile([]).map(row => ({ ...row, online: false })))
-      options.setRemoteKernels(retainedKernels.reconcile([]).map(row => ({ ...row, accepting_remote_leases: false })))
+      options.setRemoteMachines(retainedMachines.reconcile([], { authoritative: false }).map(row => ({ ...row, online: false })))
+      options.setRemoteKernels(retainedKernels.reconcile([], { authoritative: false }).map(row => ({ ...row, accepting_remote_leases: false })))
       return
     }
     if (options.getInventoryStatus() !== "ready") {
