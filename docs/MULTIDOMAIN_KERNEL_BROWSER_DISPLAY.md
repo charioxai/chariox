@@ -1,8 +1,9 @@
 # MD-DISPLAY-02/04: kernel browser display implementation and history
 
-MD-DISPLAY-02/04: the current kernel speaks local protocol 474 and relay peer
-protocol 96. The presenter requires local protocol 466 with CXD1 binary display
-events (474 for desktop display); relay peer 96 additionally enables binary relay
+MD-DISPLAY-02/04: the current kernel speaks local protocol 475 (pushed display)
+and relay peer protocol 96. The presenter requires local protocol 466 with CXD1
+binary display events (474 for desktop display, 475 for push); relay peer 96
+additionally enables binary relay
 frames (`chariox-relay-binary-v96`). Dependent video requires the explicit
 `chariox-video-dependencies-v1` codec capability; legacy offers retain
 independent frames.

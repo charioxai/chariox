@@ -3188,11 +3188,25 @@ on-demand protected observations and cannot subscribe to continuous video.
 
 The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
 credit window and encrypted CXD1 relay transport. It has no separate streaming
-service. Before hashing, damage comparison or export, readback is masked against
-both pre- and post-capture native accessibility snapshots. Unknown ownership,
-opaque browser windows, incomplete trees, changed trees and registered private
-state fail closed. Protection changes retire capture and encoder state before
-acknowledgement. This does not assert that the live protection matrix has passed.
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
 
 Multiple admitted viewers share one protected capture source. Each lease remains
 bound to its authenticated terminal, native generation and controller generation;
