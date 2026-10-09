@@ -59,6 +59,12 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
     for agent in &agents[1..] {
         tokens.push(launch(&mut app, agent));
     }
+    // MP-11: retire the launch helper's synthetic owner turn before each test
+    // submits the human or automation prompt whose causation it exercises.
+    for agent in &agents {
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .unwrap();
+    }
     let agents = agents.into_iter().zip(tokens).collect();
     Setup {
         app,
@@ -1202,7 +1208,7 @@ fn capability_review_r2_browser_decision_withdraws_on_same_prompt_replacement() 
                         })
                         .await
                         .unwrap();
-                        let mut app = room.router.app.lock().await;
+                        let app = room.router.app.lock().await;
                         if delivery_only {
                             let session = app.sessions().get_session(&room.session).unwrap();
                             let prompts = app.prompt_state_owner();
@@ -1229,14 +1235,18 @@ fn capability_review_r2_browser_decision_withdraws_on_same_prompt_replacement() 
                             app.providers_mut()
                                 .mark_run_ended_provider_only(&room.session, run.id())
                                 .unwrap();
-                            launch_test_provider(
-                                &mut app,
-                                &room.session,
-                                agent.id(),
-                                "dev-stub",
-                                "dev-stub",
-                                "native-tui-idle",
-                            );
+                            app.providers_mut()
+                                .launch_run_detached(
+                                    LaunchProviderRequest::new(
+                                        &room.session,
+                                        "dev-stub",
+                                        "dev-stub",
+                                        "default",
+                                        "native-tui-idle",
+                                    )
+                                    .with_agent_id(agent.id()),
+                                )
+                                .unwrap();
                         }
                     }
                 );
