@@ -126,7 +126,6 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     pulseaudio \
     python3 \
     python3-gi \
-    python3-pyatspi \
     python3-venv \
     python3-pil \
     python3-pyatspi \
