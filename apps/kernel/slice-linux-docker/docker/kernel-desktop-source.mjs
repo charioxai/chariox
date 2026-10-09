@@ -193,7 +193,7 @@ export class DesktopSource {
   publish(sample) {
     if(this.closed){sample.raw.release?.();return;}
     this.latest?.raw.release?.();
-    this.latest=sample;
+    this.latest=sample;this.changedAt=performance.now();
     for(const listener of this.listeners)listener(sample);
   }
   async verify() {

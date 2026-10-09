@@ -1,7 +1,8 @@
 // MP-08 / MP-10 / MP-11: desktop viewer leases use shared codecs and frame transport.
 import { randomUUID } from 'node:crypto';
 import { DesktopSource, nativeDesktopWorker } from './kernel-desktop-source.mjs';
-import { DisplayStream } from './kernel-browser-display.mjs';
+import { DisplayStream, exactPatchLimit } from './kernel-browser-display.mjs';
+import { NativeRefiner } from './kernel-browser-refiner.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 export class DesktopDisplay {
@@ -58,9 +59,21 @@ export class DesktopDisplay {
     if(command.push?.reset)stream.invalidate();
     await stream.producer.waitReady(command.push?100:20,signal);
     if(!valid())throw new UserDomainRefusal('not_granted');
-    const sample=stream.producer.take();if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
+    const sample=stream.producer.take()??this.refine(stream,source,policy,lifetimeValid);
+    if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     const frame=await stream.frame({...sample,generation:this.host.generation},binding.generation,command.after_sequence,async()=>valid(),valid);
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
+  }
+  // MP-08/MP-10: a quiet lossy desktop settles to exact repair tiles of the
+  // same published (already protected) sample; motion frames stay video.
+  refine(stream,source,policy,valid) {
+    const sample=source.sample();
+    if(!sample?.raw?.nativeExact||!stream.previous||(stream.exact&&!stream.repair))return null;
+    stream.refiner??=new NativeRefiner(binding=>binding.sample,{timing:this.host.timing});
+    const binding={source,document:stream.desktop_generation,policy,epoch:0,serial:sample.serial,native:true,sample,
+      repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
+    const exact=stream.refiner.request(binding,source.changedAt??-Infinity,()=>valid()&&source.sample()===sample);
+    return exact&&{...exact,generation:this.host.generation};
   }
   async remove(stream) {
     this.host.displays.delete(stream.subscription_id);await stream.close();
