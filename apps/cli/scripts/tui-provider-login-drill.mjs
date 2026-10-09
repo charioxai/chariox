@@ -8,6 +8,8 @@
 // bun apps/cli/scripts/tui-provider-login-drill.mjs --cli apps/cli/dist/index.js \
 //   --kernel-binary <chariox-kernel> --tools <dir with playwright + @xterm/xterm> \
 //   --output <evidence dir> --dpr 1|2 --profile xterm|terminal-app [--fixture-claude yes] [--expect-red yes]
+// Dry run on an existing kernel (never sends a code; cancels at the code prompt):
+//   --kernel-url <ws url> --chariox-home <its home> --account <claude profile label> --session-args '<TUI provider args>'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -81,27 +83,38 @@ if (args[0] === 'setup-token') {
   env.CHARIOX_CLAUDE_BIN = bin
 }
 
-const label = `drill-${profile}-${process.pid}`
+const attach = Boolean(options['kernel-url'])
+const label = attach ? options.account : `drill-${profile}-${process.pid}`
+const sessionAlias = attach ? `loginux-dry-${process.pid}` : label
 const steps = []
 const record = (name, ok, detail = {}) => { steps.push({ name, ok, ...detail }); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`) }
 let kernel, tui, browser, frontend, output = ''
 const sockets = new Set()
 let result
 try {
-  const kernelPort = freePort(), mcpPort = freePort()
-  const kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
-  kernel = Bun.spawn([path.resolve(options['kernel-binary'])], {
-    env: { ...env, CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_DAEMON_SOCKET: path.join(scratch, 'k.sock') },
-    stdout: 'ignore', stderr: 'ignore' })
-  process.env.CHARIOX_HOME = state
+  let kernelUrl = options['kernel-url']
+  if (attach) {
+    // The client finds the existing kernel's authorization in its home.
+    env.CHARIOX_HOME = path.resolve(options['chariox-home'])
+  } else {
+    const kernelPort = freePort(), mcpPort = freePort()
+    kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
+    kernel = Bun.spawn([path.resolve(options['kernel-binary'])], {
+      env: { ...env, CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(mcpPort), CHARIOX_DAEMON_SOCKET: path.join(scratch, 'k.sock') },
+      stdout: 'ignore', stderr: 'ignore' })
+  }
+  process.env.CHARIOX_HOME = env.CHARIOX_HOME
   const { LocalIpcClient } = await import(path.join(path.dirname(cli), 'ipc.js'))
   const rpc = new LocalIpcClient(kernelUrl, {})
   await waitFor(async () => {
-    if (kernel.exitCode !== null) throw Error(`kernel exited ${kernel.exitCode}`)
+    if (kernel && kernel.exitCode !== null) throw Error(`kernel exited ${kernel.exitCode}`)
     try { return Object.keys(await rpc.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
   }, 60_000, 'kernel')
-  const created = await rpc.send({ CreateProviderAccountProfile: { provider: 'claude', label } })
-  const profileId = created.ProviderAccountProfile.profile.profile_id
+  const profileId = attach
+    ? JSON.stringify(await rpc.send({ ListProviderAccountProfiles: { provider: 'claude' } }))
+      .match(new RegExp(`"profile_id":"([^"]+)"[^{}]*"label":"${label}"`))?.[1]
+    : (await rpc.send({ CreateProviderAccountProfile: { provider: 'claude', label } })).ProviderAccountProfile.profile.profile_id
+  assert.ok(profileId, `Claude profile ${label}`)
 
   frontend = Bun.serve({ hostname: '127.0.0.1', port: 0,
     fetch(request, server) {
@@ -128,7 +141,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
 
-  tui = Bun.spawn(['bun', cli, '--kernel-url', kernelUrl, '--create-session', '--alias', label, '--workspace', workspace, '--worktree', workspace,
+  tui = Bun.spawn(['bun', cli, '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
     // The session's own agent needs no Claude login; the login targets the new profile.
     ...(options['session-args'] ?? '--provider opencode').split(' ')], {
     cwd: workspace,
@@ -157,7 +170,7 @@ try {
   await press('\r')
 
   // The kernel publishes the official CLI's authorization URL on the session.
-  const sessionId = (JSON.stringify(await rpc.send({ ResolveSession: { session_ref: label, workspace_id: null } })).match(/"session_id":"([^"]+)"/) ?? [])[1]
+  const sessionId = (JSON.stringify(await rpc.send({ ResolveSession: { session_ref: sessionAlias, workspace_id: null } })).match(/"session_id":"([^"]+)"/) ?? [])[1]
   let loginUrl = null, loginInteraction = null
   await waitFor(async () => {
     const session = await rpc.send({ GetSessionState: { session_id: sessionId } })
@@ -204,57 +217,73 @@ try {
   const logical = await page.evaluate(() => logicalLines())
   record('click shows the link as one terminal-wrapped logical line', logical.some(l => l.trimEnd() === loginUrl) && await shows('1. Open this link (Cmd-click it, or select and copy it):'))
 
-  // The code pasted in the plain view returns to Chariox and fills the field.
-  // Without a plain view (the client before this change) the user selects
-  // "2.Send response" first, as Miguel did.
-  const code = 'invalidDrillCode0123456789#invalidDrillState'
-  if (!await shows('1. Open this link')) await press('2')
-  await press(`\x1b[200~${code}\x1b[201~`)
-  await sleep(1200)
-  await capture('code-pasted')
-  record('paste returns with the masked code', (await rows()).some(r => r.includes(`Code: ${'*'.repeat(24)}▏`)) && !(await shows(code)))
-  await press('\r')
-  await sleep(400)
-  await capture('code-sent')
-  // A wrong code may be answered before the next frame; the PTY keeps the progress text.
-  record('progress, never only "interaction answered"', /checking the code|Checking the code/.test(output) && !output.includes('interaction answered'))
-
-  if (fixture) {
-    // Disposable kernel: Chariox Vault is created through its own prompts.
-    await waitFor(() => shows('Create Chariox Vault'), 60_000, 'vault prompt')
-    await capture('vault-create')
-    for (const prompt of ['Create Chariox Vault', 'Confirm Chariox Vault']) {
-      await waitFor(() => shows(prompt), 30_000, prompt)
-      // Choose the passphrase field unless it already has the cursor.
-      if (!(await rows()).some(r => /> 2\.(Confirm vault passphrase|Vault passphrase): .*_\s*$/.test(r))) await press('2')
-      await typeText('drill-vault-passphrase'); await capture(`vault-${prompt.split(' ')[0].toLowerCase()}`); await press('\r'); await sleep(1500)
-    }
-    await waitFor(() => shows('Signed in to Claude'), 60_000, 'sign-in result').catch(async error => { await capture('no-result'); throw error })
-    await capture('signed-in')
-    const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
-    record('result names where the account was saved', (await screen()).includes(`Signed in to Claude`) && (await screen()).includes(`saved to ${label}`)
-      && auth.ProviderAuthStatus.status.auth_state === 'authenticated', { authState: auth.ProviderAuthStatus.status.auth_state })
+  if (attach) {
+    // Shared kernel: return from the plain view and cancel at the code prompt.
+    await press('\r')
+    await sleep(800)
+    await capture('returned')
+    record('Enter returns to the focused code field', (await rows()).some(r => r.includes('> Code: <paste the code>▏')))
   } else {
-    // Official CLI, invalid code: the provider's own error is shown.
-    await waitFor(async () => /OAuth error|error|invalid/i.test((await rows()).slice(0, 34).join('\n')) || await shows('sign-in failed'), 45_000, 'provider verdict').catch(() => {})
-    await capture('code-rejected')
-    const rejected = /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed')
-    // The provider drops its link after a rejection: the strip says what to do next.
-    const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Open the link (click it):')
-    record('the provider rejection is visible with the next step', rejected && nextStep, { rejected, nextStep })
-    // Esc leaves the field; 1 cancels through the kernel interaction.
+    // The code pasted in the plain view returns to Chariox and fills the field.
+    // Without a plain view (the client before this change) the user selects
+    // "2.Send response" first, as Miguel did.
+    const code = 'invalidDrillCode0123456789#invalidDrillState'
+    if (!await shows('1. Open this link')) await press('2')
+    await press(`\x1b[200~${code}\x1b[201~`)
+    await sleep(1200)
+    await capture('code-pasted')
+    record('paste returns with the masked code', (await rows()).some(r => r.includes(`Code: ${'*'.repeat(24)}▏`)) && !(await shows(code)))
+    await press('\r')
+    await sleep(400)
+    await capture('code-sent')
+    // A wrong code may be answered before the next frame; the PTY keeps the progress text.
+    record('progress, never only "interaction answered"', /checking the code|Checking the code/.test(output) && !output.includes('interaction answered'))
+
+    if (fixture) {
+      // Disposable kernel: Chariox Vault is created through its own prompts.
+      await waitFor(() => shows('Create Chariox Vault'), 60_000, 'vault prompt')
+      await capture('vault-create')
+      for (const prompt of ['Create Chariox Vault', 'Confirm Chariox Vault']) {
+        await waitFor(() => shows(prompt), 30_000, prompt)
+        // Choose the passphrase field unless it already has the cursor.
+        if (!(await rows()).some(r => /> 2\.(Confirm vault passphrase|Vault passphrase): .*_\s*$/.test(r))) await press('2')
+        await typeText('drill-vault-passphrase'); await capture(`vault-${prompt.split(' ')[0].toLowerCase()}`); await press('\r'); await sleep(1500)
+      }
+      await waitFor(() => shows('Signed in to Claude'), 60_000, 'sign-in result').catch(async error => { await capture('no-result'); throw error })
+      await capture('signed-in')
+      const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
+      record('result names where the account was saved', (await screen()).includes(`Signed in to Claude`) && (await screen()).includes(`saved to ${label}`)
+        && auth.ProviderAuthStatus.status.auth_state === 'authenticated', { authState: auth.ProviderAuthStatus.status.auth_state })
+    } else {
+      // Official CLI, invalid code: the provider's own error is shown.
+      await waitFor(async () => /OAuth error|error|invalid/i.test((await rows()).slice(0, 34).join('\n')) || await shows('sign-in failed'), 45_000, 'provider verdict').catch(() => {})
+      await capture('code-rejected')
+      const rejected = /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed')
+      // The provider drops its link after a rejection: the strip says what to do next.
+      const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Open the link (click it):')
+      record('the provider rejection is visible with the next step', rejected && nextStep, { rejected, nextStep })
+      // Esc leaves the field; 1 cancels through the kernel interaction.
+      await press('\x1b'); await sleep(300); await press('1')
+      await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
+      await capture('cancelled')
+      record('cancel ends with a result and a retry action', await shows(`Claude · ${label}: sign-in cancelled`) && await shows(`Retry: /provider login claude ${label}`))
+    }
+  }
+  if (attach) {
     await press('\x1b'); await sleep(300); await press('1')
     await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
     await capture('cancelled')
     record('cancel ends with a result and a retry action', await shows(`Claude · ${label}: sign-in cancelled`) && await shows(`Retry: /provider login claude ${label}`))
+  }
+  {
     const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
     record('no login was completed', auth.ProviderAuthStatus.status.auth_state !== 'authenticated', { authState: auth.ProviderAuthStatus.status.auth_state })
   }
-  await rpc.send({ DeleteSession: { session_ref: label, workspace_id: null } }).catch(() => {})
+  await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
   await rpc.close()
   await writeFile(path.join(evidence, 'pty-output.log'), output.replaceAll(loginUrl, '<authorization URL>'))
   result = { items: ['MP-08', 'MP-11'], profile, dpr: Number(options.dpr ?? 1), fixtureClaude: fixture, cli,
-    cliDistSha256: await hashTree(path.dirname(cli)), kernelSha256: sha256(await readFile(path.resolve(options['kernel-binary']))), steps }
+    cliDistSha256: await hashTree(path.dirname(cli)), kernel: attach ? kernelUrl : { sha256: sha256(await readFile(path.resolve(options['kernel-binary']))) }, steps }
 } finally {
   const stop = async child => {
     if (!child || child.exitCode !== null) return
