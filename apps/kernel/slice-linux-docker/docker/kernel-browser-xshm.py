@@ -159,7 +159,9 @@ try:
         protected_regions=[]
         if desktop:
             after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
-            if config.get('mask') or before!=after or not before.get('available') or not before.get('complete') or before.get('protected'):
+            # MP-08/MP-11: native password dots stay visible; saved plaintext
+            # values use the same local AT-SPI masks as on-demand capture.
+            if config.get('mask') or before!=after or not before.get('available') or not before.get('complete'):
                 protected_regions=[[0,0,width,height]]
             else:protected_regions=before.get('masks',before.get('uncovered',[]))
             protected=bytearray(raw)

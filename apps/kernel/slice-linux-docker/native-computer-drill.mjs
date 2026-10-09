@@ -72,8 +72,8 @@ try {
   }
   const ocr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{});
   assert(ocr.targets.length>0);
-  const masked=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},{values:['synthetic-private-value']});
-  assert.equal(masked.text,'[protected]');assert.deepEqual(masked.targets,[]);
+  const registered=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{values:['synthetic-private-value']});
+  assert(registered.targets.length>0,'MP-08 unrendered saved values do not hide ordinary native text');
   // MP-11 review R3: xclip has no proved native app provenance. The positive
   // fixture copies public editor text through the real application's Copy action.
   const clipboard='public clipboard';await command({kind:'key',key:'ctrl+a'});
@@ -114,8 +114,8 @@ try {
     assert.equal(text.status,0);assert(!text.stdout.includes('private-source-canary'),'MP-11 no refused clipboard canary in desktop source OCR');
     const passwordApp=await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
     await delay(500);
-    const password=await capture('desktop-password-protected');
-    assert(password.raw.pixels.every(v=>v===0),'MP-11 password window must export no desktop pixels');
+    const password=await capture('desktop-password-dots');
+    assert(password.raw.pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 password dots must not hide the whole desktop');
     const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
     await signalOwned(passwordOwner,'SIGTERM');if(passwordApp.exitCode===null&&passwordApp.signalCode===null)await new Promise(resolve=>passwordApp.once('exit',resolve));
     assert.equal(await isOwnedAlive(passwordOwner),false,'MP-11 password app closed before opaque browser oracle');
@@ -139,7 +139,7 @@ try {
     assert(regions.some(r=>r.x<=left&&r.y<=top&&r.x+r.width>=right&&r.y+r.height>=bottom),'MP-11 masking receipt must cover the real opaque browser');
     for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every(v=>v===0),'MP-11 opaque browser region must export no pixels');
     console.log(JSON.stringify({items:['MP-11'],oracle:'opaque browser with password app closed',browser_bounds:{left,top,right,bottom},protected_regions:regions,black_browser_pixels:true}));
-    console.log('MP-08 MP-11 desktop source clipboard OCR, password and opaque Chromium masking PASS (supplementary)');
+    console.log('MP-08 MP-11 desktop source clipboard OCR, visible password dots and opaque Chromium masking PASS (supplementary)');
   }
   const cancellation=new AbortController();
   const hold=native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'hold',key:'Right',duration_ms:10000}}, {}, {signal:cancellation.signal});
@@ -147,5 +147,5 @@ try {
   const released=spawnSync('/usr/bin/python3',['-c',"from Xlib import display;d=display.Display();keys=d.query_keymap();assert not keys[114//8] & (1 << (114%8));d.close()"],{env:binding.environment});
   assert.equal(released.status,0,'cancelled bounded key released before next actor');
   assert.equal(wakes.length,13);
-  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','registry-mask','capture-wake','proved-native-app-clipboard','unknown-xclip-refused','native-Paste-click-and-action-refused','no-canary-in-capture-OCR','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
+  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','registry-best-effort','capture-wake','proved-native-app-clipboard','unknown-xclip-refused','native-Paste-click-and-action-refused','no-canary-in-capture-OCR','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
 }finally{await cleanup();}

@@ -129,10 +129,22 @@ def value_boxes(node, bounds, values):
         while start>=0:
             try:
                 rect=text.getRangeExtents(start,start+len(variant),pyatspi.DESKTOP_COORDS)
-                if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
+                # pyatspi.Text returns a list, not Component's BoundingBox.
+                if len(rect)==4 and rect[2]>0 and rect[3]>0:boxes.append(list(rect))
             except Exception:pass
             start=content.find(variant,start+1)
     return boxes or named
+
+
+def native_frame_scale(bounds, frame, client):
+    """MP-08/MP-11: GTK reports logical coordinates on a scaled X11 desktop.
+    Admit only an integer scale whose entire frame matches X11 (rounding <=1
+    pixel at scale 2). Browser placement keeps its independent CDP proof."""
+    if not bounds or len(bounds)!=4 or bounds[2]<=0 or bounds[3]<=0:return None
+    for scale in (1,2):
+        if any(all(abs(a-b*scale)<scale for a,b in zip(rect,bounds)) for rect in (frame,client)):
+            return scale
+    return None
 
 
 def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
@@ -166,7 +178,6 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
             rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
             bounds=[rect.x,rect.y,rect.width,rect.height]
         except NotImplementedError:pass
-        if values and not secret and 'showing' in states:found.extend(value_boxes(node,bounds,values))
         actions=[]
         if not secret:
             try:
@@ -174,6 +185,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
             except NotImplementedError:pass
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':'[protected]' if secret else (node.name or '')[:4096],'states':states,'bounds':bounds,'actions':actions,'protected':secret})
+        if values and not secret and 'showing' in states:found.extend((nodes[-1],box) for box in value_boxes(node,bounds,values))
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
                              state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and
@@ -235,7 +247,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
             clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST_STACKING'),X.AnyPropertyType)
             stacked=clients is not None
             if not stacked:clients=root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'),X.AnyPropertyType)
-            windows=[]
+            windows=[];scales={}
             for window_id in clients.value if clients is not None else []:
                 window=connection.create_resource_object('window',int(window_id))
                 if window.get_attributes().map_state!=X.IsViewable:continue
@@ -250,12 +262,17 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 # MP-11: PID membership alone is never window coverage. Match
                 # a showing frame's title AND actual X11 screen geometry.
                 frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and
-                        node['name']==name and 'showing' in node['states'] and node['bounds'] in (rect,client_rect)]
+                        node['name']==name and 'showing' in node['states'] and native_frame_scale(node['bounds'],rect,client_rect) is not None]
                 windows.append((int(window_id),pid,rect,frames,client_rect))
             for window_id,pid,rect,frames,client in windows:
                 frame=frames[0] if complete and len(frames)==1 else None
                 # A single accessible frame cannot authorize two X windows.
                 covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates,_ in windows)==1
+                if covered:
+                    scale=native_frame_scale(frame['bounds'],rect,client)
+                    for node in nodes:
+                        if node['pid']==pid and node['path'][:len(frame['path'])]==frame['path']:
+                            scales[id(node)]=scale
                 if pid not in allowed:complete=False
                 if not covered or pid in browsers:
                     visible=visible_rect(rect,screen)
@@ -279,7 +296,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     geometry=child.get_geometry()
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible);masks.append(visible)
-            masks.extend(part for part in (visible_rect(box,screen) for box in found) if part)
+            for node,box in found:
+                scale=scales.get(id(node),1);x,y,w,h=[v*scale for v in box];margin=scale-1
+                part=visible_rect([x-margin,y-margin,w+2*margin,h+2*margin],screen)
+                if part:masks.append(part)
         finally:connection.close()
         # MP-11: browser pixels are placed by the CDP transform above; the
         # structured browser app stays withheld (titles, OTP/payment/private

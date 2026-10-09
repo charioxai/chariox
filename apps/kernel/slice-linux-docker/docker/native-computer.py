@@ -127,7 +127,9 @@ def main(request):
     browser_protection=request.get('browser_protection')
     values=request.get('values',[])
     before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
-    mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
+    # MP-08/MP-11 (Miguel 2026-10-09): native password controls draw dots.
+    # Only saved values exposed as plain text contribute local AT-SPI masks.
+    mask=request['mask'] or not before['available'] or not before['complete']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
     after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     if before!=after:
