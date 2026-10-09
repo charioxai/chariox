@@ -131,3 +131,25 @@ for (const transport of [[], ["--relay-url", "wss://relay.example.test", "--rela
     assert.deepEqual(h.output, [])
   })
 }
+
+test("standalone App list extracts both original issuer values before dispatch", async () => {
+  const h = harness()
+  await runAppCommand(["app", "list", "--relay-url", "wss://relay.example.test", "--relay-token", "fixture-token", "--target-daemon-id", "managed-kernel", "--relay-token-issuer", "ws://127.0.0.1:49911/kernel", "account-kernel", "--limit", "10"], h.deps)
+  assert.deepEqual(h.connections, [{ endpoint: "wss://relay.example.test", options: {
+    relayAuthToken: "fixture-token", targetDaemonId: "managed-kernel",
+    relayAuthorizationIssuer: { endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "account-kernel" },
+  } }])
+  assert.deepEqual(h.requests, [{ ListAppInstallations: { after: null, limit: 10 } }])
+  assert.equal(h.closed, 1)
+})
+
+for (const [name, issuerArgs, message] of [
+  ["missing endpoint", ["--relay-token-issuer"], /missing value for --relay-token-issuer/],
+  ["missing kernel ID", ["--relay-token-issuer", "ws://127.0.0.1/kernel"], /missing value for --relay-token-issuer/],
+  ["next flag instead of kernel ID", ["--relay-token-issuer", "ws://127.0.0.1/kernel", "--limit", "10"], /missing value for --relay-token-issuer/],
+  ["duplicate issuer", ["--relay-token-issuer", "ws://127.0.0.1/kernel", "one", "--relay-token-issuer", "ws://127.0.0.1/kernel", "two"], /duplicate connection option --relay-token-issuer/],
+] as const) test(`standalone App rejects ${name} before connecting`, async () => {
+  const h = harness()
+  await assert.rejects(runAppCommand(["app", "list", "--relay-url", "wss://relay.example.test", "--relay-token", "fixture-token", "--target-daemon-id", "managed-kernel", ...issuerArgs], h.deps), message)
+  assert.deepEqual(h.connections, [])
+})

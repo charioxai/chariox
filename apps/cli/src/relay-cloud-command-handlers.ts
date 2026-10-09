@@ -7,6 +7,7 @@ import {
   type CloudCommandLifecycleDeps,
 } from "./cloud-command-lifecycle.js"
 import type { RelayCloudProfile } from "./preferences.js"
+import { shellQuote } from "./native-tui/launch-environment.js"
 
 export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
   sessionState: () => RuntimeSession
@@ -19,7 +20,7 @@ export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
     options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
   logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
 }
 
@@ -209,6 +210,8 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
       "cloud client token",
       `transport=${issued.relayUrl}`,
       `expires_at_ms=${issued.tokenExpiresAtMs}`,
+      ...(issued.targetDaemonId ? [`target_daemon_id=${issued.targetDaemonId}`] : []),
+      ...(issued.issuer ? [`issuer_endpoint=${issued.issuer.endpoint}`, `issuer_daemon_id=${issued.issuer.daemonId}`] : []),
       ...(sessionId ? [`session_id=${sessionId}`] : []),
       "next=select the target kernel in the waiting room to attach with this CLI key",
     ].join("\n"),

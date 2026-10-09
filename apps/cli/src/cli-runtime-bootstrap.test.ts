@@ -66,6 +66,23 @@ test("bootstrapCliRuntime attaches and resizes attached sessions", async () => {
   ])
 })
 
+test("remote bootstrap passes the original issuing kernel route to the shared client", async () => {
+  const issuer = { endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "account-kernel" }
+  const options = cliOptions({ relayUrl: "wss://relay.example", relayToken: "synthetic", targetDaemonId: "managed-kernel", relayTokenIssuer: issuer })
+  let captured: unknown
+  const client = fakeClient()
+  const deps = createDeps({
+    parseArgs: () => options,
+    createClient: (endpoint, relayOptions) => {
+      assert.equal(endpoint, options.relayUrl)
+      captured = relayOptions?.relayAuthorizationIssuer
+      return client
+    },
+  })
+  await bootstrapCliRuntime({ argv: [], cwd: "/repo" }, deps)
+  assert.deepEqual(captured, issuer)
+})
+
 test("bootstrapCliRuntime deletes a requested session without attaching", async () => {
   const calls: string[] = []
   const client = fakeClient()

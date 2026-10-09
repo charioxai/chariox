@@ -1,4 +1,4 @@
-//! Local protocol-438 drill through the real router and kernel-private state.
+//! Local protocol-478 drill through the real router and kernel-private state.
 use super::*;
 use crate::local::{
     CloudRelayStatusRequest, ConnectCloudRelayRequest, LogoutCloudRelayRequest,

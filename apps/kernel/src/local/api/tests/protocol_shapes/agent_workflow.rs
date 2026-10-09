@@ -5,7 +5,7 @@ use crate::session::{
 
 #[test]
 fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     let request = LocalDaemonRequest::CreateAgentWorkflow(CreateAgentWorkflowRequest {
         session_id: "session-1".into(),
@@ -61,7 +61,7 @@ fn agent_workflow_shapes_are_versioned_and_record_their_origin() {
 /// select one and no active-substitute state on the agent.
 #[test]
 fn agent_substitute_shape_is_per_turn_only() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 439);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
 
     for retired in [
         serde_json::json!({"Activate": {"index": 0, "reason": "manual"}}),

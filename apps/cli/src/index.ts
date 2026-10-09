@@ -9,7 +9,7 @@ import { parseArgs } from "./cli-options.js"
 // Admit ordinary TUI arguments before loading rendering, logging or runtime
 // modules. Subcommands own their parsers and validate before runtime actions.
 const argv = process.argv.slice(2)
-if (!["app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud"].includes(argv[0] ?? "")) {
+if (!["access", "sudo", "app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud"].includes(argv[0] ?? "")) {
   try {
     parseArgs(argv)
   } catch (error) {

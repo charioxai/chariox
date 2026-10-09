@@ -222,7 +222,7 @@ test("managed environment requests use the shared local daemon shape", () => {
 })
 
 test("managed environment reimage preflight exposes only retained identity and desired release", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 439)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 478)
   assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
   assert.equal(managedEnvironmentCreateMinimumProtocolVersion, 342)
   const preflight: ManagedEnvironmentReimagePreflight = {
@@ -291,7 +291,7 @@ test("managed environment summaries bind the runtime machine and kernel", () => 
 })
 
 test("managed environment details preserve observed activity and operation history", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 439)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 478)
   assert.equal(managedEnvironmentShutdownObservationMinimumProtocolVersion, 370)
   const environment: ManagedEnvironmentSummary = {
     environmentId: "environment-1",
@@ -365,9 +365,9 @@ test("managed environment details preserve observed activity and operation histo
   assert.equal(legacy.environment.lastActivityChangedAt, "2026-09-26T04:59:00.000Z")
 })
 
-test("MP-08 / MP-11 protocol 439 provider portability sends selection only", async () => {
+test("MP-08 / MP-11 protocol 478 provider portability sends selection only", async () => {
   const {preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion} = await import("./ipc-managed-environment-requests.js")
-  assert.equal(providerAccountPortabilityPreflightMinimumProtocolVersion, 439)
+  assert.equal(providerAccountPortabilityPreflightMinimumProtocolVersion, 478)
   const providerAccounts = {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "synthetic-profile"}]}
   assert.deepEqual(preflightProviderAccountPortabilityRequest(providerAccounts), {PreflightProviderAccountPortability: {providerAccounts}})
 })

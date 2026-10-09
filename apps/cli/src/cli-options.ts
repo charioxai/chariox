@@ -50,6 +50,12 @@ export function parseArgs(args: string[]): CliOptions {
       case "--relay-url":
         options.relayUrl = next()
         break
+      case "--relay-token-issuer": {
+        const endpoint = next()
+        const daemonId = next()
+        options.relayTokenIssuer = { endpoint, daemonId }
+        break
+      }
       case "--relay-token":
         if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
         options.relayToken = explicitRelayToken = next()
@@ -230,7 +236,7 @@ function parseTerminalPairingLink(pairingLink: string) {
 
 function printUsage() {
   process.stdout.write([
-    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
+    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME) [--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID]] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
     "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
     cliAppUsage(),
     "",

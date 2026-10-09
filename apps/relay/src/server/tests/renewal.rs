@@ -179,7 +179,7 @@ async fn renewal_drill(reduce_permissions: bool) {
     )
     .await;
     assert!(
-        matches!(receive(&mut foreign).await, RelayEnvelope::Close { reason } if reason == "client renewal changed identity or key")
+        matches!(receive(&mut foreign).await, RelayEnvelope::Close { reason } if reason == "relay authorization renewal changed identity or reduced permissions")
     );
     let _ = foreign.close(None).await;
     for i in 1..=6 {

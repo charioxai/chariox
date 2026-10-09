@@ -363,15 +363,9 @@ pub(crate) async fn handle_connection(
                                     .or(target.daemon_alias.as_deref()),
                             )?;
                             if verified_identity.as_ref().is_some_and(|previous| {
-                                !super::client_reauthentication::same_client(previous, &identity)
+                                !super::client_renewal::retains_client_authority(previous, &identity)
                             }) {
-                                send_close(&outgoing_tx, "client renewal changed identity or key".to_string());
-                                break;
-                            }
-                            if verified_identity.as_ref().is_some_and(|previous| {
-                                !super::client_reauthentication::retains_permissions(previous, &identity)
-                            }) {
-                                send_close(&outgoing_tx, "client renewal reduced permissions".to_string());
+                                send_close(&outgoing_tx, "relay authorization renewal changed identity or reduced permissions".into());
                                 break;
                             }
                             auth_expiry_deadline = relay_auth_expiry_deadline(

@@ -45,9 +45,21 @@ test("unknown versions and unrelated requests retain existing transport behavior
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ ListSessions: null }, 388))
 })
 
-test("Cloud owner control and terminal pivots require protocol 438", () => {
+test("Cloud owner control and terminal pivots require allocated protocol 478", () => {
   for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection"]) {
-    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 437), /438/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 438))
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /478/)
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 477), /478/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 478))
   }
+})
+
+test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
+  for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
+    { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 435), /Local-kernel access needs protocol ≥470/)
+    assert.throws(() => requireKernelFeatureProtocol(request, 451), /protocol ≥470/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 470))
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })

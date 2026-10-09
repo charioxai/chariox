@@ -60,10 +60,10 @@ for (const response of [undefined, {ProviderAccountPortabilityPreflightPassed: {
   await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /acknowledgement|ProviderAccountPortabilityPreflightPassed/)
 })
 
-test("MP-08 / MP-11 selected-provider older kernel gives protocol 439 diagnostic", async () => {
+test("MP-08 / MP-11 selected-provider older kernel gives protocol 478 diagnostic", async () => {
   const profile = authority(() => {throw new Error("must not spend Cloud authority")})
   const client = {send: async () => {throw new Error("unknown variant `PreflightProviderAccountPortability`")}} as unknown as LocalIpcClient
-  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /requires kernel protocol 439/)
+  await assert.rejects(createManagedEnvironment(profile, {clientRequestId: "create-1", name: "fixture", region: "hel1", computeClass: "agent-small", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {...contextPlan, providerAccounts: {kind: "selected", accounts: [{provider: "codex", accountProfile: "fixture"}]}}}, client), /requires kernel protocol 478/)
 })
 
 // MP-08 / MP-11: human control transport has no kernel credentials, with local

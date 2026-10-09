@@ -8,7 +8,7 @@ import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
-import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
@@ -141,7 +141,6 @@ import {
   connectKernelCloudRelay,
   getKernelCloudRelayProfile,
   getRelayStatus,
-  issueKernelCloudRelayClientToken,
   logoutCloudRelay,
   pairKernelCloudRelayClient,
   pairKernelCloudRelayMachine,
@@ -608,16 +607,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayClient(client, clientId, alias),
     pairCloudRelayMachine: (_profile, machineId, alias) =>
       pairKernelCloudRelayMachine(client, machineId, alias),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
-      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
-      return issueKernelCloudRelayClientToken(
-        client,
-        targetDaemonAlias,
-        options.clientId ?? "chariox-cli",
-        tokenOptions?.sessionId ?? null,
-        relayIdentity.publicKeyThumbprint,
-      )
-    },
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     ...(deps.cloudClient ? {
       createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
       acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),

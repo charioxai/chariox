@@ -317,7 +317,7 @@ export function observeManagedEnvironmentPreReimageRequest(input: {
 }
 
 // MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
-export const providerAccountPortabilityPreflightMinimumProtocolVersion = 439
+export const providerAccountPortabilityPreflightMinimumProtocolVersion = 478
 export function preflightProviderAccountPortabilityRequest(providerAccounts: ManagedEnvironmentProviderAccounts) {
   return {PreflightProviderAccountPortability: {providerAccounts}} as const
 }

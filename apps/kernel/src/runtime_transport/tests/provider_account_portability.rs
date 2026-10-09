@@ -1,4 +1,4 @@
-//! MP-08 / MP-11 focused protocol-439 drill: actual terminal WebSocket frames,
+//! MP-08 / MP-11 focused protocol-478 drill: actual terminal WebSocket frames,
 //! ordinary kernel router and provider-native export with synthetic credentials.
 use super::*;
 use crate::config::PersistedCloudRelayProfile;

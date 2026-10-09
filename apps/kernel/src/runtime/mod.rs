@@ -80,6 +80,7 @@ pub(crate) mod disposable_worker_control;
 pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;
+pub(crate) mod external_response;
 pub(crate) mod fresh_remote_relay_inventory;
 pub(crate) mod history_executor;
 pub(crate) mod history_requests;

@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use crate::auth::{RelayAuthVerifier, RelayRevocationRegistry};
 use crate::config::RelayConfig;
 
+mod client_renewal;
 mod connection;
 mod display;
 mod health;

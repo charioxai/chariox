@@ -1,10 +1,10 @@
-# MP-08 / MP-11 — Kernel Cloud ownership and terminal auth (daemon protocol 439)
+# MP-08 / MP-11 — Kernel Cloud ownership and terminal auth (daemon protocol 478)
 
 One Chariox account represents one user. My kernels lists every kernel of the account, grouped by machine; collaboration exposes invited sessions only. Each ordinary kernel enrolls independently. `/cloud link` and attached waiting-room Login ask the kernel to start device authorization with its actual kernel ID, machine ID and relay-key thumbprint. Approval returns a kernel credential, without a human session or machine credential. Kernels group under their machine in Cloud; sharing a root does not enroll another kernel.
 
 The kernel stores its profile, credential and renewable relay token in `cloud-relay.json` under its private runtime state root, atomically with mode 0600. An explicit empty record prevents a legacy shared profile from reappearing after unlink. Separate accounts require separate roots/profiles. A state file belonging to another kernel fails loudly. `CHARIOX_HOME` selects CLI preferences and the CLI's persistent relay key, as well as the kernel root. CLI preferences contain public display metadata only, have mode 0600, and scrub predecessor credentials when loaded or saved.
 
-`CloudRelayStatus` and enrollment/pairing responses contain public metadata and `kernel_enrolled`; they never return enrollment credentials, machine credentials or human sessions. `ConnectCloudRelay` configures the kernel itself and returns public status/profile, without its relay token. A second attached terminal reads that status from the kernel rather than relying on its local preferences. CLI owner-control requests require protocol 438.
+`CloudRelayStatus` and enrollment/pairing responses contain public metadata and `kernel_enrolled`; they never return enrollment credentials, machine credentials or human sessions. `ConnectCloudRelay` configures the kernel itself and returns public status/profile, without its relay token. A second attached terminal reads that status from the kernel rather than relying on its local preferences. CLI owner-control requests require protocol 478.
 
 An attached owner's terminal can pivot into another fresh, canonical kernel in the same account through a short kernel-issued terminal grant. It must supply its persistent CLI key thumbprint. The kernel checks the authenticated owner and the encrypted relay sender key; Cloud checks the exact target, account, key, action subset, realm and issuer generation. The grant expires within five minutes. Its transient subject is not persisted as a paired client or kernel profile identity. Revoking the issuing kernel retires its delegated grants. Shared-session viewers and relay peers cannot spend the kernel owner's directory/enrollment/delegation authority.
 
@@ -27,7 +27,7 @@ Detached CLIENT enrollment now returns a rotating refresh credential as well as 
 The CLI client store is separate from public preferences and kernel state, under the CLI profile's relay directory. Atomic 0600 writes and directory synchronization protect the refresh credential and pending rotation ID. An OS lock (Linux flock, macOS lockf) serializes profile processes and releases on process death; independent profiles rotate independently. Detached login/bootstrap and background scheduling use this store through CloudClient. This path never transfers client refresh authority to a kernel. Signing in again is permitted only for revoked credentials or detected reuse, never a fixed refresh-family lifetime.
 
 
-## MP-08 / MP-11 review corrections (protocol 439)
+## MP-08 / MP-11 review corrections (protocol 478)
 
 An enrolled kernel's terminal pairing link carries the noncredential marker
 `cloud-client-token-required`, never its KERNEL transport token. The receiving

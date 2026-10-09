@@ -6,13 +6,14 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
-  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: 438 },
-  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 438 },
-  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 438 },
-  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: 438 },
-  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: 438 },
-  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: 438 },
-  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: 438 },
+  CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: 478 },
+  StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
+  PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: 478 },
+  LogoutCloudRelay: { feature: "Kernel Cloud unlink", minimum: 478 },
+  ConnectCloudRelay: { feature: "Kernel Cloud ownership", minimum: 478 },
+  ResolveKernelClientConnection: { feature: "Key-bound kernel pivot", minimum: 478 },
+  IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: 478 },
+  RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
   RestoreAppDataSnapshot: { feature: "App data snapshot restore", minimum: requests.appDataSnapshotRestoreMinimumProtocolVersion },
@@ -56,6 +57,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Custom managed repository root", minimum: requests.managedEnvironmentCreateMinimumProtocolVersion }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {
     feature = { feature: "Project export review", minimum: projectEnvironmentReviewMinimumProtocolVersion }
+  } else if (name === "RespondToInteraction" && payload?.session_id === "kernel-access") {
+    feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
   } else if ((name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
