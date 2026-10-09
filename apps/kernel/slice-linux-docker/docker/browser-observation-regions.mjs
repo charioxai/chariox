@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: trusted CDP layout, re-located before/after every frame.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { withBrowserFrames } from './browser-controller-frames.mjs';
-import { redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
+import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 import { fileURLToPath } from 'node:url';
 
 function quadRegion(quad) {
@@ -70,7 +70,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate
           // value-bearing inputs using raw, trusted layout; never retry insertion.
-          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
+          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
           const document = snapshot.documents?.[0], strings = snapshot.strings ?? [];
           const nodes = document?.nodes ?? {}, layout = document?.layout ?? {};
           const input = nodes.inputValue ?? {};
@@ -86,7 +86,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
       // Raw page strings and rendered layout text are checked before any truncation. Also
       // mask opaque media (canvas/SVG/images/video) that can render copied secrets without DOM text.
       if (values.length) {
-        snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
+        snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
         const strings = snapshot.strings ?? [];
         for (const document of snapshot.documents ?? []) {
           const nodes = document.nodes ?? {}, layout = document.layout ?? {};
