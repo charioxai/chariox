@@ -607,7 +607,7 @@ async fn review_local_missing_claude_copy_with_registered_token_delivers_prompt(
 // MP-08/MP-10/MP-11: an ordinary local agent's first prompt launches through the
 // app-level cold path, not `LaunchProviderRun` or leased submission.
 impl WorkerFixture {
-    async fn local_agent(&self) -> (String, String, String) {
+    async fn local_agent(&self, native_tui: bool) -> (String, String, String) {
         let mut app = self.app.lock().await;
         let (session, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(self.root.session_request().with_owner_user_id("owner"))
@@ -629,6 +629,46 @@ impl WorkerFixture {
             ))
             .unwrap();
         drop(app);
+        if native_tui {
+            let launch = self
+                .local_request(crate::local::LocalDaemonRequest::LaunchProviderRun(
+                    crate::local::LaunchProviderRunRequest {
+                        session_id: session.id().into(),
+                        agent_id: Some(agent.id().into()),
+                        adapter_key: "claude".into(),
+                        provider: "claude".into(),
+                        account_profile: self.account.clone(),
+                        model: "sonnet".into(),
+                        variant: None,
+                        structured_endpoint: None,
+                        provider_session_id: None,
+                        native_tui: true,
+                    },
+                ))
+                .await;
+            assert!(launch.is_ok(), "native TUI launch: {launch:?}");
+            // Delete the copy only after the first native launch has finished;
+            // otherwise its completion recovery races the reattach under test.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if self
+                        .runtime
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(session.id(), agent.id())
+                        .is_some_and(|run| {
+                            run.state() == crate::provider::ProviderRunState::Running
+                        })
+                    {
+                        break;
+                    }
+                    self.runtime.pump_transport_runtime().await;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("first native launch reaches Running");
+        }
         (
             session.id().to_string(),
             agent.id().to_string(),
@@ -678,7 +718,7 @@ async fn review_local_cold_prompt_missing_claude_copy_requests_login_before_prep
         return;
     }
     let fixture = WorkerFixture::new(true).await;
-    let local = fixture.local_agent().await;
+    let local = fixture.local_agent(false).await;
     std::fs::remove_file(&fixture.credential).unwrap();
     let outcome = fixture.local_prompt(&local, "cold-local-missing").await
         .expect("an ordinary cold prompt must enter receiving login recovery before credential preparation rejects it");
@@ -728,7 +768,7 @@ async fn review_local_cold_prompt_missing_claude_copy_with_registered_token_deli
         return;
     }
     let fixture = WorkerFixture::new(true).await;
-    let local = fixture.local_agent().await;
+    let local = fixture.local_agent(false).await;
     std::fs::remove_file(&fixture.credential).unwrap();
     fixture.register_token();
     fixture
@@ -736,6 +776,99 @@ async fn review_local_cold_prompt_missing_claude_copy_with_registered_token_deli
         .await
         .unwrap();
     fixture.wait_for_prompt("cold-local-registered-token").await;
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+#[tokio::test]
+async fn review_local_native_tui_reattach_reuses_live_run_before_copy_recovery() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let local = fixture.local_agent(true).await;
+    let live = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&local.0, &local.1)
+        .unwrap();
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let request = crate::local::LaunchProviderRunRequest {
+        session_id: local.0.clone(),
+        agent_id: Some(local.1.clone()),
+        adapter_key: "claude".into(),
+        provider: "claude".into(),
+        account_profile: fixture.account.clone(),
+        model: "sonnet".into(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: true,
+    };
+    for _ in 0..3 {
+        let response = fixture
+            .local_request(crate::local::LocalDaemonRequest::LaunchProviderRun(
+                request.clone(),
+            ))
+            .await
+            .expect("native TUI reattach");
+        let (crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | crate::local::LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }) = response
+        else {
+            panic!("launch response");
+        };
+        assert_eq!(provider_run.id(), live.id());
+    }
+    let mut mismatched = request;
+    mismatched.model = "opus".into();
+    let error = fixture
+        .local_request(crate::local::LocalDaemonRequest::LaunchProviderRun(
+            mismatched,
+        ))
+        .await
+        .expect_err("native TUI reattach must still reject different parameters");
+    assert!(matches!(
+        error,
+        DaemonError::InvalidProviderRunState {
+            operation: "launch native TUI provider run with different parameters",
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .provider_store
+            .get_run(live.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&local.0)
+            .unwrap()
+            .active_provider_run_id(),
+        Some(live.id())
+    );
+    let runs = fixture.runtime.owned.provider_store.list_runs();
+    assert_eq!(
+        runs.iter()
+            .filter(|run| run.agent_instance_id() == Some(local.1.as_str()))
+            .count(),
+        1
+    );
     assert!(fixture
         .runtime
         .owned
@@ -755,7 +888,7 @@ async fn review_app_missing_claude_copy_token_launch_retains_auth_mode() {
         return;
     }
     let fixture = WorkerFixture::new(true).await;
-    let local = fixture.local_agent().await;
+    let local = fixture.local_agent(false).await;
     std::fs::remove_file(&fixture.credential).unwrap();
     fixture.register_token();
     let run = fixture

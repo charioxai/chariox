@@ -33,6 +33,8 @@ impl KernelRuntimeState {
             || request
                 .provider_credential_env
                 .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+            // MP-08/MP-10/MP-11: reuse a live native TUI before creating a waiting run.
+            || self.owned.live_native_tui_run_for_launch(request).is_some()
         {
             return Ok(None);
         }
