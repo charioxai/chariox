@@ -92,9 +92,11 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           const nodes = document.nodes ?? {}, layout = document.layout ?? {};
           const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
           const echoed = index => typeof strings[index] === 'string' && redactObservation(strings[index], values) !== strings[index];
-          const rendered = renderedTextEchoes(strings, document, values);
+          const overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow);
+          regions.push(...overflow.regions.map(([x,y,w,h]) => [origin[0]+x-viewport.pageX,origin[1]+y-viewport.pageY,w,h]));
           for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
             const index = layout.nodeIndex[i];
+            if (overflow.unmeasured.has(i)) continue; // Covered by the local clipping ancestor.
             const name = strings[nodes.nodeName?.[index]]?.toLowerCase();
             const attributes = nodes.attributes?.[index] ?? [];
             const opaque = ['canvas', 'svg', 'img', 'video', 'iframe', 'frame'].includes(name);

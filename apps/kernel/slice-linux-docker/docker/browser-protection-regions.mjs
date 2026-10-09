@@ -81,11 +81,13 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
   }
-  const regions = [], owners = [], rendered = renderedTextEchoes(strings, document, values);
+  const regions = [], owners = [], overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow);
   const scroll = [document.scrollOffsetX ?? 0, document.scrollOffsetY ?? 0];
   if (!scroll.every(Number.isFinite)) throw new Error('MP-11: unknown document scroll');
+  regions.push(...overflow.regions.map(([x,y,w,h]) => [x-scroll[0],y-scroll[1],w,h]));
   for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
     const i = layout.nodeIndex[k], bounds = layout.bounds?.[k];
+    if (overflow.unmeasured.has(k)) continue; // Covered by the local clipping ancestor.
     if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) throw new Error('MP-11: unknown layout region');
     const rect = [bounds[0] - scroll[0], bounds[1] - scroll[1], bounds[2], bounds[3]];
     if (marked[i] || rendered.has(k)) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
