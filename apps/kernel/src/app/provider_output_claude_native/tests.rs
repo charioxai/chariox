@@ -968,7 +968,7 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         .append(true)
         .open(&transcript_file)
         .expect("partial transcript should reopen")
-        .write_all(transcript_record[transcript_split_at..].as_bytes())
+        .write_all(&transcript_record.as_bytes()[transcript_split_at..])
         .expect("late transcript output should finish writing");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)

@@ -3567,11 +3567,6 @@ mod tests {
         let ordinary_seed = ordinary_seed
             .canonicalize()
             .expect("ordinary repository seed should canonicalize");
-        let ordinary_write = ordinary_write;
-        let protected_payload = protected_payload;
-        let profile = profile;
-        let openbox_rc = openbox_rc;
-        let command_payloads = command_payloads;
 
         let request = LaunchProviderRequest::new(
             format!("managed-runtime-home-{workspace_kind}"),

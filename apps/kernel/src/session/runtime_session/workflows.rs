@@ -682,9 +682,10 @@ impl RuntimeSession {
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
-        let mut reconciliation = KernelRestartReconciliation::default();
-        reconciliation.removed_orphaned_workflow_prompt_count =
-            self.reconcile_workflow_queue_ownership();
+        let mut reconciliation = KernelRestartReconciliation {
+            removed_orphaned_workflow_prompt_count: self.reconcile_workflow_queue_ownership(),
+            ..KernelRestartReconciliation::default()
+        };
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }

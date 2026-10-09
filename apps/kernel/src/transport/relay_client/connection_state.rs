@@ -542,9 +542,7 @@ impl RelayClientState {
         &self,
         request: &RelayPeerRequest,
     ) -> Option<oneshot::Receiver<()>> {
-        let Some(observer) = self.test_authenticated_peer_request_observer.as_ref() else {
-            return None;
-        };
+        let observer = self.test_authenticated_peer_request_observer.as_ref()?;
         let (observation, release) = match request {
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup { operation_id, .. } => (
                 TestPeerRequestObservation::StartProjectEnvironmentSetup {

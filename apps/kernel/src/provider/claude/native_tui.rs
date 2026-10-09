@@ -21,6 +21,10 @@ pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
 /// How long the hook waits for the kernel's decision (`deadline` in the
 /// handler): past the interaction timeout plus a forwarded interaction's relay
 /// buffer, so the deny a timed-out interaction resolves to finds it waiting.
+#[allow(
+    dead_code,
+    reason = "Retains the compile-time ordering check against the native hook timeout"
+)]
 pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
 /// Claude's timeout for the permission hook, past the hook's own wait.
 const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;

@@ -1277,9 +1277,7 @@ fn bound_publication_response(
         })
         .and_then(|_| publication.open_url())
         .map(str::to_string);
-    let state = if local_url.is_none() {
-        "running"
-    } else if tunnel_url.is_some() {
+    let state = if local_url.is_none() || tunnel_url.is_some() {
         "running"
     } else {
         "waiting_for_relay"

@@ -315,78 +315,80 @@ mod tests {
         std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
         std::env::set_var("CHARIOX_SLICE_MACHINE_ID", "slice:native-provider-test");
         std::fs::create_dir_all(&worktree).expect("worktree should create");
-        let mut runtime = RemoteLeaseRuntime::new(&mut app);
-        let lease = runtime
-            .create_execution_lease(
-                "home-kernel",
-                "home-session",
-                "home-agent",
-                false,
-                "local-user",
-            )
-            .expect("lease should create");
-        let leased_agent = runtime
-            .create_leased_agent(
-                &lease.id,
-                "dev-stub",
-                "default",
-                Some("default".to_string()),
-                None,
-                None,
-                None,
-                None,
-                Some(worktree.display().to_string()),
-                None,
-            )
-            .expect("leased agent should create");
-        let mcp = CharioxMcpServerConfig::stdio(
-            "browser",
-            std::env::current_exe()
-                .expect("current test executable should resolve")
-                .display()
-                .to_string(),
-            Vec::new(),
-        );
-        let registry = crate::mcp::CharioxMcpRegistry::new(vec![
-            crate::mcp::CharioxMcpRegistry::user_root().expect("worker registry root"),
-        ]);
-        registry
-            .install(&mcp)
-            .expect("matching worker-local MCP should install");
-        let required = RequiredRemoteMcp {
-            definition_hash: mcp.definition_hash().expect("hash should compute"),
-            config: mcp,
-        };
+        let (leased_agent, run, colliding_attachment_id) = {
+            let mut runtime = RemoteLeaseRuntime::new(&mut app);
+            let lease = runtime
+                .create_execution_lease(
+                    "home-kernel",
+                    "home-session",
+                    "home-agent",
+                    false,
+                    "local-user",
+                )
+                .expect("lease should create");
+            let leased_agent = runtime
+                .create_leased_agent(
+                    &lease.id,
+                    "dev-stub",
+                    "default",
+                    Some("default".to_string()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(worktree.display().to_string()),
+                    None,
+                )
+                .expect("leased agent should create");
+            let mcp = CharioxMcpServerConfig::stdio(
+                "browser",
+                std::env::current_exe()
+                    .expect("current test executable should resolve")
+                    .display()
+                    .to_string(),
+                Vec::new(),
+            );
+            let registry = crate::mcp::CharioxMcpRegistry::new(vec![
+                crate::mcp::CharioxMcpRegistry::user_root().expect("worker registry root"),
+            ]);
+            registry
+                .install(&mcp)
+                .expect("matching worker-local MCP should install");
+            let required = RequiredRemoteMcp {
+                definition_hash: mcp.definition_hash().expect("hash should compute"),
+                config: mcp,
+            };
 
-        let run = runtime
-            .launch_leased_native_provider_run(
-                &leased_agent.id,
-                "dev-stub",
-                "dev-stub",
-                "default",
-                "default",
-                None,
-                None,
-                None,
-                vec![required],
-                Some(Vec::new()),
-                crate::extension::RemoteExtensionManifest::default(),
-            )
-            .expect("native run should launch");
-        let colliding_attachment_id = leased_agent.backing_attachment_id.clone();
-        let byte_count = runtime
-            .send_leased_native_provider_input(
-                &leased_agent.id,
-                run.id(),
-                &colliding_attachment_id,
-                "eA==",
-            )
-            .expect("native input should be sent");
-        assert_eq!(byte_count, 1);
-        runtime
-            .resize_leased_provider_terminal(&leased_agent.id, run.id(), 80, 24)
-            .expect("native provider terminal should resize");
-        drop(runtime);
+            let run = runtime
+                .launch_leased_native_provider_run(
+                    &leased_agent.id,
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                    None,
+                    None,
+                    None,
+                    vec![required],
+                    Some(Vec::new()),
+                    crate::extension::RemoteExtensionManifest::default(),
+                )
+                .expect("native run should launch");
+            let colliding_attachment_id = leased_agent.backing_attachment_id.clone();
+            let byte_count = runtime
+                .send_leased_native_provider_input(
+                    &leased_agent.id,
+                    run.id(),
+                    &colliding_attachment_id,
+                    "eA==",
+                )
+                .expect("native input should be sent");
+            assert_eq!(byte_count, 1);
+            runtime
+                .resize_leased_provider_terminal(&leased_agent.id, run.id(), 80, 24)
+                .expect("native provider terminal should resize");
+            (leased_agent, run, colliding_attachment_id)
+        };
 
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");

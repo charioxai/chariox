@@ -641,6 +641,10 @@ async fn dispatch_relay_client_request(
     cached_relay_dispatch_outcome(response, error)
 }
 
+#[allow(
+    clippy::boxed_local,
+    reason = "Consumes the already boxed response frame without moving a large payload through the caller stack"
+)]
 fn cached_relay_dispatch_outcome(
     response: Box<Option<Value>>,
     error: Option<KernelTransportError>,

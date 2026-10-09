@@ -69,7 +69,7 @@ pub(in crate::runtime::state) fn normalize_workspace_live_sync_repo_url(value: &
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_is_chariox_source_workspace(
-    root: &PathBuf,
+    root: &Path,
 ) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()
         && root

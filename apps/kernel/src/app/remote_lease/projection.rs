@@ -82,7 +82,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
             replay_settled_completion
                 .then_some(())
-                .and_then(|()| leased_agent.replayable_completion.as_ref())
+                .and(leased_agent.replayable_completion.as_ref())
                 .filter(|completion| completion.provider_run_id == provider_run_id)
                 .and_then(|completion| completion.home_prompt_id.clone())
         });
@@ -1548,9 +1548,9 @@ fn leased_provider_run_history_chunk_key(
     chunk: &RelayProjectedOutputChunk,
 ) -> String {
     format!(
-        "{}:{provider_run_id}:{}:{}:{}",
+        "{}:{provider_run_id}:{:?}:{}:{}",
         leased_agent.backing_session_id,
-        format!("{:?}", chunk.kind),
+        chunk.kind,
         chunk.merge_key.as_deref().unwrap_or(""),
         stable_bytes_hash(&chunk.bytes)
     )

@@ -204,7 +204,7 @@ fn remote_reservation_owner(
 fn current_text_snapshot(
     coordinator: &crate::io::ArtifactEditCoordinator,
     workspace_identity: &crate::io::WorkspaceIdentity,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<WorkspaceLiveSyncTextSnapshot> {
     let artifact_id = coordinator.resolve_artifact_id(workspace_identity, path);
     coordinator

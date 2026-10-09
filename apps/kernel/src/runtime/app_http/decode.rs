@@ -176,7 +176,10 @@ mod tests {
         .unwrap();
         // This SDK wire contract remains supported by later terminal protocols.
         assert_eq!(fixture["minimumKernelProtocol"], 294);
-        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 294);
+        assert!(
+            u64::from(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+                >= fixture["minimumKernelProtocol"].as_u64().unwrap()
+        );
         assert_eq!(
             fixture["sdkVersion"],
             chariox_app_package::SUPPORTED_SDK_VERSION

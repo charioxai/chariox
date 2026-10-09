@@ -262,13 +262,11 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
     Ok(())
 }
 
-fn workspace_live_sync_ignore_patterns(
-    workspace_root: &PathBuf,
-) -> Result<Vec<String>, DaemonError> {
+fn workspace_live_sync_ignore_patterns(workspace_root: &Path) -> Result<Vec<String>, DaemonError> {
     Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(workspace_root))
 }
 
-fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String, DaemonError> {
+fn workspace_live_sync_normalized_relative_path(path: &Path) -> Result<String, DaemonError> {
     let mut parts = Vec::new();
     for component in path.components() {
         match component {

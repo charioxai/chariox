@@ -166,10 +166,10 @@ pub(in crate::runtime::state) fn plan_workspace_live_sync_patch_operations(
 
 fn reserve_full_artifact(
     reservation_ranges: &mut BTreeMap<PathBuf, Vec<crate::io::TextRange>>,
-    path: &PathBuf,
+    path: &Path,
 ) {
     reservation_ranges
-        .entry(path.clone())
+        .entry(path.to_path_buf())
         .or_default()
         .push(crate::io::TextRange::new(0, usize::MAX));
 }

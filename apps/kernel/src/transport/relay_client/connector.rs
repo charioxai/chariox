@@ -1042,11 +1042,11 @@ async fn run_daemon_relay_connector_inner(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 if static_relay.is_none() {
-                                    let _ = spawn_cloud_presence_publish(
+                                    drop(spawn_cloud_presence_publish(
                                         Arc::clone(&router),
                                         false,
                                         "daemon shutting down",
-                                    );
+                                    ));
                                 }
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),

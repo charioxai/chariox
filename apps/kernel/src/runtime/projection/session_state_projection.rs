@@ -294,10 +294,9 @@ impl SessionStateProjectionStore {
             let projected_prompt = valid_target.then_some(active_prompt).flatten();
             let activity_changed = {
                 let entry = state.external_observed_activity.entry(key).or_default();
-                if entry.latest_observation_generation != observation_generation {
-                    false
-                } else if entry.active_prompt.as_ref().map(PromptQueueItem::id)
-                    == projected_prompt.as_ref().map(PromptQueueItem::id)
+                if entry.latest_observation_generation != observation_generation
+                    || entry.active_prompt.as_ref().map(PromptQueueItem::id)
+                        == projected_prompt.as_ref().map(PromptQueueItem::id)
                 {
                     false
                 } else {

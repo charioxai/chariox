@@ -875,7 +875,7 @@ fn security_sb01_external_prompt_cannot_borrow_human_attachment() {
                 .router
                 .runtime_state()
                 .insert_access_grant_for_test(&room.session);
-            let mut request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: room.session.clone(),
                 attachment_id: attachment.id().into(),
                 target_agent_id: Some(agent.id().into()),
@@ -889,7 +889,7 @@ fn security_sb01_external_prompt_cannot_borrow_human_attachment() {
             command.caller.caller_id = grant;
             assert!(
                 room.router
-                    .authorize_external_request(&command, &mut request)
+                    .authorize_external_request(&command, &request)
                     .is_err(),
                 "MP-11 SB-01: automation cannot submit as a human attachment"
             );
@@ -1089,15 +1089,13 @@ fn capability_review_r1_external_queue_edit_cannot_acquire_browser() {
                     prompt: "Automation requests my browser".into(),
                 })
             };
-            let mut request = make_request(human.id());
+            let request = make_request(human.id());
             let mut command =
                 KernelCommand::from_local_request("MP-11-R1-borrow", None, None, &request);
             command.caller.connection_class =
                 Some(crate::local::KernelConnectionClass::ExternalAgent);
             command.caller.caller_id = grant.clone();
-            let borrowed = room
-                .router
-                .authorize_external_request(&command, &mut request);
+            let borrowed = room.router.authorize_external_request(&command, &request);
 
             let request = make_request(automation.id());
             let mut command =

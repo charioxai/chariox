@@ -166,7 +166,7 @@ mod user_domain_admission_tests {
                     command.caller.connection_class = Some(class);
                     command.caller.caller_id = "revoked-grant".into();
                     let error = router
-                        .authorize_external_request(&command, &mut request.clone())
+                        .authorize_external_request(&command, &request)
                         .unwrap_err();
                     assert!(matches!(
                         error,

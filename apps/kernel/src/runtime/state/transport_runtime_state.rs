@@ -633,10 +633,10 @@ fn transport_runtime_pump_interval_for_state(
 }
 
 fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
-    idle_ttl_ms
-        .min(orphan_ttl_ms)
-        .min(MAX_PROVIDER_PROCESS_GC_INTERVAL_MS)
-        .max(MIN_PROVIDER_PROCESS_GC_INTERVAL_MS)
+    idle_ttl_ms.min(orphan_ttl_ms).clamp(
+        MIN_PROVIDER_PROCESS_GC_INTERVAL_MS,
+        MAX_PROVIDER_PROCESS_GC_INTERVAL_MS,
+    )
 }
 
 fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {

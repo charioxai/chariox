@@ -1406,8 +1406,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             .expect("exchanged receipt should exist");
         let envelope = confirmation_test_envelope(&runtime_release_digest);
         persist_confirmation_test_envelope(&config.envelope_path, &envelope);
-        let mut profile = crate::config::PersistedCloudRelayProfile::default();
-        profile.machine_credential = Some(format!("mcred_{}", "a".repeat(40)));
+        let profile = crate::config::PersistedCloudRelayProfile {
+            machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
+            ..crate::config::PersistedCloudRelayProfile::default()
+        };
         let mut confirmation = Some(PendingConfirmation {
             envelope,
             receipt,

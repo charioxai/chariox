@@ -161,6 +161,10 @@ pub(crate) struct PromptManifestEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Explicit turn names distinguish prompt assembly contexts"
+)]
 pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,

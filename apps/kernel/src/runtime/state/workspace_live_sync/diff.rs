@@ -20,7 +20,7 @@ pub(super) struct WorkspaceLiveSyncDiff {
 pub(super) const WORKSPACE_LIVE_SYNC_MAX_DIFF_BYTES: usize = 80_000;
 
 pub(super) fn workspace_live_sync_unified_diff(
-    path: &PathBuf,
+    path: &Path,
     before: &WorkspaceLiveSyncTextSnapshot,
     after: &WorkspaceLiveSyncTextSnapshot,
 ) -> WorkspaceLiveSyncDiff {
@@ -216,8 +216,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_text_for_diff(
 }
 
 pub(super) fn workspace_live_sync_diff_workspace_path(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
 ) -> Option<PathBuf> {
     if path.is_absolute() {
         return None;

@@ -797,7 +797,7 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
             }],
         )
         .expect("exit position should update");
-    assert!(layout_with_exit.exits.get(node.id()).is_some());
+    assert!(layout_with_exit.exits.contains_key(node.id()));
     let updated_node = service
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), false)
         .expect("node completion setting should update");
