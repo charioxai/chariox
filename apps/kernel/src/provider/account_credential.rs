@@ -144,12 +144,19 @@ pub(crate) fn resolve_provider_account_credentials(
             });
         }
     };
+    let service_revision = credentials
+        .iter()
+        .find(|entry| entry.id == credential_id)
+        .and_then(|entry| entry.metadata.as_ref())
+        .and_then(|metadata| metadata.updated_at_ms);
     let service = crate::secret::RuntimeSecretService::with_vault_config(
         credentials,
         &config.user_config.credential_vault,
     )?;
     let mut environment = ProviderCredentialEnvironment::default();
     environment.insert(env_name, service.provider_secret_input(&credential_id)?);
+    // Bind the in-memory launch to the registration read for this secret.
+    environment.registration_revision = service_revision;
     Ok(environment)
 }
 

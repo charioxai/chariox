@@ -120,6 +120,9 @@ pub struct RuntimeProviderRun {
     provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_diagnostic: Option<String>,
+    // MP-08/MP-10/MP-11: process-local provenance, never serialized.
+    #[serde(skip)]
+    account_credential_revision: Option<u64>,
     started_at_ms: u64,
     last_activity_at_ms: u64,
 }
@@ -205,6 +208,7 @@ impl RuntimeProviderRun {
                 .and_then(|state| state.provider_session_id(&request.adapter_key))
                 .map(str::to_string),
             terminal_diagnostic: None,
+            account_credential_revision: request.provider_credential_env.registration_revision,
             started_at_ms: now,
             last_activity_at_ms: now,
         }
@@ -271,6 +275,7 @@ impl RuntimeProviderRun {
             external_provider_import: None,
             provider_session_id: None,
             terminal_diagnostic: None,
+            account_credential_revision: None,
             started_at_ms: now,
             last_activity_at_ms: now,
         }
@@ -623,6 +628,10 @@ impl RuntimeProviderRun {
 
     pub fn set_provider_session_id(&mut self, provider_session_id: Option<String>) {
         self.provider_session_id = provider_session_id;
+    }
+
+    pub(crate) fn account_credential_revision(&self) -> Option<u64> {
+        self.account_credential_revision
     }
 
     pub fn terminal_diagnostic(&self) -> Option<&str> {

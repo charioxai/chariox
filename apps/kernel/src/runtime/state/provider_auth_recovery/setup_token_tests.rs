@@ -5,6 +5,15 @@ use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn setup_token_two_active_agents_share_recovery_and_reload_replacement() {
+    setup_token_recovery_fixture(false).await;
+}
+
+#[tokio::test]
+async fn setup_token_old_run_failure_preserves_completed_replacement() {
+    setup_token_recovery_fixture(true).await;
+}
+
+async fn setup_token_recovery_fixture(stale_failure: bool) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -78,6 +87,18 @@ printf '%s\n' '{replacement}'
             None,
         )
         .unwrap();
+    crate::provider::mark_provider_account_credential_verified(
+        "local",
+        &profile.profile_id,
+        crate::provider::provider_account_credential_verification(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap()
+        .revision,
+    )
+    .unwrap();
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             root.to_string_lossy(),
@@ -100,7 +121,16 @@ printf '%s\n' '{replacement}'
             &profile.profile_id,
             "claude-sonnet",
         )
-        .with_agent_id(agent.id());
+        .with_agent_id(agent.id())
+        .with_provider_credential_env(
+            crate::provider::resolve_provider_account_credentials(
+                &config,
+                "local",
+                "claude",
+                &profile.profile_id,
+            )
+            .unwrap(),
+        );
         let mut started = app.start_provider_launch(request).unwrap();
         started.run = app.providers().mark_run_running(started.run.id()).unwrap();
         starts.push(started);
@@ -175,6 +205,45 @@ printf '%s\n' '{replacement}'
         .unwrap()
         .active_interactions()
         .is_empty());
+    if stale_failure {
+        assert!(state
+            .try_provider_launch_auth_recovery(
+                &starts[1],
+                "API Error: 401 Invalid authentication credentials"
+            )
+            .await
+            .unwrap());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let observed = state
+            .owned
+            .provider_account_profiles
+            .get("local", "claude", &profile.profile_id)
+            .unwrap()
+            .auth_state;
+        let logins = std::fs::read_to_string(root.join("logins"))
+            .unwrap()
+            .lines()
+            .count();
+        app.lock().await.shutdown_cleanup().unwrap();
+        for (name, value) in names.into_iter().zip(old) {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            observed,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "MP-08/MP-10/MP-11 old run must not expire a repaired registration"
+        );
+        assert_eq!(
+            logins, 1,
+            "sequential stale failure must reload without new OAuth consent"
+        );
+        return;
+    }
     app.lock().await.shutdown_cleanup().unwrap();
     for (name, value) in names.into_iter().zip(old) {
         if let Some(value) = value {

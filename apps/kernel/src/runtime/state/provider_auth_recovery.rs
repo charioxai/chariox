@@ -140,19 +140,36 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             let provider = provider_label(run.adapter_key());
+            let mut repaired_registration = false;
             let receiver = if setup_token {
-                // An official authentication refusal is already enough to
-                // start OAuth. The shared popup shows its link directly.
-                let _ = self.owned.provider_account_profiles.update_observation(
+                let credential_id = crate::provider::provider_account_credential_id(
                     &owner,
                     "claude",
                     run.account_profile(),
-                    crate::account_profile::ProviderAccountAuthState::Expired,
-                    None,
-                    None,
-                    None,
-                    None,
                 );
+                let _commit = self
+                    .provider_runtime_lanes
+                    .acquire(&format!("claude-account-login:{credential_id}"))
+                    .await;
+                let selected = crate::provider::provider_account_credential_verification(
+                    &owner,
+                    "claude",
+                    run.account_profile(),
+                )?;
+                repaired_registration = selected.revision != run.account_credential_revision();
+                if !repaired_registration {
+                    // Only this run's exact registration can be expired.
+                    let _ = self.owned.provider_account_profiles.update_observation(
+                        &owner,
+                        "claude",
+                        run.account_profile(),
+                        crate::account_profile::ProviderAccountAuthState::Expired,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 None
             } else {
                 Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
@@ -169,7 +186,13 @@ impl KernelRuntimeState {
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
-                let outcome = state.recover_provider_login(&run, &id, receiver).await;
+                let outcome = if repaired_registration {
+                    // The old process retains its launch token. Reload through ordinary
+                    // launch preparation so the replacement gets its own Vault lease.
+                    Ok(true)
+                } else {
+                    state.recover_provider_login(&run, &id, receiver).await
+                };
                 if outcome.is_ok_and(|succeeded| succeeded) {
                     let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
                     let current = state
