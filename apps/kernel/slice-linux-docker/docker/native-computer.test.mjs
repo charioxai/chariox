@@ -2,6 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativeComputer, nativeInput, executeNative } from './native-computer.mjs';
+import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
 const publicDependencies=Object.fromEntries(['PYTHONPATH','LD_LIBRARY_PATH','GI_TYPELIB_PATH'].filter(key=>process.env[key]).map(key=>[key,process.env[key]]));
 test('MP-11 native input rejects stale placement and invalid physical events', () => {
@@ -40,6 +44,23 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await adapter.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[],unknown:false}),{data_base64:'',surface_id:'surface',generation:'generation'});
   assert.deepEqual(withheld,[]);
 });
+// Vault (Miguel 2026-10-09): no desktop blackout; values reach the AT-SPI text
+// check, OCR text is redacted, and a clipboard read stays withheld.
+test('MP-08 / MP-11 Vault values never black out the desktop; OCR is redacted, clipboard withheld', async () => {
+  const sent=[];
+  const browser={ensureConnection:async()=>({send:async method=>{if(method!=='Target.getTargets')throw new Error('unexpected');return {targetInfos:[]};}})};
+  const bound={...binding,browser:()=>browser};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);
+    return request.op==='ocr'?{text:'token v-secret here'}:request.op==='clipboard_read'?{text:'[protected]'}:{data_base64:''};}});
+  const vault={values:['v-secret'],targets:[],unknown:false},at={surface_id:'surface',generation:'generation'};
+  await adapter.request({op:'screenshot',...at},vault);
+  assert.deepEqual([sent[0].mask,sent[0].values,sent[0].browser_protection],[false,['v-secret'],{pages:[]}]);
+  assert.equal((await adapter.request({op:'ocr',...at},vault)).text,'token [redacted] here');
+  await adapter.request({op:'clipboard_read',...at},vault);
+  assert.equal(sent.at(-1).mask,true);
+  await adapter.request({op:'clipboard_read',...at},{values:[],targets:[],unknown:false});
+  assert.equal(sent.at(-1).mask,false);
+});
 test('MP-08 immediate physical key and text are distinct and wake capture after each event', async () => {
   const sent=[],wakes=[];
   const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{sent.push(request);return {};},wakeCapture:event=>wakes.push(event)});
@@ -48,7 +69,10 @@ test('MP-08 immediate physical key and text are distinct and wake capture after 
 });
 
 test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop generation', async () => {
-  let current = { ...binding, environment: { ...publicDependencies, PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' } };
+  const root=await mkdtemp(path.join(os.tmpdir(),'chariox-warm-generation-'));
+  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+  const owned=await desktop.start();
+  let current = { ...binding, environment: { ...owned.environment, ...publicDependencies } };
   const adapter = new NativeComputer({ placement: 'host', binding: () => current });
   try {
     await adapter.primeKeyboard();
@@ -58,7 +82,7 @@ test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop g
     assert.notEqual(adapter.keyboard.child.pid, first.pid);
     assert(first.exitCode !== null || first.signalCode !== null);
     assert.equal(adapter.held.size, 0);
-  } finally { await adapter.close(); }
+  } finally { await adapter.close(); await desktop.stop(); await rm(root,{recursive:true,force:true}); }
 });
 
 test('MP-08 native text is rejected before dispatch when it cannot fit the RPC budget', async () => {
@@ -117,6 +141,21 @@ test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-own
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   assert.deepEqual(calls.map(request=>request.op),Array(6).fill('input'));
   assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});
+
+test('MP-08 / MP-11 human pointer and chord input use the warm channel; agent and text input keep the one-shot helper', async () => {
+  const warm=[],oneShot=[];
+  const channel=()=>({start:async()=>{},close:async()=>{},send:async request=>{warm.push(request);return {applied:true};}});
+  const bound={...binding,ownedProcesses:async()=>[]};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{oneShot.push(request);return {applied:true};},channel});
+  const send=(input,agent)=>adapter.request({op:'input',surface_id:'surface',generation:'generation',...(agent?{_agent_input:true}:{}),input},{});
+  for(const input of [{kind:'click',x:5,y:5},{kind:'move',x:6,y:6},{kind:'scroll',x:5,y:5,steps:2},{kind:'key',key:'PageDown'},{kind:'keycode',keycode:38,state:'down'},{kind:'keycode',keycode:38,state:'up'}])await send(input);
+  assert.deepEqual(warm.map(request=>request.input.kind),['click','move','scroll','key','keycode','keycode']);
+  assert(warm.every(request=>request.op==='input'&&!('agent_input' in request)&&!('processes' in request)));
+  await send({kind:'text',text:'hi'});await send({kind:'click',x:5,y:5},true);await send({kind:'key',key:'PageDown'},true);
+  assert.deepEqual(oneShot.map(request=>[request.input.kind,request.agent_input??false]),[['text',false],['click',true],['key',true]]);
+  assert.equal(warm.length,6);
+  await adapter.close();
 });
 
 // MP-08 / MP-11 (owner 2026-10-09): registered Vault values are masked best effort
