@@ -765,6 +765,9 @@ export class LocalIpcClient {
         subscription.relayDecryptEvent = null
         subscription.relayPublicKey = null
       }
+      // The kernel may have installed a stream before its ACK was rejected.
+      // Retire that connection so peer cleanup removes the old binding/task.
+      if (this.getWebSocket(lane) === socket) await this.closeWebSocket(lane)
       throw error
     }
   }
@@ -1336,15 +1339,18 @@ export class LocalIpcClient {
       return
     }
 
+    // Inventory is a baseline/delta stream without replay. Session history
+    // keeps its cursor; inventory must start with a fresh baseline.
+    const resumeFromEventId = subscription.scope === "waiting_room_inventory" ? null : this.lastReceivedEventId
     try {
       if (this.isRelayMode()) {
         await this.sendRelaySubscribe(
           subscription,
-          this.lastReceivedEventId,
+          resumeFromEventId,
         )
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
-          buildKernelSubscriptionTransportRequest(subscription, this.lastReceivedEventId),
+          buildKernelSubscriptionTransportRequest(subscription, resumeFromEventId),
           "event",
         )
       }
@@ -1353,7 +1359,7 @@ export class LocalIpcClient {
       this.emitSyntheticEvent({
         event: "transport_resumed",
         session_id: subscription.sessionId,
-        resumed_from_event_id: this.lastReceivedEventId,
+        resumed_from_event_id: resumeFromEventId,
       })
     } catch {
       this.scheduleReconnect()

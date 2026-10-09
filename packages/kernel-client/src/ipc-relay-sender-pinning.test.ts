@@ -14,6 +14,8 @@ type RelayFixtureFrame = {
   target?: RelayTarget
   client_public_key?: string
   encrypted_request?: EncryptedRelayPayload
+  resume_from_event_id?: number | null
+  subscription_scope?: string
 }
 
 function createIdentity() {
@@ -126,6 +128,55 @@ async function closeFixture(server: WebSocketServer, client: LocalIpcClient) {
   for (const socket of server.clients) socket.terminate()
   await new Promise<void>(resolve => server.close(() => resolve()))
 }
+
+test("MP-08/MP-11 waiting-room reconnect requests a fresh baseline without a later mutation", async t => {
+  const daemon = createIdentity()
+  const cursors: (number | null | undefined)[] = []
+  const fixture = await createRelayFixture((socket, frame) => {
+    if (frame.kind === "client_connect") socket.send(clientConnectedFrame(frame.target, daemon))
+    if (frame.kind !== "client_subscribe" || !frame.client_public_key) return
+    cursors.push(frame.resume_from_event_id)
+    socket.send(clientResponseFrame(frame.request_id, daemon.encrypt(frame.client_public_key, "null")))
+    if (frame.resume_from_event_id != null) return // Inventory events are not replayed.
+    socket.send(clientEventFrame(frame.subscription_id, frame.client_public_key, daemon, cursors.length, {
+      event: "runtime_notices", notices: [{ message: cursors.length === 1 ? "before disconnect" : "changed while disconnected" }],
+    }))
+  })
+  const client = createClient(fixture.url)
+  t.after(() => closeFixture(fixture.server, client))
+  const nextEvent = createEventQueue(client)
+  await client.subscribeToWaitingRoomInventory()
+  assert.equal((await withTimeout(nextEvent(), "initial baseline")).notices[0]?.message, "before disconnect")
+  for (const socket of fixture.server.clients) socket.terminate()
+  assert.equal((await withTimeout(nextEvent(), "baseline after automatic reconnect")).notices[0]?.message, "changed while disconnected")
+  assert.deepEqual(cursors, [null, null])
+})
+
+test("MP-08/MP-11 a rejected subscribe acknowledgement retires the installed binding before retry", async t => {
+  const daemon = createIdentity()
+  const foreign = createIdentity()
+  const bindings = new Map<string, WebSocket>()
+  let attempts = 0
+  let peakBindings = 0
+  const fixture = await createRelayFixture((socket, frame) => {
+    if (frame.kind === "client_connect") socket.send(clientConnectedFrame(frame.target, daemon))
+    if (frame.kind !== "client_subscribe" || !frame.client_public_key) return
+    attempts++
+    // The server installed the stream before the client rejected the ACK.
+    bindings.set(frame.subscription_id!, socket)
+    peakBindings = Math.max(peakBindings, bindings.size)
+    socket.once("close", () => bindings.delete(frame.subscription_id!))
+    socket.send(clientResponseFrame(frame.request_id, (attempts === 1 ? foreign : daemon).encrypt(frame.client_public_key, "null")))
+  })
+  const client = createClient(fixture.url)
+  t.after(() => closeFixture(fixture.server, client))
+  client.onKernelEvent(() => undefined)
+  await assert.rejects(client.subscribeToWaitingRoomInventory(), /relay sender identity mismatch/)
+  await client.subscribeToWaitingRoomInventory()
+  assert.equal(fixture.connectionCount(), 2, "failed binding socket must be retired")
+  assert.equal(bindings.size, 1)
+  assert.equal(peakBindings, 1)
+})
 
 for (const persistent of [false, true]) {
   test(`relay IPC responses reject wrong senders and accept the paired daemon (${persistent ? "persistent" : "ephemeral"})`, async t => {
