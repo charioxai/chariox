@@ -15,6 +15,14 @@ const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backs
 // automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
 // stay precise on CDP.
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
+// MP-11: native pointer input is at most once. An action sent to the native
+// worker without a reply may have reached the page, so it counts as dispatched
+// (the retired source re-observes the outcome) and is never replayed via CDP.
+async function nativeOnce(dispatch) {
+  try { return await dispatch(); }
+  catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
+}
+
 export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
@@ -121,7 +129,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           // XTest after the same fences (no renderer acknowledgement wait).
           if (nativeClick && !resolved) {
             await check(); await mirrorGuard?.();
-            if (await nativeClick(input.x, input.y)) { onDispatch?.(); return; }
+            if (await nativeOnce(() => nativeClick(input.x, input.y))) { onDispatch?.(); return; }
           }
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
@@ -131,7 +139,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
             await check(); await mirrorGuard?.();
             // MP-11: a retired source has dispatched nothing. Fall back to
             // fenced CDP input without claiming an uncertain native action.
-            if (await nativeWheel(input.x, input.y, nx, ny)) { onDispatch?.(); return; }
+            if (await nativeOnce(() => nativeWheel(input.x, input.y, nx, ny))) { onDispatch?.(); return; }
           }
           const params = { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y };
           if (!asyncScroll || (typeof asyncScroll === 'function' && !asyncScroll())) { await sendInput("Input.dispatchMouseEvent", params); return; }

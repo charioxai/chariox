@@ -197,10 +197,18 @@ export class LinuxCapture {
  // MP-08/MP-10/MP-11: pointer input is a request. The worker reports whether
  // the owned window received it (it refuses when another top-level window,
  // e.g. a permission bubble outside the capture, covers the point), so a
- // refusal falls back to CDP instead of retiring native capture.
+ // refusal falls back to CDP instead of retiring native capture. A command
+ // sent without a reply may have been dispatched: never replay it; retire
+ // this source and report the uncertain action (code native_input_uncertain).
  async pointer(operation,values){
-  try{const reply=await this.nativeWorker.request(operation,values);return reply?.[operation==='wheel'?'wheeled':'clicked']===true;}
-  catch{return false;}
+  let reply;
+  try{reply=await this.nativeWorker.request(operation,values);}
+  catch(error){
+   if(error?.dispatched===false)return false;
+   this.timing?.('native_input_uncertain',performance.timeOrigin+performance.now());this.fence();
+   throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'});
+  }
+  return reply?.[operation==='wheel'?'wheeled':'clicked']===true;
  }
  // MP-08/MP-10: primary click on the owned display (CSS coordinates).
  click(x,y){

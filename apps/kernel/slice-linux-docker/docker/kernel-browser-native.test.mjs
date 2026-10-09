@@ -129,14 +129,36 @@ test('MP-08/MP-10 Rust capture retains supported planning and wheel controls',as
  assert.deepEqual(requests,[{wheel:{point:[10,20],notches:[0,1]}}]);
 });
 // MP-11 (review #893 P2): a pointer refused by the worker (another top-level
-// window covers the point) or a dead worker reports false; never true.
+// window covers the point) or never sent reports false; never true.
 test('MP-11 native pointer refusals are reported, not assumed dispatched',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');
- for(const [reply,expected] of [[{clicked:true},true],[{clicked:false},false],[Error('MP-11: native worker closed'),false]]){
+ const notSent=Object.assign(Error('MP-11: native control unavailable'),{dispatched:false});
+ for(const [reply,expected] of [[{clicked:true},true],[{clicked:false},false],[notSent,false]]){
   const source=new LinuxCapture({scale:2});source.valid=()=>true;source.attested=true;source.child={stdin:{destroyed:false}};
   const requests=[];source.nativeWorker={request:async(operation,values)=>{requests.push({[operation]:values});if(reply instanceof Error)throw reply;return reply}};
-  assert.equal(await source.click(10,20),expected);assert.deepEqual(requests,[{click:{point:[20,40]}}]);
+  assert.equal(await source.click(10,20),expected);assert.deepEqual(requests,[{click:{point:[20,40]}}]);assert.equal(source.closed,false);
  }
+});
+// MP-11 (review #893 @8067044d1 P2): the worker dispatches before it
+// replies; a lost reply leaves the action uncertain. It must not read as a
+// refusal (the caller would replay it via CDP) and the source retires.
+test('MP-11 a native pointer whose reply is lost is uncertain, never a refusal',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {NativeWorkerControl}=await import('./kernel-browser-native-worker.mjs');
+ for(const lose of ['timeout','closed']){
+  const written=[],child={stdin:{destroyed:false,write:(bytes,callback)=>{written.push(bytes);callback?.();return true}}};
+  const worker=new NativeWorkerControl(child);
+  const source=new LinuxCapture({scale:2});source.valid=()=>!source.closed;source.attested=true;source.child=child;source.nativeWorker=worker;
+  const click=source.click(10,20);
+  assert.equal(written.length,1,'the click command reached the worker');
+  if(lose==='closed')worker.close();else{const id=JSON.parse(written[0]).click.id;worker.pending.get(id).reject(Error('MP-10: native control timeout'));worker.pending.delete(id);}
+  await assert.rejects(click,error=>error.code==='native_input_uncertain');
+  assert.equal(source.closed,true,'an uncertain native source retires');
+ }
+ // Never written (closed before the request): a definite refusal.
+ const closed=new NativeWorkerControl({stdin:{destroyed:true}});closed.closed=true;
+ const source=new LinuxCapture({scale:2});source.valid=()=>true;source.attested=true;source.child={stdin:{destroyed:false}};source.nativeWorker=closed;
+ assert.equal(await source.click(10,20),false);
 });
 
 // MP-08/MP-10/MP-11: The host window uses physical DPR1; negotiated page DPR

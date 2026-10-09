@@ -165,6 +165,14 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
   // MP-11 (review #893 P2): the worker's asynchronous refusal also falls back.
   await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:async()=>false,onDispatch:()=>dispatched++});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: a covered owned window refuses; CDP reaches the renderer');
+  // MP-11 (review #893 @8067044d1 P2): a native click/wheel whose reply was
+  // lost may have been dispatched: it is never replayed via CDP.
+  const uncertain=async()=>{throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'})};
+  const before=dispatched;
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:uncertain,onDispatch:()=>dispatched++});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:uncertain,onDispatch:()=>dispatched++});
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: no CDP replay of an uncertain native action');
+  assert.equal(dispatched,before+2,'the uncertain action counts as dispatched once');
 });
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // text-target and focus fences; anything else stays on CDP.
