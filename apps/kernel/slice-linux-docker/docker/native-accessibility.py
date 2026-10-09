@@ -19,6 +19,7 @@ from types import SimpleNamespace
 # the 64-node / 3 KiB public projection. Exhaustion still masks captures.
 MAX_NODES=8192
 MAX_DEPTH=32
+MAX_TEXT=65536
 
 
 class NativeInputDenied(ValueError):
@@ -114,23 +115,22 @@ def subtract(rect, cover):
 
 
 def value_boxes(node, values, pyatspi):
-    """MP-08 / MP-11 (owner 2026-10-09): Vault never blacks out the desktop. A
-    registered value shown as accessible text is masked by its text range (or
-    the node box for a name); anything that cannot be checked is left alone."""
+    """MP-08 / MP-11: best effort Vault string boxes, never a native blackout."""
+    variants={variant for value in values for variant in (value,value.lower(),value.upper()) if variant}
+    if not variants:return []
     boxes=[]
-    if not values:return boxes
     try:
-        text=node.queryText();content=text.getText(0,min(text.characterCount,65536))
-        for value in values:
-            start=content.find(value)
+        text=node.queryText();content=text.getText(0,min(text.characterCount,MAX_TEXT))
+        for variant in variants:
+            start=content.find(variant)
             while start>=0 and len(boxes)<16:
                 try:
-                    x,y,width,height=text.getRangeExtents(start,start+len(value),pyatspi.DESKTOP_COORDS)
-                    if width>0 and height>0:boxes.append([x,y,width,height])
+                    rect=text.getRangeExtents(start,start+len(variant),pyatspi.DESKTOP_COORDS)
+                    if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
                 except Exception:pass
-                start=content.find(value,start+len(value))
+                start=content.find(variant,start+1)
     except Exception:pass
-    if any(value in (node.name or '') for value in values):
+    if not boxes and any(variant in (node.name or '') for variant in variants):
         try:
             rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
             if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
@@ -177,7 +177,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
             except NotImplementedError:pass
-        echoes.extend([] if secret else value_boxes(node,values,pyatspi))
+        if values and not secret and 'showing' in states:echoes.extend(value_boxes(node,values,pyatspi))
         name='[protected]' if secret else (node.name or '')[:4096]
         for value in values:name=name.replace(value,'[redacted]')
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
