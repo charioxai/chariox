@@ -75,7 +75,29 @@ test('MP-08/MP-10 a quiet lossy desktop refines to exact repair tiles of the sam
  assert.equal((await credit(2)).frame_sent,false,'an exact canvas needs no further refinement');
  await display.close();
 });
-test('MP-08/MP-10 refinement waits for 1 s of quiet and a newer sample abandons a paced repair',async()=>{
+test('MP-08/MP-10/MP-11 idle caret updates permit exact refinement while recent human input waits',async()=>{
+ const {host}=fixture();let exact=0;
+ const raw={serial:7,width:1280,height:800,retain(){},release(){},nativeExact:async()=>{exact++;return {width:1280,height:800,native_exact:true,native_repair:true,repair_tiles:[{x:0,y:0,width:16,height:16,format:'png',data_base64:'iVBORw0KGgo='}]};}};
+ const sample={raw,serial:7,width:1280,height:800,motion:true,data_base64:'masked-7'};
+ const source={closed:false,changedAt:performance.now()-300,sample:()=>sample,wake(){},subscribe:()=>()=>{},close:async()=>{},valid:()=>true};
+ const frames=[{...sample,encoded:{key:true,data_base64:'AAAA'}}];
+ const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:()=>({waitReady:async()=>{},take:()=>frames.shift()??null,retireUnsent(){},invalidate(){},close:async()=>{}})});
+ try{
+  const subscription=await display.subscribe(command,'a');
+  const credit=after=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:after},'a');
+  await credit(0);display.wake();
+  assert.equal((await credit(1)).frame_sent,false);assert.equal(exact,0,'repair must not compete with recent input');
+  await new Promise(resolve=>setTimeout(resolve,1050));let reply;
+  for(let n=0;n<10;n++){
+   source.changedAt=performance.now()-300; // latest caret change, not a fully idle desktop
+   reply=await credit(1);if(reply.frame_sent)break;
+   await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  assert.equal(reply.frame_sent,true,'an idle user field can refine between caret changes');
+  assert.equal(reply.display_frame.kind,'tiles');assert.equal(exact,1);
+ }finally{await display.close();}
+});
+test('MP-08/MP-10 refinement waits for fresh motion to settle and a newer sample abandons a paced repair',async()=>{
  const {host}=fixture();let exact=0;
  const make=serial=>{const raw={serial,width:1280,height:800,retain(){},release(){},nativeExact:async()=>{exact++;return {width:1280,height:800,native_exact:true,native_repair:true,repair_tiles:Array.from({length:40},(_,i)=>({x:(i%10)*16,y:Math.floor(i/10)*16,width:16,height:16,format:'png',data_base64:'A'.repeat(60000)}))};}};return {raw,serial,width:1280,height:800,motion:true,data_base64:'masked-'+serial};};
  let current=make(7);
@@ -85,7 +107,7 @@ test('MP-08/MP-10 refinement waits for 1 s of quiet and a newer sample abandons 
  const subscription=await display.subscribe({...command,bitrate:500000},'a');
  const credit=after=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:after},'a');
  await credit(0);
- await new Promise(resolve=>setTimeout(resolve,120));assert.equal((await credit(1)).frame_sent,false);assert.equal(exact,0,'no refinement within 1 s of motion');
+ source.changedAt=performance.now();assert.equal((await credit(1)).frame_sent,false);assert.equal(exact,0,'no refinement immediately after motion');
  source.changedAt=performance.now()-2000;let reply;
  for(let n=0;n<50&&!(reply=await credit(1)).frame_sent;n++)await new Promise(resolve=>setTimeout(resolve,10));
  assert.equal(reply.display_frame.kind,'tiles');

@@ -72,12 +72,15 @@ export class DesktopDisplay {
   refine(stream,source,policy,valid) {
     const sample=source.sample();
     if(!sample?.raw?.nativeExact||!stream.previous||(stream.exact&&!stream.repair))return null;
-    // Interactive use stays video: a repair batch occupies a constrained link
-    // (~375 KB at 8 Mbit/s), so refine only after 1 s without a new sample.
-    stream.refiner??=new NativeRefiner(binding=>binding.sample,{quietNativeMs:1000,timing:this.host.timing});
+    // MP-08/MP-10: keep repairs out of the first second after input, but
+    // allow a quiet field to settle between caret changes. Every repair
+    // remains bound to the current protected sample; motion abandons it.
+    const quietNativeMs=150;
+    stream.refiner??=new NativeRefiner(binding=>binding.sample,{quietNativeMs,timing:this.host.timing});
     const binding={source,document:stream.desktop_generation,policy,epoch:0,serial:sample.serial,native:true,sample,
       repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
-    const exact=stream.refiner.request(binding,source.changedAt??-Infinity,()=>valid()&&source.sample()===sample);
+    const changedAt=Math.max(source.changedAt??-Infinity,(this.inputAt??-Infinity)+1000-quietNativeMs);
+    const exact=stream.refiner.request(binding,changedAt,()=>valid()&&source.sample()===sample);
     return exact&&{...exact,generation:this.host.generation};
   }
   async remove(stream) {
@@ -92,5 +95,5 @@ export class DesktopDisplay {
   }
   async retire(observer){for(const stream of this.streams())if(stream.observed_by===observer)await this.remove(stream);}
   async close(){for(const stream of this.streams())await this.remove(stream);await this.retireSource();}
-  wake(){this.source?.wake();}
+  wake(){this.inputAt=performance.now();this.source?.wake();}
 }

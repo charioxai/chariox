@@ -46,7 +46,10 @@ export class NativeKeyboardChannel {
       this.child.stdin.write(JSON.stringify({id,...request})+'\n');
     });
     signal?.addEventListener('abort',abort,{once:true});
-    const timeout=setTimeout(abort,2000);
+    // MP-08/MP-10/MP-11: committed text is bounded to 128 characters by
+    // the adapter/helper and paced at 40 ms per character, within the 20 s RPC.
+    const textMs=request.input?.kind==='text'?40*[...request.input.text].length:0;
+    const timeout=setTimeout(abort,Math.min(8000,2000+textMs));
     try{return await response;}finally{clearTimeout(timeout);signal?.removeEventListener('abort',abort);}
   }
   async close(){

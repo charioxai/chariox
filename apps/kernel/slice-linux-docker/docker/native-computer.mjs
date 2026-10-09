@@ -9,7 +9,7 @@ import { fenceBrowserCapture } from './browser-protection-regions.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 // MP-08/MP-10: human input the warm channel carries (no admission; see native-computer.py).
-const WARM_INPUTS = new Set(['keycode','click','move','scroll','key','drag']);
+const WARM_INPUTS = new Set(['keycode','click','move','scroll','key','drag','text']);
 export function nativeInput(input, binding) {
   if (!input || typeof input !== 'object') throw new Error('MP-08: invalid native input');
   const bounded = (value, max) => Number.isInteger(value) && value >= 0 && value < max;
@@ -132,10 +132,11 @@ export class NativeComputer {
       try {
         // MP-08/MP-10: human input keeps one warm, ordered helper; agent input
         // keeps the one-shot helper with its per-press admission.
-        const warm=Boolean(this.channel)&&!command._agent_input&&WARM_INPUTS.has(input.kind);
+        const dispatched=input.kind==='composition'?{kind:'text',text:input.text}:input;
+        const warm=Boolean(this.channel)&&!command._agent_input&&WARM_INPUTS.has(dispatched.kind);
         let physical;
-        if(warm){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input},signal);}
-        const result=warm ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:input.kind==='composition'?{kind:'text',text:input.text}:input},binding.environment,signal);
+        if(warm){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input:dispatched},signal);}
+        const result=warm ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:dispatched},binding.environment,signal);
         if(input.kind==='keycode' && input.state==='up') {this.held.delete(input.keycode);if(!this.held.size)this.heldOwner=null;}
         // Display PR5 consumes this event to wake XDamage capture immediately.
         this.wakeCapture({surface_id:binding.surface_id,generation:binding.generation,exact:true,reason:input.kind});

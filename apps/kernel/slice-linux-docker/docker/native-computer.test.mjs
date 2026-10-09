@@ -144,18 +144,18 @@ test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-own
   assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
 });
 
-test('MP-08 / MP-11 human pointer and chord input use the warm channel; agent and text input keep the one-shot helper', async () => {
+test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm channel while every agent press keeps admission', async () => {
   const warm=[],oneShot=[];
   const channel=()=>({start:async()=>{},close:async()=>{},send:async request=>{warm.push(request);return {applied:true};}});
   const bound={...binding,ownedProcesses:async()=>[]};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{oneShot.push(request);return {applied:true};},channel});
   const send=(input,agent)=>adapter.request({op:'input',surface_id:'surface',generation:'generation',...(agent?{_agent_input:true}:{}),input},{});
-  for(const input of [{kind:'click',x:5,y:5},{kind:'move',x:6,y:6},{kind:'scroll',x:5,y:5,steps:2},{kind:'key',key:'PageDown'},{kind:'keycode',keycode:38,state:'down'},{kind:'keycode',keycode:38,state:'up'}])await send(input);
-  assert.deepEqual(warm.map(request=>request.input.kind),['click','move','scroll','key','keycode','keycode']);
+  for(const input of [{kind:'click',x:5,y:5},{kind:'move',x:6,y:6},{kind:'scroll',x:5,y:5,steps:2},{kind:'key',key:'PageDown'},{kind:'keycode',keycode:38,state:'down'},{kind:'keycode',keycode:38,state:'up'},{kind:'text',text:'hi'},{kind:'composition',text:'Grüße 世界😀'}])await send(input);
+  assert.deepEqual(warm.map(request=>request.input.kind),['click','move','scroll','key','keycode','keycode','text','text']);
   assert(warm.every(request=>request.op==='input'&&!('agent_input' in request)&&!('processes' in request)));
-  await send({kind:'text',text:'hi'});await send({kind:'click',x:5,y:5},true);await send({kind:'key',key:'PageDown'},true);
-  assert.deepEqual(oneShot.map(request=>[request.input.kind,request.agent_input??false]),[['text',false],['click',true],['key',true]]);
-  assert.equal(warm.length,6);
+  await send({kind:'text',text:'hi'},true);await send({kind:'composition',text:'世界'},true);await send({kind:'click',x:5,y:5},true);await send({kind:'key',key:'PageDown'},true);
+  assert.deepEqual(oneShot.map(request=>[request.input.kind,request.agent_input??false]),[['text',true],['text',true],['click',true],['key',true]]);
+  assert.equal(warm.length,8);
   await adapter.close();
 });
 
