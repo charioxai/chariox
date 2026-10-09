@@ -23,6 +23,7 @@ fn review931_5_attached_evidence_updates_content_digest() {
         evidence_digest: "changed".into(),
         proposals: vec![],
         operation,
+        modeled_folders: Default::default(),
     };
     store.save_detection(&cache).unwrap();
     let changed = store.snapshot(&project).unwrap();

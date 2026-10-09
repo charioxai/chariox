@@ -8,6 +8,7 @@ pub struct EnvironmentDetection {
     pub proposals: Vec<EnvironmentProposal>,
     pub skips: Vec<EnvironmentItemResult>,
     pub code_folders: BTreeSet<String>,
+    pub folder_digests: BTreeMap<String, String>,
 }
 pub fn detect_environment(
     folders: &[EnvironmentFolder],
@@ -57,11 +58,27 @@ pub fn detect_environment(
             }
         }
     }
+    let folder_digests = folders
+        .iter()
+        .map(|folder| {
+            let files: Vec<_> = index
+                .files
+                .iter()
+                .filter(|f| f.folder_id == folder.folder_id)
+                .map(|f| (&f.path, &f.digest))
+                .collect();
+            (
+                folder.folder_id.clone(),
+                metadata_digest(&(files, folder_fingerprint(&proposals, &folder.folder_id))),
+            )
+        })
+        .collect();
     Ok(EnvironmentDetection {
         evidence_digest,
         proposals,
         skips: importer.skips,
         code_folders: importer.code_folders,
+        folder_digests,
     })
 }
 impl EnvironmentDetection {
@@ -71,12 +88,6 @@ impl EnvironmentDetection {
         allowed: &[String],
         selected: &[EnvironmentFolder],
     ) -> BTreeSet<String> {
-        if previous.is_some_and(|p| {
-            p.evidence_digest == self.evidence_digest
-                && p.operation.phase == EnvironmentOperationPhase::Ready
-        }) {
-            return BTreeSet::new();
-        }
         selected
             .iter()
             .filter(|folder| {
@@ -84,8 +95,8 @@ impl EnvironmentDetection {
                     || allowed.contains(&folder.folder_id))
                     && !previous.is_some_and(|p| {
                         p.operation.phase == EnvironmentOperationPhase::Ready
-                            && folder_fingerprint(&p.proposals, &folder.folder_id)
-                                == folder_fingerprint(&self.proposals, &folder.folder_id)
+                            && p.modeled_folders.get(&folder.folder_id)
+                                == self.folder_digests.get(&folder.folder_id)
                     })
             })
             .map(|f| f.folder_id.clone())
@@ -97,7 +108,10 @@ impl EnvironmentDetection {
         folders: &[EnvironmentFolder],
         model_folders: &BTreeSet<String>,
     ) -> (ProjectEnvironmentDiscoveryInput, bool) {
-        let mut paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut paths: BTreeMap<String, BTreeSet<String>> = model_folders
+            .iter()
+            .map(|id| (id.clone(), BTreeSet::new()))
+            .collect();
         let mut references: BTreeMap<(String, String), ProjectEnvironmentEntry> = BTreeMap::new();
         for proposal in &self.proposals {
             for origin in &proposal.requirement.origins {

@@ -264,10 +264,12 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
-        match fs::remove_file(self.path(project).with_extension("detect.json")) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(environment_error("remove detection cache failed")),
+        for extension in ["detect.json", "detect-model.json"] {
+            match fs::remove_file(self.path(project).with_extension(extension)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(environment_error("remove detection cache failed")),
+            }
         }
         match fs::remove_file(self.path(project).with_extension("identity.json")) {
             Ok(()) => {}

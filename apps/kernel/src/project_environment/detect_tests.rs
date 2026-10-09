@@ -370,6 +370,7 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
         evidence_digest: detection.evidence_digest.clone(),
         proposals: detection.proposals.clone(),
         operation,
+        modeled_folders: detection.folder_digests.clone(),
     };
     let store_root = TestWorktree::new("envp02a-cache-state");
     let store = ProjectEnvironmentStore::new(store_root.path());
@@ -427,3 +428,6 @@ mod review_5;
 
 #[path = "detect_review_1_tests.rs"]
 mod review_1;
+
+#[path = "detect_review_6_tests.rs"]
+mod review_6;

@@ -12,7 +12,7 @@ fn review931_4_invalid_detection_cache_is_absent_and_replaceable() {
         crate::session::RuntimeProjectKind::Named,
     );
     let before = store.snapshot(&project).unwrap();
-    let cache_path = store.path("project").with_extension("detect.json");
+    let cache_path = store.path("project").with_extension("detect-model.json");
     for bytes in [b"invalid".as_slice(), br#"{"new_field":true}"#.as_slice()] {
         std::fs::write(&cache_path, bytes).unwrap();
         assert!(store.load_detection("project").unwrap().is_none());
@@ -37,6 +37,7 @@ fn review931_4_invalid_detection_cache_is_absent_and_replaceable() {
         evidence_digest: "fresh".into(),
         proposals: vec![],
         operation: operation.clone(),
+        modeled_folders: Default::default(),
     };
     store.save_detection(&cache).unwrap();
     assert!(
