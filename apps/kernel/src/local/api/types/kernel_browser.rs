@@ -69,6 +69,15 @@ pub enum KernelBrowserCommand {
         generation: u64,
         after_sequence: u64,
     },
+    /// MP-08/MP-10: protocol 475 pushed display. Acknowledges the newest
+    /// presented sequence on a relay display subscription (the first ack
+    /// starts the kernel push pump); `lost` requests an independent frame.
+    DisplayAck {
+        subscription_id: String,
+        generation: u64,
+        sequence: u64,
+        lost: bool,
+    },
     DisplayInput {
         tab_id: String,
         generation: u64,

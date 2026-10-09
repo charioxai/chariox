@@ -3176,3 +3176,65 @@ for host isolation, lifecycle and migration. No relay-peer shape changes.
 Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
 
 Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-10 / MP-11: protected desktop display (local 474, peer 96)
+
+A human terminal subscribes with `KernelBrowser` Computer `display_subscribe`,
+its current native `surface_id` and generation, video codecs, bounded bitrate,
+and DPR 1 or 2. The kernel returns the native source identity and physical
+geometry alongside the existing numeric controller generation and viewer lease.
+Only this new desktop viewer requires protocol 474. Agent MCP retains bounded,
+on-demand protected observations and cannot subscribe to continuous video.
+
+The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
+credit window and encrypted CXD1 relay transport. It has no separate streaming
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
+
+Multiple admitted viewers share one protected capture source. Each lease remains
+bound to its authenticated terminal, native generation and controller generation;
+disconnect, expiry and last-viewer close release its resources. Per-credit
+cancellation does not own the encoder lifetime. The existing display attach,
+next and unsubscribe operations address these leases. This section adds no
+relay frame of its own; its events use the display encoding below. Peer 97
+remains unused.
+
+Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
+events change; every other event stays JSON. On the local WebSocket they are
+binary messages; over the relay they are the encrypted plaintext. The format is
+`CXD1`, a big-endian u32 header length, the JSON event header naming its
+segments, then the raw segment bytes in order. JSON plaintexts never start with
+`CXD1`. These events are sent only on a display delivery: a local
+`display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
+that never register display delivery never receive `CXD1`. Peer 96 adds an
+optional `CXR1` WebSocket binary relay envelope, negotiated with the
+`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
+relay reads only the routing header. Kernels fall back to JSON/base64 for older
+relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
+that decodes `CXD1` before kernels at 466 or later serve it Browser display;
+an older bundle cannot parse these frames.
+
+The shared presenter accepts desktop pixels only at the exact admitted physical
+geometry, with CSS dimensions divided by the selected DPR. It converts viewer
+coordinates to native coordinates and routes input, takeover and release through
+the existing kernel Computer admission and actor ledger. Browser viewports retain
+their existing path. A Cloud client must expose the native source and use this
+shared presenter before the desktop feature is user-visible.

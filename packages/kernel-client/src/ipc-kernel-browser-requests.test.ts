@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
 test("MD-2: protocol 417 browser requests carry no session or claimed user", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 461)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 475)
   assert.equal(kernelBrowserMinimumProtocolVersion, 443)
   assert.deepEqual(kernelBrowserRequest({ op: "open", url: "https://example.com" }), {
     KernelBrowser: { command: { op: "open", url: "https://example.com" } },
@@ -15,7 +15,7 @@ test("MD-2: protocol 417 browser requests carry no session or claimed user", () 
   })
 })
 
-test("MP-08/MP-11: grant requests and cross-kernel badge share protocol 443", () => {
+test("MP-08/MP-11: grant requests and cross-kernel badge share protocol 447", () => {
   assert.equal(userDomainAccessMinimumProtocolVersion, 443)
   assert.deepEqual(kernelBrowserRequest({ op: "revoke_grants", agent_id: null }), { KernelBrowser: { command: { op: "revoke_grants", agent_id: null } } })
   assert.deepEqual(kernelBrowserRequest({ op: "subscribe_grants", after: 3, wait_ms: 25000 }), { KernelBrowser: { command: { op: "subscribe_grants", after: 3, wait_ms: 25000 } } })

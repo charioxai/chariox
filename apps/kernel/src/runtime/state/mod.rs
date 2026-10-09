@@ -1180,4 +1180,4 @@ impl KernelRuntimeState {
 }
 
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
-pub(crate) use kernel_browser_runtime::KernelBrowserDisplayRequest;
+pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

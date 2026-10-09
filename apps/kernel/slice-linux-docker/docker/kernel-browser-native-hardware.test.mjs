@@ -1,0 +1,3 @@
+// MP-08/MP-10/MP-11: driver error visibility stays private.
+import {test} from 'node:test';import assert from 'node:assert/strict';import {PortableEncoder} from './kernel-browser-display.mjs';
+test('MP-08/MP-10/MP-11: VAAPI init failure is retained once in private diagnostics',async()=>{const e=new PortableEncoder(),seen=[];e.timing={hardware:d=>seen.push(d)};const raw={nativeEncode:async()=>({backend:'native-x264',stripes:[],hardware_fallback:true,hardware_diagnostic:'/dev/dri/renderD128: /usr/lib/dri/iHD_drv_video.so init failed'})};await e.nativeEncode(raw,8000000,false,true);await e.nativeEncode(raw,8000000,false,true);assert.equal(seen.length,1);assert.match(seen[0],/iHD_drv_video.so/);});

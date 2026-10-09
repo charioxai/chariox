@@ -264,6 +264,12 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
+/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to that contract.
 /// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
 /// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 461;
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+/// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 475;

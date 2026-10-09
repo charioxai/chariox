@@ -40,6 +40,7 @@ mod connection_state;
 mod connector;
 mod daemon_requests;
 mod display_ingress;
+mod display_pump;
 mod display_tunnel;
 mod envelope_io;
 mod events;

@@ -86,6 +86,7 @@ pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
 mod kernel_browser_actors;
 mod kernel_browser_assets;
+mod kernel_browser_display_gate;
 pub(crate) mod kernel_browser_host;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;

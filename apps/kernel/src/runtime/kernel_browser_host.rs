@@ -26,6 +26,8 @@ pub(crate) struct KernelBrowserHost {
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
     stopped: bool,
+    mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
+    display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
     access: UserDomainAccess,
@@ -80,6 +82,20 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
         }
+    }
+    // MD-DISPLAY-04: queued credits wait asynchronously, away from the
+    // controller mutex. Input can enter between captures rather than behind
+    // an entire WAN window of blocking capture/encode/pacing operations.
+    pub(crate) fn display_gate(
+        &self,
+        user: &str,
+    ) -> Arc<super::kernel_browser_display_gate::DisplayGate> {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .display_gates
+            .entry(user.into())
+            .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
+            .clone()
     }
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
@@ -314,6 +330,33 @@ impl KernelBrowserHost {
         }
         self.check_admission(admission)?;
         let browser = self.backend(user)?;
+        // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
+        // but never hold the shared controller lock during input/CDP waits.
+        // Takeover/cancellation use the actor model and remain independent.
+        let mutation = method == "host.secret"
+            || (method == "host.browser"
+                && matches!(
+                    params["op"].as_str(),
+                    Some("open" | "close" | "navigate" | "input" | "stop")
+                ));
+        let mutation_lane = if mutation {
+            Some(
+                self.inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .mutation_lanes
+                    .entry(user.into())
+                    .or_default()
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let _mutation_guard = mutation_lane
+            .as_ref()
+            .map(|lane| lane.lock())
+            .transpose()
+            .map_err(|_| "MD-3: browser mutation lane poisoned")?;
         let mut backend = browser
             .lock()
             .map_err(|_| "MD-2: browser operation lock poisoned")?;
@@ -349,11 +392,15 @@ impl KernelBrowserHost {
             return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
         }
         if params["_host_generation"].is_u64() {
-            if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+            if !backend
+                .host_is_live()
+                .map_err(crate::error::HostFailure::Other)?
             {
                 return Err("MD-APP: App host is no longer live".into());
             }
-        } else if !matches!(backend.health(), Ok(health) if health.state == BrowserControllerProcessState::Ready)
+        } else if !backend
+            .host_is_live()
+            .map_err(crate::error::HostFailure::Other)?
         {
             // MP-11: state/observation reads cannot start or recover a
             // controller. Startup is explicit and uses the same grant for
@@ -402,9 +449,27 @@ impl KernelBrowserHost {
                 .into();
         }
         self.check_admission(admission)?;
-        backend.host_request_classified("host.protect", policy)?;
+        backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
+        // MP-08/MP-11: display requests on a desktop video subscription renew
+        // its viewer lease; an unsubscribe ends it (ownership then retires).
+        if method == "host.browser" {
+            let subscription = params["display_subscription_id"]
+                .as_str()
+                .or_else(|| params["subscription_id"].as_str());
+            if let Some(subscription) = subscription {
+                let now = std::time::Instant::now();
+                let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+                match params["op"].as_str() {
+                    Some("unsubscribe") => model.end_desktop_viewer(subscription, now),
+                    Some("screenshot" | "display_attach") => {
+                        model.renew_desktop_viewer(subscription, now)
+                    }
+                    _ => {}
+                }
+            }
+        }
         if method == "host.browser"
             && matches!(
                 params["op"].as_str(),
@@ -430,15 +495,23 @@ impl KernelBrowserHost {
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
-            let state = backend.host_request_cancellable(
+            let observed_input = method == "host.browser"
+                && params["op"] == "input"
+                && model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .input_is_current(&params);
+            if !observed_input {
+                let state = backend.host_request_cancellable(
                 "host.browser",
                 serde_json::json!({"op":if params["op"] == "open" { "start" } else { "state" }}),
                 admission.map(|a| a.cancellation.clone()),
             )?;
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(&state)?;
+                model
+                    .lock()
+                    .map_err(|_| "MD-3: actor lock poisoned")?
+                    .reconcile(&state)?;
+            }
             let actor = browser_actor(admission, &params);
             let (id, cancellation) = {
                 // Disconnect/focus retirement takes the same model lock. Either
@@ -473,7 +546,22 @@ impl KernelBrowserHost {
         // MP-11: focused and retained input share grant/run cancellation.
         // Vault requests also carry their live focus authority from admission.
         let request_params = params.clone();
-        let mut result = backend.host_request_cancellable(method, params, cancellation.clone());
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
+        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
+            let signal = cancellation
+                .clone()
+                .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
+            let pending = backend.begin_cancellable_mutation(method, &params, &signal)?;
+            drop(backend);
+            pending
+                .wait(&signal)
+                .map_err(crate::error::HostFailure::Other)
+                .and_then(|response| response.into_host_result(method))
+        } else {
+            backend.host_request_cancellable(method, params, cancellation.clone())
+        };
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
@@ -634,11 +722,10 @@ impl KernelBrowserHost {
             .release(actor_id, tab, generation)
     }
     pub(crate) fn actor_snapshot(&self, user: &str) -> Result<Value, String> {
-        Ok(self
-            .actor_model(user)?
-            .lock()
-            .map_err(|_| "MD-3: actor lock poisoned")?
-            .snapshot())
+        let model = self.actor_model(user)?;
+        let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        Ok(model.snapshot())
     }
 
     pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {

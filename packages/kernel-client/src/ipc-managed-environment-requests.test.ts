@@ -222,7 +222,7 @@ test("managed environment requests use the shared local daemon shape", () => {
 })
 
 test("managed environment reimage preflight exposes only retained identity and desired release", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 461)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 475)
   assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
   assert.equal(managedEnvironmentCreateMinimumProtocolVersion, 342)
   const preflight: ManagedEnvironmentReimagePreflight = {
@@ -291,7 +291,7 @@ test("managed environment summaries bind the runtime machine and kernel", () => 
 })
 
 test("managed environment details preserve observed activity and operation history", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 461)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 475)
   assert.equal(managedEnvironmentShutdownObservationMinimumProtocolVersion, 370)
   const environment: ManagedEnvironmentSummary = {
     environmentId: "environment-1",

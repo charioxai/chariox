@@ -153,6 +153,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         LocalDaemonRequest::CaptureVisibleRegion(_)
             | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
                 command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplayAck { .. }
                     | crate::local::KernelBrowserCommand::ListGrants
                     | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
                     | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }

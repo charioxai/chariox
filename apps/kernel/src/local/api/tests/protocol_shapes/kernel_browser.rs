@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,7 +130,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
@@ -142,13 +142,17 @@ fn kernel_browser_protocol_443_response_snapshot() {
 }
 
 #[test]
-fn kernel_browser_display_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+fn kernel_browser_display_protocol_475_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
-            codecs: vec!["vp09.00.10.08".into(), "png".into()],
+            codecs: vec![
+                "avc1.420033".into(),
+                "png".into(),
+                "chariox-stripes-v1".into(),
+            ],
             bitrate: 2_000_000,
             device_scale_factor: 2,
         },
@@ -156,6 +160,12 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
+        },
+        Command::DisplayAck {
+            subscription_id: "s".into(),
+            generation: 2,
+            sequence: 3,
+            lost: true,
         },
         Command::DisplayInput {
             tab_id: "t".into(),
@@ -193,14 +203,27 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
     }
     let event = crate::transport::kernel_protocol::KernelEvent::KernelBrowserFrame {
         subscription_id: "s".into(),
-        frame: serde_json::json!({"kind":"tiles","base_sequence":3,"sequence":4,"document_id":"d","generation":2,"tab_id":"t","width":2560,"height":1600,"device_scale_factor":2,"tiles":[]}),
+        frame: serde_json::json!({"kind":"stripes","base_sequence":3,"sequence":4,"document_id":"d","generation":2,"tab_id":"t","width":2560,"height":1600,"device_scale_factor":2,"stripes":[{"row":0,"y":0,"height":200,"codec":"avc1.420033","key":false,"sequence":5,"reference_sequence":4,"data_base64":"b3BhcXVl"}]}),
     };
-    let snapshot = serde_json::json!({"requests":values,"event":event});
+    // MP-08/MP-10: protocol 466 pins the binary display event and a lossless
+    // scroll frame (moves + WebP residual) exactly as clients receive them.
+    let scroll = crate::transport::kernel_protocol::KernelEvent::KernelBrowserFrame {
+        subscription_id: "s".into(),
+        frame: serde_json::json!({"kind":"tiles","base_sequence":4,"sequence":5,"document_id":"d","generation":2,"tab_id":"t","width":1920,"height":1080,"device_scale_factor":1,"moves":[[0,0,1920,1060,-20]],"tiles":[{"x":0,"y":1060,"width":1920,"height":20,"format":"webp","data_base64":"UklGRg=="}]}),
+    };
+    let binary = |event: &crate::transport::kernel_protocol::KernelEvent| {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(
+            crate::transport::kernel_browser_display::encode_display_event(event.clone()).unwrap(),
+        )
+    };
+    let snapshot =
+        serde_json::json!({"requests":values,"event":binary(&event),"scroll":binary(&scroll)});
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9df723cb7058e131e171fcc0856836b14b98fd8556da51962f11070d533cda51"
+        "422dea57f036781e882a57634a1a3bba953505038853725eb2b2aa0768f4d7ed"
     );
 }

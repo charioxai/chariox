@@ -59,7 +59,7 @@ impl StdioOwnership {
             .stdin
             .lock()
             .map_err(|_| "controller stdin lock poisoned")?;
-        serde_json::to_writer(
+        request_wire::write_line(
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
@@ -77,10 +77,6 @@ impl StdioOwnership {
             },
         )
         .map_err(|error| error.to_string())?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| error.to_string())?;
         Ok(PendingAction {
             request_id,
             cancel_id,
@@ -110,13 +106,9 @@ impl PendingAction {
                     .stdin
                     .lock()
                     .map_err(|_| "controller stdin lock poisoned")?;
-                serde_json::to_writer(&mut *stdin, &serde_json::json!({
+                request_wire::write_line(&mut *stdin, &serde_json::json!({
                     "id":self.cancel_id,"method":"browser.cancel","params":{"request_id":self.request_id}
                 })).map_err(|error| error.to_string())?;
-                stdin
-                    .write_all(b"\n")
-                    .and_then(|()| stdin.flush())
-                    .map_err(|error| error.to_string())?;
                 sent = true;
             }
             if sent && !acknowledged {

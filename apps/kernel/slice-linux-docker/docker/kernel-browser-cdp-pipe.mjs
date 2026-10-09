@@ -9,6 +9,13 @@ export function connectCdpPipe(input, output, requestTimeoutMs = 5000) {
   const emit = (type, event = {}) => {
     for (const listener of listeners.get(type) ?? []) listener(event);
   };
+  let pending = [], pendingBytes = 0;
+  const flush = () => {
+    if (socket.readyState !== 1 || !pending.length) return;
+    const bytes = pending.join(''); pending = []; pendingBytes = 0;
+    try { input.write(bytes, error => { if (error) socket.close(); }); }
+    catch { socket.close(); }
+  };
   const socket = {
     readyState: 1,
     addEventListener(type, listener) {
@@ -18,14 +25,17 @@ export function connectCdpPipe(input, output, requestTimeoutMs = 5000) {
     send(message) {
       if (socket.readyState !== 1) throw new Error('MD-2: private CDP pipe closed');
       if (Buffer.byteLength(message) > MAX_MESSAGE || message.includes('\0')) throw new Error('MD-2: private CDP message exceeds limit');
-      if (input.writableLength + Buffer.byteLength(message) + 1 > MAX_MESSAGE) {
+      if (input.writableLength + pendingBytes + Buffer.byteLength(message) + 1 > MAX_MESSAGE) {
         socket.close(); throw new Error('MD-2: private CDP pipe backpressure limit');
       }
-      input.write(message + '\0');
+      // MP-08/MP-10/MP-11: same ordered CDP messages, one write for the
+      // concurrent document/visibility fence. No fence result is cached.
+      if (!pending.length) queueMicrotask(flush);
+      pending.push(message + '\0'); pendingBytes += Buffer.byteLength(message) + 1;
     },
     close() {
       if (socket.readyState !== 1) return;
-      socket.readyState = 3;
+      socket.readyState = 3; pending = []; pendingBytes = 0;
       input.destroy(); output.destroy(); emit('close');
     },
   };

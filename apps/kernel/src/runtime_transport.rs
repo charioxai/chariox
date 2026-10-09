@@ -1191,6 +1191,25 @@ async fn send_kernel_frame<S>(writer: &mut S, frame: KernelOutgoingFrame) -> boo
 where
     S: Sink<Message> + Unpin,
 {
+    // MP-08/MP-10: protocol 466 display events are binary WebSocket messages
+    // with raw payload segments; every other frame keeps its JSON text shape.
+    match frame {
+        KernelOutgoingFrame::Event { event, .. }
+            if matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
+        {
+            match crate::transport::kernel_browser_display::encode_display_event(*event) {
+                Ok(bytes) => writer.send(Message::Binary(bytes.into())).await.is_ok(),
+                Err(_) => false,
+            }
+        }
+        frame => send_kernel_text(writer, frame).await,
+    }
+}
+
+async fn send_kernel_text<S>(writer: &mut S, frame: KernelOutgoingFrame) -> bool
+where
+    S: Sink<Message> + Unpin,
+{
     let payload = match serialize_frame(&frame) {
         Ok(payload) => payload,
         Err(_) => return false,

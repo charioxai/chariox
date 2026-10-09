@@ -142,6 +142,7 @@ impl KernelRuntimeState {
             KernelComputerCommand::Takeover { .. }
                 | KernelComputerCommand::Release { .. }
                 | KernelComputerCommand::Actors { .. }
+                | KernelComputerCommand::DisplaySubscribe { .. }
         ) {
             return Err(host_error("MP-11: human desktop channel required".into()));
         }

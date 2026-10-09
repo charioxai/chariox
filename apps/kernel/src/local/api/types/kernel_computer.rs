@@ -12,6 +12,13 @@ pub enum KernelComputerCommand {
     Start {},
     State {},
     Actors {},
+    /// MP-08/MP-11: human viewer of the protected desktop; no model video.
+    DisplaySubscribe {
+        target: KernelDesktopTarget,
+        codecs: Vec<String>,
+        bitrate: u32,
+        device_scale_factor: u32,
+    },
     Snapshot {
         target: KernelDesktopTarget,
     },

@@ -216,8 +216,16 @@ never saved as plaintext secret-bearing restore URLs. No secret-reading MCP
 endpoint exists. The obsolete unprotected host request/App methods are removed;
 appviews must use the unchanged async `kernel_browser_app_view` seam.
 
-PNG screenshots reuse the Room's trusted CDP region locator, including field,
-plaintext echo, iframe and opaque-media masks. A small bounded native PNG
+PNG screenshots reuse the Room's trusted CDP region locator, including field
+and plaintext echo masks. MP-11 (owner decision 2026-10-08): every frame is
+inspected instead of masked whole. In-process frame documents are walked with
+the pierced top document; out-of-process frames are inspected through the
+browser's auto-attached flat sessions and mapped by their owner's content box.
+Images, canvas, SVG, video and iframes are not masked by default; only
+protected fields, explicit protection markers and Vault echoes are. A frame is
+masked whole only under a marker on its owner or an ancestor, behind a
+transformed owner, or when it cannot be inspected (fail closed), and the
+reason is recorded as `region_frame_masked <reason>`. A small bounded native PNG
 adapter applies the masks after capture. Content capture binds to the emulated
 CDP viewport rather than desktop window bounds; Room desktop binding stays
 unchanged. Unsupported/racing layouts use a

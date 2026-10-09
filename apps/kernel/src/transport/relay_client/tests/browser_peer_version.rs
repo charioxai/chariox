@@ -5,7 +5,7 @@ use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 // MP-11: the admission floor moves with relay peer bumps; test around it.
-const FLOOR: u32 = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+const FLOOR: u32 = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
 
 #[test]
 fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {

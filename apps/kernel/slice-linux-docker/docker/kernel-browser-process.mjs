@@ -1,8 +1,10 @@
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
@@ -25,13 +27,16 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
-export function launchArguments(profile, headless, display = false, nativeAccessibility = false) {
+// MP-08/MP-10: a private owned window renders at the viewer's device scale
+// natively (emulated view scaling renders text differently from CDP).
+export function launchArguments(profile, headless, display = false, nativeAccessibility = false, scale = 1) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
-    "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit"] : []),
+    `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
+    // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []),
     ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
   ];
 }
@@ -50,12 +55,17 @@ export class HostChromium {
     this.environment = environment;
     this.child = null;
     this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
+    // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
+    // desktop's scale; only a private owned display may rescale it.
+    this.scale = 1;
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       if (this.connection?.isOpen()) return this.connection;
       await this.stop();
     }
+    // MP-08/MP-11: settle a previously owned display before failed recovery.
+    await this.display?.close(); this.display = null;
     let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
@@ -83,7 +93,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()));
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
     const command = this.desktop?.binding() ? desktopCommand(binary, args) : { binary, args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
@@ -107,6 +117,7 @@ export class HostChromium {
     this.child = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
+      await this.display?.close();this.display=null;
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;

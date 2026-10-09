@@ -1,9 +1,9 @@
-//! MD-N3 / MP-08 / MP-11: protocol 461 freezes every note request/event seam.
+//! MD-N3 / MP-08 / MP-11: protocol 447 freezes every note request/event seam.
 use super::*;
 use crate::local::{NoteAnchor, NoteCommand, NoteResult, NoteTextQuote, NoteWindow, NotesRequest};
 #[test]
 fn notes_protocol_443_shapes_and_rejected_authority_claims() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let window = NoteWindow::Panel {
         window_id: "message-42".into(),
     };
@@ -79,7 +79,7 @@ fn notes_protocol_443_shapes_and_rejected_authority_claims() {
 #[test]
 fn notes_protocol_443_response_snapshots() {
     use crate::local::{NoteRecord, NoteReply, NoteSelection, NoteSummary};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let window = NoteWindow::Panel {
         window_id: "message-42".into(),
     };

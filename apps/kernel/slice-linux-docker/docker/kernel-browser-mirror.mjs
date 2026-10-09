@@ -1,4 +1,5 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
+import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
@@ -52,11 +53,14 @@ export class MirrorService {
     return reply.result.value;
   }
   async subscribe(command,scope) {
+    // MP-11: the mirror tree, tiles and masks are 1280x800 CSS. Never override a
+    // different canonical display geometry on the same tab.
+    if(geometry.width!==1280||geometry.height!==800)throw new Error('MP-11: mirror requires the 1280x800 display geometry');
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor))throw new Error('MP-11: mirror negotiation bounds');
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:command.device_scale_factor,mobile:false},sessionId);
+    await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});

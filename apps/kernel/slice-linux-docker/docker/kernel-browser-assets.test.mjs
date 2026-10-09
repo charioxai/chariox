@@ -46,3 +46,14 @@ test('MP-08 #904 review 5 native kernel asset inventory has no duplicate entries
  const names=[...inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g)].map(m=>m[1]);
  assert.deepEqual(names.filter((name,index)=>names.indexOf(name)!==index),[]);
 });
+
+test('MP-08 every helper an embedded kernel display module launches is embedded too',async()=>{
+ const inventory=await readFile(new URL('../../src/runtime/kernel_browser_assets.rs',import.meta.url),'utf8');
+ const names=new Set([...inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g)].map(m=>m[1]));
+ const missing=[];
+ for(const name of [...names].filter(name=>/^kernel-(browser|desktop)-.*\.mjs$/.test(name))){
+  const text=await readFile(new URL(name,import.meta.url),'utf8');
+  for(const [,file] of text.matchAll(/(?:new URL|helper)\(\s*['"]\.\/([A-Za-z0-9._-]+\.(?:mjs|py))['"]/g))if(!names.has(file))missing.push(`${name} -> ${file}`);
+ }
+ assert.deepEqual(missing,[]);
+});

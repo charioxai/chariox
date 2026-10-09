@@ -70,17 +70,53 @@ pub(super) async fn handle_subscribe(
     let key = format!("display:{display_id}:{public_key}");
     if let Some(old) = guard.remove(&key) {
         old.handle.abort();
+        if let Some(pump) = &old.display_pump {
+            pump.stop();
+        }
     }
+    // MP-08/MP-10: protocol 475 push pump, dormant until the first ack.
+    let generation = generation.parse::<u64>().unwrap_or_default();
+    let pump = super::display_pump::DisplayPump::new(generation);
     guard.insert(
-        key,
+        key.clone(),
         RelaySubscriptionTask {
-            display_id: Some(display_id),
-            relay_subscription_id: relay_id,
+            display_id: Some(display_id.clone()),
+            display_pump: Some(pump.clone()),
+            relay_subscription_id: relay_id.clone(),
             client_public_key: public_key.clone(),
             handle: tokio::spawn(sleep(Duration::from_secs(60))),
         },
     );
     drop(guard);
+    let request =
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::DisplayNext {
+                subscription_id: display_id.clone(),
+                generation,
+                after_sequence: 0,
+            },
+        });
+    let pump_caller = KernelCommand::from_local_request_with_caller(
+        format!("{request_id}-push"),
+        KernelCommandSource::RelayClient,
+        caller.caller.clone(),
+        None,
+        None,
+        &request,
+    );
+    tokio::spawn(super::display_pump::run(
+        super::display_pump::PumpRoute {
+            router: router.clone(),
+            outgoing_tx: outgoing_tx.clone(),
+            tasks: tasks.clone(),
+            key,
+            caller: pump_caller,
+            display_id,
+            relay_id,
+            public_key: public_key.clone(),
+        },
+        pump,
+    ));
     let encrypted = encrypt_json_response(
         router,
         &public_key,
@@ -113,6 +149,33 @@ pub(super) async fn browser_display_delivery_id(
     Some(task.relay_subscription_id.clone())
 }
 
+/// MP-08/MP-10: protocol 475 acknowledgement from the subscription's own
+/// sender key; renews its delivery lease and reports the pump state.
+pub(super) async fn acknowledge(
+    tasks: &RelaySubscriptionTasks,
+    display_id: &str,
+    public_key: &str,
+    generation: u64,
+    sequence: u64,
+    lost: bool,
+) -> Option<&'static str> {
+    let pump = {
+        let guard = tasks.lock().await;
+        guard
+            .values()
+            .find(|task| {
+                task.display_id.as_deref() == Some(display_id)
+                    && task.client_public_key == public_key
+                    && !task.handle.is_finished()
+            })?
+            .display_pump
+            .clone()?
+    };
+    let status = pump.acknowledge(generation, sequence, lost)?;
+    browser_display_delivery_id(tasks, display_id, public_key).await?;
+    Some(status)
+}
+
 pub(super) async fn refresh_admitted_display_poll(
     tasks: &RelaySubscriptionTasks,
     display_id: &str,
@@ -132,6 +195,7 @@ mod tests {
             "display".into(),
             RelaySubscriptionTask {
                 display_id: Some("d".into()),
+                display_pump: None,
                 relay_subscription_id: "relay".into(),
                 client_public_key: "key".into(),
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),

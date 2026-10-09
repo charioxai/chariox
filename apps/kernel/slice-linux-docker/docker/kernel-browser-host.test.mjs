@@ -34,13 +34,16 @@ function fixture(root) {
       if (connection.beforeSend) await connection.beforeSend(method, params, session);
       sent.push({ method, params, session });
       if (method === "Target.getTargets") return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: "page", ...tab })) };
+      if (method === 'Target.getTargetInfo') return {targetInfo:pages.get(params.targetId)};
       if (method === "Target.createTarget") { const id = `target-${++next}`; pages.set(id, { url: params.url }); return { targetId: id }; }
       if (method === "Target.closeTarget") {
         pages.delete(params.targetId);
         if (pages.size === 0 && chromium.child) chromium.child.exitCode = 0;
         return {};
       }
-      if (method === "Page.captureScreenshot") return { data: Buffer.from("test-frame").toString("base64") };
+      if (method === 'DOM.getDocument') return {root:{nodeId:1}};
+      if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
+      if (method === "Page.captureScreenshot") return { data: encodePng(1280,800,Buffer.alloc(1280*800*4,255)) };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: pages.get(session?.replace("session-", ""))?.document_id ?? `doc-${session?.replace("session-", "")}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
       if (method === "Runtime.evaluate") return { result: { value: fixture.secretFocused ?? false } };
@@ -64,6 +67,70 @@ async function using(callback) {
   const context = fixture(root);
   try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test('MP-08/MP-10/MP-11 agent wheel awaits Chromium even with an attached display',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const source={attested:true,wheel:()=>assert.fail('MP-11: agent input cannot use native wheel'),close:async()=>{}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ let release,dispatched;const ack=new Promise(r=>release=r),started=new Promise(r=>dispatched=r);
+ const send=connection.send;
+ connection.send=async(method,params,session)=>{if(method==='Input.dispatchMouseEvent'){dispatched();await ack;return {}}return send(method,params,session)};
+ let settled=false;
+ const operation=host.request({op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}).then(()=>settled=true);
+ try{await started;await new Promise(r=>setImmediate(r));assert.equal(settled,false,'agent snapshot ordering requires the wheel ack');}finally{release();await operation}
+}));
+
+test('MP-08/MP-10/MP-11 refused viewer wheel falls back without stopping Chromium',()=>using(async({host,chromium,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const source={attested:true,valid:()=>true,wheel:()=>false,close:async()=>{}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const result=await host.handle({id:1,method:'host.browser',params:{op:'input',_display_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}});
+ assert.equal(result.ok,true);assert.ok(chromium.child);assert.equal(host.generation,opened.generation);
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
+}));
+
+test('MP-08/MP-10/MP-11 an unchanged admitted native credit performs no CDP observation',()=>using(async({host,sent})=>{
+ const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const {DisplayStream}=await import('./kernel-browser-display.mjs');
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+  const sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},motion:true};
+  const source={attested:true,closed:false,policy:host.protection,changedAt:performance.now(),valid:()=>true,allowed:()=>true,sample:()=>sample,close:async()=>{}};
+  let parked=0;const stream=new DisplayStream({subscription_id:'empty',tab_id:tab.tab_id,observed_by:'adapter',codec:'avc1.420033',device_scale_factor:1,bitrate:8000000},{encoder:{close:async()=>{}}});
+  Object.assign(stream,{document_id:tab.document_id,previous:{signature:'base'},compositorSerial:1,creditEpoch:0,refinerDocument:tab.document_id,
+   refiner:{quietMs:300,request:()=>null,invalidate(){},close:async()=>{}},producer:{source,frames:[],waitReady:async()=>{parked++;},take:()=>null,feedback(){},invalidate(){},close:async()=>{}}});
+  host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});host.displays.set(stream.subscription_id,stream);
+  const before=sent.length;
+  const result=await host.request({op:'screenshot',display_subscription_id:'empty',generation:opened.generation,after_sequence:0});
+  assert.equal(parked,1,'unchanged native credit parks on source readiness');assert.equal(result.frame_sent,false);assert.equal(sent.length,before,'empty native credits cannot repeat CDP observation');
+ }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));
+
+// MP-08/MP-10: protocol 475 push credits wait on readiness and return a
+// frame, or nothing after a bounded budget; reset retires the stream base.
+test('MP-08/MP-10 push credit waits on encoder readiness and retires the base on reset',()=>using(async({host,sent})=>{
+ const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const {DisplayStream}=await import('./kernel-browser-display.mjs');
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+  const sample={serial:1,document_id:tab.document_id,tab_id:tab.tab_id,raw:{},motion:true};
+  const source={attested:true,closed:false,policy:host.protection,changedAt:-Infinity,valid:()=>true,allowed:()=>true,sample:()=>sample,close:async()=>{}};
+  let waits=[],invalidated=0;const stream=new DisplayStream({subscription_id:'push',tab_id:tab.tab_id,observed_by:'adapter',codec:'avc1.420033',device_scale_factor:1,bitrate:8000000},{encoder:{close:async()=>{}}});
+  const base=()=>Object.assign(stream,{document_id:tab.document_id,previous:{signature:'base'},exact:true,compositorSerial:1,compositorRegionRevision:undefined,creditEpoch:0,refinerDocument:tab.document_id,
+   refiner:{quietNativeMs:50,request:()=>null,invalidate(){},close:async()=>{}},producer:{source,frames:[],waitReady:async ms=>{waits.push(ms);await new Promise(r=>setTimeout(r,Math.min(ms,5)))},take:()=>null,feedback(){},invalidate(){},retireUnsent(){},close:async()=>{}}});
+  base();const invalidate=stream.invalidate.bind(stream);stream.invalidate=()=>{invalidated++;invalidate();base();};
+  host.compositors.set(tab.tab_id,{document:tab.document_id,source,ready:Promise.resolve(source)});host.displays.set(stream.subscription_id,stream);
+  const before=sent.length,started=performance.now();
+  const credit={op:'screenshot',display_subscription_id:'push',generation:opened.generation,after_sequence:0,push:{reset:false,congested:false}};
+  const result=await host.request(credit);
+  assert.equal(result.frame_sent,false);assert.ok(performance.now()-started>=90,'an empty push credit waits for its budget');
+  assert.ok(waits.length>=1&&waits.every(ms=>ms>0&&ms<=100),'waits are bounded by the credit budget');
+  assert.equal(sent.length,before,'unchanged push credits perform no CDP observation');assert.equal(invalidated,0);
+  await host.request({...credit,push:{reset:true,congested:false}});assert.equal(invalidated,1,'reset retires the reference chain once');
+ }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));
 
 test("MP-11: retained input succeeds and leaves Chromium live", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op:'open', url:'https://example.com' });
@@ -138,9 +205,13 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   const subscription = await host.request({ op: "subscribe", ...binding });
   const session = sent.find(call => call.method === "Page.startScreencast").session;
   for (let count = 0; count < 100; count++) for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: `frame-${count}`, sessionId: count } });
-  const polled = await host.request({ op: "poll", ...subscription });
-  assert.equal(polled.frame.sequence, 100);
-  assert.equal(polled.frame.data_base64, "frame-99");
+  let polled;for(let attempt=0;attempt<50;attempt++){
+    polled=await host.request({op:'poll',...subscription});
+    if(decodePng(polled.frame.data_base64).pixels[0]===255)break;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  assert(polled.frame.sequence>0&&polled.frame.sequence<=100);
+  assert.equal(polled.frame.mime_type,'image/png');assert.equal(decodePng(polled.frame.data_base64).pixels[0],255);
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 100);
   await host.request({ op: "unsubscribe", ...subscription });
   assert.equal(handlers.size, 0);
@@ -174,7 +245,14 @@ test("MD-5: multiple subscribers share one CDP source and acknowledgment", () =>
   assert.equal(starts.length, 1);
   for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: starts[0].session, params: { data: "frame", sessionId: 1 } });
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 1);
-  for (const subscription of [first, second]) assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "frame");
+  for (const subscription of [first, second]) {
+    let frame;for(let attempt=0;attempt<50;attempt++){
+      frame=(await host.request({op:'poll',...subscription})).frame;
+      if(decodePng(frame.data_base64).pixels[0]===255)break;
+      await new Promise(resolve=>setTimeout(resolve,5));
+    }
+    assert.equal(frame.mime_type,'image/png');assert.equal(decodePng(frame.data_base64).pixels[0],255);
+  }
   await host.request({ op: "unsubscribe", ...first });
   assert(!sent.some(call => call.method === "Page.stopScreencast"));
   await host.request({ op: "unsubscribe", ...second });
@@ -211,6 +289,34 @@ test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and rese
   assert.equal(chromium.child.exitCode, null);
   assert(pages.has(host.keepaliveTarget));
   assert(!pages.has(navigatedTarget));
+
+}));
+
+test('MD-DISPLAY-02 bound input checks its document before dispatch without a full preflight reconciliation', () => using(async ({host, sent, pages}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const reconcile=host.browser.reconcile;let reconciles=0;
+ host.browser.reconcile=async(...args)=>{reconciles++;return reconcile(...args)};
+ host.browser.connection.beforeSend=async method=>{
+  if(method==='Input.dispatchMouseEvent')assert.equal(reconciles,0,'bound physical input must not await unrelated tab reconciliation');
+ };
+ const command={op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:2,y:2}};
+ await host.request(command);assert.equal(reconciles,1,'post-input reconciliation still discovers popups/navigation');
+ const before=sent.filter(x=>x.method==='Input.dispatchMouseEvent').length;
+ pages.get(host.tabs.get(tab.tab_id).target_id).document_id='replacement';
+ await assert.rejects(host.request(command),{code:'user_domain_stale_reference'});
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before);
+}));
+
+test('MP-08/MP-10 physical input preserves video references while retiring exact work by epoch',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let retired=0,wakes=0;
+ host.compositors.set(tab.tab_id,{document:tab.document_id,ready:Promise.resolve(),source:{wake:()=>wakes++,close:async()=>{}}});
+ host.displays.set('test-display',{tab_id:tab.tab_id,expires:Infinity,producer:{retireUnsent:()=>retired++},close:async()=>{}});
+ for(const input of [{kind:'click',x:2,y:2},{kind:'text',text:'a'},{kind:'key',key:'Tab'}])
+  await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
+ assert.equal(host.inputEpochs.get(tab.tab_id),3,'every dispatched input must retire stale exact work');
+ assert.equal(retired,0,'input cannot force row IDRs for already queued normal video');
+ assert.equal(wakes,6,'wake owned source before and after every physical input');
 }));
 
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {
@@ -235,7 +341,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   const session = sent.find(call => call.method === "Page.startScreencast").session;
   const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
   emit();
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
+  assert.notEqual((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
   const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
   await host.protect(policy);
   assert.equal((await host.request({ op: "poll", ...subscription })).frame.mime_type, "image/png");
@@ -259,6 +365,57 @@ test("MD-5: unavailable observation policy fences captures and leaves shutdown a
   await host.protect({ unknown: true, values: [], targets: [] });
   await assert.rejects(host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation }), /registry/);
   assert.equal((await host.request({ op: "stop" })).state, "stopped");
+}));
+
+test('MP-11 legacy observation retires an in-flight frame after attribute-only protection changes',()=>using(async({host,connection,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
+ const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
+ release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],0,'retired capture cannot overwrite the opaque observation');
+}));
+test('MP-11 legacy observation keeps its bound frame through DOM tree churn',()=>using(async({host,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
+ const stream=host.streams.get(subscription.subscription_id);
+ for(let n=0;n<50&&(stream.capturing||decodePng(stream.latest.data_base64).pixels[0]!==255);n++)await new Promise(resolve=>setTimeout(resolve,5));
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const method of ['DOM.childNodeInserted','DOM.childNodeCountUpdated'])for(const handler of handlers)handler({sessionId:session,method,params:{}});
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'class'}});
+ assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],255,'tree churn cannot swap in an opaque frame');
+}));
+test('MP-11 a refused compositor attestation is cached per document with backoff',()=>using(async({host,connection,handlers,pages})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ let attempts=0,shots=0;host.browser.inputCapture.hold=async()=>{attempts++;return async()=>{}};
+ const send=connection.send;
+ connection.send=async(method,params,session)=>{
+  // An animated page: every protected capture differs from the previous one.
+  if(method==='Page.captureScreenshot')return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,++shots%2?255:0))};
+  const result=await send(method,params,session);
+  if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
+  return result;
+ };
+ const stream={codec:'avc1.420033',device_scale_factor:1};
+ for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(attempts,1,'credits cannot rebuild a refused source');
+ host.compositors.get(tab.tab_id).retryAt=-Infinity;
+ assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,2,'backoff expiry retries');
+ assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
+ pages.get(tab.target_id).document_id='next';tab.document_id='next';
+ assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+}));
+test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
+ await host.request({op:'open',url:'about:blank'});
+ await Promise.all(Array.from({length:20},()=>{host.lastSaved=null;return host.save();}));
+ assert.equal(JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8')).tabs.length,1);
+}));
+test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
+ assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -528,6 +685,24 @@ for (const kind of ["key", "click"]) {
   }));
 }
 
+for (const change of ['stable','layout','metadata','unavailable']) {
+ test(`MP-11 display screenshots mask marked fields before encoding: ${change}`,()=>using(async({host,connection})=>{
+  const send=connection.send;let captured=false;
+  connection.send=async(method,params,session)=>{
+   if(method==='DOM.getDocument'){if(change==='unavailable'||captured&&change==='metadata')throw Error('metadata unavailable');return {root:{nodeId:1}};}
+   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
+   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900;return {model:{border:[x,200,x+150,200,x+150,280,x,280]}};}
+   if(method==='Page.captureScreenshot'){captured=true;return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))};}
+   return send(method,params,session);
+  };
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const frame=await host.request({op:'screenshot',tab_id:opened.tab_id,generation:opened.generation});
+  const pixels=decodePng(frame.data_base64).pixels;
+  assert.equal(pixels[(240*1280+950)*4],0,'protected bytes cannot reach an encoder or capture client');
+  assert.equal(pixels[0],change==='stable'?255:0,'racing/unavailable protection masks the whole frame');
+ }));
+}
+
 for (const change of ["stable", "layout", "metadata"]) {
   test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
     const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
@@ -553,7 +728,10 @@ for (const change of ["stable", "layout", "metadata"]) {
     try {
       const opened = await host.request({ op: "open", url: "about:blank" });
       const binding = { tab_id: opened.tab_id, generation: opened.generation };
-      await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
+      const subscribed = await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
+      // MP-08/MP-10 (1.4): a DPR2 viewer restarts the idle DSF1 browser at DSF2.
+      assert.equal(host.chromium.scale, 2); assert.equal(subscribed.generation, binding.generation + 1);
+      binding.generation = subscribed.generation;
       const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
       assert.equal(frame.width,2560); assert.equal(frame.height,1600);
       assert.deepEqual(frame.protected_regions, change === "stable"
@@ -713,4 +891,78 @@ test('MP-11 agent native input cannot bypass App human-channel admission', () =>
   let calls=0;host.nativeComputer.execute=async()=>{calls++;return {};};
   const result=await host.handle({id:'native-app-denial',method:'host.computer',params:{op:'input',surface_id:'s',generation:'g',input:{kind:'click',x:1,y:1},_agent_input:true,observed_by:'agent:a'}});
   assert.equal(result.ok,false);assert.equal(calls,0);
+
 }));
+
+test('MP-08/MP-11 protected full captures cannot interrupt an in-flight pointer operation',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ let release,enter,captured=false;
+ const held=new Promise(r=>release=r),entered=new Promise(r=>enter=r);
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot')captured=true;};
+ const input=host.sampleLane(tab).run('input',async()=>{enter();await held;});await entered;
+ const screenshot=host.request({op:'screenshot',tab_id:tab.tab_id,generation:opened.generation});
+ await new Promise(r=>setImmediate(r));assert.equal(captured,false,'capture waits for paired pointer completion');
+ release();await Promise.all([input,screenshot]);assert.equal(captured,true);
+}));
+
+// MP-08/MP-10: run this bound admission check under both supported host geometries.
+test('MP-08/MP-10 #893 unsupported DPR fails before emulation/subscription mutation',()=>using(async({host,sent})=>{
+ const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
+ const old=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const before=sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length;
+  const dpr=displayGeometry.width===1920?2:3;
+  await assert.rejects(host.request({op:'display_subscribe',tab_id:opened.tab_id,generation:opened.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr}),/negotiation/);
+  assert.equal(host.displays.size,0);assert.equal(host.scales.size,0);
+  assert.equal(sent.filter(x=>x.method==='Emulation.setDeviceMetricsOverride').length,before);
+ }finally{if(old===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=old}
+}));
+
+test('MP-08/MP-10/MP-11 viewer wheel on the CDP capture fallback uses awaited input and keeps Chromium live',()=>using(async({host,chromium,sent})=>{
+ const {CompositorSource}=await import('./kernel-browser-compositor.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const source=new CompositorSource({tab,policy:host.protection,allowed:()=>true});source.attested=true;source.close=async()=>{};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ host.displays.set('viewer',{tab_id:tab.tab_id,observed_by:'adapter',expires:Date.now()+60000,close:async()=>{}});
+ const result=await host.handle({id:1,method:'host.browser',params:{op:'input',_display_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}}});
+ assert.equal(result.ok,true);assert(chromium.child);assert.equal(host.generation,opened.generation);
+ assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent').length,1);
+}));
+
+// MP-08/MP-10/MP-11: native bounds and the compositor image share one DPR.
+// MP-08/MP-10 (1.4): an idle browser restarts at the viewer's device scale
+// (no emulated view scaling); a live viewer of the other scale keeps it.
+for(const dpr of [1,2])test(`MP-10 display renders natively at the viewer scale DPR${dpr}`,()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});
+ const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr});
+ assert.equal(host.chromium.scale??1,dpr);assert.equal(subscribed.generation,tab.generation+(dpr===2?1:0));
+ assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
+ }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+test('MP-10 a live viewer keeps the browser scale; another scale is emulated',()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const a=await host.request({op:'open',url:'about:blank'});
+ await host.request({op:'display_subscribe',tab_id:a.tab_id,generation:a.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+ const b=await host.request({op:'open',url:'about:blank'});
+ const subscribed=await host.request({op:'display_subscribe',tab_id:b.tab_id,generation:b.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+ assert.equal(host.chromium.scale??1,1);assert.equal(subscribed.generation,b.generation,'no restart under a live viewer');
+ assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:2,mobile:false});
+ }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
+// MP-08/MP-10: overlapping reconciles must not race one temporary tabs file.
+test("MP-08/MP-10 concurrent tab saves are serialized", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(path.join(tmpdir(), "tabs-save-"));
+  try {
+    const host = new KernelBrowserHost(root);
+    host.tabs.set("a", { tab_id: "a", url: "https://example.com/" });
+    const first = host.save();
+    host.tabs.set("b", { tab_id: "b", url: "https://example.org/" });
+    await Promise.all([first, host.save(), host.save()]);
+    assert.equal(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).tabs.length, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

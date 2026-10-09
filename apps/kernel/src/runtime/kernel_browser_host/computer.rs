@@ -9,6 +9,9 @@ impl KernelBrowserHost {
         policy: Value,
     ) -> Result<Value, crate::error::HostFailure> {
         self.check_admission(admission)?;
+        if params["op"] == "display_subscribe" && admission.is_some_and(|a| a.agent.is_some()) {
+            return Err("MP-11: not_granted: desktop video requires a human terminal".into());
+        }
         if admission.is_some_and(|a| {
             a.user != user
                 || (a.agent.is_some() && a.capability != KernelBrowserCapability::Computer)
@@ -30,6 +33,7 @@ impl KernelBrowserHost {
                 return Err("MP-11: not_granted: terminal desktop authority retired".into());
             }
             if params["op"] == "actors" {
+                model.retire_lapsed_desktop_viewers(std::time::Instant::now());
                 return Ok(model.snapshot());
             }
             let actor = browser_actor(admission, &params);
@@ -243,8 +247,19 @@ impl KernelBrowserHost {
             (None, Some(a)) => Some(a.cancellation.clone()),
             _ => None,
         };
+        // MP-08/MP-11: a human desktop video subscription starts a viewer lease.
+        let viewer = (params["op"] == "display_subscribe")
+            .then(|| browser_actor(admission, &params).actor_id);
         let result =
             backend.host_request_cancellable("host.computer", params, cancellation.clone());
+        if let (Some(actor), Ok(reply)) = (&viewer, &result) {
+            if let Some(subscription) = reply["subscription_id"].as_str() {
+                model
+                    .lock()
+                    .map_err(|_| "MP-11: desktop actor lock unavailable")?
+                    .desktop_viewer(actor, subscription, std::time::Instant::now());
+            }
+        }
         if let Some(action) = action {
             let terminal = if cancellation.as_ref().is_some_and(|c| c.requested()) {
                 EnvironmentActionTerminal::Cancelled

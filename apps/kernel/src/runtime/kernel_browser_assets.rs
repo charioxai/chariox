@@ -3,6 +3,98 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "kernel-desktop-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-display.mjs"),
+    ),
+    (
+        "kernel-desktop-source.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-source.mjs"),
+    ),
+    (
+        "kernel-desktop-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-protection.py"),
+    ),
+    (
+        "kernel-browser-error-label.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-error-label.mjs"),
+    ),
+    (
+        "kernel-browser-codec-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-codec-protection.py"),
+    ),
+    (
+        "kernel-browser-native-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-worker.mjs"),
+    ),
+    (
+        "kernel-browser-native-credit.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-credit.mjs"),
+    ),
+    (
+        "kernel-browser-openh264.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py"),
+    ),
+    (
+        "kernel-browser-stripes.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py"),
+    ),
+    (
+        "kernel-browser-shared-raster.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-shared-raster.mjs"),
+    ),
+    (
+        "kernel-browser-geometry.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-geometry.mjs"),
+    ),
+    (
+        "kernel-browser-native-pipe.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-pipe.mjs"),
+    ),
+    (
+        "kernel-browser-owned-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-owned-display.mjs"),
+    ),
+    (
+        "kernel-browser-native.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native.mjs"),
+    ),
+    (
+        "kernel-browser-xshm.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-xshm.py"),
+    ),
+    (
+        "kernel-browser-raster-damage.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-raster-damage.py"),
+    ),
+    (
+        "kernel-browser-motion.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-motion.mjs"),
+    ),
+    (
+        "kernel-browser-tiles.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-tiles.mjs"),
+    ),
+    (
+        "kernel-browser-refiner.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-refiner.mjs"),
+    ),
+    (
+        "kernel-browser-pixel-worker.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-pixel-worker.mjs"),
+    ),
+    (
+        "kernel-browser-webcodecs.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-webcodecs.mjs"),
+    ),
+    (
+        "kernel-browser-compositor.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-compositor.mjs"),
+    ),
+    (
+        "kernel-browser-sample-lane.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
+    ),
+    (
         "native-x11.py",
         include_bytes!("../../slice-linux-docker/docker/native-x11.py"),
     ),
@@ -91,8 +183,16 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-capture.mjs"),
     ),
     (
+        "kernel-browser-contention.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-contention.mjs"),
+    ),
+    (
         "kernel-browser-timing.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-timing.mjs"),
+    ),
+    (
+        "kernel-browser-display-credit.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-credit.mjs"),
     ),
     (
         "kernel-browser-display.mjs",

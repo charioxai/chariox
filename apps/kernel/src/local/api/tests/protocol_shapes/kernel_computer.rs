@@ -2,10 +2,10 @@
 use super::*;
 #[test]
 fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        92
+        96
     );
     let commands = serde_json::json!([
             {"op":"start"},{"op":"state"},{"op":"actors"},
@@ -60,4 +60,22 @@ fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
         text: crate::local::RoomEnvironmentKeyboardInput::new("private-canary".into()),
     };
     assert!(!format!("{input:?}").contains("private-canary"));
+}
+
+// MP-08 / MP-10 / MP-11: PR5 adds only a terminal desktop source selection.
+#[test]
+fn mp08_mp11_desktop_display_474_shape_hash_and_actor_rejection() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
+    let wire = serde_json::json!({"KernelBrowser": {"command": {"op": "computer", "command": {"op": "display_subscribe", "target": {"surface_id": "desktop-one", "generation": "native-one"}, "codecs": ["avc1.420033", "chariox-relay-binary-v96"], "bitrate": 8000000, "device_scale_factor": 2}}}});
+    let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "aefcf7a68dcc87e519eb8287105de09058d4dbfeb99e76c900a57af31e2be377"
+    );
+    for field in ["observed_by", "_agent_input", "user_id"] {
+        let mut forged = wire.clone();
+        forged["KernelBrowser"]["command"]["command"][field] = "forged".into();
+        assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
+    }
 }

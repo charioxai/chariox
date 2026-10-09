@@ -1,3 +1,4 @@
+mod binary_event;
 mod daemon;
 mod display;
 mod metadata;
