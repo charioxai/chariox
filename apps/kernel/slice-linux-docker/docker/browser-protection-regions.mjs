@@ -121,6 +121,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
 
 export async function measureBrowserProtection(browser,policy) {
   if(policy?.unknown||!Array.isArray(policy?.targets))throw Error('MP-11: fill policy unavailable');
+  // MP-08/MP-10/MP-11: registration alone contributes no browser pixels.
+  // Pending fills enter the private map before input and keep the full fence.
+  const filled=policy.targets.some(target=>target.kind==='browser'&&typeof target.value_hash==='string');
+  if(!filled&&!(browser?.fillTargets?.size))return {pages:[]};
   const connection=await browser.ensureConnection(),{targetInfos=[]}=await connection.send('Target.getTargets');
   const pages=[];
   for(const info of targetInfos.filter(t=>t.type==='page')) {
@@ -151,6 +155,7 @@ export const protectionDigest = measurement => createHash('sha256').update(JSON.
 // two animation frames, pixels derive from that layout or later. One frame
 // suffices before re-measuring: it applies pending compositor scroll offsets.
 export async function awaitPresented(browser, pages, frames = 2) {
+  if(!pages.length)return;
   const nested = 'requestAnimationFrame(() => resolve(true))';
   const callback = frames === 2 ? `requestAnimationFrame(() => ${nested})` : nested;
   const connection = await browser.ensureConnection();
