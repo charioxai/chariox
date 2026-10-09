@@ -238,6 +238,8 @@ if (process.argv[2] !== 'child') {
           row.delta_latency_ms = samples.sort((x, y) => x - y); row.delta_p50 = samples[4]; row.delta_p95 = samples[9];
         }
         if (wire === 2 && process.env.MIRROR_LAB_INPUT === '1') row.input = await inputChecks(page, tab, site);
+        // Owner question: closed shadow roots on the site (trusted DOMSnapshot via the product snapshot op).
+        try { const snap = (await host.request({ op: 'snapshot', tab_id: tabId, generation: host.generation, observed_by: 'lab' })).snapshot; row.shadow_roots = (snap.shadow_roots ?? []).reduce((m, r) => (m[r.shadow_root_type] = (m[r.shadow_root_type] ?? 0) + 1, m), {}); } catch (error) { row.shadow_roots = { error: String(error.message).slice(0, 120) }; }
         if (site.id === 'protection-fixture') {
           const variants = observationProtectedVariants([SECRET]), wire = wireJson.join('\n');
           row.protection = { packets: wireJson.length, leaked_variants: variants.filter(v => wire.includes(v)).length, password_leak: wire.includes('hunter2pass'), marked_leak: wire.includes('marked hidden text'),
@@ -259,7 +261,7 @@ if (process.argv[2] !== 'child') {
         await page?.context().close().catch(() => {});
         if (tabId) await host.request({ op: 'close', tab_id: tabId, generation: host.generation, observed_by: 'lab' }).catch(() => {});
         await writeFile(path.join(evidence, 'RESULTS.json'), JSON.stringify(results, null, 2));
-        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
+        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, shadow_roots: row.shadow_roots, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
       }
     }
   } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); fixtureServer.close(); frameServer.close(); }
