@@ -44,7 +44,7 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action, processes=None):
+def input_action(action, processes=None, connection=None):
     kind = action['kind']
     guard=None
     if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
@@ -64,7 +64,8 @@ def input_action(action, processes=None):
     if kind in ('key', 'hold'):
         keyboard.hold_input('key', action['key'].replace('Enter', 'Return'), action.get('duration_ms', 1),before_press=guard); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
-    connection = load('native-x11').open_display(display)
+    owned = connection is None
+    if owned: connection = load('native-x11').open_display(display)
     try:
         screen = connection.screen()
         if kind == 'keycode':
@@ -94,23 +95,26 @@ def input_action(action, processes=None):
                     xtest.fake_input(connection, X.ButtonRelease, 5 if steps>0 else 4)
             elif kind != 'move': raise ValueError('unsupported native input')
         connection.sync()
-    finally: connection.close()
+    finally:
+        if owned: connection.close()
 
 
-def main(request):
+def main(request, connection=None):
     op = request['op']
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
         return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
-    if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None); return {'applied':True}
+    if op == 'input': input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection); return {'applied':True}
     if op == 'release':
-        connection=load('native-x11').open_display(display)
+        owned = connection is None
+        if owned: connection=load('native-x11').open_display(display)
         try:
             for code in request['codes']:
                 if not isinstance(code,int) or not 8 <= code <= 255: raise ValueError('invalid owned release')
                 xtest.fake_input(connection,X.KeyRelease,code)
             connection.sync()
-        finally: connection.close()
+        finally:
+            if owned: connection.close()
         return {'released':True}
     if op == 'clipboard_read':
         accessibility=load('native-accessibility')
@@ -150,32 +154,36 @@ def main(request):
 WARM_INPUTS=('keycode','click','move','scroll','key','drag')
 
 
-def channel_request(request, held):
+def channel_request(request, held, connection=None):
     # MP-08 / MP-11: the warm channel carries human input only. Admission-bearing
     # agent input keeps the one-shot helper (fresh AT-SPI state per press).
     if request['op']=='release':
-        result=main(request);held.difference_update(request['codes']);return result
+        result=main(request,connection);held.difference_update(request['codes']);return result
     if request['op']!='input' or 'agent_input' in request or 'processes' in request or request['input']['kind'] not in WARM_INPUTS:
         raise ValueError('unsupported physical channel operation')
     action=request['input']
     if action['kind']=='keycode' and action['state']=='down':held.add(action['keycode'])
-    result=main(request)
+    result=main(request,connection)
     if action['kind']=='keycode' and action['state']=='up':held.discard(action['keycode'])
     return result
 
 
 def keyboard_channel():
     held=set()
+    # MP-10: keep the owned X11 connection warm as well as the helper.
+    # Every channel event is human-only and serialized on this process.
+    connection=load('native-x11').open_display(display)
     print(json.dumps({'ready':True}),flush=True)
     try:
         for line in sys.stdin:
             if len(line)>2048:raise ValueError('oversized physical event')
             request=json.loads(line)
-            print(json.dumps({'id':request['id'],'ok':True,'result':channel_request(request,held)}),flush=True)
+            print(json.dumps({'id':request['id'],'ok':True,'result':channel_request(request,held,connection)}),flush=True)
     finally:
         if held:
-            try:main({'op':'release','codes':list(held)})
+            try:main({'op':'release','codes':list(held)},connection)
             except Exception:pass  # Dead display; desktop teardown remains mandatory.
+        connection.close()
 
 
 if __name__=='__main__':
