@@ -299,3 +299,35 @@ test('MP-08/MP-10 push display skips a receive gap and fails only on binding mis
   f.emit({sequence:11,kind:'png',foreign:true});await assert.rejects(async()=>{for(let i=0;i<10;i++)await stream.next()},/invalid geometry\/binding/);
  }finally{await stream.close()}
 });
+// MP-08/MP-10 #933 review @215371f67: a lost sequence followed by only a few
+// frames (the kernel ACK gate stops sending) must not wait for queue overflow.
+test('MP-08/MP-10 push display bounds a receive gap in time, requests a key and resumes at the independent frame',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20,gapMs:60});
+ const shown=[];stream.presenter.present=async frame=>{shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  f.emit({sequence:2,kind:'tiles'});f.emit({sequence:3,kind:'tiles'});
+  await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(shown,[],'a short reorder window still waits');
+  await new Promise(resolve=>setTimeout(resolve,80));
+  assert.ok(f.ops.some(c=>c.op==='display_ack'&&c.lost),'the gap deadline requests an independent frame');
+  assert.deepEqual(shown,[],'dependent frames after the gap are not presented');
+  f.emit({sequence:4,kind:'video',key:true});f.emit({sequence:5,kind:'video',key:false});
+  await stream.next();await stream.next();assert.deepEqual(shown,[4,5]);
+  // Once recovery started, an independent frame behind a new gap establishes the cursor at once.
+  f.emit({sequence:7,kind:'tiles'});await new Promise(resolve=>setTimeout(resolve,100));assert.deepEqual(shown,[4,5]);
+  const started=Date.now();f.emit({sequence:9,kind:'png'});
+  await stream.next();assert.deepEqual(shown,[4,5,9]);assert(Date.now()-started<50,'no second gap deadline');
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10 a stopped push display neither presents nor acknowledges, and restarts from an independent frame',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20,heartbeatMs:20});
+ const shown=[];stream.presenter.present=async frame=>{shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  stream.start();f.emit({sequence:1,kind:'video',key:true});await stream.next();
+  await stream.stop();const acks=f.ops.filter(c=>c.op==='display_ack').length;
+  f.emit({sequence:2,kind:'video',key:false});await new Promise(resolve=>setTimeout(resolve,80));
+  assert.deepEqual(shown,[1]);assert.equal(f.ops.filter(c=>c.op==='display_ack').length,acks,'no acknowledgements or heartbeats while stopped');
+  stream.start();assert.ok(f.ops.at(-1).op==='display_ack'&&f.ops.at(-1).lost,'restart asks for an independent frame');
+  f.emit({sequence:3,kind:'video',key:false});f.emit({sequence:4,kind:'video',key:true});
+  await stream.next();assert.deepEqual(shown,[1,4]);
+ }finally{await stream.close()}
+});

@@ -344,10 +344,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
 // they are produced; the viewer acknowledges each presented sequence (plus a
 // heartbeat), which drives the kernel's ACK gate (after Selkies' frame ACK).
 function pushDisplay(presenter, transport, request, binding, actorCommand, options) {
-  const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000} = options;
+  const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000, gapMs = 250} = options;
   const held = new Map(), unread = [], waiters = new Set();
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
-  let recovering = false, keyRequestedAt = -Infinity;
+  let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
   const ack = (sequence, lost = false) => {
     if (closed) return;
@@ -381,17 +381,34 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
       for (const wake of waiters) wake();
     }).catch(fail);
   };
+  // Skip a receive gap to `to`, dropping older held frames, and recover from a key.
+  const skip = to => {
+    for (const [sequence, frame] of held) if (sequence < to) { held.delete(sequence); heldBytes -= frameBytes(frame); }
+    nextSequence = to; recover();
+  };
+  const drain = () => {
+    while (held.has(nextSequence)) { const ordered = held.get(nextSequence); held.delete(nextSequence++); heldBytes -= frameBytes(ordered); present(ordered); }
+    clearTimeout(gapTimer); gapTimer = null;
+    // MP-08/MP-10: a missing sequence waits a bounded reorder window, then
+    // the presenter asks for an independent frame and skips it (the kernel
+    // ACK gate may stop sending long before a queue overflow).
+    if (held.size) gapTimer = setTimeout(() => { gapTimer = null; if (!closed && held.size && !held.has(nextSequence)) { skip(Math.min(...held.keys())); drain(); } }, gapMs);
+  };
   const off = transport.onEvent(event => {
-    if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id || failure || closed) return;
+    if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id || failure || closed || paused) return;
     const frame = event.frame, size = frameBytes(frame);
+    if (resync && Number.isSafeInteger(frame.sequence)) { resync = false; nextSequence = frame.sequence; }
     // Relay lanes and concurrent decryption may reorder; decode in sequence.
     if (!Number.isSafeInteger(frame.sequence) || frame.sequence < nextSequence || held.has(frame.sequence)) return;
     held.set(frame.sequence, frame); heldBytes += size;
     // A sequence that never arrives: skip the gap and recover from a key.
-    if (held.size > 8 || heldBytes > 8 * 1024 * 1024) { nextSequence = Math.min(...held.keys()); recovering = true; }
-    while (held.has(nextSequence)) { const ordered = held.get(nextSequence); held.delete(nextSequence++); heldBytes -= frameBytes(ordered); present(ordered); }
+    // While recovering, an independent frame establishes the cursor at once.
+    if (held.size > 8 || heldBytes > 8 * 1024 * 1024) skip(Math.min(...held.keys()));
+    else if (recovering && frame.sequence > nextSequence && independent(frame)) skip(frame.sequence);
+    drain();
   });
-  const heartbeat = setInterval(() => { if (performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
+  // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.
+  const heartbeat = setInterval(() => { if (!paused && performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
   ack(presenter.sequence);
   const next = async () => {
     if (failure) throw failure;
@@ -400,8 +417,10 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     return unread.shift() ?? null;
   };
   return { binding, presenter, next, push: true,
-    start: () => { if (failure) throw failure; running = true; unread.length = 0; },
-    stop: async () => { running = false; await chain; if (failure) throw failure; },
+    // MP-08/MP-10: stop pauses reception, presentation and acknowledgements;
+    // start resumes from an independent frame (frames were dropped meanwhile).
+    start: () => { if (failure) throw failure; running = true; unread.length = 0; if (paused) { paused = false; resync = true; keyRequestedAt = -Infinity; recover(); } },
+    stop: async () => { running = false; paused = true; clearTimeout(gapTimer); gapTimer = null; held.clear(); heldBytes = 0; await chain; if (failure) throw failure; },
     get running() { return running; },
     get error() { return failure; },
     requestKey: () => ack(presenter.sequence, true),
@@ -409,6 +428,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close() { closed = true; running = false; clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close() { closed = true; running = false; clearInterval(heartbeat); clearTimeout(gapTimer); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }
