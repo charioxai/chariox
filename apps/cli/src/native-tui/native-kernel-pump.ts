@@ -1,4 +1,4 @@
-import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
+import type { AgentRuntimeActivity, RuntimeInteraction, TerminalOutputRecord } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
   getSessionStateRequest,
@@ -12,6 +12,7 @@ export function startNativeKernelPumpLoop(
   attachmentId: string,
   options: {
     onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void) | undefined
+    onInteractions?: ((interactions: RuntimeInteraction[]) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
@@ -27,8 +28,8 @@ export function startNativeKernelPumpLoop(
     try {
       // Read settlement before draining output: all final records admitted by
       // this snapshot must reach the TUI before its turn/completed notification.
-      const state = options.onAgentActivity
-        ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity> } }>(getSessionStateRequest(sessionId))
+      const state = options.onAgentActivity || options.onInteractions
+        ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity>, session?: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(sessionId))
         : undefined
       if (stopped) return
       let outputDrained = !options.onTerminalRecords
@@ -56,6 +57,7 @@ export function startNativeKernelPumpLoop(
         }
       }
       if (!stopped && outputDrained && state?.SessionState?.agent_activity) options.onAgentActivity?.(state.SessionState.agent_activity)
+      if (!stopped && outputDrained && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
       if (!stopped && options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }

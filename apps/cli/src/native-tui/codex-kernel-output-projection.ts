@@ -228,8 +228,27 @@ export function createCodexKernelOutputProjection(options: {
     }
   }
 
+  // MP-08 / MP-10: An approval waits inside an active home turn. The official
+  // TUI defers its overlay while an assistant item is streaming, so finish
+  // only this prompt's preamble items before projecting the blocking request.
+  const finishPromptItemsForInteraction = (promptId: string) => {
+    const turn = projectedTurns.get(promptId)
+    if (!projectedThreadId || !turn || turn.completed || activePromptId !== promptId) return
+    for (const [key, item] of projectedItems) {
+      if (item.turnId !== turn.id) continue
+      options.broadcast({ jsonrpc: "2.0", method: "item/completed", params: {
+        threadId: projectedThreadId, turnId: turn.id, completedAtMs: nowMs(),
+        item: item.kind === "reasoning"
+          ? { type: "reasoning", id: item.itemId, summary: [], content: [] }
+          : { type: "agentMessage", id: item.itemId, text: item.text, phase: "commentary", memoryCitation: null },
+      } })
+      projectedItems.delete(key)
+    }
+  }
+
   return {
     project,
+    finishPromptItemsForInteraction,
     projectAgentActivity,
     startPrompt: (promptId: string) => startProjectedTurn(nowMs(), promptId),
     setThreadId: (threadId: string) => {

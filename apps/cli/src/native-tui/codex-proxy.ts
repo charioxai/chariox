@@ -6,10 +6,12 @@ import WebSocket, { WebSocketServer } from "ws"
 import {
   type AgentRuntimeActivity,
   type RuntimeProviderRun,
+  type RuntimeInteraction,
   type TerminalOutputRecord,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
+import { createCodexKernelPermissionProjection, isCodexKernelPermissionResponse } from "./codex-kernel-permission-projection.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
 import { bindCodexDisplayTurn, handleCodexNativeTurnSteer, mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import {
@@ -52,6 +54,7 @@ type CodexProxyOptions = {
 export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
   projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => void
+  projectKernelInteractionsToTui: (interactions: RuntimeInteraction[]) => void
 }
 
 export function createCodexProjectionThreadTracker(options: {
@@ -204,6 +207,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
   }
 
   const broadcastToNativeTuis = (message: unknown) => {
+    if (typeof message === "object" && message && "method" in message && message.method === "item/commandExecution/requestApproval") options.debug("native_kernel_permission_broadcast", { downstreams: downstreamCounts() })
     let sent = 0
     for (const downstream of downstreams) {
       if (downstream.kind === "tui") {
@@ -220,6 +224,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     debug: options.debug,
     onTurnMapped: (threadId, turnId, promptId) => bindCodexDisplayTurn(options.bindState, threadId, turnId, promptId),
   })
+  const kernelPermissionProjection = createCodexKernelPermissionProjection({ ...options, broadcast: broadcastToNativeTuis, beforeProjectPrompt: kernelOutputProjection.finishPromptItemsForInteraction })
   const projectionThreadTracker = createCodexProjectionThreadTracker({
     setThreadId: kernelOutputProjection.setThreadId,
     debug: options.debug,
@@ -312,6 +317,10 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
       if (message.id !== undefined && !message.method) {
         if (downstream.kind !== "kernel") {
+          if (isCodexKernelPermissionResponse(message)) {
+            void kernelPermissionProjection.respond(message).catch(error => options.debug("native_kernel_permission_response_failed", { error: formatError(error) }))
+            return
+          }
           void resolveCodexNativePermissionResponse(message, options).then((resolved) => {
             if (!resolved) sendUpstream(message)
           }).catch((error) => {
@@ -397,7 +406,8 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     })
   }) as WebSocketServer["close"]
   return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project,
-    projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity })
+    projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity,
+    projectKernelInteractionsToTui: kernelPermissionProjection.project })
 }
 
 function bindObservedThread(options: CodexProxyOptions, threadId: string) {

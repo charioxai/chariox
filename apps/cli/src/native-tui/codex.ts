@@ -169,6 +169,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       onTerminalRecords: (records) => proxy?.projectKernelOutputToTui(records),
       onAgentActivity: (activity) => proxy?.projectKernelActivityToTui(activity[agent.id]),
+      onInteractions: (interactions) => proxy?.projectKernelInteractionsToTui(interactions),
       pollRuntimeNotices: false,
       debug: debugNativeCodex,
       formatError,
