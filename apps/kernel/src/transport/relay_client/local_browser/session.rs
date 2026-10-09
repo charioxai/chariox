@@ -65,7 +65,7 @@ pub(super) async fn run(
                 if last_read.elapsed() >= IDLE_TIMEOUT {
                     break "local browser connection idle timeout";
                 }
-                if guarded_io(&lease, &mut authority, &mut shutdown, writer.send(Message::Ping(Vec::new().into()))).await.map_or(true, |result| result.is_err()) {
+                if guarded_io(&lease, &mut authority, &mut shutdown, writer.send(Message::Ping(Vec::new().into()))).await.is_none_or(|result| result.is_err()) {
                     break "local browser connection closed";
                 }
             }
