@@ -64,6 +64,8 @@ static void full_page_change_fits_vbv(void) {
         for (int f=0;f<3;f++) {
             /* The first change is a reset (pipeline mode flip): fresh IDRs. */
             n=cx_codec_encode(codec,frames[f],f?0:255,NULL,0,result);assert(n==rows);
+            /* Infinite GOP: a full-page change is never an IDR unless reset. */
+            for (int r=0;r<n;r++) assert(f?!result[r].key:result[r].key);
             size_t total=0;for (int r=0;r<n;r++) total+=result[r].length;
             printf("MP-08/MP-10 full-page change rows=%d frame=%d bytes=%zu bound=%zu\n",rows,f,total,bound);fflush(stdout);
             assert(total<=bound);
