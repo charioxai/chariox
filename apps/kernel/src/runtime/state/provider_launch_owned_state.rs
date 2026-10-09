@@ -109,6 +109,19 @@ impl KernelRuntimeOwnedState {
         self.attach_project_environment(request)
     }
 
+    /// Prepare a waiting run for copied-login recovery without resolving a credential
+    /// that is known to be absent. Keep the ordinary profile, MCP and project checks.
+    pub(super) fn prepare_provider_login_recovery_launch_request(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let request = self.prepare_provider_launch_request_without_account_credentials(
+            request,
+            self.config_projection.snapshot().runtime_mcp_url(),
+        )?;
+        self.attach_project_environment(request)
+    }
+
     fn prepare_provider_launch_request_without_account_credentials(
         &self,
         mut request: crate::provider::LaunchProviderRequest,
@@ -1081,6 +1094,7 @@ mod tests {
             session.id(),
             workflow_agent.id(),
             "test remote Claude launch",
+            false,
         ));
         tokio::select! {
             result = &mut remote_credential => panic!("remote credential resolved before unlock: {result:?}"),

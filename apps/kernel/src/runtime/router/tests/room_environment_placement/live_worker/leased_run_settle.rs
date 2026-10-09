@@ -139,6 +139,7 @@ async fn check_cleanup(fixture: &mut LiveWorker, finished: bool) {
         .relay_project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                account_copy_observations: Vec::new(),
                 home_session_id: room.to_string(),
                 home_agent_id: agent.to_string(),
                 provider_run_id: worker_run_id.to_string(),

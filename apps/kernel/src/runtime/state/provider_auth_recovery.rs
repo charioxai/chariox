@@ -21,6 +21,63 @@ impl Drop for RecoveryClaim {
 }
 
 impl KernelRuntimeState {
+    /// A cold receiving Claude copy can lose its file before a harness exists to
+    /// report an auth failure. Create only a waiting run so admission keeps the work;
+    /// the existing human-only login workflow starts the native harness after login.
+    pub(super) async fn start_missing_copied_claude_login_recovery(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
+            || request.agent_id.is_none()
+            || request
+                .provider_credential_env
+                .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+            // MP-08/MP-10/MP-11: reuse a live native TUI before creating a waiting run.
+            || self.owned.live_native_tui_run_for_launch(request).is_some()
+        {
+            return Ok(None);
+        }
+        let owner = self.provider_account_authority_owner_user_id(&request.owner_user_id);
+        let profile =
+            self.owned
+                .provider_account_profiles
+                .get(&owner, "claude", &request.account_profile)?;
+        if !self
+            .owned
+            .provider_account_profiles
+            .copied_login_artifact_missing(&owner, "claude", &profile.profile_id)?
+            || crate::provider::provider_account_credential_registered(
+                &owner,
+                "claude",
+                &profile.profile_id,
+            )?
+        {
+            return Ok(None); // Retain supplied and registered setup-token fallbacks.
+        }
+        let request = self
+            .owned
+            .prepare_provider_login_recovery_launch_request(request.clone())?;
+        let started = self.owned.start_provider_launch(request)?;
+        self.owned
+            .provider_run_projection
+            .update(started.run.clone());
+        match self
+            .try_provider_launch_auth_recovery(&started, "not_logged_in")
+            .await
+        {
+            Ok(true) => Ok(Some(started.run)),
+            result => {
+                let error = result.err().unwrap_or_else(|| DaemonError::LocalTransport {
+                    operation: "recover cold copied Claude login",
+                    message: "receiving login recovery could not start".into(),
+                });
+                self.fail_provider_launch_in_lane(&started, &error).await;
+                Err(error)
+            }
+        }
+    }
+
     pub(super) fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
         for agent in self
@@ -129,25 +186,81 @@ impl KernelRuntimeState {
             {
                 return Ok(true);
             }
-            // Never replace a provider permission or another kernel interaction.
-            if session.active_interaction_for_agent(agent_id).is_some() {
-                return Ok(false);
-            }
-            let provider = provider_label(run.adapter_key());
-            let receiver = self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
-            &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
-            Some(format!("Log in to {provider} on this machine")),
-            "The provider could not renew its login. Credentials will stay on this machine.",
-            vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary),
-                choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
-            None, Some(600), None,
-        )).await?;
+            // Mark only the receiving profile/copy; preserve permissions and queued work.
+            self.owned
+                .provider_account_profiles
+                .mark_copied_login_logged_out(&owner, run.adapter_key(), run.account_profile())?;
+            let initial_receiver = if session.active_interaction_for_agent(agent_id).is_none() {
+                Some(
+                    self.create_runtime_interaction(run.session_id(), recovery_choice(run, &id))
+                        .await?,
+                )
+            } else {
+                None
+            };
             self.owned.clear_prompt_activity(run.id());
             let state = self.clone();
+            let expected_prompt_id = expected_prompt_id.map(str::to_owned);
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
-                let outcome = state.recover_provider_login(&run, &id, receiver).await;
+                let outcome = async {
+                    if let Some(receiver) = initial_receiver {
+                        return state.recover_provider_login(&run, &id, receiver).await;
+                    }
+                    // A permission or another interaction retains ownership until it settles.
+                    tokio::time::timeout(Duration::from_secs(600), async {
+                        loop {
+                            let session =
+                                state.owned.session_store.get_session(run.session_id())?;
+                            if expected_prompt_id.as_deref().is_some_and(|id| {
+                                state
+                                    .owned
+                                    .prompt_state_owner
+                                    .active_prompt_for_agent(&session, agent_id_for(&run))
+                                    .as_ref()
+                                    .is_none_or(|prompt| prompt.id() != id)
+                            }) {
+                                return Err(DaemonError::LocalTransport {
+                                    operation: "provider login recovery",
+                                    message: "admitted prompt changed while login was pending"
+                                        .into(),
+                                });
+                            }
+                            if session
+                                .active_interaction_for_agent(agent_id_for(&run))
+                                .is_none()
+                            {
+                                break;
+                            }
+                            let current = state
+                                .owned
+                                .provider_store
+                                .get_run_for_agent(run.session_id(), agent_id_for(&run));
+                            if current
+                                .as_ref()
+                                .is_none_or(|current| current.id() != run.id())
+                            {
+                                return Err(DaemonError::LocalTransport {
+                                    operation: "provider login recovery",
+                                    message: "provider run changed while login was pending".into(),
+                                });
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Ok::<(), DaemonError>(())
+                    })
+                    .await
+                    .map_err(|_| DaemonError::LocalTransport {
+                        operation: "provider login recovery",
+                        message: "pending login expired".into(),
+                    })??;
+                    let receiver = state
+                        .create_runtime_interaction(run.session_id(), recovery_choice(&run, &id))
+                        .await?;
+                    state.recover_provider_login(&run, &id, receiver).await
+                }
+                .await;
                 if outcome.is_ok_and(|succeeded| succeeded) {
                     let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
                     let current = state
@@ -470,6 +583,14 @@ impl KernelRuntimeState {
             }
         }
     }
+}
+
+fn recovery_choice(run: &crate::provider::RuntimeProviderRun, id: &str) -> RuntimeInteraction {
+    RuntimeInteraction::new(id, agent_id_for(run), RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
+        Some(format!("Log in to {} on this machine", provider_label(run.adapter_key()))),
+        "The copied provider login is logged out or could not renew. Complete the provider's official login on this machine to resume queued work.",
+        vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary), choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
+        None, Some(600), None)
 }
 
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {

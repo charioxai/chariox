@@ -1,5 +1,6 @@
 mod browser_peer_version;
 mod client_requests;
+mod managed_copy_security;
 mod ordinary_lease_caller;
 mod peer_events;
 mod peer_transport;

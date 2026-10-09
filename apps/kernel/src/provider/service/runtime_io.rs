@@ -214,7 +214,25 @@ impl ProviderProcessService {
         }
     }
 
+    /// MP-08/MP-10/MP-11: runtime-only auth mode, never a persisted credential.
+    /// Every launch seam that binds credentials records it, independently of
+    /// structured actor I/O and native PTY bindings.
+    pub(crate) fn record_runtime_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) {
+        if run.adapter_key() == "claude"
+            && credentials.contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        {
+            self.claude_setup_token_runs.insert(run.id().to_string());
+        } else {
+            self.claude_setup_token_runs.remove(run.id());
+        }
+    }
+
     pub fn clear_runtime(&mut self, provider_run_id: &str) {
+        self.claude_setup_token_runs.remove(provider_run_id);
         self.run_actor_mailbox.clear_runtime(provider_run_id);
         self.run_actor_mailbox.stop_run(provider_run_id);
     }

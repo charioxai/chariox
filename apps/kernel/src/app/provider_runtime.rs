@@ -209,6 +209,8 @@ impl DaemonApp {
             self.providers
                 .apply_runtime_binding(started.run.id(), binding)?;
         }
+        self.providers
+            .record_runtime_credentials(&started.run, &started.provider_credential_env);
         self.finish_provider_launch_success(&started.run)
     }
 

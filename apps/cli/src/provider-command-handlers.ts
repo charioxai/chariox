@@ -10,6 +10,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
+  providerAccountCopiesSummary,
   providerAccountsForProvider,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
@@ -342,7 +343,8 @@ async function handleProviderAccountsCommand(
     const profiles = await deps.listProviderAccountProfiles(provider ?? null)
     const lines = profiles.map((entry) => {
       const services = formatProviderAccountServices(entry)
-      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}`
+      const copies = providerAccountCopiesSummary(entry)
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""}${services ? ` · ${services}` : ""} · ${formatProviderAccountUsage(entry)}${copies ? `\n${copies}` : ""}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")

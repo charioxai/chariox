@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) enum ProviderLaunchStartOutcome {
+    WaitingForLogin(crate::provider::RuntimeProviderRun),
     Reused(crate::provider::RuntimeProviderRun),
     Started(crate::app::StartedProviderLaunch, u64),
 }
@@ -32,6 +33,16 @@ impl KernelRuntimeState {
             if crate::provider::canonical_provider_family(&launch_request.provider)
                 == Some("claude")
                 && provider_launch_credential.is_none()
+                && !owned
+                    .provider_account_profiles
+                    .has_renewable_login(
+                        &self.provider_account_authority_owner_user_id(
+                            &launch_request.owner_user_id,
+                        ),
+                        "claude",
+                        &launch_request.account_profile,
+                    )
+                    .unwrap_or(false)
             {
                 return Err(DaemonError::LocalTransport {
                     operation: "launch remote provider without credential",
@@ -45,6 +56,15 @@ impl KernelRuntimeState {
                 launch_request,
                 provider_launch_credential,
             )?;
+            if let Some(run) = self
+                .start_missing_copied_claude_login_recovery(&launch_request)
+                .await?
+            {
+                owned
+                    .provider_run_projection
+                    .mark_leased_provider_run(run.id());
+                return Ok(run);
+            }
             let launch_request = self
                 .prepare_provider_launch_request_with_vault(
                     launch_request,
@@ -213,7 +233,7 @@ impl KernelRuntimeState {
         let (response, remote_execution) =
             super::remote_native_provider_launch::launch_with_one_binding_refresh(
                 remote_execution,
-                move || {
+                move |force_setup_token| {
                     let state = credential_state.clone();
                     let session_id = credential_session_id.clone();
                     let agent_id = credential_agent_id.clone();
@@ -223,6 +243,7 @@ impl KernelRuntimeState {
                                 &session_id,
                                 &agent_id,
                                 "launch remote native provider run",
+                                force_setup_token,
                             )
                             .await
                     }
@@ -467,6 +488,12 @@ impl KernelRuntimeState {
                     operation: "launch provider run",
                 });
             }
+            if let Some(run) = self
+                .start_missing_copied_claude_login_recovery(&launch_request)
+                .await?
+            {
+                return Ok(ProviderLaunchStartOutcome::WaitingForLogin(run));
+            }
             let config = owned.config_projection.snapshot();
             let launch_request = self
                 .prepare_provider_launch_request_with_vault(launch_request, "launch provider run")
@@ -599,6 +626,26 @@ impl KernelRuntimeState {
                 );
                 return;
             }
+        }
+        let owner = self.provider_account_authority_owner_user_id(started.run.owner_user_id());
+        if !started
+            .provider_credential_env
+            .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+            && self
+                .owned
+                .provider_account_profiles
+                .copied_login_needs_login(
+                    &owner,
+                    started.run.adapter_key(),
+                    started.run.account_profile(),
+                )
+                .unwrap_or(false)
+            && self
+                .try_provider_launch_auth_recovery(started, "not_logged_in")
+                .await
+                .unwrap_or(false)
+        {
+            return;
         }
         let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {

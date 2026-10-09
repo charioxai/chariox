@@ -9,13 +9,13 @@ fn provider_auth_inspection_paths_follow_verified_layout_and_account() {
         environment: Default::default(),
     };
     assert_eq!(provider_auth_paths(Some(&account),true),
-        ("/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json".to_string(),
-         "/var/lib/chariox/slice-private/provider-accounts/owner-synthetic/opencode/profile-synthetic/data/opencode/auth.json".to_string()));
+        ("/var/lib/chariox/slice-private/kernel/state/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json".to_string(),
+         "/var/lib/chariox/slice-private/kernel/state/provider-accounts/owner-synthetic/opencode/profile-synthetic/data/opencode/auth.json".to_string()));
     assert_eq!(
         provider_auth_paths(None, true).0,
-        "/var/lib/chariox/slice-private/provider-accounts/local-user/codex/default/codex/auth.json"
+        "/var/lib/chariox/slice-private/kernel/state/provider-accounts/local-user/codex/default/codex/auth.json"
     );
-    assert_eq!(provider_auth_paths(Some(&account),false).0,"/home/slice/.chariox/daemon/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json");
+    assert_eq!(provider_auth_paths(Some(&account),false).0,"/home/slice/.chariox/state/provider-accounts/owner-synthetic/codex/profile-synthetic/codex/auth.json");
     assert_eq!(
         provider_auth_paths(None, false),
         (
@@ -28,14 +28,14 @@ fn provider_auth_inspection_paths_follow_verified_layout_and_account() {
 #[test]
 fn selected_broker_credential_replaces_default_and_missing_selection_clears_it() {
     let mut inputs = vec![broker::ProvisionerInput {
-        environment: "CHARIOX_SLICE_CODEX_AUTH",
-        name: "codex-auth.json",
+        environment: "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+        name: "github-token.txt",
         contents: zeroize::Zeroizing::new(b"default".to_vec()),
     }];
     replace_broker_input(
         &mut inputs,
-        "CHARIOX_SLICE_CODEX_AUTH",
-        "codex-auth.json",
+        "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+        "github-token.txt",
         Some(zeroize::Zeroizing::new(b"selected".to_vec())),
     )
     .expect("replace default credential");
@@ -44,42 +44,12 @@ fn selected_broker_credential_replaces_default_and_missing_selection_clears_it()
 
     replace_broker_input(
         &mut inputs,
-        "CHARIOX_SLICE_CODEX_AUTH",
-        "codex-auth.json",
+        "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+        "github-token.txt",
         None,
     )
     .expect("clear missing selected credential");
     assert!(inputs.is_empty());
-}
-
-#[cfg(unix)]
-#[test]
-fn optional_provider_credential_path_ignores_missing_parents_but_rejects_symlinks() {
-    use std::os::unix::fs::symlink;
-
-    let root = test_root("missing-provider-credential-parent");
-    std::fs::create_dir_all(&root).expect("fixture root should create");
-    let root = std::fs::canonicalize(root).expect("fixture root should canonicalize");
-    let missing = root.join(".local/share/opencode/auth.json");
-
-    assert_eq!(
-        read_provider_credential_no_symlinks(&missing)
-            .expect("an absent optional credential should not fail the import"),
-        None
-    );
-
-    let credential_root = root.join("managed-opencode");
-    std::fs::create_dir_all(&credential_root).expect("credential root should create");
-    std::fs::write(credential_root.join("auth.json"), b"secret")
-        .expect("credential fixture should write");
-    symlink(&credential_root, root.join("opencode-link"))
-        .expect("credential symlink should create");
-    assert!(
-        read_provider_credential_no_symlinks(&root.join("opencode-link/auth.json")).is_err(),
-        "a symlinked credential parent must remain fatal"
-    );
-
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[cfg(unix)]

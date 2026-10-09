@@ -3574,6 +3574,25 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
+        let owner = self.provider_account_authority_owner_user_id(provider_run.owner_user_id());
+        if !owned
+            .provider_store
+            .claude_run_uses_setup_token(provider_run.id())
+            && owned.provider_account_profiles.copied_login_needs_login(
+                &owner,
+                provider_run.adapter_key(),
+                provider_run.account_profile(),
+            )?
+            && self
+                .try_provider_auth_recovery(
+                    &provider_run,
+                    "not_logged_in",
+                    Some(&dispatch.prompt_id),
+                )
+                .await?
+        {
+            return Ok(true);
+        }
         let hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,
             &dispatch.hidden_system_context,

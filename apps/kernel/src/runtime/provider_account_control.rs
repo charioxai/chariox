@@ -315,6 +315,170 @@ mod tests {
     use crate::agent::{AgentInstance, AgentSubstituteProfile, GridPosition};
     use crate::session::RuntimeSession;
 
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_slice_reimport_preserves_authenticated_receiving_login() {
+        if crate::test_support::isolate_environment_test() {
+            return;
+        }
+        use crate::account_profile::*;
+        use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::TestWorktree::new("credcopies-preserve");
+        let executable = root.path().join("opencode");
+        std::fs::write(&executable, "#!/bin/sh\nprintf 'fixture-opencode\\n'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_OPENCODE_BIN", executable);
+        let registry = ProviderAccountProfileRegistry::open(root.path().join("accounts.json"))
+            .unwrap()
+            .with_machine_identity("slice-machine", "slice-kernel");
+        let profile = registry
+            .create_managed("owner", "opencode", "Synthetic receiver")
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner", "opencode", &profile.profile_id)
+            .unwrap();
+        let auth_path =
+            std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        let receiving_login = br#"{"openai":{"type":"api","key":"synthetic-receiver"}}"#;
+        std::fs::write(&auth_path, receiving_login).unwrap();
+        let mut materialization = ProviderAccountMaterialization {
+            copy_source: Some(ProviderAccountCopySource {
+                machine_id: "source-machine".into(),
+                kernel_id: "source-kernel".into(),
+            }),
+            profile: ProviderAccountReplicaMetadata {
+                owner_user_id: "owner".into(),
+                provider: "opencode".into(),
+                profile_id: profile.profile_id.clone(),
+                label: "Synthetic source".into(),
+                origin: ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(br#"{"openai":{"type":"api","key":"synthetic-source"}}"#),
+            }],
+            generated_at_ms: 1,
+        };
+        registry
+            .record_received_account_copy(
+                "owner",
+                &materialization,
+                &profile.profile_id,
+                ProviderAccountMaterializationTargetKind::Slice,
+            )
+            .unwrap();
+        materialization.generated_at_ms = 2;
+        let received = super::import_managed_account_copy_with_registry(
+            &registry,
+            "owner",
+            materialization.clone(),
+        )
+        .unwrap();
+        assert_eq!(received.auth_state, ProviderAccountAuthState::Authenticated);
+        assert_eq!(std::fs::read(&auth_path).unwrap(), receiving_login);
+        assert_eq!(
+            received.materializations[0]
+                .copy
+                .as_ref()
+                .unwrap()
+                .copied_at_ms,
+            1
+        );
+        // A missing authoritative local login is not a replaceable replica.
+        std::fs::remove_file(&auth_path).unwrap();
+        let error =
+            super::import_managed_account_copy_with_registry(&registry, "owner", materialization)
+                .expect_err("an owner import must still preserve authoritative local profiles");
+        assert!(error
+            .to_string()
+            .contains("authoritative local account profile"));
+        assert!(!auth_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_slice_reimport_after_remove_replaces_missing_copy() {
+        if crate::test_support::isolate_environment_test() {
+            return;
+        }
+        use crate::account_profile::*;
+        use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::TestWorktree::new("credcopies-reimport");
+        let executable = root.path().join("opencode");
+        std::fs::write(&executable, "#!/bin/sh\nprintf 'fixture-opencode\\n'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_OPENCODE_BIN", executable);
+        let registry = ProviderAccountProfileRegistry::open(root.path().join("accounts.json"))
+            .unwrap()
+            .with_machine_identity("slice-machine", "slice-kernel");
+        let copied_login =
+            br#"{"openai":{"type":"oauth","access":"synthetic-access","refresh":"synthetic-source"}}"#;
+        let mut materialization = ProviderAccountMaterialization {
+            copy_source: Some(ProviderAccountCopySource {
+                machine_id: "source-machine".into(),
+                kernel_id: "source-kernel".into(),
+            }),
+            profile: ProviderAccountReplicaMetadata {
+                owner_user_id: "owner".into(),
+                provider: "opencode".into(),
+                profile_id: "copied-account".into(),
+                label: "Synthetic copy".into(),
+                origin: ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(copied_login),
+            }],
+            generated_at_ms: 1,
+        };
+        let profile = super::import_managed_account_copy_with_registry(
+            &registry,
+            "owner",
+            materialization.clone(),
+        )
+        .unwrap();
+        assert_eq!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        let environment = registry
+            .resolve_environment("owner", "opencode", &profile.profile_id)
+            .unwrap();
+        let auth_path =
+            std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
+        let copied_at = |profile: &ProviderAccountProfile| {
+            profile.materializations[0]
+                .copy
+                .as_ref()
+                .unwrap()
+                .copied_at_ms
+        };
+        // A receiving login that is present but not valid is the receiver's own to fix.
+        std::fs::write(&auth_path, b"{}").unwrap();
+        materialization.generated_at_ms = 2;
+        let error = super::import_managed_account_copy_with_registry(
+            &registry,
+            "owner",
+            materialization.clone(),
+        )
+        .expect_err("an invalid receiving login must not be overwritten");
+        assert!(error.to_string().contains("/slice auth login"));
+        assert_eq!(std::fs::read(&auth_path).unwrap(), b"{}");
+        // `/slice auth remove` deletes only the slice credential; the owner's next
+        // import replaces the copy with a new tracked generation.
+        std::fs::remove_file(&auth_path).unwrap();
+        materialization.generated_at_ms = 3;
+        let received =
+            super::import_managed_account_copy_with_registry(&registry, "owner", materialization)
+                .expect("an owner import must replace a removed receiving copy");
+        assert_eq!(received.auth_state, ProviderAccountAuthState::Authenticated);
+        assert_eq!(std::fs::read(&auth_path).unwrap(), copied_login);
+        assert_eq!(copied_at(&received), 3);
+    }
+
     #[test]
     fn account_binding_detection_covers_provider_families_and_agent_owners() {
         let mut session = RuntimeSession::new(
@@ -451,4 +615,111 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+pub(crate) async fn import_managed_account_copy(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let response = tokio::task::spawn_blocking(move || {
+        import_managed_account_copy_with_registry(&registry, &owner_user_id, materialization)
+    })
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "import provider account copy",
+        message: "account import task failed".into(),
+    })??;
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
+    runtime_state.record_waiting_room_change();
+    Ok(response)
+}
+
+fn import_managed_account_copy_with_registry(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    mut materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    // One receiving authority serializes admission and installation. Recording a
+    // request only after installation would leave a replay window on failure.
+    static IMPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _import = IMPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::account_profile::validate_managed_context_materialization_shape(
+        &materialization.profile.provider,
+        &materialization,
+    )?;
+    if materialization.copy_source.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "import provider account copy",
+            message: "managed account copy requires source machine identity".into(),
+        });
+    }
+    registry.admit_slice_copy_generation(owner_user_id, &materialization)?;
+    materialization.profile.owner_user_id = owner_user_id.to_owned();
+    materialization.profile.origin =
+        crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
+    // Reconnects and repeated imports preserve a receiving machine's own login.
+    if let Some(profile) = registry
+        .list(owner_user_id, Some(&materialization.profile.provider))?
+        .into_iter()
+        .find(|profile| profile.profile_id == materialization.profile.profile_id)
+    {
+        // An explicit owner import may replace a removed replica. The registry still
+        // refuses authoritative local profiles and managed-context accounts.
+        if !registry.credential_artifact_missing(
+            owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+        ) {
+            let status = crate::local::provider_requests::observe_provider_auth_status(
+                registry,
+                owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+            )?;
+            if status.auth_state != "authenticated" {
+                return Err(DaemonError::LocalTransport {
+                    operation: "import provider account copy",
+                    message: format!(
+                        "Receiving profile is logged out; run /slice auth login <slice-ref> {} {} on this receiving slice, then retry the import",
+                        profile.provider, profile.profile_id,
+                    ),
+                });
+            }
+            return registry.get(owner_user_id, &profile.provider, &profile.profile_id);
+        }
+    }
+    let profile = registry.materialize_replica(owner_user_id, &materialization)?;
+    registry.record_received_account_copy(
+        owner_user_id,
+        &materialization,
+        &profile.profile_id,
+        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+    )?;
+    if crate::local::provider_requests::observe_provider_auth_status(
+        registry,
+        owner_user_id,
+        &profile.provider,
+        &profile.profile_id,
+    )
+    .is_err()
+    {
+        registry.update_observation(
+            owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Error,
+            None,
+            None,
+            None,
+            None,
+        )?;
+    }
+    registry.get(owner_user_id, &profile.provider, &profile.profile_id)
 }

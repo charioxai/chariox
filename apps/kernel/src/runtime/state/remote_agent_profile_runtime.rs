@@ -12,12 +12,13 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (update.relay_url.clone(), update.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        self.ensure_remote_profile_account(agent_id, update, &config)
+        let receiving_account = self
+            .ensure_remote_profile_account(agent_id, update, &config)
             .await?;
         let request = RelayPeerRequest::UpdateLeasedAgentProfile {
             leased_agent_id: update.leased_agent_id.clone(),
             provider: update.provider.clone(),
-            account_profile: update.account_profile.clone(),
+            account_profile: receiving_account.clone(),
             model: update.model.clone(),
             effort: update.effort.clone(),
         };
@@ -26,7 +27,7 @@ impl KernelRuntimeState {
             .await?;
         match response {
             RelayPeerResponse::LeasedAgentProfileUpdated { leased_agent } => {
-                update.validate_worker_acknowledgement(agent_id, &leased_agent)
+                update.validate_worker_acknowledgement(agent_id, &receiving_account, &leased_agent)
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "update remote leased agent profile",
@@ -35,7 +36,7 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn send_remote_profile_request(
+    pub(crate) async fn send_remote_profile_request(
         &self,
         config: &crate::config::DaemonConfig,
         worker_kernel_id: &str,

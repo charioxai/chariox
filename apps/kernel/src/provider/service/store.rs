@@ -93,6 +93,10 @@ impl ProviderProcessServiceStore {
         self.inner.lock().expect("provider service mutex poisoned")
     }
 
+    pub(crate) fn claude_run_uses_setup_token(&self, run_id: &str) -> bool {
+        self.read().claude_setup_token_runs.contains(run_id)
+    }
+
     pub fn registry(&self) -> ProviderRegistry {
         *self.read().registry()
     }
@@ -151,6 +155,7 @@ impl ProviderProcessServiceStore {
         &self,
         expected: &RuntimeProviderRun,
         binding: Option<ProviderRuntimeBinding>,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let mut service = self.write();
         let current = service.get_run(expected.id())?;
@@ -171,7 +176,9 @@ impl ProviderProcessServiceStore {
         if let Some(binding) = binding {
             service.apply_runtime_binding(expected.id(), binding)?;
         }
-        service.mark_run_running(expected.id())
+        let run = service.mark_run_running(expected.id())?;
+        service.record_runtime_credentials(&run, credentials);
+        Ok(run)
     }
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
@@ -412,10 +419,20 @@ impl ProviderProcessServiceStore {
     ) -> Result<(), DaemonError> {
         let binding =
             ProviderProcessService::initialize_runtime_binding_with_credentials(run, credentials)?;
+        let mut service = self.write();
         if let Some(binding) = binding {
-            self.write().apply_runtime_binding(run.id(), binding)?;
+            service.apply_runtime_binding(run.id(), binding)?;
         }
+        service.record_runtime_credentials(run, credentials);
         Ok(())
+    }
+
+    pub(crate) fn record_runtime_credentials(
+        &self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) {
+        self.write().record_runtime_credentials(run, credentials);
     }
 
     pub(crate) fn apply_runtime_binding(

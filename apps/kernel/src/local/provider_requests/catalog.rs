@@ -250,6 +250,20 @@ pub(crate) fn observe_provider_auth_status(
     account_profile: &str,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if registry.copied_login_artifact_missing(owner_user_id, provider, &profile.profile_id)? {
+        registry.mark_logged_out(owner_user_id, provider, &profile.profile_id)?;
+        return Ok(ProviderAuthStatus {
+            provider: profile.provider,
+            auth_state: "not_logged_in".into(),
+            account_profile: profile.profile_id,
+            identity_summary: None,
+            plan: None,
+            login_hint: Some(
+                "Log in on this receiving machine using the provider's official login".into(),
+            ),
+            detected_version: profile.detected_provider_version,
+        });
+    }
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     match crate::provider::canonical_provider_family(provider) {
         Some("codex") => {
@@ -293,6 +307,9 @@ pub(crate) fn refresh_provider_account_profile_response(
     account_profile: &str,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if registry.copied_login_artifact_missing(owner_user_id, provider, &profile.profile_id)? {
+        return registry.mark_logged_out(owner_user_id, provider, &profile.profile_id);
+    }
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
     let opencode_services =
@@ -1324,6 +1341,7 @@ mod tests {
                 "codex",
                 &work.profile_id,
                 crate::account_profile::ProviderAccountMaterializationStatus {
+                    copy: None,
                     target_kind:
                         crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
                     target_ref: "slice-a".to_string(),
@@ -1344,6 +1362,7 @@ mod tests {
                 "codex",
                 &work.profile_id,
                 crate::account_profile::ProviderAccountMaterializationStatus {
+                    copy: None,
                     target_kind:
                         crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
                     target_ref: "slice-a".to_string(),

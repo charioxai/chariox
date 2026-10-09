@@ -297,6 +297,9 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     let _provider_homes = FixtureProviderHomes::new(&fixture.root.join("target-home"));
     let source_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+            .map(|registry| {
+                registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id)
+            })
             .expect("open source account registry");
     let source_profile = source_registry
         .create_managed("owner-a", "codex", "Source default")
@@ -335,6 +338,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
 
     let target_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+            .map(|registry| registry.with_machine_identity("target-machine", "target-kernel"))
             .expect("open target account registry");
     let target_home = fixture.root.join("target-home");
     target_registry
@@ -425,6 +429,9 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     let fixture = PackageFixture::new("provider-account-binding");
     let source_registry =
         ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+            .map(|registry| {
+                registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id)
+            })
             .expect("open source account registry");
     let source_profile = source_registry
         .create_managed("owner-a", "codex", "Work")
@@ -586,6 +593,9 @@ esac
 fn provider_account_rollback_attempts_every_import_after_one_failure() {
     let fixture = PackageFixture::new("provider-account-rollback-all");
     let source = ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+        .map(|registry| {
+            registry.with_machine_identity("source-machine", &fixture.binding.source_kernel_id)
+        })
         .expect("open source account registry");
     let mut materializations = Vec::new();
     for (provider, environment_key, relative_path) in [
@@ -610,6 +620,7 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     }
 
     let target = ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+        .map(|registry| registry.with_machine_identity("target-machine", "target-kernel"))
         .expect("open target account registry");
     let receipts = materializations
         .iter()
@@ -996,4 +1007,66 @@ impl Drop for FixtureProviderHomes {
             }
         }
     }
+}
+
+#[test]
+fn secrev_f4_context_copy_rejects_provenance_outside_authenticated_package_binding() {
+    use base64::Engine;
+    let fixture = PackageFixture::new("copy-source-authority");
+    let registry = ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+        .unwrap()
+        .with_machine_identity("target-machine", "target-kernel-1");
+    let materialization = ProviderAccountMaterialization {
+        copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+            machine_id: "source-machine".into(),
+            kernel_id: "other-home-kernel".into(),
+        }),
+        profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "owner".into(),
+            provider: "codex".into(),
+            profile_id: "spoofed-copy".into(),
+            label: "Spoofed source".into(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+            is_default: false,
+        },
+        files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "auth.json".into(),
+            contents_base64: base64::engine::general_purpose::STANDARD
+                .encode(br#"{"OPENAI_API_KEY":"synthetic"}"#),
+        }],
+        generated_at_ms: 1,
+    };
+    let mut binding = fixture.binding.clone();
+    binding.plan.provider_accounts = ManagedContextProviderAccountSelection::Selected {
+        accounts: vec![ManagedContextProviderAccount {
+            provider: "codex".into(),
+            account_profile: "spoofed-copy".into(),
+        }],
+    };
+    let request = ManagedContextPackageApplicationRequest {
+        transfer_id: "source-authority".into(),
+        package_path: fixture.root.join("unused"),
+        expected_package_sha256: "a".repeat(64),
+        expected_binding: binding,
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: "unused".into(),
+        project_environment_target: None,
+        provider_account_target: Some(ManagedContextProviderAccountImportTarget {
+            registry: registry.clone(),
+            owner_user_id: "owner".into(),
+        }),
+        git_credential_target: None,
+    };
+    let result = import_provider_accounts(
+        &request,
+        &ManagedContextPackageProviderAccounts::Selected {
+            materializations: vec![materialization],
+        },
+    );
+    assert!(
+        result.is_err(),
+        "package binding did not bind copy source kernel"
+    );
+    assert!(registry.get("owner", "codex", "spoofed-copy").is_err());
+    fixture.cleanup();
 }

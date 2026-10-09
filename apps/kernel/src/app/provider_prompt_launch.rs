@@ -10,6 +10,15 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<String, DaemonError> {
+        let request = self.prompt_provider_launch_request(session_id, agent_id)?;
+        self.ensure_prompt_provider_run(session_id, agent_id, request)
+    }
+
+    pub(crate) fn prompt_provider_launch_request(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<LaunchProviderRequest, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
         self.provider_account_profiles.require_agent_authenticated(
@@ -39,6 +48,7 @@ impl DaemonApp {
             agent.model().unwrap_or("default"),
         )
         .with_agent_id(agent.id().to_string())
+        .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string))
         .with_execution_mode(effective_config.mode)
         .with_permission_level(effective_config.permission_level);
@@ -56,12 +66,20 @@ impl DaemonApp {
         // MP-08 / MP-10 / MP-11: Re-resolve before reusing a process, including ordinary turns.
         let directory = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
         request = request.with_working_directory(PathBuf::from(directory));
-        request = crate::project_environment::attach_project_provider_environment(
+        crate::project_environment::attach_project_provider_environment(
             &self.config,
             &session,
             Some(&agent),
             request,
-        )?;
+        )
+    }
+
+    pub(crate) fn ensure_prompt_provider_run(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        request: LaunchProviderRequest,
+    ) -> Result<String, DaemonError> {
         let mut replace_environment = false;
         if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
             if agent_run.project_environment_revision()

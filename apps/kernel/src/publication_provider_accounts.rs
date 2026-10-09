@@ -29,6 +29,10 @@ struct PublicationProviderDefaultAccount {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PublicationProviderAccountBinding {
+    #[serde(default)]
+    source: Option<crate::account_profile::ProviderAccountCopySource>,
+    #[serde(default)]
+    source_account_id: Option<String>,
     provider: String,
     account_profile: String,
     label: String,
@@ -107,7 +111,16 @@ fn materialize_validated_bindings(
         let is_default = default_profiles
             .get(&provider)
             .is_some_and(|default_profile_id| default_profile_id == profile_id);
-        registry.materialize_deployment_profile(
+        // Until every producer sends provenance, a managed binding without it is
+        // kept as unrecorded provenance instead of blocking kernel start.
+        if binding.source.is_none() && crate::provider::managed_provider_isolation_required() {
+            crate::logging::warn_with_fields(
+                "daemon.publication_provider_accounts",
+                "managed publication account binding has no copy provenance",
+                serde_json::json!({ "provider": provider, "account_profile": profile_id }),
+            );
+        }
+        let profile = registry.materialize_deployment_profile(
             owner_user_id,
             &provider,
             profile_id,
@@ -115,6 +128,32 @@ fn materialize_validated_bindings(
             is_default,
             &binding.home,
         )?;
+        if let Some(source) = &binding.source {
+            if profile
+                .materializations
+                .iter()
+                .any(|status| status.copy.is_some())
+            {
+                continue;
+            }
+            let mut materialization = registry.export_managed_context_materialization(
+                owner_user_id,
+                &provider,
+                &profile.profile_id,
+            )?;
+            materialization.copy_source = Some(source.clone());
+            materialization.profile.profile_id = binding
+                .source_account_id
+                .as_deref()
+                .unwrap_or(profile_id)
+                .into();
+            registry.record_received_account_copy(
+                owner_user_id,
+                &materialization,
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+            )?;
+        }
     }
     Ok(())
 }
@@ -157,6 +196,14 @@ fn validate_binding(binding: &PublicationProviderAccountBinding) -> Result<(), D
     if binding.provider.trim().is_empty()
         || binding.account_profile.trim().is_empty()
         || binding.label.trim().is_empty()
+        || binding.source.is_some() != binding.source_account_id.is_some()
+        || binding.source.as_ref().is_some_and(|source| {
+            source.machine_id.trim().is_empty() || source.kernel_id.trim().is_empty()
+        })
+        || binding
+            .source_account_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty())
         || !binding.home.is_absolute()
         || !binding
             .home
@@ -253,6 +300,8 @@ mod tests {
                 account_profile: " profile-codex ".to_string(),
             }],
             accounts: vec![PublicationProviderAccountBinding {
+                source: None,
+                source_account_id: None,
                 provider: " Codex ".to_string(),
                 account_profile: " profile-codex ".to_string(),
                 label: "Codex deployment".to_string(),
@@ -267,6 +316,46 @@ mod tests {
             .get("local", "codex", "profile-codex")
             .expect("resolve publication account");
         assert!(profile.is_default);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_managed_binding_without_provenance_still_materializes() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        let root = std::env::temp_dir().join(format!(
+            "chariox-publication-legacy-binding-{}",
+            std::process::id()
+        ));
+        let source_home = root.join("source-home");
+        fs::create_dir_all(source_home.join(".codex")).expect("create source profile");
+        fs::write(source_home.join(".codex/auth.json"), "{}").expect("write source credential");
+        let registry = ProviderAccountProfileRegistry::open(root.join("registry.json"))
+            .expect("open registry");
+        let bindings = PublicationProviderAccountBindings {
+            schema_version: 1,
+            defaults: Vec::new(),
+            accounts: vec![PublicationProviderAccountBinding {
+                source: None,
+                source_account_id: None,
+                provider: "codex".to_string(),
+                account_profile: "profile-codex".to_string(),
+                label: "Codex deployment".to_string(),
+                home: source_home,
+            }],
+        };
+
+        // Bindings from a producer without provenance must not stop a managed kernel booting.
+        materialize_validated_bindings(&registry, "local", &bindings)
+            .expect("legacy managed binding materializes");
+        let profile = registry
+            .get("local", "codex", "profile-codex")
+            .expect("resolve publication account");
+        assert!(profile
+            .materializations
+            .iter()
+            .all(|status| status.copy.is_none()));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -293,12 +382,16 @@ mod tests {
             }],
             accounts: vec![
                 PublicationProviderAccountBinding {
+                    source: None,
+                    source_account_id: None,
                     provider: "codex".to_string(),
                     account_profile: "profile-codex".to_string(),
                     label: "Codex deployment".to_string(),
                     home: source_home,
                 },
                 PublicationProviderAccountBinding {
+                    source: None,
+                    source_account_id: None,
                     provider: "codex".to_string(),
                     account_profile: "missing-profile".to_string(),
                     label: "Missing".to_string(),
@@ -343,6 +436,8 @@ mod tests {
                 account_profile: "profile-codex".to_string(),
             }],
             accounts: vec![PublicationProviderAccountBinding {
+                source: None,
+                source_account_id: None,
                 provider: "codex".to_string(),
                 account_profile: "profile-codex".to_string(),
                 label: "Codex deployment".to_string(),
@@ -444,6 +539,8 @@ exit 2
                 account_profile: "profile-claude".to_string(),
             }],
             accounts: vec![PublicationProviderAccountBinding {
+                source: None,
+                source_account_id: None,
                 provider: "claude".to_string(),
                 account_profile: "profile-claude".to_string(),
                 label: "Claude deployment".to_string(),

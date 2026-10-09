@@ -182,9 +182,13 @@ async fn run_controlled_workspace_live_sync_target(
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        73
+        74
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
+        copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+            machine_id: "synthetic-source-machine".into(),
+            kernel_id: "home-kernel".into(),
+        }),
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
@@ -229,7 +233,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        73
+        74
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -298,7 +302,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        73
+        74
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -350,7 +354,8 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
             archive_size_bytes: 42,
             expires_at_ms: 1_000,
             receipt: Some(RelayManagedContextImportReceipt {
-                transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                                provider_accounts: Vec::new(),
+transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
                 plan_digest: format!("sha256:{}", "f".repeat(64)),
                 development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {

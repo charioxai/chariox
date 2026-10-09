@@ -9,13 +9,14 @@ impl owned::OwnedRemoteAgentProfileUpdate {
     pub(super) fn validate_worker_acknowledgement(
         &self,
         home_agent_id: &str,
+        receiving_account: &str,
         leased_agent: &crate::execution_lease::LeasedAgent,
     ) -> Result<(), DaemonError> {
         if leased_agent.id != self.leased_agent_id
             || leased_agent.lease_id != self.execution_lease_id
             || leased_agent.home_agent_id != home_agent_id
             || leased_agent.provider != self.provider
-            || leased_agent.account_profile != self.account_profile
+            || leased_agent.account_profile != receiving_account
             || leased_agent.model != self.model
             || leased_agent.effort != self.effort
         {

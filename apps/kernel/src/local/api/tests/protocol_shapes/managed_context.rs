@@ -6,10 +6,10 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
         DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 455);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        73
+        74
     );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
@@ -52,7 +52,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 435);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 455);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -187,6 +187,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
     };
 
     let relay_receipt = RelayManagedContextImportReceipt {
+        provider_accounts: Vec::new(),
         transfer_id: "transfer-1".to_string(),
         archive_sha256: "a".repeat(64),
         plan_digest: "sha256:plan".to_string(),

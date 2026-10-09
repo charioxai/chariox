@@ -43,6 +43,25 @@ struct ManagedSliceRelayTokenClaims {
 }
 
 impl CommandRouter {
+    pub(crate) fn authorize_managed_slice_account_copy(
+        &self,
+        slice_id: &str,
+        source: &crate::account_profile::ProviderAccountCopySource,
+        sender_kernel: &str,
+        sender_public_key: &str,
+    ) -> bool {
+        slice_account_copy_owner_matches(
+            &std::env::var("CHARIOX_SLICE_ID").unwrap_or_default(),
+            &std::env::var("CHARIOX_SLICE_OWNER_KERNEL_ID").unwrap_or_default(),
+            &std::env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default(),
+            self.managed_slice_relay_owner_public_key().as_deref(),
+            slice_id,
+            source,
+            sender_kernel,
+            sender_public_key,
+        )
+    }
+
     pub(crate) fn managed_slice_relay_identity(&self) -> Option<ManagedSliceRelayIdentity> {
         let slice_id = std::env::var("CHARIOX_SLICE_ID").ok()?;
         let owner_kernel_id = std::env::var("CHARIOX_SLICE_OWNER_KERNEL_ID").ok()?;
@@ -591,4 +610,67 @@ mod tests {
             None,
         );
     }
+}
+
+fn slice_account_copy_owner_matches(
+    slice: &str,
+    owner_kernel: &str,
+    owner_machine: &str,
+    owner_key: Option<&str>,
+    requested_slice: &str,
+    source: &crate::account_profile::ProviderAccountCopySource,
+    sender_kernel: &str,
+    sender_key: &str,
+) -> bool {
+    !slice.is_empty()
+        && !owner_kernel.is_empty()
+        && !owner_machine.is_empty()
+        && !sender_key.is_empty()
+        && slice == requested_slice
+        && owner_kernel == sender_kernel
+        && owner_kernel == source.kernel_id
+        && owner_machine == source.machine_id
+        && owner_key == Some(sender_key)
+}
+
+#[cfg(test)]
+#[test]
+fn managed_slice_account_copy_rejects_wrong_owner_key_machine_and_slice() {
+    let source = crate::account_profile::ProviderAccountCopySource {
+        kernel_id: "home".into(),
+        machine_id: "machine".into(),
+    };
+    let allowed = |slice, kernel, machine, key| {
+        slice_account_copy_owner_matches(
+            "slice",
+            kernel,
+            machine,
+            key,
+            slice,
+            &source,
+            "home",
+            "public-home",
+        )
+    };
+    assert!(allowed("slice", "home", "machine", Some("public-home")));
+    assert!(!allowed(
+        "other-slice",
+        "home",
+        "machine",
+        Some("public-home")
+    ));
+    assert!(!allowed(
+        "slice",
+        "other-home",
+        "machine",
+        Some("public-home")
+    ));
+    assert!(!allowed(
+        "slice",
+        "home",
+        "other-machine",
+        Some("public-home")
+    ));
+    assert!(!allowed("slice", "home", "machine", Some("other-public")));
+    assert!(!allowed("slice", "home", "machine", None));
 }

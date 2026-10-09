@@ -540,6 +540,7 @@ mod mp11_drain_tests {
     #[test]
     fn mp11_drain_reply_binds_requested_resource_identities() {
         let event = RelayPeerEvent::LeasedRuntimeProjection {
+            account_copy_observations: Vec::new(),
             home_session_id: "home".into(),
             home_agent_id: "agent".into(),
             provider_run_id: "run".into(),

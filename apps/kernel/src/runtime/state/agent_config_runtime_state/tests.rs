@@ -1,3 +1,6 @@
+#[path = "tests/account_copies.rs"]
+mod account_copies;
+
 use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -340,6 +343,7 @@ async fn assert_remote_agent_profile_response(
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
+            projected_account_copies: Vec::new(),
             projected_provider_run: None,
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
@@ -451,6 +455,7 @@ async fn assert_remote_agent_profile_response(
         );
         let response =
             crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                copy: None,
                 provider: "codex".into(),
                 account_profile: resolved_default_profile_id.clone(),
             };
@@ -563,6 +568,7 @@ async fn assert_remote_agent_profile_response(
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
+            projected_account_copies: Vec::new(),
             projected_provider_run: None,
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,

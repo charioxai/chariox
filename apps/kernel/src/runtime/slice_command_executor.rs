@@ -240,83 +240,85 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
         None,
     )?;
     if slice.backend == crate::slice::SliceBackendKind::LocalDocker {
-        let docker_options =
-            crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
-        let resolved_slice = slice.clone();
-        let provider_for_action = provider.clone();
-        let provider_account_for_action = provider_account.clone();
-        let import_result = tokio::task::spawn_blocking(move || {
-            crate::slice::run_local_docker_slice_action(
-                &resolved_slice,
-                crate::slice::LocalDockerSliceAction::ImportProviderAuth,
-                None,
-                Some(&provider_for_action),
-                Some(&provider_account_for_action),
-                &docker_options,
-            )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.auth.import",
-            message: format!("slice auth import task failed: {error}"),
-        })?;
-        if let Err(error) = import_result {
-            let _ = runtime_state.record_slice_audit_event(
-                &slice,
-                "auth.import",
-                "failed",
-                Some(&provider),
-                Some(&error.to_string()),
-            );
-            return Err(error);
-        }
-        let verified_provider_auth = crate::slice::inspect_local_docker_slice_provider_auth(
-            &slice,
-            &provider,
-            Some(&provider_account),
-        )?;
-        if provider != "all" && verified_provider_auth.is_empty() {
-            let message = format!(
-                "{provider} credentials were not found in slice `{}` after import",
-                slice.name
-            );
-            runtime_state.record_slice_audit_event(
-                &slice,
-                "auth.import",
-                "failed",
-                Some(&provider),
-                Some(&message),
-            )?;
-            return Err(DaemonError::LocalTransport {
-                operation: "slice.auth.import",
-                message,
-            });
-        }
-        let imported_provider_auth = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
-            .map(|summaries| {
-                scoped_provider_auth_summaries(&provider, summaries)
-                    .into_iter()
-                    .map(|mut summary| {
-                        summary.account_profile = provider_account.profile_id.clone();
-                        summary
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let imported_provider_auth = crate::slice_provider_auth::merge_provider_auth_summaries(
-            imported_provider_auth
-                .into_iter()
-                .chain(verified_provider_auth)
-                .collect(),
-        );
-        let provider_auth = merge_profile_scoped_provider_auth(
-            slice.provider_auth,
+        let registry = runtime_state.provider_account_profile_registry();
+        let owner = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+        let materialization = registry.export_managed_context_materialization(
+            &owner,
             &provider,
             &provider_account.profile_id,
-            imported_provider_auth,
-        );
+        )?;
+        let relay = lifecycle::local_docker_slice_relay(config_projection, &slice).await?;
+        let config = relay.worker_discovery_config(config_projection.snapshot());
+        let target = worker_discovery::discover_started_slice_worker(&config, &slice).await?;
+        let expected_copy = registry.prepare_account_copy(
+            &owner,
+            &materialization,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+            &target.machine_id,
+            &target.kernel_id,
+        )?;
+        let response = runtime_state.send_remote_profile_request(
+            &config, &target.kernel_id,
+            crate::transport::relay_peer::RelayPeerRequest::ImportManagedSliceProviderAccountCopy {
+                slice_id: slice.id.clone(), materialization,
+            },
+        ).await?;
+        let crate::transport::relay_peer::RelayPeerResponse::ManagedSliceProviderAccountCopyImported { profile: received } = response else {
+            return Err(DaemonError::LocalTransport { operation: "slice.auth.import", message: "receiving kernel did not confirm account import".into() });
+        };
+        let status = received
+            .materializations
+            .iter()
+            .find(|status| {
+                status.copy.as_ref().is_some_and(|copy| {
+                    copy.source_account_id == provider_account.profile_id
+                        && copy.source_machine_id == config.host_machine_id
+                        && copy.source_kernel_id == config.daemon_id
+                        && copy.target_kernel_id == target.kernel_id
+                        && copy.target_machine_id == target.machine_id
+                        && received.provider == provider
+                        && copy.target_account_id == received.profile_id
+                })
+            })
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.auth.import",
+                message: "receiving kernel did not confirm copy provenance".into(),
+            })?;
+        registry.record_confirmed_account_copy(
+            &owner,
+            &expected_copy,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+            &target.machine_id,
+            &target.kernel_id,
+            &received.profile_id,
+            status,
+        )?;
+        let mut provider_auth = slice.provider_auth.clone();
+        provider_auth.retain(|summary| {
+            !(summary.provider == provider && summary.account_profile == received.profile_id)
+        });
+        provider_auth.push(crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: provider.clone(),
+            account_profile: received.profile_id,
+            state: match received.auth_state {
+                crate::account_profile::ProviderAccountAuthState::Authenticated => {
+                    crate::slice_provider_auth::SliceProviderAuthState::Authenticated
+                }
+                crate::account_profile::ProviderAccountAuthState::NotConfigured
+                | crate::account_profile::ProviderAccountAuthState::Expired => {
+                    crate::slice_provider_auth::SliceProviderAuthState::NotConfigured
+                }
+                _ => crate::slice_provider_auth::SliceProviderAuthState::Unknown,
+            },
+            auth_type: None,
+            account_id: None,
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            source: "managed_account_copy".into(),
+        });
         let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
         runtime_state.record_slice_audit_event(
             &slice,
@@ -402,6 +404,16 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
             );
             return Err(error);
         }
+        let owner = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+        runtime_state
+            .provider_account_profile_registry()
+            .observe_target_copy(
+                &owner,
+                &provider,
+                &slice.worker_kernel_ref,
+                &provider_account.profile_id,
+                crate::account_profile::ProviderAccountCopyAuthState::Removed,
+            )?;
         let provider_auth = slice
             .provider_auth
             .into_iter()

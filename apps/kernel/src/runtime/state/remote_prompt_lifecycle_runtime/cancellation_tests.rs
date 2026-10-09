@@ -1351,6 +1351,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    account_copy_observations: Vec::new(),
                     home_session_id: session_id.clone(),
                     home_agent_id: agent_id.clone(),
                     provider_run_id: WORKER_RUN_ID.to_string(),

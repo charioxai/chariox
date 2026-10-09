@@ -5,6 +5,10 @@ fn materialize_empty_codex_profile_for_test(app: &DaemonApp, owner_user_id: &str
         .materialize_replica(
             owner_user_id,
             &crate::account_profile::ProviderAccountMaterialization {
+                copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                    machine_id: "synthetic-source-machine".into(),
+                    kernel_id: "home-kernel".into(),
+                }),
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
                     owner_user_id: owner_user_id.to_string(),
                     provider: "codex".to_string(),

@@ -21,7 +21,7 @@ pub(super) async fn launch_with_one_binding_refresh<
     mut refresh: Refresh,
 ) -> Result<(Response, RemoteAgentBinding), DaemonError>
 where
-    ResolveCredential: FnMut() -> ResolveCredentialFuture,
+    ResolveCredential: FnMut(bool) -> ResolveCredentialFuture,
     ResolveCredentialFuture:
         Future<Output = Result<Option<RemoteProviderLaunchCredential>, DaemonError>>,
     Send: FnMut(RemoteAgentBinding, Option<RemoteProviderLaunchCredential>) -> SendFuture,
@@ -30,11 +30,11 @@ where
     RefreshFuture: Future<Output = Result<RemoteAgentBinding, DaemonError>>,
 {
     ensure_compatible_binding(&initial_binding)?;
-    let skipped_credential_for_active_run = initial_binding.active_worker_provider_run_id.is_some();
     let credential = credential_for_binding(&initial_binding, &mut resolve_credential).await?;
+    let credential_was_omitted = credential.is_none();
     let mut initial_result = send(initial_binding.clone(), credential).await;
-    if skipped_credential_for_active_run && launch_requires_provider_credential(&initial_result) {
-        let credential = resolve_credential().await?;
+    if credential_was_omitted && launch_requires_provider_credential(&initial_result) {
+        let credential = resolve_credential(true).await?;
         initial_result = send(initial_binding.clone(), credential).await;
     }
     match initial_result {
@@ -46,15 +46,14 @@ where
         {
             let refreshed_binding = refresh().await?;
             ensure_compatible_binding(&refreshed_binding)?;
-            let skipped_credential_for_active_run =
-                refreshed_binding.active_worker_provider_run_id.is_some();
             let credential =
                 credential_for_binding(&refreshed_binding, &mut resolve_credential).await?;
+            let credential_was_omitted = credential.is_none();
             let mut refreshed_result = send(refreshed_binding.clone(), credential).await;
-            if skipped_credential_for_active_run
+            if credential_was_omitted
                 && launch_requires_provider_credential(&refreshed_result)
             {
-                let credential = resolve_credential().await?;
+                let credential = resolve_credential(true).await?;
                 refreshed_result = send(refreshed_binding.clone(), credential).await;
             }
             let response = refreshed_result?;
@@ -99,14 +98,14 @@ async fn credential_for_binding<ResolveCredential, ResolveCredentialFuture>(
     resolve_credential: &mut ResolveCredential,
 ) -> Result<Option<RemoteProviderLaunchCredential>, DaemonError>
 where
-    ResolveCredential: FnMut() -> ResolveCredentialFuture,
+    ResolveCredential: FnMut(bool) -> ResolveCredentialFuture,
     ResolveCredentialFuture:
         Future<Output = Result<Option<RemoteProviderLaunchCredential>, DaemonError>>,
 {
     if binding.active_worker_provider_run_id.is_some() {
         return Ok(None);
     }
-    resolve_credential().await
+    resolve_credential(false).await
 }
 
 #[cfg(test)]
@@ -152,7 +151,7 @@ mod tests {
                 binding(protocol, None),
                 {
                     let credential_calls = Arc::clone(&credential_calls);
-                    move || {
+                    move |_| {
                         credential_calls.fetch_add(1, Ordering::SeqCst);
                         std::future::ready(Ok(Some(credential())))
                     }
@@ -192,7 +191,7 @@ mod tests {
             ),
             {
                 let credential_calls = Arc::clone(&credential_calls);
-                move || {
+                move |_| {
                     credential_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Err(DaemonError::InvalidConfig {
                         field: "provider account credential",
@@ -233,7 +232,7 @@ mod tests {
             ),
             {
                 let credential_calls = Arc::clone(&credential_calls);
-                move || {
+                move |_| {
                     credential_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok(Some(credential())))
                 }
@@ -282,7 +281,7 @@ mod tests {
                 Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
                 None,
             ),
-            || {
+            |_| {
                 std::future::ready(Err(DaemonError::InvalidConfig {
                     field: "provider account credential",
                     message: "cold launch requires the configured setup token",
@@ -316,7 +315,7 @@ mod tests {
             binding(Some(current), Some("stale-worker-run")),
             {
                 let credential_calls = Arc::clone(&credential_calls);
-                move || {
+                move |_| {
                     credential_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok(Some(credential())))
                 }
@@ -368,7 +367,7 @@ mod tests {
             binding(Some(current), Some("stale-worker-run")),
             {
                 let credential_calls = Arc::clone(&credential_calls);
-                move || {
+                move |_| {
                     credential_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok(Some(credential())))
                 }
@@ -400,7 +399,7 @@ mod tests {
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let result = launch_with_one_binding_refresh(
             binding(Some(current), Some("stale-worker-run")),
-            || std::future::ready(Ok(None)),
+            |_| std::future::ready(Ok(None)),
             {
                 let send_calls = Arc::clone(&send_calls);
                 move |_, _| {
@@ -426,5 +425,38 @@ mod tests {
         ));
         assert_eq!(send_calls.load(Ordering::SeqCst), 2);
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn review_ack_native_cold_copy_uses_setup_token_only_after_worker_requires_it() {
+        let mut resolutions = Vec::new();
+        let mut sends = 0;
+        let result = launch_with_one_binding_refresh(
+            binding(Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION), None),
+            |force_setup_token| {
+                resolutions.push(force_setup_token);
+                std::future::ready(Ok(force_setup_token.then(credential)))
+            },
+            |_, token| {
+                sends += 1;
+                if sends == 1 {
+                    assert!(token.is_none(), "first launch uses the receiving official login");
+                    std::future::ready(Err(DaemonError::RelayTransport {
+                        operation: "read relay peer response",
+                        code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE.into(),
+                        message: "worker requires setup-token fallback".into(), retryable: false,
+                    }))
+                } else {
+                    assert!(token.is_some(), "typed worker rejection enables the Vault fallback");
+                    std::future::ready(Ok("launched-with-fallback"))
+                }
+            },
+            || std::future::ready(Err(DaemonError::InternalInvariant {
+                operation: "refresh copy launch", message: "credential retry must retain its lease".into(),
+            })),
+        ).await.unwrap();
+        assert_eq!(result.0, "launched-with-fallback");
+        assert_eq!(resolutions, vec![false, true]);
+        assert_eq!(sends, 2);
     }
 }

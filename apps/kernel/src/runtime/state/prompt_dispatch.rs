@@ -708,13 +708,28 @@ impl KernelRuntimeState {
                         return Ok(submission);
                     }
                 } else {
-                    self.with_app_side_effect(|app| {
-                        // The app mutex can outlive the grant. Reauthorize only
-                        // after acquiring it, before launching a cold provider.
-                        authorize()?;
-                        app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                    })
-                    .await?;
+                    let request = self
+                        .with_app_side_effect(|app| {
+                            authorize()?;
+                            app.prompt_provider_launch_request(&session_id, &target_agent_id)
+                        })
+                        .await?;
+                    // MP-08/MP-10/MP-11: a missing receiving Claude copy waits for
+                    // human login before credential preparation can reject the turn.
+                    authorize()?;
+                    if self
+                        .start_missing_copied_claude_login_recovery(&request)
+                        .await?
+                        .is_none()
+                    {
+                        self.with_app_side_effect(|app| {
+                            // The app mutex can outlive the grant. Reauthorize only
+                            // after acquiring it, before launching a cold provider.
+                            authorize()?;
+                            app.ensure_prompt_provider_run(&session_id, &target_agent_id, request)
+                        })
+                        .await?;
+                    }
                 };
                 authorize()?;
                 if let Some(mut submission) =

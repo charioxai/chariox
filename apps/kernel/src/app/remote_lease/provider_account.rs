@@ -66,19 +66,11 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
-        if crate::provider::canonical_provider_family(&materialization.profile.provider)
-            == Some("claude")
-            && materialization
-                .files
-                .iter()
-                .any(|file| file.relative_path == ".credentials.json")
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
-                message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
-            });
-        }
-
+        crate::account_profile::validate_copy_source_kernel(
+            &materialization,
+            &lease.home_kernel_id,
+        )?;
+        crate::account_profile::validate_claude_transfer_artifacts(&materialization)?;
         self.app
             .provider_account_profile_registry()
             .reconcile_materialized_replica_rollback(
@@ -162,7 +154,22 @@ impl RemoteLeaseRuntime<'_> {
             self.app
                 .provider_account_profile_registry()
                 .materialize_replica_with_rollback_state(&lease.owner_user_id, &materialization)?;
-        let profile = match self.validate_remote_provider_account(profile) {
+        let validation = (|| {
+            self.app
+                .provider_account_profile_registry()
+                .record_received_account_copy(
+                    &lease.owner_user_id,
+                    &materialization,
+                    &profile.profile_id,
+                    if std::env::var("CHARIOX_SLICE_ID").is_ok_and(|id| !id.trim().is_empty()) {
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+                    } else {
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+                    },
+                )?;
+            self.validate_remote_provider_account(profile)
+        })();
+        let profile = match validation {
             Ok(profile) => profile,
             Err(error) => {
                 if let Err(rollback_error) = self
@@ -192,13 +199,7 @@ impl RemoteLeaseRuntime<'_> {
                 &materialization.profile.provider,
                 &materialization.profile.profile_id,
             )?;
-        self.app
-            .provider_account_profile_registry()
-            .record_credential_copy(
-                &lease.owner_user_id,
-                &materialization,
-                &context.home_kernel_id,
-            )?;
+
         self.app.durable_state_store().append_event(
             "provider_account.materialized",
             Some(lease.id),
@@ -209,18 +210,28 @@ impl RemoteLeaseRuntime<'_> {
                 "source_home_kernel_id": context.home_kernel_id,
             }),
         )?;
-        Ok(profile)
+        self.app.provider_account_profile_registry().get(
+            &lease.owner_user_id,
+            &profile.provider,
+            &profile.profile_id,
+        )
     }
 
     fn validate_remote_provider_account(
         &self,
         profile: ProviderAccountProfile,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        if !remote_provider_account_requires_auth_validation(&profile.provider, profile.auth_state)
-        {
+        if profile.auth_state == ProviderAccountAuthState::Authenticated {
             return Ok(profile);
         }
         let registry = self.app.provider_account_profile_registry();
+        if profile.provider == "claude"
+            && !registry
+                .has_renewable_login(&profile.owner_user_id, "claude", &profile.profile_id)
+                .unwrap_or(false)
+        {
+            return Ok(profile); // No login artifact was copied; launch may use the separate Vault setup token.
+        }
         crate::local::provider_requests::observe_provider_auth_status(
             &registry,
             &profile.owner_user_id,
@@ -237,20 +248,96 @@ impl RemoteLeaseRuntime<'_> {
     }
 }
 
-fn remote_provider_account_requires_auth_validation(
-    provider: &str,
-    auth_state: ProviderAccountAuthState,
-) -> bool {
-    // Claude refresh credentials never cross this boundary. Its official CLI
-    // is authenticated at launch through the existing vaulted setup-token
-    // path, so preserve that separate handoff contract.
-    crate::provider::canonical_provider_family(provider) != Some("claude")
-        && auth_state != ProviderAccountAuthState::Authenticated
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrev_f4_leased_copy_rejects_another_home_provenance_before_installation() {
+        let root = crate::test_support::TestWorktree::new("lease-copy-source");
+        let (mut app, context) = remote_account_fixture(root.path());
+        let materialization = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "source-machine".into(),
+                kernel_id: "other-home-kernel".into(),
+            }),
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".into(),
+                provider: "claude".into(),
+                profile_id: "spoofed-copy".into(),
+                label: "Spoofed source".into(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: Vec::new(),
+            generated_at_ms: 1,
+        };
+        let result = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, materialization);
+        assert!(
+            result.is_err(),
+            "lease accepted another home's source provenance"
+        );
+        assert!(app
+            .provider_account_profile_registry()
+            .get("owner-a", "claude", "spoofed-copy")
+            .is_err());
+    }
+
+    #[test]
+    fn secrev_f6_claude_aliases_reject_nonrefreshable_artifacts_before_installation() {
+        use base64::Engine;
+        for provider in ["claude-headless", "claude-p"] {
+            assert_eq!(
+                crate::provider::canonical_provider_family(provider),
+                Some("claude")
+            );
+            let root = crate::test_support::TestWorktree::new("lease-claude-alias");
+            let (mut app, context) = remote_account_fixture(root.path());
+            let materialization = ProviderAccountMaterialization {
+                copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                    machine_id: "source-machine".into(),
+                    kernel_id: context.home_kernel_id.clone(),
+                }),
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner-a".into(),
+                    provider: provider.into(),
+                    profile_id: "bad-claude".into(),
+                    label: "Invalid Claude".into(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                    is_default: false,
+                },
+                files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                    relative_path: ".credentials.json".into(),
+                    contents_base64: base64::engine::general_purpose::STANDARD.encode(
+                        br#"{"claudeAiOauth":{"accessToken":"synthetic","refreshToken":""}}"#,
+                    ),
+                }],
+                generated_at_ms: 1,
+            };
+            let result = RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), materialization.clone());
+            assert!(
+                result.is_err(),
+                "{provider} installed a nonrefreshable Claude artifact"
+            );
+            assert!(app
+                .provider_account_profile_registry()
+                .get("owner-a", "claude", "bad-claude")
+                .is_err());
+            let mut vault_only = materialization.clone();
+            vault_only.files.clear();
+            RemoteLeaseRuntime::new(&mut app)
+                .ensure_remote_provider_account(context.clone(), vault_only)
+                .expect("empty artifact list must retain the separate Vault path");
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .ensure_remote_provider_account(context, materialization)
+                    .is_err(),
+                "{provider} bypassed validation by reusing an existing profile"
+            );
+        }
+    }
 
     #[cfg(unix)]
     fn install_opencode_auth_fixture(root: &std::path::Path) -> impl Drop {
@@ -366,6 +453,10 @@ exit 2
             execution_lease_id: lease.id.clone(),
         };
         let materialization = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
@@ -389,6 +480,10 @@ exit 2
         assert!(std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]).is_dir());
 
         let claude_with_refresh_credential = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
@@ -405,8 +500,8 @@ exit 2
         };
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
-            .expect_err("remote Claude refresh credentials must be rejected");
-        assert!(error.to_string().contains("setup-token launch path"));
+            .expect_err("nonportable Claude artifacts must be rejected");
+        assert!(error.to_string().contains("no transferable credentials"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
         let mut wrong_owner = materialization;
@@ -448,6 +543,10 @@ exit 2
             execution_lease_id: lease.id,
         };
         let materialization = |synthetic_key: &str| ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
@@ -507,22 +606,6 @@ exit 2
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn remote_auth_validation_policy_preserves_codex_and_claude_handoffs() {
-        assert!(remote_provider_account_requires_auth_validation(
-            "codex",
-            ProviderAccountAuthState::Unknown,
-        ));
-        assert!(!remote_provider_account_requires_auth_validation(
-            "codex",
-            ProviderAccountAuthState::Authenticated,
-        ));
-        assert!(!remote_provider_account_requires_auth_validation(
-            "claude",
-            ProviderAccountAuthState::Unknown,
-        ));
-    }
-
     #[cfg(unix)]
     #[test]
     fn failed_default_materialization_restores_the_exact_previous_default() {
@@ -547,6 +630,10 @@ exit 2
             .set_default("owner-a", "opencode", &profile_b.profile_id)
             .expect("select B");
         let failed_c = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
@@ -604,6 +691,10 @@ exit 2
         let (mut app, context) = remote_account_fixture(&root);
         let materialization =
             |profile_id: &str, contents_base64: &str| ProviderAccountMaterialization {
+                copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                    machine_id: "synthetic-source-machine".into(),
+                    kernel_id: "home-kernel".into(),
+                }),
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
                     owner_user_id: "owner-a".to_string(),
                     provider: "opencode".to_string(),
@@ -633,6 +724,17 @@ exit 2
             crate::account_profile::ProviderAccountAuthState::Authenticated
         );
         assert!(profile.last_validated_at_ms.is_some());
+        let copy = profile
+            .materializations
+            .iter()
+            .find_map(|status| status.copy.as_ref())
+            .expect("acknowledgement includes the actual receiving copy");
+        assert_eq!(copy.source_machine_id, "synthetic-source-machine");
+        assert_eq!(copy.target_account_id, profile.profile_id);
+        assert_eq!(
+            copy.auth_state,
+            crate::account_profile::ProviderAccountCopyAuthState::Authenticated
+        );
 
         let error = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
@@ -708,6 +810,10 @@ exit 2
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
@@ -875,6 +981,10 @@ exit 2
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
@@ -969,6 +1079,10 @@ exit 2
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
+            copy_source: Some(crate::account_profile::ProviderAccountCopySource {
+                machine_id: "synthetic-source-machine".into(),
+                kernel_id: "home-kernel".into(),
+            }),
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),

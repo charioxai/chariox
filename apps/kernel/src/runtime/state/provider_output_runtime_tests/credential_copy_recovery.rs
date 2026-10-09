@@ -134,7 +134,8 @@ async fn run_case(recovery: RecoveryCase) {
     let source = crate::account_profile::ProviderAccountProfileRegistry::open(
         workspace.path().join("source/accounts.json"),
     )
-    .unwrap();
+    .unwrap()
+    .with_machine_identity("synthetic-source-machine", "synthetic-source-kernel");
     let profile = source
         .create_managed(owner, "codex", "Synthetic copied login")
         .unwrap();
@@ -151,7 +152,12 @@ async fn run_case(recovery: RecoveryCase) {
         .materialize_replica(owner, &materialization)
         .unwrap();
     registry
-        .record_credential_copy(owner, &materialization, "synthetic-source-machine")
+        .record_received_account_copy(
+            owner,
+            &materialization,
+            &copied.profile_id,
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+        )
         .unwrap();
     crate::test_support::authenticate_provider_account(
         &registry,
@@ -528,7 +534,7 @@ async fn run_case(recovery: RecoveryCase) {
         assert_eq!(
             notices
                 .iter()
-                .filter(|n| n.message.contains("were copied from"))
+                .filter(|n| n.message.contains("was copied from"))
                 .count(),
             1
         );

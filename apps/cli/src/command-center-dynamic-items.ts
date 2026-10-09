@@ -17,6 +17,7 @@ import type { CommandCenterItem } from "./command-center-types.js"
 import {
   providerAccountCapacity,
   providerAccountDisplayLabel,
+  providerAccountCopiesSummary,
   providerAccountsForProvider,
 } from "./waiting-room-provider-accounts.js"
 
@@ -196,12 +197,13 @@ export function buildAccountItems(input: string, context: CommandCenterDynamicCo
   return filterCommandCenterItems(
     providerAccountsForProvider(context.providerAccounts ?? [], context.currentProvider).map((profile) => {
       const capacity = providerAccountCapacity(profile, Date.now(), context.currentModel)
+      const copies = providerAccountCopiesSummary(profile)
       return {
         id: `account-${profile.provider}-${profile.profile_id}`,
         label: providerAccountDisplayLabel(profile, context.currentModel),
         description: profile.profile_id === (context.currentAccount ?? "default")
-          ? `current account · ${capacity.detail}`
-          : capacity.detail,
+          ? `current account · ${capacity.detail}${copies ? ` · ${copies}` : ""}`
+          : `${capacity.detail}${copies ? ` · ${copies}` : ""}`,
         kind: "account" as const,
         value: profile.profile_id,
         ...(capacity.state === "exhausted"

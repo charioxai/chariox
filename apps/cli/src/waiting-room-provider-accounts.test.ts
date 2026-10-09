@@ -182,3 +182,20 @@ function usageMeter(
     ...(resetsAtMs === undefined ? {} : { resets_at_ms: resetsAtMs }),
   }
 }
+
+
+test("provider account copies show machine identities, warning, observation and receiving login", async () => {
+  const { providerAccountCopiesSummary } = await import("./waiting-room-provider-accounts.js")
+  const text = providerAccountCopiesSummary({ provider: "codex", materializations: [{
+    target_kind: "worker", target_ref: "worker-kernel", state: "stale", observed_at_ms: 1000,
+    copy: { source_machine_id: "source-machine", source_kernel_id: "source-kernel", source_account_id: "source-default",
+      target_machine_id: "worker-machine", target_kernel_id: "worker-kernel", target_account_id: "actual-target-default",
+      renewable_services: ["codex"], auth_state: "needs_login", copied_at_ms: 1, warning_seen: false },
+  }] } as never)
+  assert.match(text, /worker-machine \(worker-kernel\)/)
+  assert.match(text, /copied from source-machine \(source-default\)/)
+  assert.match(text, /needs login observed/)
+  assert.match(text, /This copy can log you out/)
+  assert.match(text, /Consider logging in on that machine/)
+  assert.match(text, /Official login on receiving machine: \/provider login codex actual-target-default/)
+})

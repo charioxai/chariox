@@ -13,9 +13,9 @@ impl KernelRuntimeState {
         agent_id: &str,
         update: &owned::OwnedRemoteAgentProfileUpdate,
         config: &crate::config::DaemonConfig,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<String, DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(&update.provider) else {
-            return Ok(());
+            return Ok(update.account_profile.clone());
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -30,10 +30,15 @@ impl KernelRuntimeState {
         } else {
             ProviderAccountMaterializationTargetKind::Worker
         };
+        let profile = registry.get(&owner, provider, &update.account_profile)?;
+        if let Some(receiving_account) =
+            profile.installed_account_id_at(target_kind, &update.worker_kernel_id)
+        {
+            return Ok(receiving_account.to_string());
+        }
         let result = async {
             let mut materialization =
                 registry.export_materialization(&owner, provider, &update.account_profile)?;
-            // A resolved stable ID must cross both account and profile requests.
             if materialization.profile.profile_id != update.account_profile {
                 return Err(DaemonError::LocalTransport {
                     operation: "materialize remote profile account",
@@ -42,6 +47,19 @@ impl KernelRuntimeState {
             }
             // Cloud-owner aliases are local registry details, not lease owners.
             materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+            let binding = agent
+                .remote_execution()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "issue account copy",
+                    message: "worker binding disappeared".into(),
+                })?;
+            let expected_copy = registry.prepare_account_copy(
+                &owner,
+                &materialization,
+                target_kind,
+                &binding.worker_machine_id,
+                &update.worker_kernel_id,
+            )?;
             let response = self
                 .send_remote_profile_request(
                     config,
@@ -57,46 +75,72 @@ impl KernelRuntimeState {
                     },
                 )
                 .await?;
-            match response {
-                RelayPeerResponse::RemoteProviderAccountEnsured {
-                    provider: confirmed_provider,
-                    account_profile,
-                } if confirmed_provider == provider
-                    && account_profile == update.account_profile =>
-                {
-                    Ok(())
-                }
-                _ => Err(DaemonError::LocalTransport {
-                    operation: "materialize remote profile account",
-                    message:
-                        "worker did not confirm the selected provider account; profile unchanged"
-                            .into(),
-                }),
+            let RelayPeerResponse::RemoteProviderAccountEnsured {
+                copy,
+                provider: confirmed_provider,
+                account_profile,
+            } = response
+            else {
+                return Err(unconfirmed_profile_account());
+            };
+            if confirmed_provider != provider || account_profile != update.account_profile {
+                return Err(unconfirmed_profile_account());
             }
+            if let Some(status) = copy {
+                // This validates placement/generation and persists the confirmed
+                // receipt in one path. Never cache success before it accepts.
+                registry.record_confirmed_account_copy(
+                    &owner,
+                    &expected_copy,
+                    target_kind,
+                    &binding.worker_machine_id,
+                    &update.worker_kernel_id,
+                    &account_profile,
+                    status,
+                )?;
+            } else {
+                // Preserve the existing metadata-only/legacy response contract.
+                registry.update_materialization_status(
+                    &owner,
+                    provider,
+                    &update.account_profile,
+                    ProviderAccountMaterializationStatus {
+                        copy: None,
+                        target_kind,
+                        target_ref: update.worker_kernel_id.clone(),
+                        state: ProviderAccountMaterializationState::Materialized,
+                        observed_at_ms: crate::session::unix_epoch_ms(),
+                        last_error: None,
+                    },
+                )?;
+            }
+            Ok(account_profile)
         }
         .await;
-        let status = registry.update_materialization_status(
-            &owner,
-            provider,
-            &update.account_profile,
-            ProviderAccountMaterializationStatus {
-                target_kind,
-                target_ref: update.worker_kernel_id.clone(),
-                state: if result.is_ok() {
-                    ProviderAccountMaterializationState::Materialized
-                } else {
-                    ProviderAccountMaterializationState::Error
+        if result.is_err() {
+            // A rejected receipt must not be reusable by the next profile change.
+            // Keep the lease and queued work; only this installation attempt fails.
+            registry.update_materialization_status(
+                &owner,
+                provider,
+                &update.account_profile,
+                ProviderAccountMaterializationStatus {
+                    copy: None,
+                    target_kind,
+                    target_ref: update.worker_kernel_id.clone(),
+                    state: ProviderAccountMaterializationState::Error,
+                    observed_at_ms: crate::session::unix_epoch_ms(),
+                    last_error: Some("selected account transfer failed; profile unchanged".into()),
                 },
-                observed_at_ms: crate::session::unix_epoch_ms(),
-                last_error: result
-                    .as_ref()
-                    .err()
-                    .map(|_| "selected account transfer failed; profile unchanged".to_string()),
-            },
-        );
-        // Never destroy an existing lease or discard queued work on failure.
-        result?;
-        status?;
-        Ok(())
+            )?;
+        }
+        result
+    }
+}
+
+fn unconfirmed_profile_account() -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "materialize remote profile account",
+        message: "worker did not confirm the selected provider account; profile unchanged".into(),
     }
 }

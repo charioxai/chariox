@@ -146,6 +146,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         operation: &'static str,
+        force_setup_token: bool,
     ) -> Result<Option<crate::transport::relay_peer::RemoteProviderLaunchCredential>, DaemonError>
     {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -170,6 +171,30 @@ impl KernelRuntimeState {
             agent.provider(),
             agent.provider_account_profile(),
         )?;
+        let receiving_copy = agent.remote_execution().and_then(|binding| {
+            let kind = if self
+                .owned
+                .slice_store
+                .resolve_by_worker_kernel_ref(&binding.worker_kernel_id)
+                .is_some()
+            {
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+            } else {
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+            };
+            self.owned.provider_account_profiles.confirmed_remote_copy(
+                &profile,
+                kind,
+                &binding.worker_machine_id,
+                &binding.worker_kernel_id,
+            )
+        });
+        if receiving_copy.is_some() && !force_setup_token {
+            return Ok(None);
+        }
+        let receiving_account = receiving_copy
+            .map(|copy| copy.target_account_id.clone())
+            .unwrap_or_else(|| profile.profile_id.clone());
         let request = crate::provider::LaunchProviderRequest::new(
             agent.session_id(),
             crate::provider::adapter_key_for_provider(agent.provider()),
@@ -198,7 +223,7 @@ impl KernelRuntimeState {
         Ok(Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {
                 provider: "claude".to_string(),
-                account_profile: profile.profile_id,
+                account_profile: receiving_account,
                 secret_input:
                     crate::transport::relay_peer::RemoteCredentialSecretInput::from_zeroizing(token),
             },

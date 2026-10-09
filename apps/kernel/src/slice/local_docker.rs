@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -38,17 +38,15 @@ mod memory_admission;
 mod observation_environment;
 pub(crate) use observation_environment::fresh_local_docker_observation_environment;
 mod log_output;
-mod provider_inputs;
 mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
 use log_output::MAX_LOG_BYTES;
 mod tuning;
-
 use broker::docker_command;
+
 pub(crate) use capture_preflight::require_verified_layout as require_supported_slice_capture_layout;
-use provider_inputs::home_provider_credential_sources;
 pub(crate) use snapshot_pause::recover as recover_local_docker_snapshot_pause;
 pub(crate) use state::{
     acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
@@ -276,84 +274,31 @@ pub fn run_local_docker_slice_action(
         ),
     )?;
     let mut broker_inputs = Vec::new();
-    if let (true, true, Some(home)) = (
-        broker::configured(),
-        action == LocalDockerSliceAction::ImportProviderAuth,
-        std::env::var_os("HOME"),
-    ) {
-        let home = PathBuf::from(home);
-        for (environment, source, name) in home_provider_credential_sources(&home, provider) {
-            configure_provider_input(&mut command, &mut broker_inputs, environment, &source, name)?;
-        }
+    if action == LocalDockerSliceAction::ImportProviderAuth
+        && broker::configured()
+        && provider == Some("github")
+    {
+        let github_token =
+            crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
+                .ok()
+                .and_then(|context| {
+                    bounded_github_token("gh", GITHUB_TOKEN_COMMAND_TIMEOUT, &context)
+                });
+        replace_broker_input(
+            &mut broker_inputs,
+            "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
+            "github-token.txt",
+            github_token,
+        )?;
     }
     if let Some(provider) = provider {
         command.env("CHARIOX_SLICE_AUTH_PROVIDER", provider);
     }
-    if action == LocalDockerSliceAction::ImportProviderAuth {
-        if let Some(account) = provider_account {
-            command
-                .env("CHARIOX_SLICE_ACCOUNT_OWNER", &account.owner_path_component)
-                .env("CHARIOX_SLICE_ACCOUNT_PROFILE", &account.profile_id);
-            if let Some(codex_home) = account.environment.get("CODEX_HOME") {
-                let source = Path::new(codex_home).join("auth.json");
-                configure_provider_input(
-                    &mut command,
-                    &mut broker_inputs,
-                    "CHARIOX_SLICE_CODEX_AUTH",
-                    &source,
-                    "codex-auth.json",
-                )?;
-            }
-            if let Some(data_home) = account.environment.get("XDG_DATA_HOME") {
-                let source = Path::new(data_home).join("opencode").join("auth.json");
-                configure_provider_input(
-                    &mut command,
-                    &mut broker_inputs,
-                    "CHARIOX_SLICE_OPENCODE_AUTH",
-                    &source,
-                    "opencode-auth.json",
-                )?;
-            }
-            if let Some(claude_config_dir) = account.environment.get("CLAUDE_CONFIG_DIR") {
-                let root = Path::new(claude_config_dir);
-                for (environment, source, name) in [
-                    (
-                        "CHARIOX_SLICE_CLAUDE_SETTINGS",
-                        root.join("settings.json"),
-                        "claude-settings.json",
-                    ),
-                    (
-                        "CHARIOX_SLICE_CLAUDE_STATS",
-                        root.join("stats-cache.json"),
-                        "claude-stats.json",
-                    ),
-                ] {
-                    configure_provider_input(
-                        &mut command,
-                        &mut broker_inputs,
-                        environment,
-                        &source,
-                        name,
-                    )?;
-                }
-            }
-        }
-        if broker::configured() && matches!(provider, Some("all" | "github")) {
-            let github_token =
-                crate::managed_context::scm::GitCredentialCommandContext::source_from_process()
-                    .ok()
-                    .and_then(|context| {
-                        bounded_github_token("gh", GITHUB_TOKEN_COMMAND_TIMEOUT, &context)
-                    });
-            replace_broker_input(
-                &mut broker_inputs,
-                "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
-                "github-token.txt",
-                github_token,
-            )?;
-        }
+    if let Some(account) = provider_account {
+        command
+            .env("CHARIOX_SLICE_ACCOUNT_OWNER", &account.owner_path_component)
+            .env("CHARIOX_SLICE_ACCOUNT_PROFILE", &account.profile_id);
     }
-
     let log_path = local_docker_slice_action_log_path(&options.root, record, action);
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
@@ -455,26 +400,6 @@ pub fn run_local_docker_slice_action(
     })
 }
 
-fn configure_provider_input(
-    command: &mut Command,
-    broker_inputs: &mut Vec<broker::ProvisionerInput>,
-    environment: &'static str,
-    source: &Path,
-    name: &'static str,
-) -> Result<(), DaemonError> {
-    if !broker::configured() {
-        command.env(environment, source);
-        return Ok(());
-    }
-    let contents = read_provider_credential_no_symlinks(source)?;
-    replace_broker_input(
-        broker_inputs,
-        environment,
-        name,
-        contents.map(Zeroizing::new),
-    )
-}
-
 fn replace_broker_input(
     broker_inputs: &mut Vec<broker::ProvisionerInput>,
     environment: &'static str,
@@ -542,115 +467,6 @@ fn bounded_github_token(
         && contents.len() <= MAX_PROVIDER_CREDENTIAL_BYTES
         && !contents.iter().all(u8::is_ascii_whitespace))
     .then_some(contents)
-}
-
-#[cfg(unix)]
-fn read_provider_credential_no_symlinks(source: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
-    use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
-    use std::path::Component;
-
-    if !source.is_absolute() {
-        return Err(local_docker_error(
-            "managed provider credential paths must be absolute",
-        ));
-    }
-    let components = source
-        .components()
-        .filter_map(|component| match component {
-            Component::RootDir => None,
-            Component::Normal(name) => Some(Ok(name)),
-            _ => Some(Err(local_docker_error(
-                "managed provider credential path is not normalized",
-            ))),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if components.is_empty() {
-        return Err(local_docker_error(
-            "managed provider credential path has no file name",
-        ));
-    }
-    let root = CString::new("/").expect("root path has no NUL");
-    let root_fd = unsafe {
-        libc::open(
-            root.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
-    };
-    if root_fd < 0 {
-        return Err(local_docker_error(format!(
-            "failed to open provider credential root: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    let mut directory = unsafe { OwnedFd::from_raw_fd(root_fd) };
-    for (index, component) in components.iter().enumerate() {
-        let component = CString::new(component.as_bytes()).map_err(|_| {
-            local_docker_error("managed provider credential path contains a NUL byte")
-        })?;
-        let last = index + 1 == components.len();
-        let flags = if last {
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
-        } else {
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW
-        };
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
-        if fd < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::NotFound {
-                return Ok(None);
-            }
-            return Err(local_docker_error(format!(
-                "failed to open provider credential without symlinks {}: {error}",
-                source.display()
-            )));
-        }
-        let opened = unsafe { OwnedFd::from_raw_fd(fd) };
-        if last {
-            let file = File::from(opened);
-            let metadata = file.metadata().map_err(|error| {
-                local_docker_error(format!(
-                    "failed to inspect opened provider credential {}: {error}",
-                    source.display()
-                ))
-            })?;
-            if !metadata.is_file()
-                || metadata.nlink() != 1
-                || metadata.len() > MAX_PROVIDER_CREDENTIAL_BYTES as u64
-            {
-                return Err(local_docker_error(format!(
-                    "provider credential is not a bounded singly-linked regular file: {}",
-                    source.display()
-                )));
-            }
-            let mut contents = Vec::with_capacity(metadata.len() as usize);
-            file.take((MAX_PROVIDER_CREDENTIAL_BYTES + 1) as u64)
-                .read_to_end(&mut contents)
-                .map_err(|error| {
-                    local_docker_error(format!(
-                        "failed to read opened provider credential {}: {error}",
-                        source.display()
-                    ))
-                })?;
-            if contents.len() > MAX_PROVIDER_CREDENTIAL_BYTES {
-                return Err(local_docker_error(
-                    "provider credential grew beyond its limit",
-                ));
-            }
-            return Ok(Some(contents));
-        }
-        directory = opened;
-    }
-    unreachable!("provider credential components are nonempty")
-}
-
-#[cfg(not(unix))]
-fn read_provider_credential_no_symlinks(_source: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
-    Err(local_docker_error(
-        "managed provider credential transfer requires Unix",
-    ))
 }
 
 pub fn start_local_docker_slice_provider_login(
@@ -735,9 +551,9 @@ fn provider_auth_paths(
     protected: bool,
 ) -> (String, String) {
     let root = if protected {
-        "/var/lib/chariox/slice-private/provider-accounts"
+        "/var/lib/chariox/slice-private/kernel/state/provider-accounts"
     } else {
-        "/home/slice/.chariox/daemon/provider-accounts"
+        "/home/slice/.chariox/state/provider-accounts"
     };
     let owner = account
         .map(|account| account.owner_path_component.as_str())
@@ -1202,6 +1018,7 @@ fn configure_local_docker_slice_command(
             },
         )
         .env("CHARIOX_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
+        .env("CHARIOX_SLICE_OWNER_PUBLIC_KEY", &options.home_public_key)
         .env("CHARIOX_SLICE_DAEMON_ID", record.worker_kernel_ref.clone())
         .env(
             "CHARIOX_SLICE_DAEMON_ALIAS",

@@ -269,7 +269,21 @@ export type ProviderAccountProfile = {
   materializations?: ProviderAccountMaterializationStatus[]
 }
 
+export type ProviderAccountCopyMetadata = {
+  source_machine_id: string
+  source_kernel_id: string
+  source_account_id: string
+  target_machine_id: string
+  target_kernel_id: string
+  target_account_id: string
+  renewable_services: string[]
+  auth_state: "unknown" | "authenticated" | "needs_login" | "removed"
+  copied_at_ms: number
+  warning_seen: boolean
+}
+
 export type ProviderAccountMaterializationStatus = {
+  copy?: ProviderAccountCopyMetadata | null
   target_kind: "worker" | "slice"
   target_ref: string
   state: "materialized" | "stale" | "error"

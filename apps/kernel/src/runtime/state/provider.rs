@@ -7,18 +7,15 @@ use super::owned::OwnedProviderRunExit;
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn reusable_native_tui_run_for_launch(
+    pub(super) fn live_native_tui_run_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
-    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+    ) -> Option<crate::provider::RuntimeProviderRun> {
         if request.client_interface != crate::provider::ProviderClientInterface::NativeTui {
-            return Ok(None);
+            return None;
         }
-        let Some(agent_id) = request.agent_id.as_deref() else {
-            return Ok(None);
-        };
-        let Some(run) = self
-            .provider_store
+        let agent_id = request.agent_id.as_deref()?;
+        self.provider_store
             .list_runs()
             .into_iter()
             .filter(|run| {
@@ -32,7 +29,13 @@ impl KernelRuntimeOwnedState {
                     )
             })
             .max_by(|left, right| left.active_selection_cmp(right))
-        else {
+    }
+
+    pub(super) fn reusable_native_tui_run_for_launch(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        let Some(run) = self.live_native_tui_run_for_launch(request) else {
             return Ok(None);
         };
 
@@ -234,9 +237,11 @@ impl KernelRuntimeOwnedState {
             .previous_active_run_id
             .as_deref()
             .and_then(|run_id| self.provider_store.get_run(run_id).ok());
-        let run = self
-            .provider_store
-            .finish_current_launch(&started.run, binding)?;
+        let run = self.provider_store.finish_current_launch(
+            &started.run,
+            binding,
+            &started.provider_credential_env,
+        )?;
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.session_snapshot(run.session_id())?;

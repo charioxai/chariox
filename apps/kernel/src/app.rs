@@ -336,7 +336,8 @@ impl DaemonApp {
         let provider_account_profiles =
             crate::account_profile::ProviderAccountProfileRegistry::open(
                 config.account_profile_registry_path(),
-            )?;
+            )?
+            .with_machine_identity(&config.host_machine_id, &config.daemon_id);
         crate::publication_provider_accounts::materialize_publication_provider_accounts(
             &provider_account_profiles,
             crate::session::DEFAULT_LOCAL_USER_ID,

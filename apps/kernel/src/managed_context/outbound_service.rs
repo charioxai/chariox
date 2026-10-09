@@ -71,6 +71,8 @@ pub struct ManagedContextTransferTicket {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextOutboundImportReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_accounts: Vec<crate::account_profile::ManagedContextProviderAccountReceipt>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -133,6 +135,7 @@ pub enum ManagedContextOutboundKernelContextImportReceipt {
 impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
     fn from(receipt: RelayManagedContextImportReceipt) -> Self {
         Self {
+            provider_accounts: receipt.provider_accounts,
             transfer_id: receipt.transfer_id,
             archive_sha256: receipt.archive_sha256,
             plan_digest: receipt.plan_digest,
@@ -638,8 +641,28 @@ pub(crate) fn start_managed_context_outbound_operation(
             status.phase = ManagedContextOutboundOperationPhase::Uploading;
             status.package_size_bytes = prepared.package.package_size_bytes;
         });
+        let copy_owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &config,
+            config
+                .cloud_relay
+                .as_ref()
+                .map(|cloud| cloud.user_id.as_str())
+                .unwrap_or("local"),
+        );
+        for expected in &prepared.account_copy_expectations {
+            if let Err(error) = provider_account_profiles.remember_issued_account_copy(
+                &copy_owner,
+                expected,
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                &authoritative_ticket.target.machine_id,
+                &authoritative_ticket.target.kernel_id,
+            ) {
+                task_store.update(&task_context_id, |status| fail_status(status, &error));
+                return;
+            }
+        }
         let transport = RelayManagedContextPeerTransport::new(
-            config,
+            config.clone(),
             relay_state,
             authoritative_ticket.target.kernel_id.clone(),
             authoritative_ticket.target.relay_public_key.clone(),
@@ -648,9 +671,9 @@ pub(crate) fn start_managed_context_outbound_operation(
             &transport,
             ManagedContextOutboundTransferRequest {
                 plan,
-                target_environment_id: authoritative_ticket.environment_id,
-                target_kernel_id: authoritative_ticket.target.kernel_id,
-                target_key_thumbprint: authoritative_ticket.target.key_thumbprint,
+                target_environment_id: authoritative_ticket.environment_id.clone(),
+                target_kernel_id: authoritative_ticket.target.kernel_id.clone(),
+                target_key_thumbprint: authoritative_ticket.target.key_thumbprint.clone(),
                 package: prepared.package,
                 capability: prepared.capability,
             },
@@ -670,7 +693,26 @@ pub(crate) fn start_managed_context_outbound_operation(
         )
         .await;
         match transfer {
-            Ok(result) => match remove_artifact_root(&prepared.artifact_root) {
+            Ok(result) => match finish_committed_account_package(&prepared.artifact_root, || {
+                for receipt in &result.receipt.provider_accounts {
+                    if let Some(status) = &receipt.copy {
+                        let copy = status.copy.as_ref().ok_or_else(|| {
+                            outbound_service_error(
+                                "target account receipt has no copy identity",
+                                false,
+                            )
+                        })?;
+                        let expected = prepared.account_copy_expectations.iter().find(|expected| expected.provider == receipt.provider && expected.source_account_id == copy.source_account_id)
+                            .ok_or_else(|| outbound_service_error("target account receipt does not match an issued provider account", false))?;
+                        provider_account_profiles.record_confirmed_account_copy(
+                            &copy_owner, expected, crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+                            &authoritative_ticket.target.machine_id, &authoritative_ticket.target.kernel_id,
+                            &receipt.profile_id, status.clone(),
+                        )?;
+                    }
+                }
+                Ok(())
+            }) {
                 Ok(()) => task_store.update(&task_context_id, |status| {
                     status.phase = ManagedContextOutboundOperationPhase::Completed;
                     status.accepted_bytes = result.package_size_bytes;
@@ -907,7 +949,7 @@ fn prepare_managed_context_package_with_environment(
             let mut materializations = Vec::with_capacity(accounts.len());
             let mut serialized_component_bytes = 2u64;
             for account in accounts {
-                let materialization = provider_account_profiles
+                let mut materialization = provider_account_profiles
                     .export_managed_context_materialization(
                         &owner_user_id,
                         &account.provider,
@@ -922,6 +964,11 @@ fn prepare_managed_context_package_with_environment(
                             false,
                         )
                     })?;
+                materialization.copy_source =
+                    Some(crate::account_profile::ProviderAccountCopySource {
+                        machine_id: config.host_machine_id.clone(),
+                        kernel_id: config.daemon_id.clone(),
+                    });
                 append_bounded_provider_account_materialization(
                     &mut materializations,
                     &mut serialized_component_bytes,
@@ -973,6 +1020,7 @@ fn prepare_managed_context_package_with_environment(
             Some(archive_path.clone())
         }
     };
+    let account_copy_expectations = account_copy_expectations(&provider_accounts)?;
     let package = export_managed_context_package(ManagedContextPackageExportRequest {
         plan,
         target_environment_id: ticket.environment_id.clone(),
@@ -1027,6 +1075,7 @@ fn prepare_managed_context_package_with_environment(
         package,
         capability,
         artifact_root,
+        account_copy_expectations,
     })
 }
 
@@ -1364,7 +1413,20 @@ fn retire_artifact_root(root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
+fn account_copy_expectations(
+    accounts: &ManagedContextPackageProviderAccounts,
+) -> Result<Vec<crate::account_profile::ProviderAccountCopyExpectation>, DaemonError> {
+    match accounts {
+        ManagedContextPackageProviderAccounts::None => Ok(Vec::new()),
+        ManagedContextPackageProviderAccounts::Selected { materializations } => materializations
+            .iter()
+            .map(crate::account_profile::ProviderAccountCopyExpectation::from_materialization)
+            .collect(),
+    }
+}
+
 struct PreparedOutboundArtifact {
+    account_copy_expectations: Vec<crate::account_profile::ProviderAccountCopyExpectation>,
     package: crate::managed_context::package::ManagedContextPackageExportResult,
     capability: crate::transport::relay_peer::RelayManagedContextCapability,
     artifact_root: PathBuf,
@@ -1418,6 +1480,34 @@ fn restore_prepared_artifact(
             false,
         ));
     }
+    let account_copy_expectations = if matches!(
+        plan.provider_accounts,
+        ManagedContextProviderAccountSelection::None
+    ) {
+        Vec::new()
+    } else {
+        let source = ticket.context_plan.source_binding().ok_or_else(|| {
+            outbound_service_error(
+                "retained package has no authenticated source binding",
+                false,
+            )
+        })?;
+        let extracted = crate::managed_context::package::extract_managed_context_package(
+            crate::managed_context::package::ManagedContextPackageImportRequest {
+                package_path: package_path.clone(),
+                expected_package_sha256: persisted.package_sha256.clone(),
+                expected_binding: crate::managed_context::package::ManagedContextPackageBinding {
+                    plan: plan.clone(),
+                    target_environment_id: ticket.environment_id.clone(),
+                    source_kernel_id: source.kernel_id.into(),
+                    source_key_thumbprint: source.key_thumbprint.into(),
+                    target_kernel_id: ticket.target.kernel_id.clone(),
+                    target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                },
+            },
+        )?;
+        account_copy_expectations(&extracted.provider_accounts)?
+    };
     Ok(PreparedOutboundArtifact {
         package: crate::managed_context::package::ManagedContextPackageExportResult {
             plan,
@@ -1431,6 +1521,7 @@ fn restore_prepared_artifact(
         },
         capability: persisted.capability,
         artifact_root,
+        account_copy_expectations,
     })
 }
 
@@ -1667,6 +1758,16 @@ fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, Daemo
     Ok(bytes)
 }
 
+fn finish_committed_account_package(
+    artifact_root: &Path,
+    record_receipt: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    // The target has committed. Credential retention must not depend on source
+    // metadata still existing or on a well-formed account receipt.
+    remove_artifact_root(artifact_root)?;
+    record_receipt()
+}
+
 fn remove_artifact_root(path: &Path) -> Result<(), DaemonError> {
     if path_entry_exists(path)? {
         validate_artifact_root(path)?;
@@ -1757,6 +1858,29 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
 
+    #[test]
+    fn secrev_f5_committed_package_is_removed_when_receipt_bookkeeping_fails() {
+        let root = crate::test_support::TestWorktree::new("committed-package-cleanup");
+        let artifact = root.path().join("outbound");
+        create_private_directory(&artifact).unwrap();
+        fs::write(
+            artifact.join("managed-context.pkg"),
+            b"synthetic-credential-package",
+        )
+        .unwrap();
+        let result = finish_committed_account_package(&artifact, || {
+            Err(outbound_service_error(
+                "source profile removed after commit",
+                false,
+            ))
+        });
+        assert!(result.is_err());
+        assert!(
+            !artifact.exists(),
+            "completed credential package outlived failed bookkeeping"
+        );
+    }
+
     fn git_enrollment_test_ticket(
         config: &DaemonConfig,
         context_id: &str,
@@ -1784,6 +1908,7 @@ mod tests {
     fn provider_account_component_budget_rejects_before_retaining_the_next_account() {
         fn materialization(profile_id: &str) -> ProviderAccountMaterialization {
             ProviderAccountMaterialization {
+                copy_source: None,
                 profile: ProviderAccountReplicaMetadata {
                     owner_user_id: "owner-a".to_string(),
                     provider: "codex".to_string(),
