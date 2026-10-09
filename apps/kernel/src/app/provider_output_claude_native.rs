@@ -35,8 +35,9 @@ use permission::{
     claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_denied,
     claude_headless_workspace_trust_interaction_id,
     claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
-    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
-    claude_workspace_trust_approval_input, claude_workspace_trust_selection_started_at,
+    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_details,
+    claude_rendered_permission_visible, claude_workspace_trust_approval_input,
+    claude_workspace_trust_selection_started_at,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
     extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
@@ -953,11 +954,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             clear_claude_permission_recent(context_file);
             return Ok(());
         }
-        let recent = if visible {
-            rendered.to_string()
-        } else {
-            update_claude_permission_recent(context_file, rendered)
-        };
+        // MP-08 / MP-10 / MP-11: the tool/action can arrive in a PTY chunk
+        // before the choices. Retain that context for the user's decision.
+        let recent = update_claude_permission_recent(context_file, rendered);
         if !visible && !claude_rendered_permission_visible(&recent) {
             clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
@@ -997,7 +996,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
             Some("Approve Claude Code tool?".to_string()),
-            "Claude Code is showing a native tool permission prompt.",
+            claude_rendered_permission_details(&recent),
             vec![
                 RuntimeInteractionChoice::new(
                     "allow_once",

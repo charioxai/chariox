@@ -498,6 +498,19 @@ pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
 
+pub(super) fn claude_rendered_permission_details(text: &str) -> String {
+    // MP-08 / MP-10 / MP-11: expose the provider's actual action/arguments,
+    // never terminal control sequences or Chariox hidden instructions.
+    let mut visible = normalize_claude_rendered_permission_text(text);
+    while visible.contains(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START) {
+        visible = redact_native_hidden_instructions(&visible);
+    }
+    format!(
+        "Claude Code asks to run this tool:\n{}",
+        visible.chars().take(4000).collect::<String>().trim()
+    )
+}
+
 /// Select Yes using the rendered selector, including an explicit highlighted
 /// row. Without a highlight, Claude starts on the first displayed choice.
 pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
