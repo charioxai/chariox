@@ -11,7 +11,7 @@ test('MP-11 1080p capture keeps an opaque whole frame under unknown protection',
  const script="import {wholeFrameMask,decodePng} from './apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs';const p=decodePng(wholeFrameMask());if(p.width!==1920||p.height!==1080||p.pixels.some((v,i)=>v!==(i%4===3?255:0)))throw Error('whole-frame geometry/mask');";
  execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}});
 });
-test('MP-11 protected regions at 1080p remain in native DPR1 coordinates',()=>{
- const script="import {captureRegionMasks} from './apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs';const c={send:async m=>m==='DOM.getDocument'?{root:{nodeId:1}}:m==='DOM.querySelectorAll'?{nodeIds:[2]}:{model:{border:[1700,900,1800,900,1800,950,1700,950]}}};const m=await captureRegionMasks(c,'s');const r=await m.afterCapture({width:1920,height:1080});if(JSON.stringify(r)!==JSON.stringify([{x:1700,y:900,width:100,height:50}]))throw Error('protection scaled outside field');";
+test('MP-11 exact Vault target regions at 1080p remain in native DPR1 coordinates',()=>{
+ const script="import {captureProtectionFence,captureRegionMasks} from './apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs';const page={viewport:[1920,1080],regions:[[1700,900,100,50]]};const m=await captureProtectionFence({},'s','t',{targets:[{}]},{measure:async()=>page});const r=await m.afterCapture({width:1920,height:1080});if(JSON.stringify(r)!==JSON.stringify([{x:1700,y:900,width:100,height:50}]))throw Error('protection scaled outside field');const generic=await captureRegionMasks();if((await generic.afterCapture()).length)throw Error('generic masks retired');";
  execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}});
 });

@@ -52,23 +52,25 @@ test('MP-11 protected exact crops and motion thumbnails cannot recover the origi
  assert.equal(decodePng(thumb.data_base64).pixels[(30*160+119)*4],0);
  assert.throws(()=>cropProtectedPng(protectedPng,{x:-1,y:0,width:50,height:50,scale:1}),/bounds/);
 });
-function connection(){
+function regionFence(){
  const state={x:900,fail:false};
- return {state,send:async method=>{
+ const fence=new NativeRegionProtection({},'session');
+ fence.measure=async()=>{
   if(state.fail)throw Error('metadata unavailable');
-  if(method==='DOM.getDocument')return {root:{nodeId:1}};
-  if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
-  assert.equal(method,'DOM.getBoxModel');return {model:{border:[state.x,200,state.x+150,200,state.x+150,280,state.x,280]}};
- }};
+  return [[state.x,200,150,80]];
+ };
+ return {state,fence};
 }
 test('MP-11 native region fences bind readback time, race recovery and unavailable metadata',async()=>{
- const c=connection(),fence=new NativeRegionProtection(c,'session');await fence.refresh();
+ const {state,fence}=regionFence();await fence.refresh();
  const sample={width:1280,height:800,captured_ms:fence.beforeAt+1};
  assert.deepEqual(await fence.regions(sample),[region]);
- assert.deepEqual(await fence.regions({...sample,captured_ms:fence.beforeAt-1}),[{x:0,y:0,width:1280,height:800}]);
- c.state.x=800;assert.deepEqual(await fence.regions({...sample,captured_ms:fence.beforeAt+1}),[{x:0,y:0,width:1280,height:800}]);
+ await assert.rejects(fence.regions({...sample,captured_ms:fence.beforeAt-1}),/unavailable/);
+ state.x=800;await assert.rejects(fence.regions({...sample,captured_ms:fence.beforeAt+1}),/unavailable/);
+ assert.equal(fence.guard,null,'moving targets refuse release instead of masking unrelated content');
+ await fence.refresh();
  assert.deepEqual(await fence.regions({...sample,captured_ms:fence.beforeAt+1}),[{...region,x:800}]);
- c.state.fail=true;await assert.rejects(fence.regions({...sample,captured_ms:fence.beforeAt+1}),/unavailable/);
+ state.fail=true;await assert.rejects(fence.regions({...sample,captured_ms:fence.beforeAt+1}),/unavailable/);
 });
 test('MP-11 raw CDP frames wake a fresh protected capture before fingerprinting/full-video encoding',async()=>{
  const pixels=raw().pixels,unmasked=encodePng(1280,800,pixels),masked=maskPng(unmasked,[[900,200,150,80]]);let emitted;
@@ -81,7 +83,10 @@ test('MP-11 trusted mask metadata stays aligned through native crops and DPR2 th
  for(const scale of [1,2]){
   const width=1280*scale,height=800*scale,png=encodePng(width,height,Buffer.alloc(width*height*4,255));
   const mask={x:900*scale,y:200*scale,width:150*scale,height:80*scale};
-  const tab={tab_id:'tab',document_id:'doc'},host={scales:new Map([['tab',scale]]),screenshot:async()=>({tab_id:'tab',document_id:'doc',width,height,data_base64:png,protected_regions:[mask]})};
+  // The screenshot path already masks exact Vault targets; this helper only
+  // crops its protected pixels and carries private region metadata.
+  const protectedPng=maskPng(png,[[mask.x,mask.y,mask.width,mask.height]],scale);
+  const tab={tab_id:'tab',document_id:'doc'},host={scales:new Map([['tab',scale]]),screenshot:async()=>({tab_id:'tab',document_id:'doc',width,height,data_base64:protectedPng,protected_regions:[mask]})};
   const crop=await captureProtectedDisplay(host,tab,{x:890,y:190,width:50,height:50,scale:1});
   assert.deepEqual(crop[displayMaskRegions],[{x:10*scale,y:10*scale,width:150*scale,height:80*scale}]);
   assert.equal(decodePng(crop.data_base64).pixels[(30*scale*crop.width+30*scale)*4],0);
@@ -90,14 +95,18 @@ test('MP-11 trusted mask metadata stays aligned through native crops and DPR2 th
   assert.equal(Object.keys(thumbnail).some(k=>k.includes('protect')||k.includes('mask')),false);
  }
 });
-test('MP-11 attribute-only protected/layout changes retire cached native and CDP observations',()=>{
- for(const name of ['type','autocomplete','data-chariox-secret','data-chariox-observation-protected','data-observation-protected'])
-  assert(regionProtectionChanged({sessionId:'session',method:'DOM.attributeModified',params:{name}},'session',false));
+test('MP-11 type changes on tracked Vault fields retire native observations; generic markers do not',()=>{
+ const scope={targets:true};
+ assert(regionProtectionChanged({sessionId:'session',method:'DOM.attributeModified',params:{name:'type'}},'session',scope));
+ assert.equal(regionProtectionChanged({sessionId:'session',method:'DOM.attributeModified',params:{name:'type'}},'session',{targets:false}),false);
+ for(const name of ['autocomplete','data-chariox-secret','data-chariox-observation-protected','data-observation-protected'])
+  assert.equal(regionProtectionChanged({sessionId:'session',method:'DOM.attributeModified',params:{name}},'session',scope),false);
  const style={sessionId:'session',method:'DOM.attributeModified',params:{name:'style'}};
  assert.equal(regionProtectionChanged(style,'session',false),false);
- assert.equal(regionProtectionChanged(style,'session',true),true);
+ assert.equal(regionProtectionChanged(style,'session',scope),false);
  assert.equal(regionProtectionChanged(style,'foreign',true),false);
- assert(regionProtectionChanged({sessionId:'session',method:'DOM.childNodeInserted'},'session',false));
+ assert(regionProtectionChanged({sessionId:'session',method:'DOM.documentUpdated'},'session',scope));
+ assert(regionProtectionChanged({sessionId:'session',method:'Page.frameNavigated'},'session',scope));
 });
 
 test('MP-08/MP-10 trusted empty DOM protection uses events instead of per-frame tree transfer',async()=>{
@@ -109,8 +118,9 @@ test('MP-08/MP-10 trusted empty DOM protection uses events instead of per-frame 
 });
 test('MP-11 a trusted metadata reply after protection retirement cannot reactivate admission',async()=>{
  let enter,release;const entered=new Promise(r=>enter=r),held=new Promise(r=>release=r);
- const c={send:async method=>{if(method==='DOM.getDocument'){enter();await held;return {root:{nodeId:1}};}return {nodeIds:[]};}};
- const guard=new NativeRegionProtection(c,'s');const pending=guard.refresh();await entered;guard.retire();release();await assert.rejects(pending,/retired/);
+ const guard=new NativeRegionProtection({},'s');
+ guard.measure=async()=>{enter();await held;return [];};
+ const pending=guard.refresh();await entered;guard.retire();release();await assert.rejects(pending,/retired/);
  assert.equal(guard.guard,null);
 });
 
