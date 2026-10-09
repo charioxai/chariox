@@ -144,7 +144,7 @@ class WarmChannelTests(unittest.TestCase):
             self.assertTrue(event.called)
             self.assertEqual(held,set())
 
-    def test_mp11_warm_chord_restores_termination_between_events(self):
+    def test_mp11_warm_chord_and_text_restore_termination_between_events(self):
         # The shared chord helper shields key-up restoration. That shield must
         # not survive a request in the long-lived human input process.
         original = {number: module.signal.getsignal(number) for number in
@@ -152,24 +152,27 @@ class WarmChannelTests(unittest.TestCase):
         def terminate(number, frame):
             raise SystemExit(128 + number)
         try:
-            for failed in (False, True):
-                with self.subTest(failed=failed):
-                    for number in original:
-                        module.signal.signal(number, terminate)
-                    def chord(*args, **kwargs):
+            for kind, helper, action in (
+                    ('key', 'hold_input', {'kind': 'key', 'key': 'Home'}),
+                    ('text', 'type_text', {'kind': 'text', 'text': 'Grüße 世界😀'})):
+                for failed in (False, True):
+                    with self.subTest(kind=kind, failed=failed):
                         for number in original:
-                            module.signal.signal(number, module.signal.SIG_IGN)
-                        if failed:
-                            raise ValueError('chord failed after key-up shield')
-                    with patch.object(module.keyboard, 'hold_input', side_effect=chord):
-                        request = {'op': 'input', 'input': {'kind': 'key', 'key': 'Home'}}
-                        if failed:
-                            with self.assertRaises(ValueError):
+                            module.signal.signal(number, terminate)
+                        def dispatch(*args, **kwargs):
+                            for number in original:
+                                module.signal.signal(number, module.signal.SIG_IGN)
+                            if failed:
+                                raise ValueError('input failed after key-up shield')
+                        with patch.object(module.keyboard, helper, side_effect=dispatch):
+                            request = {'op': 'input', 'input': action}
+                            if failed:
+                                with self.assertRaises(ValueError):
+                                    module.channel_request(request, set())
+                            else:
                                 module.channel_request(request, set())
-                        else:
-                            module.channel_request(request, set())
-                    for number in original:
-                        self.assertIs(module.signal.getsignal(number), terminate)
+                        for number in original:
+                            self.assertIs(module.signal.getsignal(number), terminate)
         finally:
             for number, handler in original.items():
                 module.signal.signal(number, handler)
@@ -180,14 +183,15 @@ class WarmChannelTests(unittest.TestCase):
             held=set()
             for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
                             {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},
-                            {'op':'input','input':{'kind':'text','text':'x'}},
+                            {'op':'input','agent_input':True,'processes':[],'input':{'kind':'text','text':'x'}},
+                            {'op':'input','input':{'kind':'text','text':'x'*129}},
                             {'op':'input','input':{'kind':'clipboard_write','text':'x'}},
                             {'op':'accessibility','processes':[]}):
                 with self.assertRaises(ValueError):module.channel_request(request,held)
             self.assertEqual(events,[])
-            for kind,extra in (('click',{'x':1,'y':1}),('scroll',{'x':1,'y':1,'steps':1}),('key',{'key':'Next'}),('keycode',{'keycode':38,'state':'down'})):
+            for kind,extra in (('click',{'x':1,'y':1}),('scroll',{'x':1,'y':1,'steps':1}),('key',{'key':'Next'}),('keycode',{'keycode':38,'state':'down'}),('text',{'text':'Grüße 世界😀'})):
                 module.channel_request({'op':'input','input':{'kind':kind,**extra}},held)
-            self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None)])
+            self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None),('text',None)])
             self.assertEqual(held,{38})
 class CaptureEvidenceTests(unittest.TestCase):
     def test_mp08_mp11_capture_uses_fill_evidence_and_keeps_input_authority_separate(self):

@@ -155,7 +155,7 @@ def main(request, connection=None):
     finally: image.close()
 
 
-WARM_INPUTS=('keycode','click','move','scroll','key','drag')
+WARM_INPUTS=('keycode','click','move','scroll','key','drag','text')
 
 
 def channel_request(request, held, connection=None):
@@ -166,6 +166,8 @@ def channel_request(request, held, connection=None):
     if request['op']!='input' or 'agent_input' in request or 'processes' in request or request['input']['kind'] not in WARM_INPUTS:
         raise ValueError('unsupported physical channel operation')
     action=request['input']
+    if action['kind']=='text' and (not isinstance(action.get('text'),str) or not 1 <= len(action['text']) <= 128):
+        raise ValueError('text exceeds the bounded human channel budget')
     if action['kind']=='keycode' and action['state']=='down':held.add(action['keycode'])
     # Chord cleanup shields key-up against a second termination signal.
     # Restore the channel's cancellation handlers after every human event,
