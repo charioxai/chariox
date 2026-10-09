@@ -78,20 +78,14 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             ));
         }
         let state = self.state.clone();
-        let resolution = self.handle.block_on(async move {
-            let receiver = state
-                .create_runtime_interaction(&session_id, interaction)
-                .await?;
-            receiver.await.map_err(|error| DaemonError::LocalTransport {
-                operation: "provider_native_interaction_bridge",
-                message: format!("interaction dropped before resolution: {error}"),
-            })
-        })?;
-        Ok(ProviderNativeInteractionResolution {
-            status: resolution.status.to_string(),
-            choice_id: resolution.choice_id,
-            reply: resolution.reply,
-        })
+        self.handle
+            .block_on(request_runtime_interaction_with_timeout(
+                &state,
+                &session_id,
+                interaction,
+                "provider_native_interaction_bridge",
+                None,
+            ))
     }
 }
 
@@ -159,16 +153,7 @@ pub(crate) async fn request_provider_native_interaction(
         return forward_native_interaction_to_home(config, target_daemon_id, context, interaction)
             .await;
     }
-    let mut abandoned = AbandonedInteractionGuard(Some((
-        state.clone(),
-        session_id.to_string(),
-        interaction.id().to_string(),
-    )));
-    let resolution =
-        request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None)
-            .await;
-    abandoned.0 = None;
-    resolution
+    request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }
 
 struct AbandonedInteractionGuard(Option<(KernelRuntimeState, String, String)>);
@@ -301,19 +286,48 @@ async fn request_runtime_interaction_with_timeout(
     operation: &'static str,
     forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    let timeout = interaction.timeout_sec().map(Duration::from_secs);
+    // MP-08 / MP-10 / MP-11: parallel provider tools retain the one-decision
+    // subject gate. Wait only for its temporary refusal; every attempt keeps
+    // the original identity/origin and revalidates current runtime authority.
+    let deadline = interaction
+        .timeout_sec()
+        .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
     let timeout_session_id = session_id.to_string();
     let timeout_interaction_id = interaction.id().to_string();
-    let mut receiver = state
-        .create_runtime_interaction_with_forwarding(session_id, interaction, forwarding)
-        .await?;
-    // The timer belongs to this wait, so answering or withdrawing the card
-    // cancels it. Expiry must return the home's actual timeout/default outcome.
-    let resolution = if let Some(timeout) = timeout {
+    let mut receiver = loop {
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            return Ok(ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            });
+        }
+        match state
+            .create_runtime_interaction_with_forwarding(session_id, interaction.clone(), forwarding)
+            .await
+        {
+            Ok(receiver) => break receiver,
+            Err(error) if crate::runtime::state::interaction_waits(&error) => {
+                let next = tokio::time::Instant::now() + Duration::from_millis(50);
+                tokio::time::sleep_until(deadline.map_or(next, |deadline| deadline.min(next)))
+                    .await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    // Cancellation can retire only an interaction this invocation admitted,
+    // never the card whose subject/identity caused its admission to wait.
+    let mut abandoned = AbandonedInteractionGuard(Some((
+        state.clone(),
+        timeout_session_id.clone(),
+        timeout_interaction_id.clone(),
+    )));
+    // Waiting for another tool consumes this decision's original budget.
+    let resolution = if let Some(deadline) = deadline {
         tokio::select! {
             biased;
             resolution = &mut receiver => resolution,
-            _ = tokio::time::sleep(timeout) => {
+            _ = tokio::time::sleep_until(deadline) => {
                 state.timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id).await?;
                 receiver.await
             }
@@ -324,6 +338,7 @@ async fn request_runtime_interaction_with_timeout(
         operation,
         message: format!("interaction dropped before resolution: {error}"),
     })?;
+    abandoned.0 = None;
     Ok(ProviderNativeInteractionResolution {
         status: resolution.status.to_string(),
         choice_id: resolution.choice_id,
@@ -391,5 +406,174 @@ mod tests {
             "permission bridge must not retain its own runtime"
         );
         assert!(crate::app::DaemonApp::bootstrap(config).is_ok());
+    }
+
+    async fn permission_queue_fixture() -> (
+        crate::runtime::router::CommandRouter,
+        String,
+        String,
+        std::path::PathBuf,
+    ) {
+        let root = crate::test_support::test_workspace_root().join(format!(
+            "native-permission-queue-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let worktree = root.to_string_lossy().into_owned();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &worktree, &worktree,
+            ))
+            .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        (router, session.id().into(), agent.id().into(), root)
+    }
+
+    fn queued_permission(id: &str, agent: &str, timeout: u64) -> RuntimeInteraction {
+        RuntimeInteraction::new(
+            id,
+            agent,
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            Some("Approve documentation fetch?".into()),
+            "Fetch the requested public documentation",
+            vec![
+                RuntimeInteractionChoice::new("allow", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(timeout),
+            Some("deny".into()),
+        )
+    }
+
+    #[tokio::test]
+    async fn native_permission_queue_waits_for_the_existing_subject_decision() {
+        let (router, session, agent, root) = permission_queue_fixture().await;
+        let state = router.runtime_state();
+        let first = state
+            .create_runtime_interaction(&session, queued_permission("first", &agent, 10))
+            .await
+            .unwrap();
+        let pending_state = state.clone();
+        let pending_session = session.clone();
+        let second = tokio::spawn(async move {
+            request_runtime_interaction_with_timeout(
+                &pending_state,
+                &pending_session,
+                queued_permission("second", &agent, 5),
+                "native_permission_queue_test",
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !second.is_finished(),
+            "MP-10/MP-11 parallel permission must wait for the current decision"
+        );
+        state
+            .resolve_runtime_interaction(&session, "first", "allow", None)
+            .await
+            .unwrap();
+        assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("allow"));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if state
+                .resolve_runtime_interaction(&session, "second", "deny", None)
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let resolution = second.await.unwrap().unwrap();
+        assert_eq!(resolution.choice_id.as_deref(), Some("deny"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_permission_queue_counts_waiting_time_against_its_deadline() {
+        let (router, session, agent, root) = permission_queue_fixture().await;
+        let state = router.runtime_state();
+        let _first = state
+            .create_runtime_interaction(&session, queued_permission("first", &agent, 10))
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let resolution = request_runtime_interaction_with_timeout(
+            &state,
+            &session,
+            queued_permission("second", &agent, 1),
+            "native_permission_queue_test",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution.status, "timed_out");
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        state
+            .resolve_runtime_interaction(&session, "first", "deny", None)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_permission_queue_cancellation_keeps_the_existing_decision() {
+        let (router, session, agent, root) = permission_queue_fixture().await;
+        let state = router.runtime_state();
+        let first = state
+            .create_runtime_interaction(&session, queued_permission("shared", &agent, 10))
+            .await
+            .unwrap();
+        let waiting_state = state.clone();
+        let waiting_session = session.clone();
+        let waiting = tokio::spawn(async move {
+            request_runtime_interaction_with_timeout(
+                &waiting_state,
+                &waiting_session,
+                queued_permission("shared", &agent, 5),
+                "native_permission_queue_test",
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiting.is_finished());
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        tokio::task::yield_now().await;
+        state
+            .resolve_runtime_interaction(&session, "shared", "allow", None)
+            .await
+            .unwrap();
+        assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("allow"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_permission_queue_does_not_retry_foreign_session_admission() {
+        let (router, session, agent, root) = permission_queue_fixture().await;
+        let state = router.runtime_state();
+        let started = tokio::time::Instant::now();
+        let result = request_runtime_interaction_with_timeout(
+            &state,
+            &format!("{session}-foreign"),
+            queued_permission("foreign", &agent, 30),
+            "native_permission_queue_test",
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
