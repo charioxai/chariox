@@ -105,11 +105,12 @@ export function redactObservation(value, protectedValues) {
 // (::before, ::after, ::marker, ::first-letter, counters) that has no DOM
 // value, is flattened over the whole document in visual order (snapshots list
 // pseudo-elements before children), so a value split across nested or sibling
-// elements still matches. A second flattening reads displaced, clipped and
-// transparent subtrees as separate runs and skips invisible text (hidden,
-// alpha or opacity below 0.1, font-size below 4px), so pieces that only such
-// a subtree separates in DOM order still match. A match protects every
-// contributing entry and the box of their nearest common laid-out ancestor;
+// elements still matches. A second flattening reads displaced and clipped
+// subtrees as separate runs. Visibility and adjacency use Chromium rendered
+// text boxes and final text opacity, never computed font-size/opacity or
+// reconstructed CSS clips. Tiny/unknown boxes are conservatively covered.
+// A match protects every contributing entry and its nearest common laid-out
+// ancestor;
 // unreadable text or a match without such a container fails closed.
 //
 // Visual order can differ from DOM order (coordinator rule 2026-10-09). While
@@ -118,21 +119,20 @@ export function redactObservation(value, protectedValues) {
 // order: flex/grid/-webkit-box containers with reversed, column-wrapped,
 // column-flow or dense placement, CSS order or explicit grid placement; tables
 // whose captions or header/footer groups move; block containers whose negative
-// margins add up to half an em. Glyph order inside one text run cannot be
-// observed, so the block container of a bidi override, a direction change,
+// margins add up to half a rendered line height. Glyph order inside one run
+// cannot be observed, so the block container of a bidi override, a direction change,
 // bidi controls or right-to-left letters is masked. Displaced glyphs (absolute,
-// fixed, sticky, offset relative, float, transform) less than 1em from other
-// glyphs mask both block containers. Glyphs 1em or more apart are separate
+// fixed, sticky, offset relative, float, transform) near other glyphs mask both
+// block containers. Gaps of a rendered line height or more are separate
 // words or columns, as in any layout. The snapshot must carry
 // RENDER_ORDER_STYLES (and textBoxes for per-line boxes).
 export const RENDER_ORDER_STYLES = ["display", "position", "float", "order", "flex-direction", "flex-wrap", "grid-auto-flow",
   "grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end", "-webkit-box-direction", "-webkit-box-ordinal-group",
   "caption-side", "direction", "unicode-bidi", "top", "right", "bottom", "left",
   "margin-top", "margin-right", "margin-bottom", "margin-left", "transform", "translate", "rotate", "scale", "offset-path",
-  "overflow-x", "overflow-y", "clip", "clip-path", "visibility", "opacity", "-webkit-text-fill-color", "font-size"];
+  "overflow-x", "overflow-y", "clip-path"];
 const PSEUDO_ORDER = { "::marker": 0, "::first-letter": 1, "::before": 2, "::after": 5 };
 const BIDI_TEXT = /[\u0590-\u08ff\u200e\u200f\u202a-\u202e\u2066-\u2069\ufb1d-\ufdff\ufe70-\ufefc\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
-const CLEAR = /^transparent$|^rgba\(([^,]*,){3}\s*0(\.0\d*)?\)$|\/\s*(0(\.0\d*)?|\d(\.\d+)?%)\)$/; // Alpha below 0.1.
 const GRID_PLACEMENT = ["grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end"];
 const TABLE_RANK = { "table-header-group": 1, "table-row-group": 2, "table-row": 2, "table-footer-group": 3 };
 const MAX_GRID_ENTRIES = 16_384, MAX_GEOMETRY_COMPARISONS = 65_536, GRID_MARGIN = 128;
@@ -153,6 +153,14 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
     if (!Number.isInteger(node) || node < 0 || node >= count) throw new Error("MP-11: unknown layout node");
     (entries.get(node) ?? entries.set(node, []).get(node)).push(k);
   }
+  const validBox = b => Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) && b[2] >= 0 && b[3] >= 0;
+  const lines = new Map(); // Chromium post-transform line boxes, in document coordinates.
+  (document.textBoxes?.layoutIndex ?? []).forEach((k, j) => (lines.get(k) ?? lines.set(k, []).get(k)).push(document.textBoxes.bounds?.[j]));
+  const textBoxes = k => lines.get(k) ?? [layout.bounds?.[k]];
+  const uncertainText = k => textBoxes(k).some(b => !validBox(b) || b[2] < 2 || b[3] < 2);
+  // The snapshot's final opacity accounts for overlapping/ancestor opacity.
+  // It cannot prove arbitrary clipping; absent evidence always stays covered.
+  const visibleText = k => uncertainText(k) || layout.textColorOpacities?.[k] !== 0;
   const name = (i) => strings[nodes.nodeName[i]] ?? "";
   const px = (value) => parseFloat(value) || 0;
   const displaced = (s) => /absolute|fixed|sticky/.test(s.position) || s.float !== "none" ||
@@ -174,11 +182,10 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
     if (!style) {
       if (!row.every((s) => typeof strings[s] === "string")) throw new Error("MP-11: unknown render-order styles");
       style = Object.fromEntries(RENDER_ORDER_STYLES.map((property, j) => [property, strings[row[j]]]));
-      const out = /absolute|fixed/.test(style.position), faint = px(style.opacity) < 0.1, moved = displaced(style);
-      // separate: read as a run of its own; hidden: no visible glyphs.
+      const out = /absolute|fixed/.test(style.position), moved = displaced(style);
+      // separate: read as a run of its own; styles never exclude text.
       const d = style.display;
-      Object.assign(style, { out, faint, moved, separate: moved || style["overflow-x"] !== "visible" || style["overflow-y"] !== "visible" || style["clip-path"] !== "none" || faint,
-        hidden: style.visibility !== "visible" || px(style["font-size"]) < 4 || CLEAR.test(style["-webkit-text-fill-color"]),
+      Object.assign(style, { out, moved, separate: moved || style["overflow-x"] !== "visible" || style["overflow-y"] !== "visible" || style["clip-path"] !== "none",
         flex: /flex/.test(d), grid: /grid/.test(d), box: /box/.test(d), table: /^(inline-)?table$/.test(d), inline: /^(inline|contents|ruby|ruby-text)$/.test(d) });
       bucket.push([row, style]);
     }
@@ -199,7 +206,7 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
           const piece = layout.text?.[k];
           if (piece === -1) continue;
           if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
-          if (split && s.hidden) continue;
+          if (split && !visibleText(k)) continue;
           if (strings[piece]) spans.push([flat.length, flat.length + strings[piece].length, k, i]);
           flat += strings[piece];
         }
@@ -265,57 +272,35 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
       const key = b.join(',');if (!extra.has(key)) { extra.add(key);overflow.regions.push(b); }
     }
   };
-  const validBox = b => Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) && b[2] >= 0 && b[3] >= 0;
   for (const [i, ks] of entries) if (ks.some(k => !validBox(layout.bounds?.[k]))) geometryUnknown.add(i);
   const corners = ([x, y, w, h] = []) => {
     if (![x, y, w, h].every(Number.isFinite)) throw new Error("MP-11: unknown text bounds");
     return [x, y, x + w, y + h];
   };
-  const lines = new Map(); // Layout entry -> per-line text boxes.
-  (document.textBoxes?.layoutIndex ?? []).forEach((k, j) => (lines.get(k) ?? lines.set(k, []).get(k)).push(document.textBoxes.bounds?.[j]));
-  // Per node: nearest displaced ancestor-or-self, faded (opacity below 0.1)
-  // and the clip of overflow boxes it cannot escape (absolute/fixed escape).
-  const mover = new Array(count).fill(-1), faded = new Array(count).fill(false), clip = new Array(count).fill(null);
-  const glyphs = new Map(), extent = new Array(count).fill(null); // Visible, clipped line boxes per text entry; their extent per node.
+  const mover = new Array(count).fill(-1), textHeight = new Array(count).fill(0), uncertain = new Set();
+  const glyphs = new Map(), extent = new Array(count).fill(null);
   const grow = (i, b) => { const e = extent[i]; extent[i] = e ? [Math.min(e[0], b[0]), Math.min(e[1], b[1]), Math.max(e[2], b[2]), Math.max(e[3], b[3])] : b; };
-  const ALL = [-Infinity, -Infinity, Infinity, Infinity];
   for (let i = 0; i < count; i++) {
     const s = css.get(i), up = parent[i];
-    mover[i] = up >= 0 ? mover[up] : -1; faded[i] = up >= 0 && faded[up]; clip[i] = up >= 0 ? clip[up] : null;
-    if (s && name(i) !== "#text") {
-      if (s.moved) mover[i] = i;
-      if (s.faint) faded[i] = true;
-      if (s.out) clip[i] = null;
-      const r = s.out && /^rect\(([^,]+),([^,]+),([^,]+),([^)]+)\)$/.exec(s.clip);
-      if (s["overflow-x"] !== "visible" || s["overflow-y"] !== "visible" || r) {
-        const raw = layout.bounds?.[entries.get(i)[0]];
-        if (!validBox(raw)) { geometryUnknown.add(i);continue; }
-        const b = corners(raw), c = clip[i] ?? ALL;
-        if (s["overflow-x"] !== "visible") clip[i] = [Math.max(c[0], b[0]), c[1], Math.min(c[2], b[2]), c[3]];
-        if (s["overflow-y"] !== "visible") clip[i] = [(clip[i] ?? c)[0], Math.max(c[1], b[1]), (clip[i] ?? c)[2], Math.min(c[3], b[3])];
-        // clip: rect(top, right, bottom, left) of an absolutely positioned box, from its border-box origin.
-        if (r) {
-          const [t, right, bottom, l] = r.slice(1).map((v, j) => (v.trim() === "auto" ? [b[1], b[2], b[3], b[0]][j] : b[j % 2 ? 0 : 1] + px(v)));
-          const o = clip[i] ?? c;
-          clip[i] = [Math.max(o[0], l), Math.max(o[1], t), Math.min(o[2], right), Math.min(o[3], bottom)];
-        }
+    mover[i] = up >= 0 ? mover[up] : -1;
+    if (s?.moved && name(i) !== "#text") mover[i] = i;
+    for (const k of entries.get(i) ?? []) {
+      if (layout.text?.[k] === -1 || !/\S/.test(strings[layout.text?.[k]] ?? "") || !visibleText(k)) continue;
+      if (uncertainText(k)) { uncertain.add(i); geometryUnknown.add(i); }
+      const seen = [];
+      for (const line of textBoxes(k)) {
+        if (!validBox(line)) { geometryUnknown.add(i); continue; }
+        seen.push(corners(line));
+        textHeight[i] = Math.max(textHeight[i], line[3]);
       }
-    }
-    if (!s || s.hidden || faded[i]) continue;
-    for (const k of entries.get(i)) {
-      if (layout.text?.[k] === -1 || !/\S/.test(strings[layout.text?.[k]] ?? "")) continue;
-      const c = clip[i] ?? ALL, seen = [];
-      for (const line of lines.get(k) ?? [layout.bounds?.[k]]) {
-        if (!validBox(line)) { geometryUnknown.add(i);continue; }
-        const b = corners(line), x0 = Math.max(b[0], c[0]), y0 = Math.max(b[1], c[1]), x1 = Math.min(b[2], c[2]), y1 = Math.min(b[3], c[3]);
-        if (x1 - x0 >= 2 && y1 - y0 >= 2) seen.push([x0, y0, x1, y1]); // Narrower: no legible glyph.
-      }
-      if (seen.length) { glyphs.set(k, seen); seen.forEach((b) => grow(i, b)); }
+      if (seen.length) { glyphs.set(k, seen); seen.forEach(b => grow(i, b)); }
     }
   }
   // In-flow glyph extents; out-of-flow glyphs are left to the proximity check.
   const outOfFlow = (i) => name(i) !== "#text" && css.has(i) && (css.get(i).out || css.get(i).float !== "none");
-  for (let i = count - 1; i > 0; i--) if (extent[i] && parent[i] >= 0 && !outOfFlow(i)) grow(parent[i], extent[i]);
+  for (let i = count - 1; i > 0; i--) if (extent[i] && parent[i] >= 0 && !outOfFlow(i)) {
+    grow(parent[i], extent[i]); textHeight[parent[i]] = Math.max(textHeight[parent[i]], textHeight[i]);
+  }
   // Rendered flow of a container in DOM order: line boxes of inline content,
   // glyph extents of block-level children and items; out-of-flow boxes are
   // left to the proximity check below.
@@ -330,12 +315,11 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
     }
     return out;
   };
-  // Rendered in DOM reading order: the nearest box less than 1em to the right
-  // on the same line is the next one in DOM order, the nearest less than 1em
-  // below comes later; boxes overlapping on a line are uncertain. Farther
+  // DOM reading order: the nearest box within a rendered line height to the
+  // right is DOM-next; the nearest box within a line height below comes later; boxes overlapping on a line are uncertain. Farther
   // boxes are separate words or columns, as in any layout.
   let comparisons = 0;
-  const ordered = (boxes, em) => boxes.length <= 2000 && boxes.every((a, j) => {
+  const ordered = (boxes, reach) => boxes.length <= 2000 && boxes.every((a, j) => {
     let right = -1, below = -1;
     for (let m = 0; m < boxes.length; m++) {
       if (comparisons >= MAX_GEOMETRY_COMPARISONS) return false;
@@ -344,8 +328,8 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
       if (m === j) continue;
       if (Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > Math.min(a[3] - a[1], b[3] - b[1]) / 2) {
         if (b[0] < a[2] - 1 && b[2] > a[0] + 1) return false;
-        if (b[0] >= a[2] - 1 && b[0] - a[2] < em && (right < 0 || b[0] < boxes[right][0])) right = m;
-      } else if (b[1] + b[3] > a[1] + a[3] && Math.min(a[2], b[2]) > Math.max(a[0], b[0]) && b[1] - a[3] < em && (below < 0 || b[1] < boxes[below][1])) below = m;
+        if (b[0] >= a[2] - 1 && b[0] - a[2] < reach && (right < 0 || b[0] < boxes[right][0])) right = m;
+      } else if (b[1] + b[3] > a[1] + a[3] && Math.min(a[2], b[2]) > Math.max(a[0], b[0]) && b[1] - a[3] < reach && (below < 0 || b[1] < boxes[below][1])) below = m;
     }
     return (right < 0 || right === j + 1) && (below < 0 || below > j);
   });
@@ -373,15 +357,15 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
       (item ? Math.max(0, -px(s["margin-left"])) + Math.max(0, -px(s["margin-right"])) : 0);
     if (pull) { const at = blockOf(up >= 0 ? up : i); pulled.set(at, (pulled.get(at) ?? 0) + pull); }
   }
-  // Negative margins move following content by their sum: below half an em they cannot reorder glyphs.
-  for (const [at, pull] of pulled) if (pull >= px(css.get(at)["font-size"]) / 2) suspects.add(at);
+  // Negative margins trigger a geometry proof at half a rendered line height.
+  for (const [at, pull] of pulled) if (pull >= Math.max(2, textHeight[at]) / 2) suspects.add(at);
   const hasUnknownGeometry = i => [...geometryUnknown].some(node => { while (node >= 0 && node !== i) node = parent[node];return node === i; });
-  for (const i of suspects) if (hasUnknownGeometry(i) || !ordered(flow(i), px(css.get(i)["font-size"]))) mask(i);
-  // Displaced glyphs within 1em of glyphs outside their displaced subtree.
+  for (const i of suspects) if (hasUnknownGeometry(i) || !ordered(flow(i), Math.max(2, textHeight[i]))) mask(i);
+  // Displaced glyphs within a rendered line height of glyphs outside their displaced subtree.
   const pre = [], size = new Array(count).fill(1), cells = new Map(), CELL = 128;
   for (const stack = [...roots].reverse(); stack.length;) { const i = stack.pop(); pre[i] = pre.length; for (let c = children[i].length - 1; c >= 0; c--) stack.push(children[i][c]); }
   for (let i = count - 1; i >= 0; i--) if (parent[i] >= 0) size[parent[i]] += size[i];
-  const near = []; // Line boxes grown by half an em: a gap below 1em joins them.
+  const near = []; // Grow boxes by half their rendered line height.
   // MP-08/MP-11: transformed glyphs may cover millions of CSS pixels. Only
   // index the capture viewport plus one cell of margin, in document pixels.
   // Count memberships (including overlapping boxes), not just unique cells.
@@ -394,31 +378,33 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
     while (block >= 0 && (!css.has(block) || name(block) === '#text' || css.get(block).inline)) block = parent[block];
     mask(block < 0 || ['#document', 'html', 'body'].includes(name(block).toLowerCase()) ? i : block);
   };
+  // Tiny and unknown text remains visible to protection, never an order exemption.
+  for (const i of uncertain) cover(i);
   const coverGlyphs = () => {
     let moved;
     for (const [k, boxes] of glyphs) {
       const i = layout.nodeIndex[k];
       if (mover[i] < 0) continue;
       cover(i);
-      const em = px(css.get(i)["font-size"]) / 2;
+      const reach = Math.max(2, textHeight[i]) / 2;
       for (const b of boxes) {
-        const r = [Math.max(view[0], b[0] - em), Math.max(view[1], b[1] - em), Math.min(view[2], b[2] + em), Math.min(view[3], b[3] + em)];
+        const r = [Math.max(view[0], b[0] - reach), Math.max(view[1], b[1] - reach), Math.min(view[2], b[2] + reach), Math.min(view[3], b[3] + reach)];
         if (r[0] >= r[2] || r[1] >= r[3]) continue;
         moved = moved ? [Math.min(moved[0], r[0]), Math.min(moved[1], r[1]), Math.max(moved[2], r[2]), Math.max(moved[3], r[3])] : r;
       }
     }
     if (!moved) return;
     for (const [k, boxes] of glyphs) {
-      const i = layout.nodeIndex[k], em = px(css.get(i)["font-size"]) / 2;
-      if (mover[i] < 0 && boxes.some(b => b[0] - em <= moved[2] && b[2] + em >= moved[0] && b[1] - em <= moved[3] && b[3] + em >= moved[1])) cover(i);
+      const i = layout.nodeIndex[k], reach = Math.max(2, textHeight[i]) / 2;
+      if (mover[i] < 0 && boxes.some(b => b[0] - reach <= moved[2] && b[2] + reach >= moved[0] && b[1] - reach <= moved[3] && b[3] + reach >= moved[1])) cover(i);
     }
   };
   let gridEntries = 0;
   for (const k of glyphs.keys()) {
-    const i = layout.nodeIndex[k], em = px(css.get(i)["font-size"]) / 2;
+    const i = layout.nodeIndex[k], reach = Math.max(2, textHeight[i]) / 2;
     for (const b of glyphs.get(k)) {
-      const rect = [Math.max(b[0] - em, view[0]), Math.max(b[1] - em, view[1]),
-        Math.min(b[2] + em, view[2]), Math.min(b[3] + em, view[3]), i];
+      const rect = [Math.max(b[0] - reach, view[0]), Math.max(b[1] - reach, view[1]),
+        Math.min(b[2] + reach, view[2]), Math.min(b[3] + reach, view[3]), i];
       if (rect[0] >= rect[2] || rect[1] >= rect[3]) continue;
       const needed = (Math.floor(rect[2] / CELL) - Math.floor(rect[0] / CELL) + 1) *
         (Math.floor(rect[3] / CELL) - Math.floor(rect[1] / CELL) + 1);
