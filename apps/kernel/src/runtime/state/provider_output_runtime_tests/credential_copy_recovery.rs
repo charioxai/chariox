@@ -532,6 +532,11 @@ async fn run_case(recovery: RecoveryCase) {
                 .count(),
             1
         );
+        assert_eq!(
+            notices.iter().filter(|n| n.message.contains("Signed in to Codex on daemon-test")).count(),
+            1,
+            "MP-08/MP-11: the execution kernel must project its verified login result to every terminal"
+        );
     }
     assert!(registry
         .take_credential_copy_notice(owner, "codex", &copied.profile_id, "machine-test")

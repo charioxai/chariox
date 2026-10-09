@@ -16,7 +16,7 @@ const MAX_POLL_FAILURES = 3
 type FooterTone = "info" | "error"
 type NoticeTone = "muted" | "warning"
 
-export type ProviderLoginRef = { login_id: string; provider: string; account_profile: string }
+export type ProviderLoginRef = { login_id: string; provider: string; account_profile: string; kernel_id?: string }
 
 export type ProviderLoginStripState = {
   view: ProviderLoginView
@@ -29,6 +29,7 @@ export type ProviderLoginStripState = {
 }
 
 export type ProviderLoginInteractionControllerDeps = {
+  getKernelId: () => Promise<string>
   getLoginStatus: (loginId: string) => Promise<ProviderLoginStatus>
   getAuthStatus: (provider: string, accountProfile: string) => Promise<ProviderAuthStatus>
   accountLabel: (provider: string, accountProfile: string) => string
@@ -55,6 +56,7 @@ type TrackedLogin = {
   sentOutput: string | null
   sentProblem: string | null
   problem: string | null
+  projectionOnly: boolean
 }
 
 /** MP-08/MP-11: the TUI side of a kernel-owned provider login. It follows the
@@ -66,14 +68,15 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   const tracked = new Map<string, TrackedLogin>()
   const finished = new Set<string>()
+  const keyOf = (ref: ProviderLoginRef) => JSON.stringify([ref.kernel_id ?? "", ref.login_id])
 
   const subject = (ref: ProviderLoginRef) =>
     `${providerLoginName(ref.provider)} · ${deps.accountLabel(ref.provider, ref.account_profile)}`
 
   const finish = async (login: TrackedLogin, status: ProviderLoginStatus | null, error?: string) => {
     const { ref } = login
-    tracked.delete(ref.login_id)
-    finished.add(ref.login_id)
+    tracked.delete(keyOf(ref))
+    finished.add(keyOf(ref))
     clearTimer(login.timer)
     const label = deps.accountLabel(ref.provider, ref.account_profile)
     if (status?.state === "succeeded") {
@@ -94,9 +97,14 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   }
 
   const poll = async (login: TrackedLogin) => {
-    if (tracked.get(login.ref.login_id) !== login) return
+    if (tracked.get(keyOf(login.ref)) !== login) return
     let status: ProviderLoginStatus
     try {
+      if (login.ref.kernel_id && login.ref.kernel_id !== await deps.getKernelId()) {
+        login.projectionOnly = true
+        login.timer = null
+        return
+      }
       status = await deps.getLoginStatus(login.ref.login_id)
       login.failures = 0
     } catch (error) {
@@ -108,7 +116,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       login.timer = setTimer(() => { void poll(login) }, POLL_MS)
       return
     }
-    if (tracked.get(login.ref.login_id) !== login) return
+    if (tracked.get(keyOf(login.ref)) !== login) return
     login.status = status
     if (status.state !== "running") {
       await finish(login, status)
@@ -128,15 +136,26 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   }
 
   const track = (ref: ProviderLoginRef) => {
-    if (!ref.login_id || tracked.has(ref.login_id) || finished.has(ref.login_id)) return
-    const login: TrackedLogin = { ref, status: null, timer: null, failures: 0, sentOutput: null, sentProblem: null, problem: null }
-    tracked.set(ref.login_id, login)
+    const key = keyOf(ref)
+    const unscopedKey = keyOf({ login_id: ref.login_id, provider: ref.provider, account_profile: ref.account_profile })
+    if (!ref.login_id || tracked.has(key) || finished.has(key) || finished.has(unscopedKey)) return
+    // A slash command starts on the attached kernel before its interaction
+    // carries that kernel's ID. Adopt the projection without a second watcher.
+    const started = ref.kernel_id ? tracked.get(unscopedKey) : undefined
+    if (started && started.ref.provider === ref.provider && started.ref.account_profile === ref.account_profile) {
+      tracked.delete(unscopedKey)
+      started.ref = ref
+      tracked.set(key, started)
+      return
+    }
+    const login: TrackedLogin = { ref, status: null, timer: null, failures: 0, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false }
+    tracked.set(key, login)
     login.timer = setTimer(() => { void poll(login) }, 0)
   }
 
   const refOf = (interaction: RuntimeInteraction): ProviderLoginRef | null => {
     const login = interaction.provider_login?.login
-    return login?.login_id ? { login_id: login.login_id, provider: login.provider, account_profile: login.account_profile } : null
+    return login?.login_id ? { login_id: login.login_id, provider: login.provider, account_profile: login.account_profile, kernel_id: interaction.provider_login!.kernel_id } : null
   }
 
   /** The strip state of a provider login interaction, or null for others. */
@@ -158,7 +177,14 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     if (projection.login.login_kind === "terminal_setup_token" && !view.takesCode) return null
     // A code prompt shows its steps before the provider prints the link.
     if (!view.url && !view.takesCode) return null
-    const login = ref ? tracked.get(ref.login_id) : undefined
+    const login = ref ? tracked.get(keyOf(ref)) : undefined
+    if (login?.projectionOnly && login.sentOutput !== null && projection.terminal_output_base64 !== login.sentOutput) {
+      const problem = providerLoginProblem(projection.terminal_output_base64)
+      if (problem && problem !== login.sentProblem) {
+        login.sentOutput = null
+        login.problem = problem
+      }
+    }
     const startedAt = login?.status?.started_at_ms
     return {
       view,
@@ -179,9 +205,9 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       const ref = refOf(interaction)
       if (!ref || interaction.custom_choice?.id !== PROVIDER_LOGIN_CODE_CHOICE_ID) return false
       track(ref)
-      const login = tracked.get(ref.login_id)
+      const login = tracked.get(keyOf(ref))
       if (login) {
-        login.sentOutput = login.status?.terminal_output_base64 ?? ""
+        login.sentOutput = login.status?.terminal_output_base64 ?? interaction.provider_login?.terminal_output_base64 ?? ""
         login.sentProblem = providerLoginProblem(login.sentOutput)
         login.problem = null
       }

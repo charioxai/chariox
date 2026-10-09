@@ -24,6 +24,7 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
   const shown: unknown[] = []
   const pasted: string[] = []
   const controller = createProviderLoginInteractionController({
+    getKernelId: async () => "fleet",
     getLoginStatus: async () => {
       const next = statuses.length > 1 ? statuses.shift()! : statuses[0]!
       if (next instanceof Error) throw next
@@ -136,4 +137,42 @@ test("MP-08/MP-11 ordinary terminal logins preserve the official CLI prompts bef
     assert.equal(h.controller.stripState(terminal), null, "the generic renderer must retain the message and terminal output")
     h.controller.dispose()
   }
+})
+
+test("MP-08/MP-11 a home-attached TUI leaves worker login status and completion to the worker projection", async () => {
+  const reads: unknown[][] = []
+  const h = harness([], {
+    getLoginStatus: async (...args) => { reads.push(args); throw Error("provider login was not found") },
+    getAuthStatus: async () => { throw Error("home must not query worker auth") },
+  })
+  const forwarded: RuntimeInteraction = {
+    ...interaction,
+    provider_login: { ...interaction.provider_login!, kernel_id: "worker" },
+  }
+  h.controller.stripState(forwarded)
+  await h.tick(); await h.tick(); await h.tick()
+  assert.deepEqual(reads, [], "worker login IDs must never be queried against the home store")
+  assert.deepEqual(h.notices, [], "home lookup failure must never replace the execution kernel's result notice")
+  assert.equal(h.controller.codeSent(forwarded), true)
+  assert.equal(h.controller.stripState(forwarded)!.checking, true)
+  const updated: RuntimeInteraction = {
+    ...forwarded,
+    provider_login: { ...forwarded.provider_login!, terminal_output_base64: output("OAuth error: code expired") },
+  }
+  assert.equal(h.controller.stripState(updated)!.problem, "OAuth error: code expired")
+  assert.equal(h.controller.stripState(updated)!.checking, false)
+  assert.equal(h.timers.length, 0, "forwarded output comes from session projections")
+  h.controller.dispose()
+})
+
+test("MP-08/MP-11 the local slash-command watcher adopts its kernel projection once", async () => {
+  const h = harness([status("succeeded")])
+  h.controller.track({ login_id: "login-1", provider: "claude", account_profile: "disposable-claude-ggpinwmx" })
+  h.controller.stripState(interaction)
+  assert.equal(h.timers.length, 1)
+  await h.tick()
+  h.controller.stripState(interaction)
+  assert.equal(h.notices.length, 1)
+  assert.equal(h.timers.length, 0)
+  h.controller.dispose()
 })

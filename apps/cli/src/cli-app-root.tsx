@@ -1,5 +1,6 @@
 import { createProviderLoginLinkPresenter, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
+import { getRelayStatus } from "./relay-api.js"
 import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
@@ -239,7 +240,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   >()
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const interactionChoiceStore = createInteractionChoiceStoreController()
+  // RelayStatus identifies even an unconfigured local kernel. Read only its
+  // public daemon ID; worker login IDs never enter the attached home's store.
   const providerLoginInteractions = createProviderLoginInteractionController({
+    getKernelId: async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id,
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
     getAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
