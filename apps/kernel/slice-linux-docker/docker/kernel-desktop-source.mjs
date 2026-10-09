@@ -19,7 +19,9 @@ export function nativeDesktopWorker(environment = process.env) {
   const executable = environment.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER, root = environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
   return path.isAbsolute(executable ?? '') && path.isAbsolute(root ?? '') ? { executable, root } : null;
 }
-const UNOBSERVED_MS = 200;
+const UNOBSERVED_MS = 200, HEARTBEAT_MS = 100;
+// MP-11: process identity is pid, parent and start time (never run state), in pid order.
+const identities = list => list.map(({ pid, parent, started }) => ({ pid, parent, started })).sort((a, b) => a.pid - b.pid);
 const validMasks = (masks, width, height) => Array.isArray(masks) && masks.length <= 4096 && masks.every(rect => Array.isArray(rect) && rect.length === 4 && rect.every(Number.isSafeInteger) &&
   rect[0] >= 0 && rect[1] >= 0 && rect[2] >= 1 && rect[3] >= 1 && rect[0] + rect[2] <= width && rect[1] + rect[3] <= height);
 async function settle(child) {
@@ -32,21 +34,23 @@ async function settle(child) {
 }
 export class DesktopSource {
   constructor(binding, policy, { native = nativeDesktopWorker(), timing = () => {} } = {}) {
-    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.held=null;
+    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.pending=[];this.stepStarted=null;this.verifiedStep=null;
     // MP-08/MP-11: kernel-browser windows are revealed only under a stable,
     // presented CDP measurement that is re-verified after each frame's capture.
     this.gate=new ProtectionGate(async()=>{
       const browser=this.binding.browser?.();
       if(!browser||this.policy.unknown)return null;
+      const presented=Date.now();
       await awaitPresented(browser,this.gate.protection?.pages??[],1);
-      return measureBrowserProtection(browser,this.policy);
+      const measured=Date.now();this.timing('desktop_gate_presented',presented,measured);
+      try{return await measureBrowserProtection(browser,this.policy);}finally{this.timing('desktop_gate_measure',measured);}
     });
   }
   valid() { return !this.closed; }
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
   async scope() {
-    return { processes:await this.binding.ownedProcesses(), browser_processes:await this.binding.browserProcesses(),
+    return { processes:identities(await this.binding.ownedProcesses()), browser_processes:identities(await this.binding.browserProcesses()),
       browser_protection:this.gate.protection, serial:this.gate.protectionSerial,
       mask:this.policy.unknown||Boolean(this.policy.values.length||this.policy.targets.length) };
   }
@@ -57,6 +61,7 @@ export class DesktopSource {
     for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);
     if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
     void this.verify();
+    if(this.worker)void this.heartbeat();
     return this;
   }
   // Fallback without the native worker: the helper masks before its pipe.
@@ -130,8 +135,8 @@ export class DesktopSource {
   async protect() {
     if(this.protecting)return;this.protecting=true;
     try{while(this.next&&!this.closed){
-      const raw=this.next,scope=this.current;this.next=null;
-      if(scope.mask){this.bind(raw,null,scope.serial);continue;}
+      const raw=this.next,scope=this.current;this.next=null;this.inflight=true;
+      if(scope.mask){this.bind(raw,null,scope.serial,raw.captured_ms);continue;}
       try{await this.measure(scope);}catch(error){raw.release();throw error;}
       if(this.closed){raw.release();break;}
       const first=this.history.findLastIndex(item=>item.end<=raw.captured_ms),span=first<0?[]:this.history.slice(first);
@@ -140,26 +145,50 @@ export class DesktopSource {
       }
       const stable=span.every(item=>item.scope===scope&&item.digest===span[0].digest);
       this.timing(stable?'desktop_readback_bound':'desktop_readback_masked',raw.captured_ms);
-      this.bind(raw,stable?span[0].masks:null,scope.serial);
+      this.bind(raw,stable?span[0].masks:null,scope.serial,raw.captured_ms);
       // A whole-masked frame must not stick on a still desktop: read again.
       if(!stable&&!this.next)this.worker.notify({refresh:true},true);
     }}catch{this.next?.release();this.next=null;void this.close().catch(()=>{});}
-    finally{this.protecting=false;}
+    finally{this.protecting=false;this.inflight=false;}
   }
-  bind(raw,masks,serial) {
+  // MP-08/MP-11: idle snapshots keep a preceding observation for the first
+  // readback after a quiet desktop: the same bracketing rule, more observations.
+  async heartbeat() { while(!this.closed){await delay(HEARTBEAT_MS);await this.observeIdle();} }
+  async observeIdle() {
+    const scope=this.current;
+    if(this.closed||!this.worker||this.protecting||this.next||!scope||scope.mask)return;
+    this.protecting=true;
+    try{await this.measure(scope);}
+    catch{void this.close().catch(()=>{});return;}
+    finally{this.protecting=false;}
+    if(this.next)void this.protect();
+  }
+  bind(raw,masks,serial,captured) {
     const {width,height}=this.binding;
     const regions=(masks??[[0,0,width,height]]).map(([x,y,w,h])=>({x,y,width:w,height:h}));
     const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);
     if(masked!==raw)raw.release();
     this.previousRegions=regions;
-    this.offer({raw:masked,serial:raw.serial,width,height,motion:true,data_base64:masked.signature},serial);
+    this.offer({raw:masked,serial:raw.serial,width,height,motion:true,data_base64:masked.signature},serial,captured);
   }
-  offer(sample,serial) {
+  offer(sample,serial,captured) {
     if(this.closed){sample.raw.release?.();return;}
     // Serial 0 withholds every kernel-browser window: publish at once.
     if(serial===0)this.publish(sample);
-    else if(serial===this.gate.protectionSerial){this.held?.sample.raw.release?.();this.held={sample,serial};}
+    else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();
+  }
+  // MP-08/MP-11: publish the newest frame that a completed gate step verified
+  // (same serial, step began after its capture). Retain only the running
+  // step's newest candidate and the newest frame (no starvation while scrolling).
+  settle() {
+    const step=this.verifiedStep;
+    const ready=step?this.pending.findLastIndex(item=>item.serial===step.serial&&item.captured<step.started):-1;
+    if(ready>=0){for(const item of this.pending.splice(0,ready))item.sample.raw.release?.();this.publish(this.pending.shift().sample);}
+    const serial=this.gate.protectionSerial,start=this.stepStarted??-Infinity;
+    const candidate=this.pending.findLast(item=>item.serial===serial&&item.captured<start),newest=this.pending.findLast(item=>item.serial===serial);
+    for(const item of this.pending)if(item!==candidate&&item!==newest)item.sample.raw.release?.();
+    this.pending=[...new Set([candidate,newest])].filter(Boolean);
   }
   publish(sample) {
     if(this.closed){sample.raw.release?.();return;}
@@ -171,13 +200,13 @@ export class DesktopSource {
     while(!this.closed) {
       // Measuring holds the renderer's main thread (DOMSnapshot): only measure
       // to adopt protection or to verify a captured frame, never while idle.
-      if(!this.held&&this.gate.protectionSerial!==0){await delay(8);continue;}
-      // The latest frame captured before this measurement begins; frames
-      // arriving meanwhile wait for the next one (no starvation while scrolling).
-      const held=this.held,started=Date.now();this.held=null;
-      const {verified,changed}=await this.gate.step();
-      this.timing(held&&verified===held.serial?'desktop_gate_verified':'desktop_gate_step',started);
-      if(held&&verified===held.serial)this.publish(held.sample);else held?.sample.raw.release?.();
+      // A step starts when a readback arrives, alongside its AT-SPI binding.
+      if(!this.pending.length&&!this.next&&!this.inflight&&this.gate.protectionSerial!==0){await delay(4);continue;}
+      this.stepStarted=Date.now();
+      const {started,verified,changed}=await this.gate.step();
+      this.stepStarted=null;this.verifiedStep=verified===null?null:{started,serial:verified};
+      const published=this.latest;this.settle();
+      this.timing(this.latest!==published?'desktop_gate_verified':'desktop_gate_step',started);
       if(changed)await this.wake();
       // Unadopted (no browser, DevTools open, unbindable page): retry calmly.
       await delay(this.gate.protectionSerial?4:50);
@@ -199,8 +228,8 @@ export class DesktopSource {
   async close() {
     if(this.closed&&!this.child&&!this.oracle)return;
     this.closed=true;
-    for(const raw of [this.latest?.raw,this.held?.sample.raw,this.next])raw?.release?.();
-    this.latest=null;this.held=null;this.next=null;this.listeners.clear();
+    for(const raw of [this.latest?.raw,...this.pending.map(item=>item.sample.raw),this.next])raw?.release?.();
+    this.latest=null;this.pending=[];this.next=null;this.listeners.clear();
     const child=this.child,oracle=this.oracle,poolRoot=this.poolRoot;this.child=null;this.oracle=null;this.poolRoot=null;
     this.worker?.close();
     await Promise.all([settle(child),settle(oracle)]);
