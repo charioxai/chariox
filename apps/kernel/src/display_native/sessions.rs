@@ -434,7 +434,14 @@ impl Sessions {
         let EncodeJob { codec, started, .. } = job;
         let backend = |codec: &Codec| {
             let kind = unsafe { ffi::cx_codec_backend(codec.0) };
-            json!({"backend":if kind == 1 {"native-vaapi"} else {"native-x264"},"hardware_fallback":kind == 2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(codec.0))}.to_string_lossy(),"converter":"libyuv"})
+            let backend = if kind == 1 {
+                "native-vaapi"
+            } else if unsafe { ffi::cx_codec_openh264(codec.0) } == 1 {
+                "native-openh264"
+            } else {
+                "native-x264"
+            };
+            json!({"backend":backend,"hardware_fallback":kind == 2,"hardware_diagnostic":unsafe {std::ffi::CStr::from_ptr(ffi::cx_codec_diagnostic(codec.0))}.to_string_lossy(),"converter":"libyuv"})
         };
         let mut reply = backend(&codec);
         let reduced = unsafe { ffi::cx_codec_reduced(codec.0) } == 1;

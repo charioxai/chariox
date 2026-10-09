@@ -62,3 +62,17 @@ test("MD-DISPLAY optimized PNG filters preserve all pixels and reject corruption
     png[33]^=1;assert.throws(()=>decodePng(png.toString('base64')),/corrupt|frame/);
   }
 });
+
+// MP-08/MP-10/MP-11: indexed PNGs decode exactly or not at all.
+test('MP-11 indexed PNG decoding rejects out-of-palette indices, transparency and a missing palette', async () => {
+  const { deflateSync, crc32 } = await import('node:zlib');
+  const chunk = (type, data) => { const body = Buffer.concat([Buffer.from(type), data]), out = Buffer.alloc(body.length + 8); out.writeUInt32BE(data.length); body.copy(out, 4); out.writeUInt32BE(crc32(body), out.length - 4); return out; };
+  const header = Buffer.alloc(13); header.writeUInt32BE(2); header.writeUInt32BE(1, 4); header[8] = 8; header[9] = 3;
+  const png = (...chunks) => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), ...chunks, chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  const data = indices => chunk('IDAT', deflateSync(Buffer.from([0, ...indices])));
+  const palette = chunk('PLTE', Buffer.from([1, 2, 3, 4, 5, 6]));
+  assert.deepEqual([...decodePng(png(palette, data([1, 0]))).pixels], [4, 5, 6, 255, 1, 2, 3, 255]);
+  assert.throws(() => decodePng(png(palette, data([2, 0]))), /palette index/);
+  assert.throws(() => decodePng(png(palette, chunk('tRNS', Buffer.from([0])), data([0, 0]))), /unsupported frame format/);
+  assert.throws(() => decodePng(png(data([0, 0]))), /chunk order/);
+});

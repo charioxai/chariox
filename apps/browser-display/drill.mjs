@@ -11,10 +11,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {nativeLoader} from './native-loader.mjs';
-import { shapeViewerLeg } from './drill-netem.mjs';
+import { shapeViewerLeg, shapeViewerLegUserspace } from './drill-netem.mjs';
 import {assertIndependentNavigation} from './drill-navigation.mjs';
 import { drainRepairs, verifySettled } from './drill-settle.mjs';
 import { measureWorkload } from './drill-workloads.mjs';
+import { measureSiteLatency } from './drill-site-latency.mjs';
+import { measureAckGate } from './drill-ack-gate.mjs';
 import { fixture } from './drill-fixtures.mjs';
 import {CpuSampler,cpuSpan} from './drill-cpu.mjs';
 import { distribution } from './drill-metrics.mjs';
@@ -178,7 +180,7 @@ try {
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
+ kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264:process.env.MD_OPENH264,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.record('stdout',b));kernel.stderr.on('data',b=>log.record('stderr',b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
@@ -206,7 +208,7 @@ try {
 
  if(process.env.MD_NETEM_PROFILE&&process.env.MD_NETEM_PROFILE!=='local'){
   const bootstrap=JSON.parse(await readFile(path.join(home,'relay-bootstrap.private.json'),'utf8'));
-  shaped=await shapeViewerLeg(process.env.MD_NETEM_PROFILE,bootstrap.relay_url,process.env.MD_HOST_NETNS);receipt.network=shaped.info;
+  shaped=process.env.MD_USERSPACE_SHAPING==='1'?await shapeViewerLegUserspace(process.env.MD_NETEM_PROFILE,bootstrap.relay_url):await shapeViewerLeg(process.env.MD_NETEM_PROFILE,bootstrap.relay_url,process.env.MD_HOST_NETNS);receipt.network=shaped.info;
  }else receipt.network={name:'local',rtt:0,jitter:0,loss:0,mbps:0};
  const viewerHome=path.join(root,'viewer');await mkdir(viewerHome,{mode:0o700});await chown(viewerHome,runUid,runGid);
  viewer=await launchOwned(chrome,['--headless=new','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',`--user-data-dir=${viewerHome}`,'--no-first-run','--disable-background-networking','--disable-dev-shm-usage','about:blank'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{PATH:runtimePath,HOME:viewerHome,TMPDIR:shortTmp},stdio:'ignore'});groups.push(viewer.pid);await cpu.track(viewer.pid,'viewer');
@@ -246,7 +248,7 @@ try {
      timing('event_received',arrived);
      const value=await api.decryptRelayEvent(sender.privateKey,message.encrypted_event,daemonKey);
      timing('client_event_decrypt',arrived);
-     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?event.data.byteLength:event.data.length});for(const listener of listeners)listener(value);
+     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?event.data.byteLength:event.data.length,arrived_ms:arrived,key:value.frame.kind==='png'||value.frame.kind==='video'&&value.frame.key===true||value.frame.kind==='stripes'&&value.frame.stripes?.length===8&&value.frame.stripes.every(row=>row.key)});for(const listener of listeners)listener(value);
    }
   };
   const control=(value,reserved)=>new Promise((resolve,reject)=>{const key=reserved??String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
@@ -273,7 +275,7 @@ try {
         mdProtection.failures.push({sequence:frame.sequence,kind:frame.kind,document:frame.document_id,pixel:Array.from(pixels.slice(0,4)),maximum,above,png:MDDisplay.canvas.toDataURL('image/png')});
       }
     }
-    const sample={sequence:frame.sequence,kind:frame.kind,drawn_ms:stamp(),content_changed:motionSamples.sample(MDDisplay.canvas)};window.mdPresentation=sample;mdPresentations.push(sample);
+    const sample={sequence:frame.sequence,kind:frame.kind,drawn_ms:stamp(),content_changed:motionSamples.sample(MDDisplay.canvas)};window.mdPresentation=sample;mdPresentations.push(sample);window.mdOnPresented?.(sample);
     requestAnimationFrame(()=>{
       if(window.mdProbeLeft!==undefined){const c=MDDisplay.canvas.getContext('2d');let n=0;for(let i=0;i<5;i++){const p=c.getImageData(mdProbeLeft+4*dpr+i*8*dpr,28*dpr,1,1).data;if(p[0]>128)n|=1<<i}sample.step=n;}
       sample.presented_ms=stamp();
@@ -321,6 +323,12 @@ try {
  const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('settled-verification-'+attempt));
  receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,verification_attempts:settled.verification_attempts,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:settled.fidelity};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
+ if(process.env.MD_SITE_LATENCY==='1')receipt.site_latency=await measureSiteLatency({page,pause,pair,samples:Number(process.env.MD_SITE_SAMPLES||40),secondTab:process.env.MD_SECOND_TAB==='1'});
+ else {
+ if(process.env.MD_ACK_GATE==='1'){
+  receipt.ack_gate=await measureAckGate({page,pause,control:process.env.MD_ACK_GATE_CONTROL==='1'});
+  if(!receipt.ack_gate.skipped){const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('after-ack-gate-'+attempt));receipt.ack_gate.settled_lossless=settled.fidelity.lossless;if(!settled.fidelity.lossless)throw Error('MP-10: ACK gate recovery did not settle exact');}
+ }
  if(process.env.MD_FRAMES==='1'){
   // MP-11: the isolated frame is visible and clickable; its protected field stays masked.
   const dpr=geometry.dpr,read=async()=>{await page.evaluate(()=>mdStream.next());return PNG.sync.read(Buffer.from((await actual()).png.split(',')[1],'base64'))};
@@ -472,6 +480,7 @@ try {
   receipt.supervisor_crash={raster_bytes:rasterBytes,packet_roots:packetRoots,pool_files:poolFiles,auth_files:authFiles,durable_profiles:profiles,owned_supervisor_pid:supervisors[0]};
  }catch(error){receipt.cleanup.push(error.message);receipt.status='RED';process.exitCode=1}
 
+ }
  if(!receipt.supervisor_crash)await page.evaluate(()=>mdStream.close());
  await writeFile(path.join(home,'STOP'),'MD-DISPLAY owned stop');
  const exit=await kernelExit;receipt.kernel_exit=exit;if(exit.code!==0)throw Error('MD-DISPLAY kernel drill failed');
@@ -485,7 +494,7 @@ try {
   if(!receipt.protected_presentations.frames||receipt.protected_presentations.violations)throw Error('MP-11: an encoded/displayed frame exposed a protected region');
  }
  receipt.status='PASS_LOCAL_COMPONENT';
- receipt.latency_goal={p50_ms:80+receipt.network.rtt,p95_ms:100+receipt.network.rtt,passed:receipt.latency.p50_ms<=80+receipt.network.rtt&&receipt.latency.p95_ms<=100+receipt.network.rtt};
+ if(receipt.latency)receipt.latency_goal={p50_ms:80+receipt.network.rtt,p95_ms:100+receipt.network.rtt,passed:receipt.latency.p50_ms<=80+receipt.network.rtt&&receipt.latency.p95_ms<=100+receipt.network.rtt};
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
 } catch(error) {
  receipt.status='RED';receipt.error=String(error.message);process.exitCode=receipt.interrupted?130:1;

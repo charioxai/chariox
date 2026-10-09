@@ -18,11 +18,12 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
+import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { CompositorSource } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
@@ -31,12 +32,18 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
+// MP-08/MP-10: a refused native start mostly clears within a second (the
+// window resize landing, a transient overlay); persistent refusals back off
+// to one attempt a minute.
+export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
+
 export function scheduleHostRequest(request) {
   return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string'
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
@@ -67,6 +74,7 @@ export class KernelBrowserHost {
     this.scrolling = new Map();
     this.sampleLanes = new Map();
     this.compositors = new Map();
+    this.foreground = new WindowForeground();
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
@@ -111,7 +119,7 @@ export class KernelBrowserHost {
   }
   async write() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, scale: this.chromium.scale ?? 1, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -125,6 +133,7 @@ export class KernelBrowserHost {
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     await this.desktopDisplay.close();
     await this.closeCompositors();
+    this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
     // MP-11: retire helpers on the old display before Chromium recovery can
@@ -149,7 +158,6 @@ export class KernelBrowserHost {
     }
     assertNotCancelled(signal);
     // MP-08/MP-10: relaunch at the device scale of the last display viewer.
-    if (geometry.width !== 1920 && !this.chromium.desktop && [1, 2].includes(saved.scale)) this.chromium.scale = saved.scale;
     const connection = await this.chromium.start();
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
@@ -207,22 +215,28 @@ export class KernelBrowserHost {
     const refusals=entry?.document===tab.document_id&&entry.policy===this.protection?entry.refusals??0:0;
     if(refusals&&performance.now()<entry.retryAt)return null;
     // MP-08/MP-10: a CDP fallback after a refused native start retries native
-    // with backoff (5 s doubling to 60 s) for the same document.
+    // with backoff (nativeRetryDelayMs) for the same document.
     const retry=this.nativeRetryAt?.get(tab.tab_id),retryNative=entry&&!(entry.source instanceof LinuxCapture)&&retry?.document===tab.document_id&&performance.now()>=retry.at;
     if(entry&&(entry.document!==tab.document_id||entry.source?.closed||retryNative)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      // MP-08/MP-10: a refused native start is retried after 5 s, not per credit.
+      // MP-08/MP-10: a refused native start is retried on the backoff, not per credit.
       const retryAt=this.nativeRetryAt?.get(tab.tab_id);
       let source=retryAt?.document===tab.document_id&&performance.now()<retryAt.at?null:await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
-        if(this.tabs.size!==1){this.nativeScope('tab_count');throw Error('native tab scope');}
+        // MP-08/MP-10/MP-11: one tab owns the window. A live native viewer on
+        // another tab keeps it; otherwise retire other native sources and claim
+        // the foreground before the source brings this tab to front.
+        const holder=this.foreground.tab;
+        if(holder&&holder!==tab.tab_id&&[...this.displays.values()].some(s=>s.tab_id===holder&&s.expires>Date.now())&&this.compositors.get(holder)?.source instanceof LinuxCapture){this.nativeScope('foreground_busy');throw Error('native foreground busy');}
+        for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
+        const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
-          (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+Math.min(60000,5000*2**(attempts-1))});throw error;
+          (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+nativeRetryDelayMs(attempts)});throw error;
         }
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
@@ -294,7 +308,7 @@ export class KernelBrowserHost {
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
-    await this.closeCompositors();
+    await this.closeCompositors();this.foreground.reset();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     assertNotCancelled(signal);
@@ -343,7 +357,7 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId, { frames: frameId => this.browser.frameSession?.(frameId, connection), record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
+    const regionMasks = protectedCapture ? await captureProtectionFence(connection, sessionId, tab.target_id, this.protection, { record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -498,22 +512,6 @@ export class KernelBrowserHost {
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
-      // MP-08/MP-10 (1.4): the owned window must render at the viewer's scale
-      // (emulated view scaling fails native attestation on text). With no
-      // other live display/mirror viewer, restart Chromium at that scale;
-      // tabs restore from tabs.json under a new generation, which the reply
-      // carries. Otherwise (or on the shared owned desktop, whose restart would
-      // retire every desktop app) the stream keeps the emulated scale.
-      if ((this.chromium.scale ?? 1) !== command.device_scale_factor && geometry.width !== 1920 && !this.chromium.desktop && !this.restoring &&
-        ![...this.displays.values()].some(s => s.expires > Date.now()) && this.mirror.streams.size === 0) {
-        this.chromium.scale = command.device_scale_factor;
-        this.timing(`display_rescale ${command.device_scale_factor}`, timestamp());
-        await this.save();
-        await this.stop();
-        await this.start({ signal });
-        tab = this.tabs.get(command.tab_id);
-        if (!tab) throw new UserDomainRefusal("stale_reference");
-      }
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
@@ -529,7 +527,7 @@ export class KernelBrowserHost {
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
-      await this.closeCompositors(tab.tab_id);
+      await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
@@ -561,6 +559,7 @@ export class KernelBrowserHost {
         if (dispatched) return;
         dispatched = true;
         this.inputChangedAt.set(tab.tab_id, performance.now());
+        this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };

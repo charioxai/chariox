@@ -122,10 +122,13 @@ pub(super) struct DisplayPump {
 }
 
 impl DisplayPump {
+    /// A new pump (also a re-subscription after a dropped relay socket, whose
+    /// in-flight frames were lost) starts with an independent frame.
     pub(super) fn new(generation: u64) -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::Mutex::new(PumpState {
                 generation,
+                reset: true,
                 ..Default::default()
             }),
             wake: tokio::sync::Notify::new(),
@@ -391,6 +394,21 @@ mod tests {
             panic!()
         };
         assert!(!credit.congested, "congestion decays after the window");
+    }
+
+    #[test]
+    fn mp10_new_pump_first_frame_is_independent() {
+        let pump = DisplayPump::new(7);
+        assert_eq!(pump.acknowledge(7, 13, false), Some("running"));
+        let now = Instant::now();
+        let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
+            panic!()
+        };
+        assert!(credit.reset, "the viewer may hold no base for this pump");
+        let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
+            panic!()
+        };
+        assert!(!credit.reset);
     }
 
     #[test]

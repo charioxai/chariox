@@ -62,7 +62,7 @@ impl DisplayPackets {
         let (prefix, files): (&str, &[&str]) = if name.starts_with("encoder-") {
             ("encoder-", &["raster"])
         } else if name.starts_with("raster-") {
-            ("raster-", &["0", "1", "2"])
+            ("raster-", &super::RASTER_SLOT_NAMES)
         } else {
             return;
         };
@@ -367,7 +367,8 @@ mod tests {
         let directory = root.join("raster-Ab1234");
         std::fs::create_dir(&directory).unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        for name in ["0", "1", "2"] {
+        // Every slot the worker allocates (review #893 P2: slots 3-5 leaked).
+        for name in ["0", "1", "2", "3", "4", "5"] {
             let file = directory.join(name);
             std::fs::write(&file, b"MP-11 owned capture").unwrap();
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();

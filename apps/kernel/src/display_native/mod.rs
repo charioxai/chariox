@@ -5,6 +5,7 @@ mod ffi;
 mod raster;
 mod sessions;
 mod worker;
+pub(crate) use crate::runtime::browser_controller_process::RASTER_SLOT_NAMES;
 pub fn run() -> Result<(), String> {
     worker::run()
 }

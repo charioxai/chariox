@@ -344,7 +344,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
 // they are produced; the viewer acknowledges each presented sequence (plus a
 // heartbeat), which drives the kernel's ACK gate (after Selkies' frame ACK).
 function pushDisplay(presenter, transport, request, binding, actorCommand, options) {
-  const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000, gapMs = 250} = options;
+  const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000, gapMs = Math.min(250, heartbeatMs)} = options;
   const held = new Map(), unread = [], waiters = new Set();
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
@@ -404,7 +404,7 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     // A sequence that never arrives: skip the gap and recover from a key.
     // While recovering, an independent frame establishes the cursor at once.
     if (held.size > 8 || heldBytes > 8 * 1024 * 1024) skip(Math.min(...held.keys()));
-    else if (recovering && frame.sequence > nextSequence && independent(frame)) skip(frame.sequence);
+    else if (frame.sequence > nextSequence && independent(frame)) skip(frame.sequence);
     drain();
   });
   // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.

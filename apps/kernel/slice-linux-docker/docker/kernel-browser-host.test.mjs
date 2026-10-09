@@ -44,8 +44,14 @@ function fixture(root) {
       if (method === 'DOM.getDocument') return {root:{nodeId:1}};
       if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
       if (method === "Page.captureScreenshot") return { data: encodePng(1280,800,Buffer.alloc(1280*800*4,255)) };
-      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", loaderId: pages.get(session?.replace("session-", ""))?.document_id ?? `doc-${session?.replace("session-", "")}` } } };
+      const target = session?.replace("session-", "");
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
+      if (method === "Runtime.evaluate" && params.expression.includes("visibilityState")) return { result: { value: ["visible", chromium.scale ?? 1, 1280, 800] } };
+      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 } };
+      if (method === "DOM.performSearch") return { searchId: "search", resultCount: fixture.protectedField && params.query.includes("password") ? 1 : 0 };
+      if (method === "DOM.getSearchResults") return { nodeIds: [2] };
+      if (method === "DOM.describeNode") return { node: { localName: "input", backendNodeId: 7 } };
       if (method === "Runtime.evaluate") return { result: { value: fixture.secretFocused ?? false } };
       return {};
     },
@@ -65,7 +71,7 @@ function fixture(root) {
 async function using(callback) {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-md2-test-"));
   const context = fixture(root);
-  try { await callback(context, root); } finally { fixture.secretFocused = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
+  try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
 test('MP-08/MP-10/MP-11 agent wheel awaits Chromium even with an attached display',()=>using(async({host,connection})=>{
@@ -690,11 +696,11 @@ for (const change of ['stable','layout','metadata','unavailable']) {
   const send=connection.send;let captured=false;
   connection.send=async(method,params,session)=>{
    if(method==='DOM.getDocument'){if(change==='unavailable'||captured&&change==='metadata')throw Error('metadata unavailable');return {root:{nodeId:1}};}
-   if(method==='DOM.querySelectorAll')return {nodeIds:[2]};
-   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900;return {model:{border:[x,200,x+150,200,x+150,280,x,280]}};}
+   if(method==='DOM.getBoxModel'){const x=captured&&change==='layout'?100:900,q=[x,200,x+150,200,x+150,280,x,280];return {model:{border:q,content:q,width:150,height:80}};}
    if(method==='Page.captureScreenshot'){captured=true;return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))};}
    return send(method,params,session);
   };
+  fixture.protectedField=true;
   const opened=await host.request({op:'open',url:'about:blank'});
   const frame=await host.request({op:'screenshot',tab_id:opened.tab_id,generation:opened.generation});
   const pixels=decodePng(frame.data_base64).pixels;
@@ -704,9 +710,11 @@ for (const change of ['stable','layout','metadata','unavailable']) {
 }
 
 for (const change of ["stable", "layout", "metadata"]) {
-  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
+  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection, chromium }) => {
     const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
     process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
+    chromium.scale = 2; // HostChromium's 1280x800 density
+    fixture.protectedField = true;
     const send = connection.send;
     let captured = false;
     connection.send = async (method, params, session) => {
@@ -714,10 +722,9 @@ for (const change of ["stable", "layout", "metadata"]) {
         if (captured && change === "metadata") throw Error("metadata unavailable");
         return { root: { nodeId: 1 } };
       }
-      if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
       if (method === "DOM.getBoxModel") {
-        const x = captured && change === "layout" ? 150 : 100;
-        return { model: { border: [x,100,x+20,100,x+20,120,x,120] } };
+        const x = captured && change === "layout" ? 150 : 100, quad = [x,100,x+20,100,x+20,120,x,120];
+        return { model: { border: quad, content: quad, width: 20, height: 20 } };
       }
       if (method === "Page.captureScreenshot") {
         captured = true;
@@ -729,9 +736,7 @@ for (const change of ["stable", "layout", "metadata"]) {
       const opened = await host.request({ op: "open", url: "about:blank" });
       const binding = { tab_id: opened.tab_id, generation: opened.generation };
       const subscribed = await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
-      // MP-08/MP-10 (1.4): a DPR2 viewer restarts the idle DSF1 browser at DSF2.
-      assert.equal(host.chromium.scale, 2); assert.equal(subscribed.generation, binding.generation + 1);
-      binding.generation = subscribed.generation;
+      assert.equal(subscribed.generation, binding.generation);
       const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
       assert.equal(frame.width,2560); assert.equal(frame.height,1600);
       assert.deepEqual(frame.protected_regions, change === "stable"
@@ -930,25 +935,17 @@ test('MP-08/MP-10/MP-11 viewer wheel on the CDP capture fallback uses awaited in
  assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent').length,1);
 }));
 
-// MP-08/MP-10/MP-11: native bounds and the compositor image share one DPR.
-// MP-08/MP-10 (1.4): an idle browser restarts at the viewer's device scale
-// (no emulated view scaling); a live viewer of the other scale keeps it.
-for(const dpr of [1,2])test(`MP-10 display renders natively at the viewer scale DPR${dpr}`,()=>using(async({host,sent})=>{
+// MP-08/MP-10/MP-11 (review #893 P1): display_subscribe is an observation.
+// It never stops or relaunches the browser (tab state, generation and agent
+// references survive); the DSF-2 window serves both densities 1:1.
+for(const dpr of [1,2])test(`MP-11 a DPR${dpr} viewer subscribe never relaunches the browser`,()=>using(async({host,sent,chromium})=>{
  const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
- try{const tab=await host.request({op:'open',url:'about:blank'});
+ try{chromium.scale=2;const tab=await host.request({op:'open',url:'about:blank'});
+ const launched=chromium.child,stops=chromium.stop;let stopped=0;chromium.stop=async()=>{stopped++;return stops()};
  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr});
- assert.equal(host.chromium.scale??1,dpr);assert.equal(subscribed.generation,tab.generation+(dpr===2?1:0));
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
- }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
-}));
-test('MP-10 a live viewer keeps the browser scale; another scale is emulated',()=>using(async({host,sent})=>{
- const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
- try{const a=await host.request({op:'open',url:'about:blank'});
- await host.request({op:'display_subscribe',tab_id:a.tab_id,generation:a.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
- const b=await host.request({op:'open',url:'about:blank'});
- const subscribed=await host.request({op:'display_subscribe',tab_id:b.tab_id,generation:b.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
- assert.equal(host.chromium.scale??1,1);assert.equal(subscribed.generation,b.generation,'no restart under a live viewer');
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:2,mobile:false});
+ assert.equal(stopped,0,'no stop/relaunch from an observation');assert.equal(chromium.child,launched);
+ assert.equal(subscribed.generation,tab.generation);assert.equal(host.generation,tab.generation);assert.equal(chromium.scale,2);
+ assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr/2,mobile:false});
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
@@ -978,4 +975,9 @@ test("MP-08/MP-10 concurrent tab saves are serialized", async () => {
     await Promise.all([first, host.save(), host.save()]);
     assert.equal(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).tabs.length, 2);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("MP-08/MP-10 a refused native start retries after one second, backing off to a minute", async () => {
+  const { nativeRetryDelayMs } = await import("./kernel-browser-host.mjs");
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 12].map(nativeRetryDelayMs), [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]);
 });

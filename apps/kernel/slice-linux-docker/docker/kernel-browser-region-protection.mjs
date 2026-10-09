@@ -1,6 +1,7 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {maskPng,opaqueFrame,cropProtectedPng,displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {measurePageProtection,protectionDigest} from './browser-protection-regions.mjs';
 // Screenshot-region masks from trusted CDP metadata, never page JavaScript.
 const explicitMarkers=['data-chariox-secret','data-chariox-observation-protected','data-observation-protected'];
 const protectionAttributes=new Set(['type','autocomplete',...explicitMarkers]);
@@ -173,6 +174,35 @@ export async function captureRegionMasks(connection, sessionId, { reinspect = tr
       return after.map(region => ({ x: region.x * width / geometry.width, y: region.y * height / geometry.height,
         width: region.width * width / geometry.width, height: region.height * height / geometry.height }));
     } catch { this.changed=true;this.failed=true;return fullFrame; }
+  } };
+}
+
+// MP-08/MP-11: CDP screenshots use the shared per-frame protection transform
+// (browser-protection-regions.mjs) on the page's own session: a second
+// attached session resets the page's device-metrics emulation (DPR2 would
+// silently become DPR1). Native and controller node references are backend
+// ids, so its DOM.getDocument cannot stale them. Masks apply only when the
+// measurements before and after the screenshot agree and bind its raster;
+// otherwise (and for an unknown policy or unbound page) the whole raster is masked.
+export async function captureProtectionFence(connection, sessionId, targetId, policy, { record = () => {}, measure = measurePageProtection } = {}) {
+  const measured = async () => {
+    if (policy.unknown) return null;
+    try { return await measure(connection, sessionId, targetId, policy, { hidden: true }); }
+    catch (error) { record('fence_unbound ' + (/^MP-11: [a-z -]{1,40}$/.test(error?.message) ? error.message.slice(7) : 'cdp')); return null; }
+  };
+  const before = await measured();
+  return { async afterCapture({ width, height }) {
+    const after = await measured();
+    // The screenshot raster scales the measured viewport uniformly (view
+    // image scale): map regions outward; any other geometry fails closed.
+    const sx = width / after?.viewport?.[0], sy = height / after?.viewport?.[1];
+    const failed = !before || !after ? 'fence_unbound' : protectionDigest(before) !== protectionDigest(after) ? 'fence_changed' : !(sx > 0) || Math.abs(sx - sy) > 1e-9 ? 'fence_raster' : null;
+    if (failed) { record(failed); return [{ x: 0, y: 0, width, height }]; }
+    for (const reason of new Set(after.withheld)) record(reason);
+    return after.regions.map(([x, y, w, h]) => {
+      const left = Math.floor(x * sx), top = Math.floor(y * sy);
+      return { x: left, y: top, width: Math.ceil((x + w) * sx) - left, height: Math.ceil((y + h) * sy) - top };
+    });
   } };
 }
 

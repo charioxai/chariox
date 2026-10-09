@@ -38,7 +38,7 @@ function paeth(a, b, c) {
 export function decodePng(data, scale = 1) {
   const png = Buffer.from(data, "base64");
   if (!png.subarray(0, 8).equals(signature) || png.length > 4 * 1024 * 1024) throw new Error("MD-5: unsupported frame");
-  let width, height, channels, ended = false;
+  let width, height, channels, palette = null, ended = false;
   const compressed = [];
   for (let offset = 8; offset + 12 <= png.length;) {
     const length = png.readUInt32BE(offset), end = offset + length + 12;
@@ -48,10 +48,17 @@ export function decodePng(data, scale = 1) {
     if (type === "IHDR") {
       if (body.length !== 13 || width) throw new Error("MD-5: invalid frame header");
       width = body.readUInt32BE(0); height = body.readUInt32BE(4);
-      channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : 0;
+      // MP-08/MP-10: the native exact raster writes indexed PNGs (exact
+      // per-RGB palettes, at most 256 colours) as well as RGB/RGBA.
+      channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : body[9] === 3 ? 1 : 0;
       if (!width || !height || width > geometry.width * scale || height > geometry.height * scale || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
+    } else if (type === "PLTE") {
+      if (!width || channels !== 1 || palette || compressed.length || !body.length || body.length % 3 || body.length > 768) throw new Error("MD-5: invalid frame palette");
+      palette = Buffer.from(body);
+    } else if (type === "tRNS") {
+      throw new Error("MD-5: unsupported frame format");
     } else if (type === "IDAT") {
-      if (!width || ended) throw new Error("MD-5: invalid frame chunk order");
+      if (!width || ended || (channels === 1 && !palette)) throw new Error("MD-5: invalid frame chunk order");
       compressed.push(body);
     } else if (type === "IEND") {
       if (body.length || end !== png.length) throw new Error("MD-5: invalid frame end");
@@ -89,7 +96,14 @@ export function decodePng(data, scale = 1) {
     }
   }
   const pixels = channels === 4 ? decoded : Buffer.alloc(width * height * 4);
-  if (channels === 3) {
+  if (channels === 1) {
+    const colours = palette.length / 3;
+    for (let source = 0, target = 0; source < decoded.length; source++, target += 4) {
+      const index = decoded[source];
+      if (index >= colours) throw new Error("MD-5: invalid frame palette index");
+      pixels[target] = palette[index * 3]; pixels[target + 1] = palette[index * 3 + 1]; pixels[target + 2] = palette[index * 3 + 2]; pixels[target + 3] = 255;
+    }
+  } else if (channels === 3) {
     for (let source = 0, target = 0; source < decoded.length; source += 3, target += 4) {
       pixels[target] = decoded[source]; pixels[target + 1] = decoded[source + 1]; pixels[target + 2] = decoded[source + 2]; pixels[target + 3] = 255;
     }

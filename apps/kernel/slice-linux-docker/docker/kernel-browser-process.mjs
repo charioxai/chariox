@@ -33,7 +33,9 @@ export function launchArguments(profile, headless, display = false, nativeAccess
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
-    "--disable-session-crashed-bubble", "--disable-background-networking",
+    // The host restores its own tabs; after an unclean stop Chromium's
+    // "Restore pages?" bubble would cover the page in the owned window.
+    "--hide-crash-restore-bubble", "--disable-background-networking",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []),
@@ -57,7 +59,7 @@ export class HostChromium {
     this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
-    this.scale = 1;
+    this.scale = this.desktop ? 1 : geometry.dpr;
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {

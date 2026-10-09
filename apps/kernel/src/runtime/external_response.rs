@@ -135,6 +135,18 @@ response_policies! {
         EventGeneratorAuthorizationStarted,
         EventConnectionAuthorizationStarted,
         EventConnectionAuthorizationObserved,
+        // MP-08/MP-11: user-domain browser, Notes and App replies show page,
+        // window and App content; external grant holders use the host terminal.
+        KernelBrowser,
+        Notes,
+        VisibleRegionCaptured,
+        UserAppViewCallResult,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewOpened,
+        UserAppViewsChanged,
+        UserAppViewsListed,
+        UserDomainInteractionAnswered,
     ],
     Public => [
         CloudRelayLoggedOut,

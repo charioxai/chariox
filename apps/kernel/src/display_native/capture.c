@@ -374,16 +374,29 @@ int cx_shift_plan(const uint8_t *raw,const uint8_t *base,int width,int height,in
     free(hashes);free(c->hash_cur);free(c);return result;
 }
 
+/* MP-11 (review #893 P2): the pointer may reach only the owned window.
+ * Chromium shows permission/download bubbles, autofill and <select> popups
+ * as separate top-level windows outside the captured pixmap, so a viewer
+ * never sees them. Resolves the owned window's root point (0: owned on top,
+ * 1: another top-level window covers it, -1: not owned/unknown). */
+static int pointer_target(struct Capture *c,int x,int y,int *px,int *py){
+    if(x<0||y<0||x>=c->width||y>=c->height)return -1;
+    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    Window root=DefaultRootWindow(c->display),child;int rx,ry,ox,oy;
+    if(!XTranslateCoordinates(c->display,c->window,root,0,0,&rx,&ry,&child))return -1;
+    *px=rx+x;*py=ry+c->offset+y;
+    if(!XTranslateCoordinates(c->display,root,root,*px,*py,&ox,&oy,&child))return -1;
+    return child==c->window?0:1;
+}
 /* MP-08/MP-10: wheel notches into the owned window on the kernel's private X
  * server, so Chromium applies native smooth scrolling (CDP wheel deltas are
  * precise and unanimated). Callers fence the document and actor first. */
 int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
     if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
-    if(x<0||y<0||x>=c->width||y>=c->height||dx<-10||dx>10||dy<-10||dy>10||(!dx&&!dy))return -1;
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
-    Window child;int rx,ry;
-    if(!XTranslateCoordinates(c->display,c->window,DefaultRootWindow(c->display),0,0,&rx,&ry,&child))return -1;
-    if(!XTestFakeMotionEvent(c->display,-1,rx+x,ry+c->offset+y,CurrentTime))return -1;
+    if(dx<-10||dx>10||dy<-10||dy>10||(!dx&&!dy))return -1;
+    int px,py,target=pointer_target(c,x,y,&px,&py);
+    if(target)return target;
+    if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
     for(int i=0;i<abs(dy);i++){unsigned b=dy>0?5:4;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
     for(int i=0;i<abs(dx);i++){unsigned b=dx>0?7:6;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
     XFlush(c->display);return 0;
@@ -393,11 +406,9 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
  * acknowledgement round trip); the caller fenced document and actor first. */
 int cx_capture_click(struct Capture *c,int x,int y){
     if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
-    if(x<0||y<0||x>=c->width||y>=c->height)return -1;
-    if(window_pid(c->display,c->window)!=c->owner)return -1;
-    Window child;int rx,ry;
-    if(!XTranslateCoordinates(c->display,c->window,DefaultRootWindow(c->display),0,0,&rx,&ry,&child))return -1;
-    if(!XTestFakeMotionEvent(c->display,-1,rx+x,ry+c->offset+y,CurrentTime))return -1;
+    int px,py,target=pointer_target(c,x,y,&px,&py);
+    if(target)return target;
+    if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
     XTestFakeButtonEvent(c->display,1,True,CurrentTime);XTestFakeButtonEvent(c->display,1,False,CurrentTime);
     XFlush(c->display);return 0;
 }

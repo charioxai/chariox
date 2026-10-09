@@ -121,11 +121,44 @@ test('MP-11 Python capture stays available across planning credits and uses fenc
 
 test('MP-08/MP-10 Rust capture retains supported planning and wheel controls',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');
- const commands=[],source=new LinuxCapture({scale:1});source.valid=()=>true;source.attested=true;
- source.child={stdin:{destroyed:false}};source.nativeWorker={notify:(command,immediate)=>(commands.push({command,immediate}),true)};
+ const commands=[],requests=[],source=new LinuxCapture({scale:1});source.valid=()=>true;source.attested=true;
+ source.child={stdin:{destroyed:false}};source.nativeWorker={notify:(command,immediate)=>(commands.push({command,immediate}),true),request:async(operation,values)=>(requests.push({[operation]:values}),{wheeled:true})};
  source.plans(false);source.plans(false);source.plans(true);
- assert.equal(source.wheel(10,20,0,1),true);
- assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true},{wheel:[10,20,0,1]}]);
+ assert.equal(await source.wheel(10,20,0,1),true);
+ assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true}]);
+ assert.deepEqual(requests,[{wheel:{point:[10,20],notches:[0,1]}}]);
+});
+// MP-11 (review #893 P2): a pointer refused by the worker (another top-level
+// window covers the point) or never sent reports false; never true.
+test('MP-11 native pointer refusals are reported, not assumed dispatched',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const notSent=Object.assign(Error('MP-11: native control unavailable'),{dispatched:false});
+ for(const [reply,expected] of [[{clicked:true},true],[{clicked:false},false],[notSent,false]]){
+  const source=new LinuxCapture({scale:2});source.valid=()=>true;source.attested=true;source.child={stdin:{destroyed:false}};
+  const requests=[];source.nativeWorker={request:async(operation,values)=>{requests.push({[operation]:values});if(reply instanceof Error)throw reply;return reply}};
+  assert.equal(await source.click(10,20),expected);assert.deepEqual(requests,[{click:{point:[20,40]}}]);assert.equal(source.closed,false);
+ }
+});
+// MP-11 (review #893 @8067044d1 P2): the worker dispatches before it
+// replies; a lost reply leaves the action uncertain. It must not read as a
+// refusal (the caller would replay it via CDP) and the source retires.
+test('MP-11 a native pointer whose reply is lost is uncertain, never a refusal',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {NativeWorkerControl}=await import('./kernel-browser-native-worker.mjs');
+ for(const lose of ['timeout','closed']){
+  const written=[],child={stdin:{destroyed:false,write:(bytes,callback)=>{written.push(bytes);callback?.();return true}}};
+  const worker=new NativeWorkerControl(child);
+  const source=new LinuxCapture({scale:2});source.valid=()=>!source.closed;source.attested=true;source.child=child;source.nativeWorker=worker;
+  const click=source.click(10,20);
+  assert.equal(written.length,1,'the click command reached the worker');
+  if(lose==='closed')worker.close();else{const id=JSON.parse(written[0]).click.id;worker.pending.get(id).reject(Error('MP-10: native control timeout'));worker.pending.delete(id);}
+  await assert.rejects(click,error=>error.code==='native_input_uncertain');
+  assert.equal(source.closed,true,'an uncertain native source retires');
+ }
+ // Never written (closed before the request): a definite refusal.
+ const closed=new NativeWorkerControl({stdin:{destroyed:true}});closed.closed=true;
+ const source=new LinuxCapture({scale:2});source.valid=()=>true;source.attested=true;source.child={stdin:{destroyed:false}};source.nativeWorker=closed;
+ assert.equal(await source.click(10,20),false);
 });
 
 // MP-08/MP-10/MP-11: The host window uses physical DPR1; negotiated page DPR
@@ -143,6 +176,24 @@ for(const scale of [1,2])test(`MP-10 native window fits negotiated DPR${scale} b
  await assert.rejects(source.start(),stop);
  assert.deepEqual(calls[1],{method:'Browser.setWindowBounds',params:{windowId:7,bounds:{width:geometry.width*scale,height:geometry.height*scale+87}}});
  assert.equal(source.attested,false,'bounds do not admit a surface');assert.equal(source.latest,null);
+});
+
+// MP-08/MP-10: hosted, the first DPR1 viewer after a browser launch saw its
+// bounds change dropped (Chromium still reported 1280x887 a second later), so
+// the native start refused and the view stayed on CDP capture for seconds.
+test('MP-10 native start re-sends window bounds that Chromium dropped',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const stop=Error('front'),sets=[];let applied=null;
+ const connection={subscribe:()=>()=>{},send:async(method,params)=>{
+  if(method==='Browser.getWindowForTarget')return {windowId:7};
+  if(method==='Browser.setWindowBounds'){sets.push(params.bounds);if(sets.length===2)applied=params.bounds;return {};}
+  if(method==='Browser.getWindowBounds')return {bounds:applied??{width:1280,height:887,windowState:'normal'}};
+  if(method==='Page.bringToFront')throw stop;
+  assert.fail('unexpected '+method);
+ }};
+ const source=new LinuxCapture({pid:42,connection,tab:{target_id:'own'},scale:1,hostScale:2});source.valid=()=>true;
+ await assert.rejects(source.start(),stop);
+ assert.equal(sets.length,2);assert.deepEqual(sets[1],{width:640,height:487});
 });
 
 // MP-08/MP-10/MP-11: renderer image scale must match the physical DPR1 host
@@ -176,4 +227,12 @@ test('MP-08/MP-10 native readbacks publish without per-frame CDP fences; navigat
  assert.deepEqual(published,[1,2,3,4,5]);assert.equal(sent.length,setup,'no CDP call per readback');
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});
  assert.equal(source.closed,true);assert.equal(source.sample(),null,'a navigated source never offers its pixels');await source.close();
+});
+// MP-08/MP-10: a DPR1 page on the DSF-2 window: the link-status bubble is
+// 52 physical rows (hosted Wikipedia attestation differed at y 752..771).
+test('MP-10 attestation excludes the status bubble at the window density',async()=>{
+ const {statusBand}=await import('./kernel-browser-native.mjs');
+ assert.deepEqual(statusBand({width:1280,height:800},2),{x:0,y:748,width:1280,height:52});
+ assert.deepEqual(statusBand({width:2560,height:1600},2),{x:0,y:1548,width:2560,height:52});
+ assert.deepEqual(statusBand({width:1920,height:1080},1),{x:0,y:1054,width:1920,height:26});
 });

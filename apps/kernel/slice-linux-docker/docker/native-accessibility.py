@@ -126,7 +126,8 @@ def value_boxes(node, values, pyatspi):
             while start>=0 and len(boxes)<16:
                 try:
                     rect=text.getRangeExtents(start,start+len(variant),pyatspi.DESKTOP_COORDS)
-                    if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
+                    x,y,width,height=(rect.x,rect.y,rect.width,rect.height) if hasattr(rect,"width") else rect
+                    if width>0 and height>0:boxes.append([x,y,width,height])
                 except Exception:pass
                 start=content.find(variant,start+1)
     except Exception:pass

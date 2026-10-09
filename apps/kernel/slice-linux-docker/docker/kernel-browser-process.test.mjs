@@ -25,6 +25,18 @@ test('MP-08/MP-10 source browser keeps normal animation cadence rather than outr
  assert(!launchArguments('/private',false,true).includes('--disable-frame-rate-limit'));
 });
 
+// MP-08/MP-10/MP-11: after an unclean kernel stop Chromium's crash-restore
+// bubble covered the page in the owned window, so native attestation refused
+// the window until a click dismissed it. The host restores tabs itself.
+test('MP-08/MP-10 relaunch after an unclean stop shows no crash-restore bubble',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const display of [false,true]){
+  const args=launchArguments('/private',false,display);
+  assert(args.includes('--hide-crash-restore-bubble'));
+  assert(!args.includes('--disable-session-crashed-bubble'),'obsolete switch: Chromium ignores it');
+ }
+});
+
 // MP-08/MP-10: LCD stripes are tied to a physical panel, whereas these
 // captured pixels are shown on arbitrary remote panels at either DPR.
 test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordinary browser launch stays native',async()=>{
@@ -35,7 +47,10 @@ test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordi
 
 // MP-08/MP-10/MP-11: physical browser scale stays independent of the
 // negotiated page raster. Both clients must attest the same bounded window.
-test('MP-10 host display uses physical DPR1 for negotiated DPR1/2 pages',async()=>{
- const {launchArguments}=await import('./kernel-browser-process.mjs');
- assert(launchArguments('/private',false,true).includes('--force-device-scale-factor=1'));
+test('MP-10 host display renders at the geometry density for negotiated DPR1/2 pages',async()=>{
+ const {launchArguments,HostChromium}=await import('./kernel-browser-process.mjs');
+ const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
+ const chromium=new HostChromium('/private');
+ assert.equal(chromium.scale,chromium.desktop?1:displayGeometry.dpr);
+ assert(launchArguments('/private',false,true,false,2).includes('--force-device-scale-factor=2'));
 });

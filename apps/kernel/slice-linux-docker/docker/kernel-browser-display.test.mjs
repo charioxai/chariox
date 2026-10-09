@@ -400,6 +400,34 @@ test('MP-11 protected codec rejection bootstraps a bounded opaque base before ex
  }finally{await stream.close()}
 });
 
+// MP-08/MP-10/MP-11 (review #893 @8067044d1 P2): native raster::png() writes
+// indexed PNGs for <=256 colours; an oversized one with no canvas base must
+// still bootstrap black and repair every pixel exactly.
+test('MP-11 an oversized indexed native PNG with no base bootstraps and repairs exactly',async()=>{
+ const {deflateSync,crc32}=await import('node:zlib');
+ const width=1280,height=800,indices=randomBytes(width*height),palette=Buffer.alloc(768);
+ for(let n=0;n<256;n++){palette[n*3]=n;palette[n*3+1]=255-n;palette[n*3+2]=(n*37)&255;}
+ const chunk=(type,body)=>{const head=Buffer.alloc(8);head.writeUInt32BE(body.length);head.write(type,4,'ascii');const tail=Buffer.alloc(4);tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4),body])));return Buffer.concat([head,body,tail]);};
+ const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(width);ihdr.writeUInt32BE(height,4);ihdr[8]=8;ihdr[9]=3;
+ const rows=Buffer.alloc((width+1)*height);for(let y=0;y<height;y++)indices.copy(rows,y*(width+1)+1,y*width,(y+1)*width);
+ const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('PLTE',palette),chunk('IDAT',deflateSync(rows)),chunk('IEND',Buffer.alloc(0))]);
+ const expected=Buffer.alloc(width*height*4);for(let i=0;i<indices.length;i++){palette.copy(expected,i*4,indices[i]*3,indices[i]*3+3);expected[i*4+3]=255;}
+ const source={generation:1,force_lossless:true,data_base64:png.toString('base64'),repair_tiles:[]};
+ assert.ok(source.data_base64.length>1024*1024,'the exact indexed PNG exceeds bounded egress');
+ const stream=new DisplayStream({...binding,device_scale_factor:1,css_width:width,css_height:height},{now:()=>0,wait:async()=>{},encoder:new BrowserEncoder(null,'target',new PortableEncoder())});
+ try{
+  const first=await stream.frame(source,'d',0);
+  assert.equal(first.kind,'png');const restored=decodePng(first.data_base64).pixels;
+  assert.ok(restored.every((v,i)=>i%4===3?v===255:v===0),'bootstrap exposes only opaque black');
+  for(let n=0;!stream.exact&&n<400;n++){
+   const frame=await stream.frame(source,'d',stream.sequence);
+   assert.equal(frame.kind,'tiles');
+   for(const tile of frame.tiles){const decoded=decodePng(tile.data_base64);for(let y=0;y<tile.height;y++)decoded.pixels.copy(restored,((tile.y+y)*width+tile.x)*4,y*tile.width*4,(y+1)*tile.width*4);}
+  }
+  assert.equal(stream.exact,true);assert.ok(restored.equals(expected),'every indexed pixel repaired exactly');
+ }finally{await stream.close()}
+});
+
 test('MP-11 opaque bootstrap triggers only when the exact PNG exceeds bounded egress',async()=>{
  const width=400,height=400,pixels=randomBytes(width*height*4);
  for(let n=3;n<pixels.length;n+=4)pixels[n]=255;

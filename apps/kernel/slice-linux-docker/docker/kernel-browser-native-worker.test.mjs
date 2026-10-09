@@ -19,6 +19,14 @@ test('MP-08/MP-10/MP-11 native motion never starts Python or reads the raster in
  Object.defineProperty(raw,'pixels',{get(){throw Error('MP-11: Node raster read')}});
  try{assert.deepEqual(await encoder.encodeStripes(raw,8000000,[2]),{stripes:[],native_revision:3,native_deliver:undefined});assert.equal(encoder.child,null);assert.deepEqual(called.regions,raw[displayMaskRegions]);assert.deepEqual(called.reset,[2]);assert.equal(called.encoder,encoder.nativeSession);}finally{await encoder.close()}
 });
+test('MP-08/MP-10 the native worker reports its runtime-loaded encoder (OpenH264 default, x264 optional)',async()=>{
+ for(const [backend,label] of [['native-openh264','openh264'],['native-x264','x264'],['native-vaapi','vaapi']]){
+  const encoder=new PortableEncoder();const raw={nativeEncode:async()=>({backend,converter:'libyuv',workers:1,stripes:[],revision:1}),[displayMaskRegions]:[]};
+  try{await encoder.encodeStripes(raw,8000000,[]);assert.equal(encoder.backend,label);}finally{await encoder.close()}
+ }
+ const encoder=new PortableEncoder();const raw={nativeEncode:async()=>({backend:'native-other',stripes:[],revision:1}),[displayMaskRegions]:[]};
+ try{await assert.rejects(encoder.encodeStripes(raw,8000000,[]),/MP-11: native codec reply/);}finally{await encoder.close()}
+});
 test('MP-08/MP-10 native exact preparation bypasses Node pixel workers and retains its immutable lease',async()=>{
  let held=0,prepared;const raw={width:1280,height:800,retain(){held++},release(){held--},nativeExact:async request=>{prepared=request;return {native_exact:true,data_base64:'exact',width:1280,height:800}},[displayMaskRegions]:[]};
  Object.defineProperty(raw,'pixels',{get(){throw Error('MP-10: Node pixels')}});
@@ -68,13 +76,22 @@ test('MP-10 #933 review 7 a full native queue refuses one request softly and kee
  assert.equal(bridge.closed,undefined,'the worker stays open');
  const next=bridge.request('encode',{serial:2}),second=writes[1].encode.id;
  bridge.receive({reply:second},Buffer.from('{}'));assert.deepEqual(await next,{});
- // An error reply is still fatal.
+ // A refusal replies before input dispatch and keeps the worker.
  const failing=bridge.request('exact',{serial:3});bridge.receive({reply:writes[2].exact.id},Buffer.from('{"error":"x"}'));
- await assert.rejects(failing,/refused/);assert.equal(bridge.closed,true);
+ await assert.rejects(failing,/refused/);assert.equal(bridge.closed,undefined);
 });
 test('MP-10 #933 review 7 a busy native exact repair is retried, not a sticky refiner failure',async()=>{
  const raw={width:1280,height:800,retain(){},release(){},nativeExact:async()=>{throw Object.assign(Error('MD-DISPLAY: native worker busy'),{busy:true})},[displayMaskRegions]:[]};
  const sample={raw,signature:'serial-1',motion:true};
  const refiner=new NativeRefiner(async()=>sample,{now:()=>100,pixels:{run(){throw Error('unused')},close:async()=>{}},prepareTiles:true});
  try{refiner.request({native:true,sample,source:{},document:'d',policy:{},epoch:0,serial:1,encoder:'e',repairLimit:192000},0,()=>true);await refiner.active;assert.equal(refiner.failure,undefined);}finally{await refiner.close()}
+});
+test('MP-08/MP-10: Retina whole-frame motion encodes at the reduced geometry; stripes and masks stay native',async()=>{
+ const encoder=new PortableEncoder(),requests=[];
+ const raw=(width,regions=[])=>({width,height:width===2560?1600:800,[displayMaskRegions]:regions,nativeEncode:async request=>{requests.push(request);return {backend:'native-x264',stripes:[],revision:1}}});
+ await encoder.nativeEncode(raw(2560),8000000,false,false);
+ await encoder.nativeEncode(raw(2560),8000000,false,true);
+ await encoder.nativeEncode(raw(2560,[{x:0,y:0,width:10,height:10}]),8000000,false,false);
+ await encoder.nativeEncode(raw(1280),8000000,false,false);
+ assert.deepEqual(requests.map(r=>r.reduced===true),[true,false,false,false]);
 });

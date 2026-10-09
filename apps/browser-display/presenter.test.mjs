@@ -293,10 +293,35 @@ test('MP-08/MP-10 push display skips a receive gap and fails only on binding mis
  const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20});
  const shown=[];stream.presenter.present=async frame=>{if(frame.foreign)throw Error('MD-DISPLAY: invalid geometry/binding');shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
  try{
-  for(let n=2;n<=10;n++)f.emit({sequence:n,kind:n===6?'png':'tiles'});
-  for(let i=0;i<5;i++)await stream.next();assert.deepEqual(shown,[6,7,8,9,10],'missing sequence 1 is skipped and recovery waits for an independent frame');
+  for(let n=2;n<=12;n++)f.emit({sequence:n,kind:n===11?'png':'tiles'});
+  for(let i=0;i<2;i++)await stream.next();assert.deepEqual(shown,[11,12],'missing sequence 1 is skipped and recovery waits for an independent frame');
   assert.ok(f.ops.some(c=>c.op==='display_ack'&&c.lost));
-  f.emit({sequence:11,kind:'png',foreign:true});await assert.rejects(async()=>{for(let i=0;i<10;i++)await stream.next()},/invalid geometry\/binding/);
+  f.emit({sequence:13,kind:'png',foreign:true});await assert.rejects(async()=>{for(let i=0;i<10;i++)await stream.next()},/invalid geometry\/binding/);
+ }finally{await stream.close()}
+});
+// MP-08/MP-10: frames pushed into a dropped relay socket never arrive. On a
+// quiet page the viewer must not wait for eight more frames to skip the gap.
+test('MP-08/MP-10 push display presents an independent frame across a lost-frame gap at once',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20});
+ const shown=[];stream.presenter.present=async frame=>{shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  f.emit({sequence:1,kind:'video',key:true});await stream.next();
+  f.emit({sequence:4,kind:'video',key:true});f.emit({sequence:5,kind:'video',key:false});
+  await stream.next();await stream.next();
+  assert.deepEqual(shown,[1,4,5],'lost 2 and 3 are not waited for');
+  f.emit({sequence:3,kind:'tiles'});assert.equal(await stream.next(),null,'a late frame below the key is dropped');
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10 push display skips a gap that stays open and asks for a key',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20,heartbeatMs:30});
+ const shown=[];stream.presenter.present=async frame=>{shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  f.emit({sequence:1,kind:'video',key:true});await stream.next();
+  f.emit({sequence:3,kind:'video',key:false});
+  await new Promise(r=>setTimeout(r,120));
+  assert.ok(f.ops.some(c=>c.op==='display_ack'&&c.lost&&c.sequence===1),'a key is requested from the last good base');
+  f.emit({sequence:4,kind:'video',key:true});await stream.next();
+  assert.deepEqual(shown,[1,4],'the dependent frame after the gap is skipped');
  }finally{await stream.close()}
 });
 // MP-08/MP-10 #933 review @215371f67: a lost sequence followed by only a few

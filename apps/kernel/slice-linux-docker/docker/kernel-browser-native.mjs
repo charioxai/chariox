@@ -30,6 +30,11 @@ export function nativeRefusalReason(error,helperStage){
 }
 // Pixels inside protected regions of the reference capture (null: none).
 const STATUS_BAND_DIP=26;
+// MP-08/MP-10: Chromium's link-status bubble (browser UI under a parked
+// XTest pointer, bottom 26 DIP) is absent from CDP references; it is not page
+// content and stays visible to the viewer, as on a native desktop. Browser UI
+// renders at the window's density, not the page's emulated one.
+export const statusBand=(raw,hostScale)=>{const band=STATUS_BAND_DIP*hostScale;return {x:0,y:raw.height-band,width:raw.width,height:band};};
 export function attestationMask(regions,width,height){
  if(!regions.length)return null;
  const mask=new Uint8Array(width*height);
@@ -68,9 +73,10 @@ export class LinuxCapture {
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
    // Window bounds are host DIPs: the negotiated raster divided by host scale.
    const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds});
    // The X window resize is asynchronous; the worker needs its final size.
-   for(let n=0;n<50;n++){const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
+   // Chromium can drop a bounds change (the first DPR1 viewer after a browser
+   // launch kept 1280x887 DIPs): re-send until it reports the requested size.
+   for(let n=0;n<50;n++){if(n%10===0)await this.connection.send('Browser.setWindowBounds',{windowId,bounds});const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
    await this.connection.send('Page.bringToFront',{},this.sessionId);
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
@@ -134,10 +140,7 @@ export class LinuxCapture {
     // MP-08/MP-11: the reference is the protected capture; its masked
     // regions (+2 px for rounding) are excluded. The same trusted regions
     // mask every native frame before any encoder or client sees it.
-    // MP-08/MP-10: Chromium's link-status bubble (browser UI under a parked
-    // XTest pointer, bottom 24 DIP) is absent from CDP references; it is not
-    // page content and stays visible to the viewer, as on a native desktop.
-    const band=STATUS_BAND_DIP*this.scale,masked=attestationMask([...(shot[displayMaskRegions]??[]),{x:0,y:raw.height-band,width:raw.width,height:band}],raw.width,raw.height);
+    const masked=attestationMask([...(shot[displayMaskRegions]??[]),statusBand(raw,this.hostScale)],raw.width,raw.height);
     // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
     let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
     for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
@@ -178,7 +181,7 @@ export class LinuxCapture {
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
-   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
+   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
   }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
@@ -189,14 +192,30 @@ export class LinuxCapture {
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
-  return this.control({wheel:[px,py,dx,dy]},true);
+  return this.pointer('wheel',{point:[px,py],notches:[dx,dy]});
+ }
+ // MP-08/MP-10/MP-11: pointer input is a request. The worker reports whether
+ // the owned window received it (it refuses when another top-level window,
+ // e.g. a permission bubble outside the capture, covers the point), so a
+ // refusal falls back to CDP instead of retiring native capture. A command
+ // sent without a reply may have been dispatched: never replay it; retire
+ // this source and report the uncertain action (code native_input_uncertain).
+ async pointer(operation,values){
+  let reply;
+  try{reply=await this.nativeWorker.request(operation,values);}
+  catch(error){
+   if(error?.dispatched===false)return false;
+   this.timing?.('native_input_uncertain',performance.timeOrigin+performance.now());this.fence();
+   throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'});
+  }
+  return reply?.[operation==='wheel'?'wheeled':'clicked']===true;
  }
  // MP-08/MP-10: primary click on the owned display (CSS coordinates).
  click(x,y){
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
-  return this.control({click:[px,py]},true);
+  return this.pointer('click',{point:[px,py]});
  }
  // MP-08/MP-10: one key press/release on the owned display (X keysym:
  // printable ASCII or a named editing key); callers fence the text target.

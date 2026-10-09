@@ -163,7 +163,7 @@ export class MirrorService {
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch;
       const clip=refine?{x:0,y:0,width:1280,height:800,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
-      const masks=await captureRegionMasks(world.connection,world.sessionId,{mirrorStructured:true});
+      const masks=await captureRegionMasks(world.connection,world.sessionId);
       mark('tile_masks_before');
       const captured=await this.host.screenshot(tab,refine?null:clip);
       stream.refinePending=!refine;stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;

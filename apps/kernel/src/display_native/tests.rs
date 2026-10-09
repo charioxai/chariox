@@ -705,3 +705,73 @@ fn mp08_committed_canvas_plan_reencodes_only_changed_cells_without_a_scroll() {
         "nothing to send"
     );
 }
+#[test]
+fn mp11_protected_retina_rows_keep_the_mask_black_at_the_paced_rate() {
+    // MP-08/MP-11: dense detail starves a 1.5-frame VBV (x264 emergency QPs);
+    // masked macroblocks used to decode grey, fail output_safe and drop
+    // every frame.
+    let (w, h) = (2560usize, 1600usize);
+    let regions = [
+        Rect {
+            left: 1001,
+            top: 403,
+            right: 1137,
+            bottom: 447,
+        },
+        Rect {
+            left: 90,
+            top: 603,
+            right: 333,
+            bottom: 640,
+        },
+    ];
+    for row_count in [1, 8] {
+        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, row_count, 0) });
+        assert!(!codec.0.is_null());
+        for frame in 0..6 {
+            // Dense text-like strokes on white, scrolled each frame.
+            let source: Vec<u8> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .flat_map(|(x, y)| {
+                    let yy = y + frame * 37;
+                    let mut k = ((x / 3) as u32).wrapping_mul(2654435761)
+                        ^ ((yy / 3) as u32).wrapping_mul(40503);
+                    k ^= k >> 15;
+                    let ink = yy % 26 < 16 && k % 3 == 0;
+                    if ink {
+                        [30, 40, if k & 64 != 0 { 200 } else { 35 }, 255]
+                    } else {
+                        [250, 248, 245, 255]
+                    }
+                })
+                .collect();
+            let mut rows = [RowResult::default(); 8];
+            let count = unsafe {
+                ffi::cx_codec_encode(
+                    codec.0,
+                    source.as_ptr(),
+                    if frame == 0 { 255 } else { 0 },
+                    regions.as_ptr(),
+                    regions.len(),
+                    rows.as_mut_ptr(),
+                )
+            };
+            assert!(
+                count >= 0,
+                "protected rows={row_count} frame={frame} dropped ({count})"
+            );
+        }
+    }
+}
+
+#[test]
+fn mp08_native_codec_prefers_runtime_openh264_and_keeps_x264_optional() {
+    // Owner 2026-10-09: OpenH264 is the default encoder, x264 an opt-in; both
+    // load at runtime. A configured OpenH264 binary must be the one in use.
+    let codec = Codec(unsafe { ffi::cx_codec_open(64, 64, 1_000_000, 1, 0) });
+    assert!(!codec.0.is_null(), "MP-10: a runtime codec must load");
+    let x264 = std::env::var("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER").as_deref() == Ok("libx264");
+    if std::env::var_os("CHARIOX_BROWSER_DISPLAY_OPENH264").is_some() {
+        assert_eq!(unsafe { ffi::cx_codec_openh264(codec.0) } == 1, !x264);
+    }
+}
