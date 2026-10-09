@@ -288,6 +288,7 @@ pub use api::{
     KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
+pub use api::{KernelAccessProviderHarness, KernelAccessRequester};
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
 };
@@ -296,9 +297,6 @@ pub use api::{
     NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
 };
 pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
-    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptKind,
-};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
