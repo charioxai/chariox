@@ -1370,14 +1370,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(prompt) = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .filter(|prompt| prompt.status() != crate::session::PromptStatus::Cancelling)
         else {
             return Ok(());
         };
-        if claude_native_marker(context_file)
+        let injected_prompt_id = claude_native_marker(context_file);
+        let injected_prompt_id = injected_prompt_id
             .as_deref()
-            .and_then(claude_native_dispatch_prompt_id)
-            .is_some_and(|dispatch_prompt_id| dispatch_prompt_id != prompt.id())
+            .and_then(claude_native_dispatch_prompt_id);
+        if provider_run.provider() == "claude"
+            && provider_run.client_interface()
+                == crate::provider::ProviderClientInterface::NativeTui
+            && injected_prompt_id != Some(prompt.id())
         {
+            // Native hidden context is prepared by the dispatcher. An output
+            // poll may retry that injection, but must not start it without the
+            // handoff or overwrite a user's native composer.
+            return Ok(());
+        }
+        if injected_prompt_id.is_some_and(|dispatch_prompt_id| dispatch_prompt_id != prompt.id()) {
             // The output pump also revisits pending injection. Do not let it
             // overwrite a concurrent steering dispatch, whose injection id is
             // intentionally different from the active turn's prompt id.
