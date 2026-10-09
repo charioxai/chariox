@@ -93,15 +93,19 @@ try {
   // value shown as accessible text is masked by its text box, public text stays.
   const secret='synthetic-private-value',vault={values:[secret],targets:[],unknown:false};
   await command({kind:'key',key:'ctrl+End'});await command({kind:'text',text:' '+secret});await delay(300);
+  const plainShot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   const vaultShot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},vault);
   assert.equal(vaultShot.protected,false,'MP-11 a Vault value does not black out the desktop');
-  const pixels=path.join(root,'vault.png');await writeFile(pixels,Buffer.from(vaultShot.data_base64,'base64'));
+  const plainPng=path.join(root,'plain.png'),vaultPng=path.join(root,'vault.png');
+  await writeFile(plainPng,Buffer.from(plainShot.data_base64,'base64'));await writeFile(vaultPng,Buffer.from(vaultShot.data_base64,'base64'));
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-vault-value-box.png'),Buffer.from(vaultShot.data_base64,'base64'));
-  const read=spawnSync('tesseract',[pixels,'stdout'],{env:binding.environment,encoding:'utf8'}).stdout??'';
-  assert.match(read,/Hello/,'public editor text stays visible under a Vault policy');
-  assert(!read.includes('synthetic-private')&&!read.includes('private-value'),'MP-11 the registered value box is masked in the pixels');
+  // Pixels: only one line-height box differs from the same desktop without the policy.
+  const diff=JSON.parse(spawnSync('/usr/bin/python3',['-I','-c',"import sys,json;from PIL import Image,ImageChops;a=Image.open(sys.argv[1]).convert('RGB');b=Image.open(sys.argv[2]).convert('RGB');box=ImageChops.difference(a,b).getbbox();print(json.dumps(box))",plainPng,vaultPng],{encoding:'utf8'}).stdout);
+  assert(Array.isArray(diff),'MP-11 the registered value box is masked in the pixels');
+  const [left,top,right,bottom]=diff;
+  assert(bottom-top<=40&&(right-left)*(bottom-top)<1280*800*0.05,'only the value box is masked, not the window '+JSON.stringify(diff));
   const vaultOcr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},vault);
-  assert(!vaultOcr.text.includes(secret)&&/Hello/.test(vaultOcr.text));
+  assert(!vaultOcr.text.includes(secret)&&/Hello/.test(vaultOcr.text),'public text stays readable; the value is not');
   await command({kind:'key',key:'ctrl+a'});await command({kind:'text',text:publicText});await delay(200);
   // MP-11 #904 review 1: a fresh desktop has no CLIPBOARD owner, and a mapped
   // window without accessibility (masked, like the kernel browser) does not
