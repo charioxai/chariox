@@ -6,6 +6,19 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    fn provider_run_for_focus(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        match self.provider_store.get_run(provider_run_id) {
+            Ok(run) => Ok(Some(run)),
+            Err(DaemonError::ProviderRunNotFound { .. }) => {
+                Ok(self.provider_run_projection.get(provider_run_id))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) fn should_defer_provider_run_sync_for_focus_change(
         &self,
         session_id: &str,
@@ -16,16 +29,12 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        let active_run = self
-            .provider_store
-            .get_run(&active_provider_run_id)
-            .or_else(|_| {
-                self.provider_run_projection
-                    .get(&active_provider_run_id)
-                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                        provider_run_id: active_provider_run_id.clone(),
-                    })
-            })?;
+        let Some(active_run) = self.provider_run_for_focus(&active_provider_run_id)? else {
+            // A settled/recovered worker may have removed its old projection.
+            // Active prompt ownership still prevents a focus change from
+            // repointing a provider handoff that is in progress.
+            return Ok(self.prompt_state_owner.has_any_active_prompt(&session));
+        };
         if active_run.agent_instance_id() == Some(target_agent_id) {
             return Ok(false);
         }
@@ -63,26 +72,23 @@ impl KernelRuntimeOwnedState {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self
-                .provider_store
-                .get_run(current_active_run_id)
-                .or_else(|_| {
-                    self.provider_run_projection
-                        .get(current_active_run_id)
-                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                            provider_run_id: current_active_run_id.to_string(),
-                        })
-                })?;
-            if active_run.agent_instance_id() != Some(agent_id)
-                && active_run.state() == crate::provider::ProviderRunState::Running
-                && active_run.client_interface().is_chariox()
-                && !self.provider_run_has_prompt_work(session_id, &active_run)?
-            {
-                let outcome = self
-                    .provider_store
-                    .park_run_provider_only(session_id, current_active_run_id)?;
-                self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
-                self.provider_run_projection.update(outcome.into_run());
+            if let Some(active_run) = self.provider_run_for_focus(current_active_run_id)? {
+                let worker_owned = active_run
+                    .agent_instance_id()
+                    .and_then(|id| self.agent_store.get_agent(id).ok())
+                    .is_some_and(|agent| agent.remote_execution().is_some());
+                if !worker_owned
+                    && active_run.agent_instance_id() != Some(agent_id)
+                    && active_run.state() == crate::provider::ProviderRunState::Running
+                    && active_run.client_interface().is_chariox()
+                    && !self.provider_run_has_prompt_work(session_id, &active_run)?
+                {
+                    let outcome = self
+                        .provider_store
+                        .park_run_provider_only(session_id, current_active_run_id)?;
+                    self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+                    self.provider_run_projection.update(outcome.into_run());
+                }
             }
         }
 
@@ -131,17 +137,10 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot(session_id)?;
         if let Some(active_provider_run_id) = session.active_provider_run_id() {
-            let active_run = self
-                .provider_store
-                .get_run(active_provider_run_id)
-                .or_else(|_| {
-                    self.provider_run_projection
-                        .get(active_provider_run_id)
-                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                            provider_run_id: active_provider_run_id.to_string(),
-                        })
-                })?;
-            if active_run.state() == crate::provider::ProviderRunState::Starting {
+            if self
+                .provider_run_for_focus(active_provider_run_id)?
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting)
+            {
                 return Ok(());
             }
         }
