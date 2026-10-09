@@ -231,8 +231,13 @@ async function updateAgentAccountProfile(
     const payload = await deps.updateAgentProfile!(deps.sessionState().id, agent.id, {
       provider: current.provider,
       accountProfile: profile.profile_id,
-      model: model.id,
-      ...(effort ? { effort } : { clearEffort: true }),
+      // A later explicit selection already passed kernel validation. Let the
+      // kernel validate it for this account instead of replacing it from an
+      // earlier catalog snapshot.
+      ...(current.model !== agent.model || current.effort !== agent.effort ? {} : {
+        model: model.id,
+        ...(effort ? { effort } : { clearEffort: true }),
+      }),
     })
     deps.applySessionState(payload.session)
     await deps.refreshAgentPanes(payload.session)
