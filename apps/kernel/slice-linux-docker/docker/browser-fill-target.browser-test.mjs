@@ -32,7 +32,18 @@ async function videoPixels(png,dpr,label,required=false) {
 }
 const value = 'MP11-disposable-fill-value';
 const hash = v => createHash('sha256').update(v).digest('hex');
+async function waitForClientDocument(connection,sessionId,url) {
+  for(let attempt=0;attempt<100;attempt++) {
+    try {const {result}=await connection.send('Runtime.evaluate',{expression:`document.URL===${JSON.stringify(url)}&&document.readyState==="complete"&&!!document.body`,returnByValue:true},sessionId);if(result.value)return;}catch(error){if(!error.message.includes('context was destroyed'))throw error;}
+    await new Promise(resolve=>setTimeout(resolve,30));
+  }
+  throw Error('MP-11 fixture client document did not load');
+}
 const html = '<!doctype html><body style="margin:0;background:white"><input id=plain style="position:absolute;left:80px;top:70px;width:220px;height:40px;background:magenta;border:0"><input id=password type=password style="position:absolute;left:80px;top:150px;width:220px;height:40px;background:cyan;border:0"><textarea id=area style="position:absolute;left:80px;top:230px"></textarea><div id=editor contenteditable style="position:absolute;left:80px;top:300px;width:220px;height:40px"></div><p>MP11-disposable-fill-value</p><canvas width=200 height=80></canvas>';
+function mirrorHost({browser,connection,sessionId,targetId,documentId,policy,dpr}) {
+  const tab={tab_id:'fixture-tab',target_id:targetId,document_id:documentId};
+  return {generation:1,browser,protection:policy,scales:new Map([[tab.tab_id,dpr]]),async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=> (await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,...(clip?{clip}:{})},sessionId)).data,dpr,clip)}}};
+}
 async function setup(dpr, run) {
   const root = await mkdtemp(path.join(tmpdir(), 'protxform-fill-'));
   const server = createServer((req,res) => {res.setHeader('content-type','text/html');res.end(req.url==='/frame'?html:html+`<iframe src="http://localhost:${server.address().port}/frame" style="position:absolute;left:500px;top:120px;width:400px;height:430px;border:0"></iframe>`);});
@@ -57,6 +68,82 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: registration fill retirement and incremental packets cross the kernel mirror boundary`,()=>setup(dpr,async context=>{
+   const {browser,connection,sessionId,fill,evaluate,url}=context;
+   await evaluate("Object.assign(document.querySelector('p').style,{position:'absolute',left:'80px',top:'400px',width:'420px',height:'40px',margin:'0',font:'20px monospace',color:'magenta'})");
+   const service=new MirrorService(mirrorHost(context)),root=await mkdtemp(path.join(tmpdir(),'protxform-wire-'));
+   try {
+     const sub=await service.subscribe({tab_id:'fixture-tab',generation:1,device_scale_factor:dpr},'test');let sequence=0;const packets=[];
+     const next=async()=>{const packet=await service.next({subscription_id:sub.subscription_id,generation:1,after_sequence:sequence,drift_nodes:[]},'test');sequence=packet.sequence;packets.push(packet);return packet};
+     const registered=await next();
+     assert(!JSON.stringify(registered.nodes).includes(value),'MP-11 registered matching paragraph is absent from structured bytes');
+     assert(registered.nodes.some(n=>n.reason==='protected_text'),'MP-08 ordinary paragraph uses visible compositor pixels');
+     await fill('#plain');const filled=await next();assert(!filled.reset);assert.equal(filled.nodes.filter(n=>n.kind==='mask').length,1);
+     await evaluate("document.querySelector('#plain').value='';document.querySelector('p').setAttribute('title','MP11-disposable-fill-value');document.querySelector('p').textContent='Changed MP11-disposable-fill-value'");
+     const retired=await next();assert(!retired.reset);assert.equal(retired.base_sequence,filled.sequence);assert(!JSON.stringify(retired.nodes).includes(value));
+     const fixture=path.join(root,'mirror-wire.json');await writeFile(fixture,JSON.stringify({value,packets}));
+     let wire=packets;
+     if(process.env.CHARIOX_MIRROR_WIRE_TEST_BINARY) {
+       const result=spawnSync(process.env.CHARIOX_MIRROR_WIRE_TEST_BINARY,['runtime::state::kernel_browser_secret_runtime::tests::mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary','--exact','--test-threads=1'],{encoding:'utf8',env:{...process.env,CHARIOX_MIRROR_WIRE_FIXTURE:fixture},timeout:60000});
+       if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-kernel-boundary-dpr${dpr}.log`),result.stdout+result.stderr);
+       assert.equal(result.status,0,'MP-11 actual compiled kernel boundary replay succeeds');
+       assert.match(result.stdout,/1 passed/);wire=JSON.parse(await readFile(`${fixture}.wire.json`,'utf8'));
+     }
+     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+     const code=await readFile(bundle,'utf8'),target=(await connection.send('Target.createTarget',{url})).targetId;
+     try {
+       const {sessionId:client}=await browser.resolvePageTarget(target);
+       await waitForClientDocument(connection,client,url);
+       await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false},client);
+       const initialized=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);globalThis.renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();return true})()`},client);assert.equal(initialized.exceptionDetails,undefined);
+       for(let index=0;index<wire.length;index++) {
+         const applied=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{await renderer.apply(${JSON.stringify(wire[index])});return renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').length})()`},client);
+         assert.equal(applied.exceptionDetails,undefined,'MP-11 BrowserMirrorRenderer accepts post-kernel reset and incremental hashes');assert.equal(applied.result.value,index===1?1:0);
+         const png=(await connection.send('Page.captureScreenshot',{format:'png'},client)).data,frame=decodePng(png,dpr);let ink=0;
+         for(let y=400*dpr;y<440*dpr;y++)for(let x=80*dpr;x<500*dpr;x++){const i=(y*frame.width+x)*4;if(frame.pixels[i]>120&&frame.pixels[i+1]<80&&frame.pixels[i+2]>120)ink++;}
+         assert(ink>100,'MP-08 ordinary matching paragraph stays visibly rendered');
+         for(const [x,y] of [[100,540],[700,600]]){const i=((y*dpr)*frame.width+x*dpr)*4;assert.deepEqual([...frame.pixels.subarray(i,i+3)],[255,255,255],'MP-08 positioned tiles must not leave displaced black placeholders in ordinary content');}
+         if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-wire-dpr${dpr}-${index}.png`),Buffer.from(png,'base64'));
+       }
+       await connection.send('Runtime.evaluate',{expression:'renderer.close()'},client);
+     }finally{await connection.send('Target.closeTarget',{targetId:target});}
+   }finally{clearInterval(service.expiry);service.clear();await rm(root,{recursive:true,force:true});}
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: hidden filled fields remain tracked across production image video and mirror capture`,()=>setup(dpr,async context=>{
+   const {browser,fill,evaluate,collect,capture,connection,sessionId,targetId,documentId}=context;
+   const service=new MirrorService(mirrorHost(context));
+   try {
+     const sub=await service.subscribe({tab_id:'fixture-tab',generation:1,device_scale_factor:dpr},'test');let sequence=0;
+     const mirror=async()=>{const packet=await service.next({subscription_id:sub.subscription_id,generation:1,after_sequence:sequence,drift_nodes:[]},'test');sequence=packet.sequence;return packet};
+     for(const selector of ['#plain','#editor']) {
+       await fill(selector);assert.equal((await collect()).length,1);
+       for(const ancestor of [false,true]) {
+         await evaluate(`(()=>{const field=document.querySelector(${JSON.stringify(selector)});if(${ancestor}){const wrapper=document.createElement('section');field.before(wrapper);wrapper.append(field);wrapper.style.display='none'}else field.style.display='none'})()`);
+         const hidden=await capture(`hidden-${selector.slice(1)}-${ancestor}`);
+         assert.deepEqual(await collect(),[],'MP-11 confirmed non-rendered field contributes no pixels');
+         assert.equal(browser.fillTargets.size,1,'MP-11 hidden retained value is not retired');
+         assert.equal((await mirror()).nodes.filter(n=>n.kind==='mask').length,0,'MP-11 hidden field has no mirror mask');
+         const video=await videoPixels((await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr,`hidden-${selector.slice(1)}-${ancestor}`,true);
+         assert.equal(video.length,hidden.width*hidden.height*4);
+         await evaluate(`(()=>{const field=document.querySelector(${JSON.stringify(selector)});(${ancestor}?field.parentElement:field).style.display=''})()`);
+         const revealed=await capture(`revealed-${selector.slice(1)}-${ancestor}`);
+         assert.equal((await collect()).length,1,'MP-11 reveal remasks the same retained fill');
+         assert.equal((await mirror()).nodes.filter(n=>n.kind==='mask').length,1);
+         const y=selector==='#plain'?90:310,i=((y*dpr)*revealed.width+100*dpr)*4;
+         assert.deepEqual([...revealed.pixels.subarray(i,i+3)],[0,0,0]);
+         const protectedPng=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},context.policy.values,context.policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr);
+         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true);
+         assert([...revealedVideo.subarray(i,i+3)].every(channel=>channel<5),'MP-11 revealed field stays covered in decoded production video');
+       }
+       await evaluate(`document.querySelector(${JSON.stringify(selector)}).${selector==='#editor'?'textContent':'value'}=''`);assert.deepEqual(await collect(),[]);
+     }
+     // Layout presence is not proof of an available measurement: still refuse
+     // a genuine box failure for a visible, filled field.
+     await fill('#plain');const send=connection.send.bind(connection);
+     connection.send=(method,...args)=>method==='DOM.getBoxModel'?Promise.reject(Error('fixture box failure')):send(method,...args);
+     try {await assert.rejects(capture('unknown-box'),/unavailable/);await assert.rejects(mirror(),/fixture box failure/);}finally{connection.send=send;}
+   }finally{clearInterval(service.expiry);service.clear();}
+ }));
  test(`MP-08/MP-11 DPR${dpr}: overflowing filled contenteditable text is covered in image and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,url})=>{
    await evaluate("Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'magenta',background:'white'})");
    await fill('#editor');
@@ -153,6 +240,7 @@ for(const dpr of [1,2]) {
        const clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
        try {
          const {sessionId:clientSession}=await browser.resolvePageTarget(clientTarget);
+         await waitForClientDocument(connection,clientSession,url);
          const render=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);const renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();await renderer.apply(${JSON.stringify(packet)});const result={overlays:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').length,masked:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').map(n=>n.style.background)};globalThis.__charioxMirrorFixtureRenderer=renderer;return result})()`},clientSession);
          assert.equal(render.exceptionDetails,undefined,'MP-11 real mirror client accepts the protected packet/hash');
          const passwordTile=packet.nodes.find(n=>n.tag==='input'&&n.box?.x===80&&n.box?.y===150);

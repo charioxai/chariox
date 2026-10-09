@@ -147,6 +147,16 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         const inFlight=filling.get(connection)?.has(key)&&state.exists&&state.editable;
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
+        // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
+        // confirmed absence of layout for the entire field subtree permits
+        // skipping box lookup; keep identity tracking so reveal remasks it.
+        const nodeIndex=raw.nodes.backendNodeId.indexOf(backendNodeId),parents=raw.nodes.parentIndex;
+        if(!Array.isArray(raw.layout?.nodeIndex)||!Array.isArray(parents))throw Error('MP-11: fill layout unavailable');
+        const rendered=raw.layout.nodeIndex.some(index=>{
+          for(let steps=0;index>=0&&steps<parents.length;steps++,index=parents[index])if(index===nodeIndex)return true;
+          return false;
+        });
+        if(!rendered)continue;
         await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
         const map=await toViewport(entry),fieldRegions=[];
