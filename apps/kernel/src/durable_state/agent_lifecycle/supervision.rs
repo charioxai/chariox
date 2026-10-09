@@ -26,7 +26,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             source,
             occurrence: id,
             success,
-            now: _,
         } => {
             if let Some(answer) = public_answer.as_mut() {
                 crate::secret_redaction::redact_json_secrets(answer);

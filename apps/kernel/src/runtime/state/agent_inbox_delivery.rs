@@ -110,7 +110,7 @@ impl KernelRuntimeState {
             text,
             crate::session::PromptStatus::Queued,
         )
-        .with_durable_operation(&prompt_id, &format!("event:{}", event.sequence))
+        .with_durable_operation(&prompt_id, format!("event:{}", event.sequence))
         .with_attachments(
             event
                 .payload

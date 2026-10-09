@@ -78,6 +78,7 @@ impl AgentServiceStore {
             .materialize_publication_agent(agent, session_id, owner_user_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn materialize_workflow_runtime_agent(
         &self,
         agent: AgentInstance,

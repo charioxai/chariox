@@ -173,7 +173,6 @@ fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
         source: "child".into(),
         occurrence: "result".into(),
         success: true,
-        now: 2,
     });
     let Outcome::Settled { task, correction } = f.settle("p", true) else {
         panic!()
@@ -481,7 +480,6 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
         source: "peer".into(),
         occurrence: "answer".into(),
         success: true,
-        now: 2,
     });
     f.apply(Operation::Subscribe {
         task: "p".into(),
@@ -853,7 +851,6 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         source: "independent-child-task".into(),
         occurrence: "other-result".into(),
         success: true,
-        now: 3,
     });
     assert_eq!(f.task().obligations[0].status, "open");
     f.apply(Operation::SourceOutcome {
@@ -862,7 +859,6 @@ fn a02_first_delegate_task_binding_is_not_replaced_by_independent_work() {
         source: "first-child-task".into(),
         occurrence: "result".into(),
         success: true,
-        now: 3,
     });
     assert_eq!(f.task().obligations[0].status, "settling");
 }
@@ -887,7 +883,6 @@ fn a02_owner_cancel_closes_sources_without_faking_physical_completion() {
         source: "child".into(),
         occurrence: "physical-cancellation".into(),
         success: false,
-        now: 3,
     });
     assert_eq!(f.task().obligations[0].status, "cancelled");
     assert_eq!(f.task().state, ExecutionState::Cancelled);
@@ -948,7 +943,6 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         source: "peer".into(),
         occurrence: "one-result".into(),
         success: true,
-        now: 2,
     });
     let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(inbox.len(), 1);
@@ -962,7 +956,6 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
         source: "peer".into(),
         occurrence: "one-result".into(),
         success: true,
-        now: 3,
     });
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
@@ -1070,7 +1063,6 @@ fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
         source: "child".into(),
         occurrence: "terminal".into(),
         success: true,
-        now: 10,
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let blocked = tasks.iter().find(|t| t.task_id == "p").unwrap();
@@ -1315,7 +1307,6 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         occurrence: "task-terminal-q".into(),
         success: true,
         public_answer: Some(serde_json::json!({"excerpt":"verified result"})),
-        now: 6,
     });
     assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
     f.begin("independent");
@@ -1357,7 +1348,6 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         occurrence: "task-terminal-q".into(),
         success: true,
         public_answer: None,
-        now: 8,
     });
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
@@ -2438,7 +2428,6 @@ fn a02_security_f1_full_recipient_cannot_abort_source_outcome() {
         occurrence: "completion".into(),
         success: true,
         public_answer: None,
-        now: 2,
     });
     assert_eq!(f.store.agent_inbox("room", "healthy", 0).unwrap().len(), 1);
     assert!(f
@@ -2521,7 +2510,6 @@ fn a02_security_f2_reused_child_id_cannot_recover_old_answer() {
         occurrence: "deleted-child-result".into(),
         success: true,
         public_answer: Some(serde_json::json!("old answer")),
-        now: 1,
     });
     f.begin("p");
     f.register();
@@ -2558,7 +2546,6 @@ fn a02_security_f4_unattributed_child_task_cannot_bind_delegation() {
         occurrence: "peer-answer".into(),
         success: true,
         public_answer: Some(serde_json::json!("peer-controlled")),
-        now: 3,
     });
     assert_eq!(f.task().obligations[0].status, "open");
     assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
@@ -2590,7 +2577,6 @@ fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
             occurrence: format!("{prompt}-result"),
             success: true,
             public_answer: Some(serde_json::json!(prompt)),
-            now: 3,
         });
         f.apply(Operation::SourceOutcome {
             room: "room".into(),
@@ -2598,7 +2584,6 @@ fn a02_security_f4_parent_task_binds_after_peer_task_and_fast_completion() {
             occurrence: format!("{prompt}-agent-result"),
             success: true,
             public_answer: Some(serde_json::json!(prompt)),
-            now: 3,
         });
     }
     assert_eq!(f.task().obligations[0].status, "open");
@@ -2724,7 +2709,6 @@ fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
             source: "completed-run".into(),
             occurrence: "terminal-run".into(),
             success: true,
-            now: 2,
         };
         if early {
             f.apply(completed());

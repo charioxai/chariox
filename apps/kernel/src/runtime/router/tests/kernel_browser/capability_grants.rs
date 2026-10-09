@@ -185,7 +185,7 @@ fn capability_owner_request_grants_only_opened_tabs_until_revoked() {
         Box::pin(async {
             let setup = setup("capability-s01", &[], &["worker"]);
             let (agent, token) = setup.agents[1].clone();
-            let room = start(setup, &agent.owner_user_id().to_string());
+            let room = start(setup, agent.owner_user_id());
             let router = &room.router;
             let prompt = running_prompt(
                 &room,
@@ -375,7 +375,7 @@ fn capability_unrequested_turns_cannot_acquire_browser_access() {
         Box::pin(async {
             let setup = setup("capability-s02", &[], &["idle", "messaged"]);
             let agents = setup.agents.clone();
-            let room = start(setup, &agents[0].0.owner_user_id().to_string());
+            let room = start(setup, agents[0].0.owner_user_id());
             let router = &room.router;
             // No running prompt at all.
             let (_, idle) = &agents[1];
@@ -431,7 +431,7 @@ fn capability_child_subset_transfer_never_widens_and_follows_parent_revoke() {
             let (parent, parent_token) = setup.agents[0].clone();
             let (child, child_token) = setup.agents[1].clone();
             let (peer, _) = setup.agents[2].clone();
-            let room = start(setup, &parent.owner_user_id().to_string());
+            let room = start(setup, parent.owner_user_id());
             let router = &room.router;
             running_prompt(
                 &room,
@@ -543,7 +543,7 @@ fn capability_child_subset_transfer_never_widens_and_follows_parent_revoke() {
 fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
     run_test(|| {
         Box::pin(async {
-            let mut setup = setup("capability-s04", &["leased"], &[]);
+            let setup = setup("capability-s04", &["leased"], &[]);
             let (parent, parent_token) = setup.agents[0].clone();
             let (child, child_token) = setup.agents[1].clone();
             setup
@@ -565,7 +565,7 @@ fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
                     },
                 )
                 .unwrap();
-            let room = start(setup, &parent.owner_user_id().to_string());
+            let room = start(setup, parent.owner_user_id());
             let router = &room.router;
             running_prompt(
                 &room,
@@ -883,7 +883,7 @@ fn security_sb01_external_prompt_cannot_borrow_human_attachment() {
                 .router
                 .runtime_state()
                 .insert_access_grant_for_test(&room.session);
-            let mut request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
                 session_id: room.session.clone(),
                 attachment_id: attachment.id().into(),
                 target_agent_id: Some(agent.id().into()),
@@ -897,7 +897,7 @@ fn security_sb01_external_prompt_cannot_borrow_human_attachment() {
             command.caller.caller_id = grant;
             assert!(
                 room.router
-                    .authorize_external_request(&command, &mut request)
+                    .authorize_external_request(&command, &request)
                     .is_err(),
                 "MP-11 SB-01: automation cannot submit as a human attachment"
             );
@@ -1097,15 +1097,13 @@ fn capability_review_r1_external_queue_edit_cannot_acquire_browser() {
                     prompt: "Automation requests my browser".into(),
                 })
             };
-            let mut request = make_request(human.id());
+            let request = make_request(human.id());
             let mut command =
                 KernelCommand::from_local_request("MP-11-R1-borrow", None, None, &request);
             command.caller.connection_class =
                 Some(crate::local::KernelConnectionClass::ExternalAgent);
             command.caller.caller_id = grant.clone();
-            let borrowed = room
-                .router
-                .authorize_external_request(&command, &mut request);
+            let borrowed = room.router.authorize_external_request(&command, &request);
 
             let request = make_request(automation.id());
             let mut command =

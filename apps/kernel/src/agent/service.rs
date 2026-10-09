@@ -251,6 +251,7 @@ impl AgentService {
         self.store.insert(agent)
     }
 
+    #[cfg(test)]
     pub(crate) fn materialize_workflow_runtime_agent(
         &mut self,
         agent: AgentInstance,

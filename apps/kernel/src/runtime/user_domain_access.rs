@@ -291,6 +291,7 @@ impl UserDomainAccess {
             .map(|grant| grant.subscription_owner.clone())
     }
     /// MP-08/MP-11: holders whose absolute lifetime has elapsed.
+    #[cfg(test)]
     pub(crate) fn due(&self, now: Instant) -> Vec<(String, String)> {
         self.grants
             .iter()
