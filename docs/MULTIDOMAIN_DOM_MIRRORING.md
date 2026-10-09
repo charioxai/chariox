@@ -29,9 +29,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
 - **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
   by the next page change; the client keeps four credits outstanding, packets
   apply strictly in sequence (`base_sequence`), and a gap asks for a reset
-  (`after_sequence: 0`). A credit's deadline counts from its arrival. The kernel
-  gzips the scrubbed packet body after the Vault scrub; resource and region
-  bytes travel beside it (`resources`, `tiles`).
+  (`after_sequence: 0`). Replies arrive in credit order, so a gap with no older
+  credit outstanding (for example a credit replayed after a reconnect, which the
+  kernel runs again) resets at once; the reset credit does not wait for credits
+  in flight, and the kernel ends the long poll of every credit that arrived
+  before it. A credit's deadline counts from its arrival. Small packets
+  (< 2 KB) travel as JSON; larger bodies are gzipped after the Vault scrub;
+  resource and region bytes travel beside it (`resources`, `tiles`).
 - **Resources** are only bytes the page itself loaded (data: URLs, the resource
   tree, or Chrome's cache without credentials for Resource Timing URLs), typed
   by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
