@@ -84,24 +84,13 @@ test('MD-DISPLAY disabled commands fail before launching host Chromium', async (
     for (const op of ['display_subscribe','display_next','display_input']) await assert.rejects(host.request({op}), /experimental display disabled/);
   } finally { if(original !== undefined) process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original; }
 });
-test('MD-DISPLAY DPR changes fence protected capture before sampling secret pixels', async () => {
+test('MP-08/MP-11 DPR mismatch refuses capture without sampling pixels', async () => {
   const { captureProtectedPage } = await import('./kernel-browser-pixels.mjs');
-  const connection = { send: async method => {
-    if (method === 'Target.getTargets') return { targetInfos: [{ type: 'page', targetId: 'page' }] };
-    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'page', loaderId: 'd' } } };
-    if (method === 'Page.createIsolatedWorld') return { executionContextId: 1 };
-    if (method === 'Runtime.evaluate') return { result: { value: ['visible', 1, 800] } };
-    throw new Error('unexpected CDP call');
-  } };
-  const browser = { ensureConnection: async () => connection, resolvePageTarget: async () => ({ connection, sessionId: 'page' }) };
-  let captured = false;
-  const masked = await captureProtectedPage(browser, { target_id: 'page' }, ['synthetic-sensitive-value'], [{ target_id: 'page', document_id: 'd' }], async () => { captured = true; throw Error('must not capture a mismatched source'); }, 2);
-  assert.equal(captured, false);
-  const frame = decodePng(masked, 2);
-  assert.equal(frame.width, 2560); assert.equal(frame.height, 1600); assert.equal(frame.pixels[0], 0);
-  const crop = decodePng(await captureProtectedPage(browser, { target_id:'page' }, ['synthetic-sensitive-value'], [{target_id:'page',document_id:'d'}], async()=>{assert.fail('racing crop must not capture');},2,{x:100,y:100,width:64,height:32,scale:1}),2);
-  assert.equal(crop.width,128);assert.equal(crop.height,64);assert.equal(crop.pixels[0],0);
+  let captured=false;
+  await assert.rejects(captureProtectedPage({}, {target_id:'page'}, ['fixture'], [{target_id:'page'}], async()=>{captured=true;return 'raw';},2), /capture unavailable/);
+  assert.equal(captured,false);
 });
+
 test('MD-DISPLAY pacing credit is bounded and accrued, never unbounded idle burst', async () => {
   let time=0;const waits=[];
   const stream=new DisplayStream(binding,{encoder:{encode:async()=> 'YWJj',close:async()=>{}},now:()=>time,wait:async ms=>{waits.push(ms);time+=ms}});

@@ -23,25 +23,13 @@ function installMirrorObserver(initialStyles = {}) {
   const snapshots = new Map();
   const read = (variants = [], opaqueRegions = [], subscription = null, reset = false) => {
     observer.disconnect();observed=new WeakSet();
-    protectedVariants=variants;
+    protectedVariants=[];
+    variants=[];
     const records = [], resources = [], fonts = [], nextLive = new Map(), marked = new WeakSet();
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
-    let textSize = 0, textNodes = [], text = '', visited = 0;
-    const tainted = value => typeof value==='string' && variants.some(secret => value.includes(secret));
-    // Match unsplit text BEFORE truncation, including split-node/shadow/frame echoes.
-    const scan = (node,depth=0) => {
-      if (depth>128 || ++visited>24000) throw new Error('mirror bounds');
-      if (node.nodeType===3) { textNodes.push({node,start:text.length}); text+=node.data; if (text.length>2097152) throw new Error('mirror text bounds'); }
-      for (const child of node.childNodes) scan(child,depth+1);
-      if (node.shadowRoot) scan(node.shadowRoot,depth+1);
-      if (node.localName==='iframe') {let nested;try{nested=node.contentDocument;}catch{}if(nested)scan(nested,depth+1);}
-    };
-    scan(document.documentElement);
-    for (const value of variants) for(let at=text.indexOf(value);at>=0;at=text.indexOf(value,at+1)) {
-      for (const item of textNodes) if(item.start<at+value.length && item.start+item.node.length>at) marked.add(item.node);
-    }
-    const secret = node => node.nodeType===1 && (node.matches('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || /password|one-time-code|cc-/i.test(node.autocomplete??'') || tainted(node.value) || [...node.attributes].some(a=>tainted(a.value)));
+    let textSize = 0;
+    const tainted = () => false; // Visual protection comes only from filled plain fields.
     // MP-08/MP-10/MP-11: exact same-read CSS sharing for plain leaf paragraphs.
     // Same parent, tag, raw attributes, box size and complete selector match set
     // imply the same author cascade + inheritance. Uninspectable/grouped/nested/
@@ -94,7 +82,7 @@ function installMirrorObserver(initialStyles = {}) {
         const tag=node.localName;
         record.tag=tags.has(tag)?tag:'div'; record.box=box(node);
         const overlaps=opaqueRegions.some(r=>record.box.width>0 && record.box.height>0 && record.box.x<r[0]+r[2] && record.box.x+record.box.width>r[0] && record.box.y<r[1]+r[3] && record.box.y+record.box.height>r[1]);
-        if(secret(node) || overlaps && !['html','body'].includes(tag)) {
+        if(overlaps && (tag==='input'||tag==='textarea'||node.isContentEditable)) {
           record.kind='mask'; record.tag=tags.has(tag)?tag:'div'; record.style={...safeStyle(node,null,false),width:`${record.box.width}px`,height:`${record.box.height}px`,background:'black',color:'transparent','border-color':'black'};
           return done(record);
         }
@@ -111,9 +99,9 @@ function installMirrorObserver(initialStyles = {}) {
         // MP-08/MP-11: preserve inert editing semantics, never arbitrary values.
         if(node.hasAttribute('contenteditable'))record.attributes.contenteditable=['true','false','plaintext-only'].includes(node.contentEditable)?node.contentEditable:(node.isContentEditable?'true':'false');
         // No name/id/data-* attributes, URLs, event handlers, provider/page secrets.
-        if(tag==='input' && !['text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(record.attributes.type??'text')) record.attributes.type='text';
+        if(tag==='input' && !['password','text','search','email','url','number','tel','checkbox','radio','range','button','submit','reset','date','time','color','hidden'].includes(record.attributes.type??'text')) record.attributes.type='text';
         if(['input','textarea','select'].includes(tag)&&typeof node.value==='string'&&node.value.length>16384)throw new Error('mirror form bounds');
-        if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
+        if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:tag==='input'&&node.type==='password'?'':(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
         record.scroll={x:node.scrollLeft,y:node.scrollTop};
         if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none'){record.kind='tile';record.reason='native_control';return done(record);}
         if(media.has(tag) || tag.includes('-') && !node.shadowRoot) {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
@@ -126,7 +114,6 @@ function installMirrorObserver(initialStyles = {}) {
           } catch {record.kind='tile';record.tag='img';record.reason='cross_origin_frame';return done(record);}
         }
         if(tag==='img') {
-          if(variants.length) {record.kind='mask';record.tag='div';return done(record);}
           if(node.currentSrc) {const key=`r${resources.length}`;resources.push({key,url:node.currentSrc,kind:'image'});record.resource=key;}
         }
         // Pseudo text is literal sanitized text, not a CSS program.

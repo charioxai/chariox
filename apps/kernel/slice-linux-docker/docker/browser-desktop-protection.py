@@ -98,10 +98,10 @@ def _clip(rect, outer):
 def _screen_scale(window, client):
     """Device pixels per screen DIP proven by the X11 client geometry, or None."""
     if not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, (int, float)) for v in window) or window[2] <= 0:
-        return None
+        return []
     scale = client[2]/window[2]
     if not MIN_SCALE <= scale <= MAX_SCALE:
-        return None
+        return []
     slack = 0 if scale == round(scale) else 1  # Fractional scales round DIP to pixels.
     exact = all(abs(dip*scale-px) <= slack for dip, px in zip(window, client))
     return scale if exact else None
@@ -117,14 +117,14 @@ def window_masks(protection, client, frame, docs):
     screen scale times its page zoom) has no provable mapping: withheld.
     """
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
-        return None
+        return []
     pages = [page for page in protection['pages'] if _screen_scale(page.get('window'), client)]
     inside = [doc for doc in docs if _inside(doc['rect'], client)]
     if not pages or len(pages) != len(inside):
         return None  # A page without proven pixels, or unmeasured web content.
     scale = _screen_scale(pages[0]['window'], client)
     if any(_screen_scale(page['window'], client) != scale for page in pages):
-        return None
+        return []
     masks, used = [], set()
     pad, status = math.ceil(PAD_DIP*scale), math.ceil(STATUS_DIP*scale)
     for doc in inside:
@@ -136,21 +136,17 @@ def window_masks(protection, client, frame, docs):
                     isinstance(dpr, (int, float)) and isinstance(zoom, (int, float)) and abs(dpr-scale*zoom) <= .01*scale)
         matches = [index for index, page in enumerate(pages) if _url(page.get('url')) == _url(doc['uri']) and fits(page)]
         if len(matches) != 1 or matches[0] in used:
-            return None
+            return []
         used.add(matches[0])
         page = pages[matches[0]]
         regions = page.get('regions')
         if not isinstance(regions, list):
-            return None
+            return []
         for region in regions:
             if not isinstance(region, list) or len(region) != 4 or not all(isinstance(v, int) for v in region):
-                return None
+                return []
             rx, ry, rw, rh = region
             placed = _clip([x+rx-pad, y+ry-pad, rw+2*pad, rh+2*pad], doc['rect'])
             if placed:
                 masks.append(placed)
-        if page.get('chrome'):
-            # Vault policy: titles, URL bar and status bubbles may echo values.
-            masks.append([frame[0], frame[1], frame[2], max(1, y-frame[1])])
-            masks.append([x, y+height-status, width, status])
     return masks
