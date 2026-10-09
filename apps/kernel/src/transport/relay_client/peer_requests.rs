@@ -1320,17 +1320,37 @@ pub(super) async fn handle_daemon_peer_request(
             arguments,
         } => {
             let handled = router
-                .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+                .dispatch_forwarded_workflow_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    |result| {
+                        router.with_forwarded_response_authority(|| {
+                            let outcome = encrypt_peer_response(
+                                &daemon_private_key,
+                                &requester_public_key,
+                                RelayPeerResponse::WorkflowRuntimeToolHandled { result },
+                            );
+                            if let Some(error) = outcome.error.as_ref() {
+                                return Err(DaemonError::RelayTransport {
+                                    operation: "release forwarded workflow response",
+                                    code: error.code.clone(),
+                                    message: error.message.clone(),
+                                    retryable: error.retryable,
+                                });
+                            }
+                            Ok(outcome)
+                        })
+                    },
+                )
                 .await;
-            match handled {
-                Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
+            return match handled {
+                Ok(outcome) => outcome,
+                Err(error) => RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            };
         }
         RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
             context,

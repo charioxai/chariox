@@ -65,6 +65,7 @@ impl KernelRuntimeOwnedState {
         arguments: &serde_json::Value,
         context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
         is_final: bool,
+        defer_prompt_settlement: bool,
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
@@ -186,7 +187,11 @@ impl KernelRuntimeOwnedState {
                 "output": workflow_output_json,
             }),
         ));
-        if is_final && warning.is_none() && workflow_run.publication_invocation().is_some() {
+        if is_final
+            && warning.is_none()
+            && workflow_run.publication_invocation().is_some()
+            && !defer_prompt_settlement
+        {
             let max_turns = self.workflow_max_turns(&context.session_id);
             let activity_mutation = self.begin_managed_activity_mutation();
             let update = self.session_store.write().complete_workflow_node_run(
