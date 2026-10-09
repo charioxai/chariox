@@ -3,7 +3,7 @@ use super::tests::{fixture_with_options, popup, running, Fixture, PASSKEY};
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome};
 
-async fn approve(
+pub(super) async fn approve(
     f: &Fixture,
     prompt: &PasskeyPrompt,
     minutes: Option<&str>,
@@ -23,7 +23,7 @@ async fn approve(
 }
 
 /// Opens a real window through the terminal popup and returns it.
-async fn open(f: &Fixture, minutes: Option<&str>) -> KernelSudoTurn {
+pub(super) async fn open(f: &Fixture, minutes: Option<&str>) -> KernelSudoTurn {
     let state = f.state.clone();
     let request = f.request.clone();
     let task = tokio::spawn(async move {
@@ -66,6 +66,67 @@ fn outcomes(f: &Fixture, entry: &str) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+/// Starts a kernel-correlated continuation of the window's task after its
+/// elevated turn ended; returns the continuation prompt id.
+pub(super) fn start_continuation(f: &Fixture, window: &KernelSudoTurn) -> String {
+    let agent = window.agent_id.clone();
+    let task = window.task_id.clone().unwrap();
+    let Outcome::Task(blocked) = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Block {
+            task: task.clone(),
+            prompt: task.clone(),
+            reason: "fixture".into(),
+        })
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let Outcome::Task(resumed) = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::OwnerResponse {
+            task: task.clone(),
+            revision: blocked.blocked_revision,
+            resume: true,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let continuation = resumed.pending_prompt_id.clone().unwrap();
+    let prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: window.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            &continuation,
+            &f.request.attachment_id,
+            &agent,
+            "continue",
+            PromptStatus::Queued,
+        )
+        .with_durable_operation(&continuation, format!("task:{task}:{}", resumed.revision)),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    f.state.owned.admit_agent_task(&prepared).unwrap();
+    let outcome = f
+        .state
+        .owned
+        .submit_local_prepared_prompt_with_queue_policy(&prepared, true)
+        .unwrap()
+        .unwrap()
+        .outcome;
+    assert!(
+        matches!(outcome, PromptSubmissionOutcome::Started { .. }),
+        "{outcome:?}"
+    );
+    continuation
 }
 
 #[tokio::test]
@@ -249,60 +310,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
         .active_prompt_for_agent(&session(&f), &agent)
         .is_none());
     // A kernel-correlated continuation of the same task starts and is bound.
-    let task = window.task_id.clone().unwrap();
-    let Outcome::Task(blocked) = f
-        .state
-        .owned
-        .durable_state_store
-        .agent_lifecycle(Operation::Block {
-            task: task.clone(),
-            prompt: task.clone(),
-            reason: "fixture".into(),
-        })
-        .unwrap()
-    else {
-        unreachable!()
-    };
-    let Outcome::Task(resumed) = f
-        .state
-        .owned
-        .durable_state_store
-        .agent_lifecycle(Operation::OwnerResponse {
-            task: task.clone(),
-            revision: blocked.blocked_revision,
-            resume: true,
-            now: crate::session::unix_epoch_ms(),
-        })
-        .unwrap()
-    else {
-        unreachable!()
-    };
-    let continuation = resumed.pending_prompt_id.clone().unwrap();
-    let prepared = crate::app::KernelPreparedPromptSubmission {
-        session_id: window.session_id.clone(),
-        prompt: PromptQueueItem::new(
-            &continuation,
-            &f.request.attachment_id,
-            &agent,
-            "continue",
-            PromptStatus::Queued,
-        )
-        .with_durable_operation(&continuation, format!("task:{task}:{}", resumed.revision)),
-        force_queue: false,
-        refresh_projection: true,
-    };
-    f.state.owned.admit_agent_task(&prepared).unwrap();
-    let outcome = f
-        .state
-        .owned
-        .submit_local_prepared_prompt_with_queue_policy(&prepared, true)
-        .unwrap()
-        .unwrap()
-        .outcome;
-    assert!(
-        matches!(outcome, PromptSubmissionOutcome::Started { .. }),
-        "{outcome:?}"
-    );
+    let continuation = start_continuation(&f, &window);
     let resumed_turn = f.state.sudo_for_auth_token("sudo-fixture-bearer").unwrap();
     assert_eq!(resumed_turn.entry_id, window.entry_id);
     assert_eq!(
@@ -312,6 +320,16 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
     assert!(
         old_command.authorize_current_external_command().is_err(),
         "an in-flight command from the old turn cannot acquire the continuation's authority"
+    );
+    assert!(
+        old_command
+            .with_external_command_authority(Some((
+                &window.entry_id,
+                &LocalDaemonRequest::ListSessions(ListSessionsRequest)
+            )))
+            .authorize_current_external_command()
+            .is_err(),
+        "re-scoping the same grant cannot renew an old command's turn"
     );
     assert!(f
         .state

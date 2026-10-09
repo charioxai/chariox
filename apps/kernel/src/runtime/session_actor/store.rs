@@ -28,11 +28,27 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    /// The submitting turn of a sudo command, captured when it is enqueued.
+    pub(super) fn sudo_binding(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<(String, String)> {
+        self.state
+            .with_kernel_command_authority(command, request)
+            .sudo_binding()
+    }
+
     pub(super) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
-        Self::new(self.state.with_external_command_authority(authority))
+        Self::new(
+            self.state
+                .with_external_command_authority(authority)
+                .with_sudo_binding(sudo_binding),
+        )
     }
 
     pub(super) fn authorize_external_access(

@@ -32,9 +32,7 @@ pub(crate) async fn dispatch_interactive_command(
     command: KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let grant_id = command.external_grant_id();
-    let runtime_state =
-        runtime_state.with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+    let runtime_state = runtime_state.with_kernel_command_authority(&command, &request);
     if let LocalDaemonRequest::CreateSession(mut inner) = request {
         inner.agent_defaults = runtime_state
             .resolve_session_agent_defaults(inner.agent_defaults)

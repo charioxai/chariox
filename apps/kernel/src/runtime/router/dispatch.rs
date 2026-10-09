@@ -19,18 +19,11 @@ impl CommandRouter {
         mut request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.authorize_external_request(&command, &mut request)?;
-        let grant_id = command.external_grant_id();
         let mut router = self.clone();
         router.runtime_state = self
             .runtime_state
-            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
-        if grant_id.as_deref().is_some_and(|id| {
-            id.starts_with("sudo:") && command.causation_id.as_deref() == Some(id)
-        }) {
-            router.runtime_state = router.runtime_state.with_sudo_command_turn(
-                &command.correlation_id,
-                command.provider_run_id.as_deref(),
-            );
+            .with_kernel_command_authority(&command, &request);
+        if command.is_sudo_command() {
             router.runtime_state.authorize_current_external_command()?;
         }
         router.capability_runtime =
