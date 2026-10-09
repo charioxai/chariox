@@ -2294,6 +2294,9 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
+    // MP-11 (#904 R2 and review @61b0a4ac6): the approved native secret above
+    // stays registered for this Room, so agent text and clicks (which can
+    // Paste it elsewhere) are refused below; pointer moves and scrolls forward.
     let input_cases = [
         (
             "slice_mouse",
@@ -2302,23 +2305,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         ),
         (
             "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
             json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
             "pointer_scroll",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-            "keyboard_text",
         ),
     ];
     let mut action_ids = Vec::new();
@@ -2349,6 +2337,18 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     // MP-11 R1/R2: agent mutations with no protection fence are refused on
     // the real home/worker route; approved Vault above and ordinary input remain.
     for (tool, arguments) in [
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+        ),
         (
             "slice_mouse",
             json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
@@ -2426,13 +2426,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         action_count_before_invalid,
         "rejected provider input must not enter the home Action ledger"
     );
-    for (action_id, expected_kind) in action_ids.iter().zip([
-        "pointer_move",
-        "pointer_click",
-        "pointer_click",
-        "pointer_scroll",
-        "keyboard_text",
-    ]) {
+    assert_eq!(action_ids.len(), 2);
+    for (action_id, expected_kind) in action_ids.iter().zip(["pointer_move", "pointer_scroll"]) {
         let action = home_environment
             .actions
             .iter()
@@ -2448,18 +2443,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             crate::session::EnvironmentActionState::Completed
         );
     }
-    let keyboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[4])
-        .expect("keyboard text Action");
-    assert_eq!(
-        keyboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardText {
-            utf8_byte_count: 14,
-            character_count: 8,
-        })
-    );
     let environment_debug = format!("{home_environment:?}");
     assert!(
         !environment_debug.contains("Grüße 世界")
@@ -2481,10 +2464,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         concat!(
             "computer-secret-input-ok\n",
             "move 120 160\n",
-            "pointer-click 220 260 right 1\n",
-            "pointer-click 320 360 left 2\n",
             "pointer-scroll 640 400 -3 5\n",
-            "computer-type-stdin|Grüße 世界\n",
         ),
         "provider Computer tools must use the shared physical input adapter",
     );
