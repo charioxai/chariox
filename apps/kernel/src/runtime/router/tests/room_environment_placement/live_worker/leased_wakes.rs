@@ -350,10 +350,14 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
         .unwrap();
     fixture.stop().await;
     let receipt = receipt.expect("worker holds the exact receipt for the home prompt");
-    assert_eq!(
+    // MP-08/MP-10/MP-11: the admitted provider can finish before this sample.
+    // Its completed receipt still binds the same home prompt and worker run;
+    // the identity checks below must hold in either phase.
+    assert!(matches!(
         receipt.phase,
         crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
-    );
+            | crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed
+    ));
     // One attempt: the home id carries no retry suffix and still names the
     // single worker run the receipt reports.
     assert_eq!(settled.provider_run_id.as_deref(), Some(run.as_str()));
