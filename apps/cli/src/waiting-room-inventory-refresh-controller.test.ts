@@ -631,6 +631,7 @@ test("transport closure immediately marks retained inventory as reconnecting", a
 
 function createHarness(options: {
   connected?: boolean
+  nowMs?: () => number
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
   getInventory?: () => Promise<WaitingRoomInventory>
@@ -663,6 +664,7 @@ function createHarness(options: {
 
   const controller = createWaitingRoomInventoryRefreshController({
     isKernelConnected: () => options.connected ?? true,
+    nowMs: options.nowMs,
     getInventoryStatus: () => inventoryStatus,
     setInventoryStatus: (status) => {
       inventoryStatus = status
@@ -833,3 +835,18 @@ function deferred<T>() {
   })
   return { promise, resolve, reject }
 }
+
+
+test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live version", async () => {
+  let now = 0
+  const live = inventory("constant", {kernelId: "kernel-a", sessions: [session("session-a")]})
+  const absent = inventory("cached-b", {kernelId: "kernel-b", sessions: [session("session-b")]})
+  const harness = createHarness({nowMs: () => now, cachedInventories: [live, absent], getInventory: async () => live})
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id).sort(), ["session-a", "session-b"])
+  now = 30_001
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+})

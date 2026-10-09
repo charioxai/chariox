@@ -172,13 +172,16 @@ export function createWaitingRoomInventoryRefreshController(
       }
       options.setInventoryStatus("ready")
       const present = new Set([snapshot.kernelId, ...snapshot.remoteKernels.map(row => row.kernel_id), ...(options.getLocalKernelPresences?.() ?? []).map(row => row.kernelId)])
+      let pruned = false
       for (const id of inventoriesByKernel.keys()) {
         if (present.has(id)) lastPresenceByKernel.set(id, nowMs())
         else if (nowMs() - (lastPresenceByKernel.get(id) ?? nowMs()) >= 30_000) {
           inventoriesByKernel.delete(id)
           lastPresenceByKernel.delete(id)
+          pruned = true
         }
       }
+      if (pruned) options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
       lastPresenceByKernel.set(snapshot.kernelId, nowMs())
       const previousActiveKernelId = activeKernelId
       const previousInventoryVersion = inventoryVersion
