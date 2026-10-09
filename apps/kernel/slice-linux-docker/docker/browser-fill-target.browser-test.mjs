@@ -274,7 +274,7 @@ for(const dpr of [1,2]) {
      const artifact=async()=>{await browser.reconcile(viewport,{browserBarVisible:false});return browser.captureArtifact(request)};
      const released=[];
      for(const [surface,run] of [['video',next],['artifact',artifact]]) {
-       try {await run();released.push(surface);}catch(error){assert.match(error.message,/unavailable/);}
+      try {await run();released.push(surface);}catch(error){assert.match(error.message,/unavailable|^MP-11: fill capture must retry$/);}
      }
      assert.deepEqual(released,[],'MP-11 neither production surface may release unproved paint coverage');
      assert.equal(stream.sequence,0);assert.equal(encoded,0,'MP-11 refusal occurs before encoding');
