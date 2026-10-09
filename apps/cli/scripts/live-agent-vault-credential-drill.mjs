@@ -729,7 +729,7 @@ async function main() {
       if (generated.length !== 1 ||
         credential.metadata?.created_by_kind !== 'vault_generate' ||
         credential.source?.key !== credential.id ||
-        JSON.stringify(credential.allowed_hosts) !== JSON.stringify([`127.0.0.1:${echo.port}`]) ||
+        JSON.stringify(credential.allowed_hosts) !== JSON.stringify([new URL(origin).origin]) ||
         JSON.stringify(credential.allowed_uses) !== JSON.stringify(['browser'])) {
         throw new Error(`${provider} sudo generation did not store exactly one site-bound browser credential: ${JSON.stringify(generated.map(({ id, allowed_hosts, allowed_uses, metadata }) => ({ id, allowed_hosts, allowed_uses, kind: metadata?.created_by_kind })))}`)
       }

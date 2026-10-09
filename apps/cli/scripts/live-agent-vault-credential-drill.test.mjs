@@ -24,3 +24,24 @@ test('MP-08/MP-10/MP-11 A06: generation runs only in an owner-authorized sudo wi
   assert.match(script, /respondToSudoPopup\(\{[\s\S]*?passkey: vaultPassphrase/, 'the owner answers the sudo popup with the passkey')
   assert.match(script, /waitForSudoWindowsToEnd\(/, 'the sudo window must end with its work')
 })
+
+
+test('MP-08/MP-10/MP-11 A06: the live drill validates the saved canonical origin', () => {
+  const condition = script.match(/if \((generated\.length !== 1 \|\|[\s\S]*?)\) \{\n\s+throw new Error\(`\$\{provider\} sudo generation/)
+  assert.ok(condition, 'exercise the actual live-drill credential validation guard')
+  const refuses = new Function('generated', 'credential', 'origin', 'echo', `return (${condition[1]})`)
+  const credential = {
+    id: 'generated-handle', metadata: { created_by_kind: 'vault_generate' },
+    source: { key: 'generated-handle' }, allowed_uses: ['browser'],
+  }
+  const origin = 'http://127.0.0.1:8123/register'
+  for (const [saved, expected] of [
+    ['http://127.0.0.1:8123', false],
+    ['127.0.0.1:8123', true],
+    ['https://127.0.0.1:8123', true],
+    ['http://127.0.0.1:8124', true],
+  ]) {
+    const stored = { ...credential, allowed_hosts: [saved] }
+    assert.equal(refuses([stored], stored, origin, { port: 8123 }), expected, `saved origin ${saved}`)
+  }
+})
