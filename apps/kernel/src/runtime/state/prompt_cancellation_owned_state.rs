@@ -433,6 +433,11 @@ impl KernelRuntimeOwnedState {
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
 
+        let pty_input = if active_prompt.delivery_pending() {
+            crate::app::claude_native_pending_prompt_cancel_input(&provider_run, active_prompt.id())
+        } else {
+            b"\x03"
+        };
         let prompt = self
             .prompt_state_owner
             .begin_cancelling_prompt_if_matches(&session, target_agent_id, expected)
@@ -473,6 +478,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run.id().to_string(),
                 source_attachment_id: attachment_id.to_string(),
+                pty_input,
             }),
         }))
     }

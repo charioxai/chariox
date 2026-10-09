@@ -3,6 +3,15 @@ use super::*;
 
 #[tokio::test]
 async fn runtime_native_cancel_clears_only_its_unacknowledged_composer() {
+    native_cancel_composer_fixture(false).await;
+}
+
+#[tokio::test]
+async fn runtime_native_cancel_keeps_composer_ownership_after_settlement() {
+    native_cancel_composer_fixture(true).await;
+}
+
+async fn native_cancel_composer_fixture(settles_before_abort: bool) {
     for (marker, expected_input) in [
         ("injected:cancel-native", b"\x03\x15".as_slice()),
         ("accepted:cancel-native", b"\x03".as_slice()),
@@ -107,6 +116,16 @@ async fn runtime_native_cancel_clears_only_its_unacknowledged_composer() {
             .cancel_local_prompt(session.id(), agent.id(), attachment.id())
             .unwrap()
             .unwrap();
+        if settles_before_abort {
+            runtime
+                .owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    session.id(),
+                    agent.id(),
+                    Some(run.id()),
+                )
+                .unwrap();
+        }
         let result = runtime
             .enqueue_prompt_abort(&cancellation.dispatch.unwrap())
             .await;
