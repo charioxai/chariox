@@ -512,7 +512,7 @@ base64 byte accounting and pacing.
 The relay applies the existing daemon/realm/subscription route and backpressure
 cleanup to both encodings. A receiver that did not negotiate binary events gets
 the original JSON/base64 envelope. A peer-94 relay therefore continues to work,
-and an older client can attach to a newer kernel and relay. The existing peer90
+and an older client can attach to a newer kernel and relay. The peer92
 runtime/security admission floor remains unchanged: advertising optional
 transport96 does not revoke compatible peer94 workers. Binary-event routing
 never decrypts ciphertext or parses a display payload. Kernel and browser bounds,
