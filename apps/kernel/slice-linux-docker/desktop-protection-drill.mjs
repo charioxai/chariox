@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: kernel Chromium on the owned Linux desktop, observed
 // through the production Computer screenshot and desktop stream paths.
 // Usage: node desktop-protection-drill.mjs <evidence-dir> [url...]
-// Without URLs it serves the magenta/cyan regression fixture (never acceptance).
+// Real public URLs are required; this source-only drill is supplementary.
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -10,13 +10,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost } from './docker/kernel-browser-host.mjs';
 import { DesktopSource } from './docker/kernel-desktop-source.mjs';
 import { decodePng, encodePng } from './docker/kernel-browser-pixels.mjs';
-import { serveFixture } from './docker/browser-protection-fixture.mjs';
 
 const [evidence, ...urls] = process.argv.slice(2);
-assert.ok(evidence, 'evidence directory required');
+assert.ok(evidence&&urls.length, 'MP-08/MP-11 evidence directory and public URLs required');
 await mkdir(evidence, { recursive: true });
 const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-protection-'));
-const fixture = urls.length ? null : await serveFixture();
 const policy = { values: [], targets: [], unknown: false };
 const host = new KernelBrowserHost(root);
 const report = [];
@@ -40,7 +38,7 @@ try {
     return reply.result;
   };
   const state = await call({ op: 'start' });
-  for (const url of urls.length ? urls : [fixture.url + '?novault']) {
+  for (const url of urls) {
     const entry = { url };
     try {
       const opened = await host.request({ op: 'open', url });
@@ -88,7 +86,6 @@ try {
 } finally {
   await source?.close();
   await host.stop();
-  await fixture?.close();
   await rm(root, { recursive: true, force: true });
   await writeFile(path.join(evidence, 'report.json'), JSON.stringify(report, null, 1));
 }

@@ -128,9 +128,9 @@ def main(request):
     values=request.get('values',[])
     before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     # MP-08/MP-11 (Miguel 2026-10-09): native password controls draw dots.
-    # Only saved values exposed as plain text contribute local AT-SPI masks.
-    mask=request['mask'] or not before['available'] or not before['complete']
-    image=capture(mask,before.get('masks',before.get('uncovered',())))
+    # Only exact Vault-filled plain entries contribute local AT-SPI masks.
+    mask=request['mask']
+    image=capture(mask,before.get('masks',()))
     after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     if before!=after:
         image.close()

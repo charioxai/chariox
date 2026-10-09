@@ -145,8 +145,8 @@ export class NativeComputer {
     }
     if(!['screenshot','ocr','clipboard_read'].includes(command.op)) throw new Error('MP-08: unsupported native observation');
     // Vault (Miguel 2026-10-09): never black out the desktop. Kernel-browser
-    // windows keep their CDP field/value masks; other windows mask a registered
-    // value only where AT-SPI exposes it as text (best effort). A clipboard
+    // windows keep their CDP fill-target masks; native windows cover only the
+    // exact AT-SPI plain entry filled from the Vault. A clipboard
     // read stays withheld while values or targets are registered.
     const values=policy?.values??[];
     const mask=command.op==='clipboard_read'&&Boolean(values.length || policy?.targets?.length);

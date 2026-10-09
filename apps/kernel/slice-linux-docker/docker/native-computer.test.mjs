@@ -30,7 +30,7 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   };
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
-  assert.deepEqual(await run({ ensureConnection: async () => { throw new Error('closed'); } }), [null]);
+  await assert.rejects(run({ ensureConnection: async () => { throw new Error('closed'); } }), /fence unavailable/);
   // Vault policy never blacks out the desktop: browser windows are measured with the values.
   assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
   // A window AT-SPI has not yet bound is retried, and the count stays private.

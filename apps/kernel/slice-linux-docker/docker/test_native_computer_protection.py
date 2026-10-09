@@ -13,7 +13,7 @@ helpers=lambda accessibility:(lambda name: accessibility if name=='native-access
 class ProtectionTests(unittest.TestCase):
     def test_mp08_mp11_password_dots_leave_desktop_visible_and_only_plaintext_value_is_masked(self):
         # Password roles still protect structured text/input; their dots are safe
-        # pixels. A registered value shown in an ordinary entry is a local mask.
+        # pixels. Only an explicit recorded plain fill contributes a local mask.
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
         for masks in ([],[[2,1,2,2]]):
@@ -48,8 +48,8 @@ class ProtectionTests(unittest.TestCase):
         accessibility=SimpleNamespace(snapshot=lambda *args:before)
         with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else clipboard),patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'public')):
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
-    def test_mp08_uncovered_owned_window_is_blacked_out_not_the_desktop(self):
-        # Owned app stacked above covers x>=4 of the terminal frame: only the exposed part is blacked out.
+    def test_mp08_mp11_only_explicit_fill_masks_affect_pixels(self):
+        # Uncovered authority bounds do not contribute visual masks.
         tree={'available':True,'complete':True,'protected':False,'nodes':[],'uncovered':[[2,1,3,2]],'masks':[[2,1,2,2]]}
         accessibility=SimpleNamespace(snapshot=lambda *args:tree)
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
@@ -62,14 +62,14 @@ class ProtectionTests(unittest.TestCase):
             self.assertEqual(image.getpixel((1,1)),(200,200,200));self.assertEqual(image.getpixel((5,1)),(200,200,200));self.assertEqual(image.getpixel((2,3)),(200,200,200))
             # A terminal selection may hold typed secrets: keep the clipboard closed.
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
-    def test_mp11_missing_masks_falls_back_to_whole_uncovered_frames(self):
+    def test_mp11_missing_fill_masks_preserves_uncovered_frames(self):
         tree={'available':True,'complete':True,'protected':False,'nodes':[],'uncovered':[[2,1,3,2]]}
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
         with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
             result=module.main({'op':'screenshot','mask':False,'processes':[]})
             image=module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64'])))
-            self.assertEqual(image.getpixel((4,2)),(0,0,0))
+            self.assertEqual(image.getpixel((4,2)),(200,200,200))
     def test_mp08_mp11_browser_protection_fences_both_snapshots_and_reports_withheld_windows(self):
         calls=[]
         def snapshot(*args):

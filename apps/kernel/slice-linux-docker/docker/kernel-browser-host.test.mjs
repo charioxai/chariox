@@ -311,7 +311,7 @@ test("MD-2: failed child spawn has no PID to kill or await", async () => {
   assert.equal(chromium.child, null);
 });
 
-test("MD-5: protection flushes old frames and masks new/retired frames across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
+test("MP-08/MP-11: policy flushes old frames without masks for registration alone across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   const session = sent.find(call => call.method === "Page.startScreencast").session;
@@ -327,7 +327,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   assert.equal(protectedFrame.mime_type, "image/png");
   assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
   const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(capture.data_base64, Buffer.from("test-frame").toString("base64")); // MP-11 registration alone leaves source pixels intact
+  assert.equal(decodePng(capture.data_base64).pixels[0],255); // MP-11 registration alone leaves source pixels intact
   const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
   chromium.child.exitCode = 1;
@@ -343,16 +343,6 @@ test("MD-5: unavailable observation policy fences captures and leaves shutdown a
   assert.equal((await host.request({ op: "stop" })).state, "stopped");
 }));
 
-test('MP-11 legacy observation retires an in-flight frame after attribute-only protection changes',()=>using(async({host,connection,handlers,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
- const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
- connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
- const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
- const session=sent.find(call=>call.method==='Page.startScreencast').session;
- for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
- release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
- assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],0,'retired capture cannot overwrite the opaque observation');
-}));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
   await host.protect({ unknown: false, values: ["synthetic-protected-value"], targets: [] });

@@ -159,15 +159,16 @@ try:
         protected_regions=[]
         if desktop:
             after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
-            # MP-08/MP-11: native password dots stay visible; saved plaintext
-            # values use the same local AT-SPI masks as on-demand capture.
-            if config.get('mask') or before!=after or not before.get('available') or not before.get('complete'):
+            # MP-08/MP-11: native password dots stay visible; exact Vault-filled
+            # plain entries use the same local masks as on-demand capture.
+            if before!=after: continue  # Drop racing captures; never mask the desktop.
+            if config.get('mask'):
                 protected_regions=[[0,0,width,height]]
-            else:protected_regions=before.get('masks',before.get('uncovered',[]))
+            else:protected_regions=before.get('masks',[])
             protected=bytearray(raw)
             for rx,ry,rw,rh in protected_regions:
                 if any(type(v) is not int for v in [rx,ry,rw,rh]) or rx<0 or ry<0 or rw<1 or rh<1 or rx+rw>width or ry+rh>height:
-                    protected_regions=[[0,0,width,height]];protected=bytearray(size);break
+                    raise ValueError('invalid fill-target bounds')
                 for row in range(ry,ry+rh):protected[(row*width+rx)*4:(row*width+rx+rw)*4]=bytes(rw*4)
             raw=bytes(protected)
         sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False

@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: exact fill targets share the browser/desktop collector.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
-import { measureBrowserProtection, measurePageProtection } from './browser-protection-regions.mjs';
+import { measureBrowserProtection, measurePageProtection, pruneBrowserFillTargets } from './browser-protection-regions.mjs';
 import { fileURLToPath } from 'node:url';
 export async function locateBrowserRegions(targets,browser,values=[],{contentTarget=null,contentScale=1}={}) {
   const policy={targets,values,unknown:false};
@@ -11,6 +11,7 @@ export async function locateBrowserRegions(targets,browser,values=[],{contentTar
     const merged=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
     for(const target of tracked)if(!merged.includes(target))merged.push(target);
     pages=[await measurePageProtection(connection,sessionId,contentTarget,{...policy,targets:merged},{includeHidden:true})];
+    pruneBrowserFillTargets(browser,connection);
   } else pages=(await measureBrowserProtection(browser,policy)).pages;
   const regions=[];
   for(const page of pages) {

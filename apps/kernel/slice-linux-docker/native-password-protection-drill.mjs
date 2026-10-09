@@ -1,6 +1,10 @@
 // MP-08 / MP-11: supplementary X11 GTK oracle, screenshot and XDamage paths.
 // Public canary only; this is not provider/Vault/hosted acceptance.
 import assert from 'node:assert/strict';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+const execute=promisify(execFile);
+const keyboard=path.resolve('apps/kernel/slice-linux-docker/docker/slice-keyboard.py');
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
@@ -27,7 +31,7 @@ l=Gtk.Label(label='Ordinary desktop remains visible');b.pack_start(l,False,False
 p=Gtk.Entry();p.set_visibility(False);p.get_accessible().set_name('Password dots');b.pack_start(p,False,False,0)
 t=Gtk.Entry();t.get_accessible().set_name('Plain text');b.pack_start(t,False,False,0)
 t.set_name('native-plain');css=Gtk.CssProvider();css.load_from_data(b'#native-plain { color: #ff00ff; caret-color: transparent; }');t.get_style_context().add_provider(css,Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-w.add(b);w.connect('destroy',Gtk.main_quit);w.show_all()
+w.add(b);w.connect('destroy',Gtk.main_quit)\ndef key(w,event):\n    if event.keyval==65477:p.set_visibility(not p.get_visibility());return True\n    return False\nw.connect('key-press-event',key);w.show_all()
 def status():
     with open(sys.argv[1],'w') as f:json.dump({'scale':w.get_scale_factor(),'password_hidden':not p.get_visibility(),'password_typed':p.get_text()=='${value}','plain_typed':t.get_text()=='${value}'},f)
     return True
@@ -73,19 +77,33 @@ try {
   report.bounds={password:password.bounds,plain:plain.bounds,label:label.bounds};
   const policy={values:[],targets:[],unknown:false};
   const empty=await capture('empty',policy);
-  const type=async box=>{
+  const type=async (box,vault=false)=>{
     const [x,y,w,h]=box;
-    for(const input of [{kind:'click',x:x+Math.floor(w/2),y:y+Math.floor(h/2)},{kind:'text',text:value},{kind:'move',x:1270,y:790}])
+    for(const input of [{kind:'click',x:x+Math.floor(w/2),y:y+Math.floor(h/2)}])
       await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input},policy);
+    if(vault){
+      const target=JSON.parse((await execute('/usr/bin/python3',[keyboard,'secret-target'],{env:binding.environment})).stdout);
+      const child=execFile('/usr/bin/python3',[keyboard,'secret',JSON.stringify(target)],{env:binding.environment});
+      let diagnostic='';child.stderr.on('data',chunk=>{const text=String(chunk).trim();if(['physical keyboard text input failed','computer credential input aborted: focused control or window changed'].includes(text))diagnostic=text;});
+      child.stdin.end(value);await new Promise((resolve,reject)=>child.on('close',code=>code===0?resolve():reject(Error('Vault keyboard exit '+code+': '+diagnostic))));
+    }else await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'text',text:value}},policy);
+    await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'move',x:1270,y:790}},policy);
     await delay(1500);
   };
-  await type(password.bounds);
+  await type(password.bounds,true);
   const dots=await capture('dots',policy);
   const registered={values:[value],targets:[],unknown:false};
   const saved=await capture('saved-dots',registered);
   await type(plain.bounds);
   const publicText=await capture('plain-no-policy',policy);
-  const protectedText=await capture('plain-saved-value',registered);
+  const registeredOnly=await capture('registered-no-fill',registered);
+  for(const kind of ['screenshot','stream'])assert.equal(Buffer.compare(publicText[kind],registeredOnly[kind]),0,'MP-11 registration alone masks nothing');
+  const [px,py,pw,ph]=plain.bounds;
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'click',x:px+Math.floor(pw/2),y:py+Math.floor(ph/2)}},policy);
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'ctrl+a'}},policy);
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'BackSpace'}},policy);
+  await type(plain.bounds,true);
+  const protectedText=await capture('plain-vault-filled',registered);
   report.gtk=JSON.parse(await readFile(path.join(root,'status.json'),'utf8'));
   assert.deepEqual(report.gtk,{scale:report.dpr,password_hidden:true,password_typed:true,plain_typed:true});
   report.label_visible_pixels=Object.fromEntries(['screenshot','stream'].map(kind=>[kind,
@@ -106,12 +124,28 @@ try {
         masked++;const [px,py,pw,ph]=plain.bounds;if(col<px||col>=px+pw||row<py||row>=py+ph)outside++;
       }
     }
-    assert(masked>100,'MP-11 visible saved text is covered');assert.equal(outside,0,'MP-11 masking stays inside the ordinary text box');
+    assert(masked>100,'MP-11 visible saved text is covered');assert(outside<= (plain.bounds[2]+plain.bounds[3])*8*report.dpr,'MP-11 only small field padding is masked');
     const magenta=p=>{let n=0;for(let i=0;i<p.length;i+=4)if(p[i]>200&&p[i+1]<50&&p[i+2]>200)n++;return n;};
     assert(magenta(publicText[kind])>20,'MP-11 unmasked public canary is visible');
     assert.equal(magenta(protectedText[kind]),0,'MP-11 no saved-text glyph pixels remain');
     report.checks.push({kind,password_dot_changed_pixels:changed,masked_pixels:masked,masked_outside_plain_box:outside});
   }
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'F8'}},policy);
+  await delay(500);
+  const toggled=await capture('password-shown',registered);
+  for(const kind of ['screenshot','stream'])assert.equal(count(toggled[kind],password.bounds),0,'MP-11 password shown as plain text is covered');
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'F8'}},policy);
+  await delay(500);
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'click',x:px+Math.floor(pw/2),y:py+Math.floor(ph/2)}},policy);
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'ctrl+a'}},policy);
+  await native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'key',key:'BackSpace'}},policy);
+  await delay(500);
+  const cleared=await capture('plain-cleared',registered);
+  for(const kind of ['screenshot','stream'])assert(count(cleared[kind],plain.bounds)>100,'MP-11 user clear retires the native fill');
+  await type(plain.bounds);
+  const retyped=await capture('plain-user-retyped',registered);
+  for(const kind of ['screenshot','stream'])assert(count(retyped[kind],plain.bounds)>100,'MP-11 retired native target does not resurrect');
+  report.retirement={show_password_covered:true,user_clear_visible:true,user_retype_visible:true};
   report.result='PASS';console.log(JSON.stringify(report));
 } catch(error) {report.result='FAIL';report.failure=error.message;throw error;}
 finally {

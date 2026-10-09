@@ -41,7 +41,7 @@ export class DesktopSource {
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
       // Vault (Miguel 2026-10-09): no desktop blackout; browser windows keep CDP
-      // field/value masks, other windows mask values AT-SPI exposes as text.
+      // fill-target masks; native windows mask only Vault-filled plain entries.
       mask:this.policy.unknown,values:this.policy.values,
       processes:await this.binding.ownedProcesses(),browser_processes:await this.binding.browserProcesses()})+'\n');
     for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
