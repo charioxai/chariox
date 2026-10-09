@@ -1198,7 +1198,7 @@ async fn assert_structured_abort_receipt_ownership(cancelling: bool, stale: bool
             if cancelling {
                 crate::session::PromptStatus::Cancelling
             } else {
-                crate::session::PromptStatus::Dispatching
+                crate::session::PromptStatus::Running
             }
         );
     } else {
