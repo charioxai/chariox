@@ -93,6 +93,11 @@ int cx_openh264_rate(void *encoder,int bitrate) {
     h->p.iTargetBitrate=h->p.sSpatialLayers[0].iSpatialBitrate=bitrate;
     return 0;
 }
+/* The next frame is an IDR with parameter sets; the RC state is kept. */
+int cx_openh264_restart(void *encoder) {
+    struct Encoder *h=encoder;
+    return (*h->e)->ForceIntraFrame(h->e,true)?-1:0;
+}
 /* One access unit (every layer) into *packet; returns its length, or -1. */
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key) {
     struct Encoder *h=encoder;ISVCEncoder *e=h->e;SSourcePicture picture;SFrameBSInfo info;
