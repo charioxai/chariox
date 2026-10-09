@@ -86,7 +86,7 @@ if (process.argv[2] !== 'child') {
       if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, x: command.action.x, y: command.action.y, sequence: command.sequence, ok: true });
     } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, error: String(error?.message ?? error).slice(0, 200) }); throw error; }
     // A credit replayed after a reconnect runs twice in the kernel; only the first reply reaches the viewer.
-    if (command.op === 'mirror_next' && replayNext) { replayNext = false; void host.request({ ...command, observed_by: 'lab' }).catch(() => {}); }
+    if (command.op === 'mirror_next' && replayNext) { replayNext = false; void host.request({ ...command, wait_ms: 0, observed_by: 'lab' }).catch(() => {}); }
     if (command.op === 'mirror_next') await validate(result).catch(() => {});
     const json = JSON.stringify({ KernelBrowser: { result } });
     if (command.op === 'mirror_next') wireJson.push(json);
@@ -250,6 +250,13 @@ if (process.argv[2] !== 'child') {
           await main(tab, `(()=>{const p=document.createElement('p');p.textContent=${JSON.stringify(marker)};document.body.append(p);return true})()`);
           const seen = await page.waitForFunction(m => document.querySelector('iframe')?.contentDocument?.body?.textContent.includes(m), marker, { timeout: 30000 }).then(() => true, () => false);
           row.replay = { visible_ms: seen ? Date.now() - t0 : null, resets_after: wireLog.filter(e => e.reset && e.at >= t0 - 3000).length, failures: await page.evaluate(() => window.failures) };
+          // Active page: the gap appears while other credits are in flight, then the page goes quiet.
+          // Measured: arming -> first reset applied in the viewer (no page change after the burst).
+          await new Promise(r => setTimeout(r, 4000)); const armedAt = await page.evaluate(() => performance.now()); replayNext = true;
+          for (let i = 0; i < 6; i++) { await main(tab, `(()=>{document.body.append(document.createElement('i'));return true})()`); await new Promise(r => setTimeout(r, 100)); }
+          await new Promise(r => setTimeout(r, 5000));
+          const reset = (await page.evaluate(() => window.packets)).find(p => p.reset && p.at > armedAt);
+          row.replay.active_reset_ms = reset ? Math.round(reset.at - armedAt) : null;
         }
         // Owner question: closed shadow roots on the site (trusted DOMSnapshot via the product snapshot op).
         try { const snap = (await host.request({ op: 'snapshot', tab_id: tabId, generation: host.generation, observed_by: 'lab' })).snapshot; row.shadow_roots = (snap.shadow_roots ?? []).reduce((m, r) => (m[r.shadow_root_type] = (m[r.shadow_root_type] ?? 0) + 1, m), {}); } catch (error) { row.shadow_roots = { error: String(error.message).slice(0, 120) }; }

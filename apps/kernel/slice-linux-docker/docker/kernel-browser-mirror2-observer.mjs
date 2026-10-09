@@ -526,6 +526,6 @@ export function installMirror2(sanitizeMirrorCss) {
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
   const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
-  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, sanitize, markClosedHost, customHosts, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   return true;
 }

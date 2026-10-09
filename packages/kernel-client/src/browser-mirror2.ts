@@ -437,8 +437,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       .catch(error => { if (reset) resetOutstanding = false; wantReset = true; if (!closed && fatal(error)) { closed = true; renderer.close(); handlers.failure(error) } })
       .finally(() => { outstanding.delete(order); inflight--; if (!closed) setTimeout(fill, 0) })
   }
-  // Pipelined credits start once a snapshot is applied; a reset is a single credit.
-  const fill = (): void => { while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit() }
+  // Pipelined credits start once a snapshot is applied; a reset is a single
+  // credit and never waits behind credits in flight (the kernel ends their wait).
+  const fill = (): void => {
+    if (!closed && applied && wantReset && !resetOutstanding) credit()
+    while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
+  }
   fill()
   return {
     renderer,

@@ -166,11 +166,15 @@ export class Mirror2 {
     // A credit's long-poll deadline counts from its arrival: queued behind
     // others it must not outlive the client's request timeout.
     const deadline = Date.now() + (command.wait_ms ?? 0);
-    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, deadline));
+    // A reset credit (lost base) must not queue behind a waiting long poll.
+    // Credits that arrived before it stop waiting (their hurry count is older).
+    if (command.after_sequence === 0) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, 'globalThis.__charioxMirror2.wake()').catch(() => {}); }
+    const hurry = stream.hurry;
+    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, deadline, hurry));
     stream.chain = run.catch(() => {});
     return run;
   }
-  async packet(stream, command, scope, signal, deadline = Date.now()) {
+  async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
     this.service.require(command.subscription_id, scope, command.generation);
@@ -226,7 +230,7 @@ export class Mirror2 {
       // slices), so an echo never queues behind image bytes on the socket.
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
-      while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline) {
+      while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
         const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, deadline - Date.now()))},${JSON.stringify({ variants })})`, true));
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
