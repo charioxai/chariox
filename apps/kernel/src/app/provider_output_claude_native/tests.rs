@@ -1795,6 +1795,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
+    let other_worktree = crate::test_support::TestWorktree::new("claude-native-unrelated");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
@@ -1816,7 +1817,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unrelated-agent",
-            root.display().to_string(),
+            other_worktree.path().display().to_string(),
         ))
         .expect("unrelated session should be created");
     let other_agent = crate::app::KernelSessionService::new(&mut app)
