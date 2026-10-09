@@ -58,6 +58,7 @@ import {
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
 import { KernelRequestLifetime, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
+import { KernelSocketResponsiveness } from "./kernel-socket-responsiveness.js"
 
 // Slice start can cold-build the managed Linux image before returning the
 // worker kernel endpoint. Keep the control request open long enough for first
@@ -295,6 +296,7 @@ export class LocalIpcClient {
   private readonly controlRequestRetryDeadlineMs: number
   private readonly controlResponseStallMs: number
   private missedControlPongs = 0
+  private readonly socketResponsiveness = new KernelSocketResponsiveness()
   private missedEventPongs = 0
   private suppressNextControlCloseEvent = false
   private suppressNextEventCloseEvent = false
@@ -676,7 +678,20 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        this.destroyWebSocket(lane, "kernel websocket reset", "request_replay")
+        const current = this.getWebSocket(lane)
+        const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
+          && current === socket && socket.readyState === WebSocket.OPEN
+          && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)
+        // MP-10: replay the same command on a responsive carrier. A slow
+        // handler is not a transport failure, and a stale attempt cannot retire
+        // a newer lane. Dead/unproven carriers retain the existing recovery.
+        if (current === socket && !responsiveTimeout) {
+          this.destroyWebSocket(lane, "kernel websocket reset", "request_replay", {
+            code: error instanceof LocalIpcError ? error.code : null,
+          })
+        } else if (responsiveTimeout) {
+          this.reportTransportDiagnostic(lane, "request_replay", { code: "request_timeout", operation: "retry responsive socket" })
+        }
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
     }
@@ -893,6 +908,8 @@ export class LocalIpcClient {
             this.handleWebSocketMessage(data, lane)
           })
           socket.on("pong", () => {
+            if (this.getWebSocket(lane) !== socket) return
+            this.socketResponsiveness.recordPong(socket)
             this.setMissedKernelPongs(lane, 0)
           })
           socket.once("close", (code: number, reason: Buffer) => {
@@ -1528,8 +1545,8 @@ export class LocalIpcClient {
   }
 
   private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset",
-    cause: KernelTransportDiagnostic["cause"] = "reset"): void {
-    if (this.getWebSocket(lane)) this.reportTransportDiagnostic(lane, cause)
+    cause: KernelTransportDiagnostic["cause"] = "reset", details: Partial<KernelTransportDiagnostic> = {}): void {
+    if (this.getWebSocket(lane)) this.reportTransportDiagnostic(lane, cause, details)
     // Retiring the lane makes its asynchronous close/error callbacks stale.
     // Settle requests here, including untimed human authorization waits.
     this.rejectPending(message, lane)

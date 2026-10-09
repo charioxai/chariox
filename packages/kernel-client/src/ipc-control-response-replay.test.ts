@@ -5,6 +5,49 @@ import WebSocket, { WebSocketServer } from "ws"
 
 import { LocalIpcClient, LocalIpcError } from "./ipc.js"
 
+test("MP-08/MP-10 slow responses do not retire a control socket still answering heartbeats", async (t) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>((resolve) => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let connections = 0
+  let pings = 0
+  const commands = new Map<string, Promise<{ ok: boolean }>>()
+  server.on("connection", (socket) => {
+    connections++
+    socket.on("ping", () => { pings++ })
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload))
+      let result = commands.get(frame.request_id)
+      if (!result) {
+        result = new Promise(resolve => setTimeout(() => resolve({ ok: true }), 600))
+        commands.set(frame.request_id, result)
+      }
+      void result.then(response => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+          type: "response", request_id: frame.request_id, response, error: null,
+        }))
+      })
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    kernelPingIntervalMs: 250, kernelMaxMissedPongs: 2,
+    controlRequestRetryDeadlineMs: 3_000, controlResponseStallMs: 350,
+    reconnectJitterMs: 0,
+  })
+  t.after(() => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    return new Promise<void>(resolve => server.close(() => resolve()))
+  })
+  assert.deepEqual(await Promise.all([
+    client.send({ ListSessions: null }), client.send({ GetKernelCapabilities: null }),
+  ]), [{ ok: true }, { ok: true }])
+  assert.equal(commands.size, 2, "MP-10 replay must preserve each command identity")
+  assert(pings > 0, "MP-10 the real WebSocket must answer a heartbeat before the response stall")
+  assert.equal(connections, 1, "MP-10 a response stall must not retire the responsive serving carrier")
+})
+
 test("MP-08 LocalIpcClient replays a stalled command and records the retired lane", async (t) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await new Promise<void>((resolve) => server.once("listening", resolve))
