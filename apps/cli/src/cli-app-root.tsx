@@ -1,3 +1,4 @@
+import { createNativeSelectionController } from "./native-selection-controller.js"
 import { createProviderLoginLinkPresenter } from "./provider-login-link.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
@@ -9,9 +10,9 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextRenderable, parseKeypress, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, onCleanup } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -216,6 +217,25 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  const [nativeSelectionHint, setNativeSelectionHint] = createSignal<string | null>(null)
+  const nativeSelection = createNativeSelectionController({
+    renderer,
+    setHint: (hint) => { setNativeSelectionHint(hint); updateSessionChrome() },
+  })
+  const nativeSelectionInput = (sequence: string) => {
+    const key = parseKeypress(sequence, { useKittyKeyboard: true })
+    return key ? nativeSelection.ownsRendererKey(key) : false
+  }
+  renderer.prependInputHandler(nativeSelectionInput)
+  const nativeSelectionPaste = (event: { preventDefault(): void; stopPropagation(): void }) => {
+    if (nativeSelection.isActive()) { event.preventDefault(); event.stopPropagation() }
+  }
+  renderer.keyInput.on("paste", nativeSelectionPaste)
+  onCleanup(() => {
+    renderer.removeInputHandler(nativeSelectionInput)
+    renderer.keyInput.off("paste", nativeSelectionPaste)
+    if (!renderer.isDestroyed) nativeSelection.dispose()
+  })
   const secretInput = createCliSecretInput(renderer)
   const providerLoginLink = createProviderLoginLinkPresenter(renderer)
   onCleanup(secretInput.cancel)
@@ -725,7 +745,11 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerRunStateSignal: providerRunState,
     working, activeStatusLabel, providerActivityLabel, syncPromptPlaceholder,
     fatalError, submitting, footerHint, connectedClientCount,
-    multiAgentMode, sessionStatusMode, footerFlash, promptMetaParts,
+    multiAgentMode, sessionStatusMode,
+    footerFlash: () => nativeSelectionHint()
+      ? { message: nativeSelectionHint()!, tone: "info" }
+      : footerFlash(),
+    promptMetaParts,
   })
   sessionChromeUpdateController = responseShellSessionChromeUpdateController
 
@@ -891,6 +915,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
+    handleNativeSelectionKey: nativeSelection.handleKey,
+    nativeSelectionActive: nativeSelection.isActive,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
     showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,

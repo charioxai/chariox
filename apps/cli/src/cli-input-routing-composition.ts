@@ -32,6 +32,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  handleNativeSelectionKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["handleNativeSelectionKey"]
+  nativeSelectionActive?: () => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
@@ -672,6 +674,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    ...(deps.handleNativeSelectionKey ? { handleNativeSelectionKey: deps.handleNativeSelectionKey } : {}),
+    ...(deps.nativeSelectionActive ? { nativeSelectionActive: deps.nativeSelectionActive } : {}),
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
     // Same settings as the renderer's own parser, so both agree on every chunk.
     createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),

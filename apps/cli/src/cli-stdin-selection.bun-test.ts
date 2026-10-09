@@ -91,3 +91,34 @@ test("MP-08 / MP-10 batched typing is decoded as the same keys typed one by one"
     assert.deepEqual(counts, { clears: 2, shortcuts: 2 })
   }
 })
+
+test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearing", async () => {
+  let active = false
+  const { controller, counts } = selectionControllerWithNativeMode()
+  function selectionControllerWithNativeMode() {
+    const counts = { clears: 0, shortcuts: 0, nativeKeys: [] as string[] }
+    const controller = createCliStdinKeyController({
+      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+      nativeSelectionActive: () => active,
+      handleNativeSelectionKey: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => {
+        if (event.name === "f7" || active && event.name === "escape") {
+          active = !active; counts.nativeKeys.push(event.name); return true
+        }
+        return active
+      },
+      clearTextSelection: () => { counts.clears++ },
+      dialogOverlayOpen: () => true,
+      closeActiveDialogOverlay: () => { counts.shortcuts++ },
+      handleSessionBrowserKey: () => { counts.shortcuts++; return true },
+    } as unknown as CliStdinKeyControllerDeps)
+    return { controller, counts }
+  }
+  controller.handleData("\x1b[18~")
+  assert.equal(active, true)
+  controller.handleData("\x1b[200~paste\x1b[201~")
+  controller.handleData("x")
+  controller.handleData("\x1b")
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(active, false)
+  assert.deepEqual(counts, { clears: 0, shortcuts: 0, nativeKeys: ["f7", "escape"] })
+})

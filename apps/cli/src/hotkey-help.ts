@@ -15,7 +15,8 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
   { keys: HOTKEY_TOGGLE_LABEL, description: "Show or hide this hotkey list." },
   { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
   { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
-  { keys: "F6 / Meta+C", description: "Copy the selected text (drag release also copies); OSC 52 delivery is unconfirmed over SSH." },
+  { keys: "F7 / Esc", description: "F7 turns mouse reporting off: drag-select and press Cmd-C. Esc or F7 restores the mouse." },
+  { keys: "F6 / Meta+C", description: "Copy the selected text (drag release also copies). F7 enables native copy over SSH." },
   { keys: "Native selection", description: "Hold Shift while dragging (terminal dependent), then use terminal Copy. Set CHARIOX_TUI_MOUSE=off to disable mouse capture." },
 ]
 

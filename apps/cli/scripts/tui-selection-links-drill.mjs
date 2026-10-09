@@ -112,6 +112,17 @@ try {
       if (kernel.exitCode !== null) throw Error(`owned kernel exited: ${kernel.exitCode}`)
       try { return Object.keys(await probe.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
     })
+    if (options.attached) {
+      assert.ok(options['profile-path'], 'owned real-provider kernel requires an existing product-linked profile path')
+      const linked = await probe.send({ LinkProviderAccountProfile: {
+        provider: options.provider ?? 'codex', label: 'tuifix-native-copy', path: path.resolve(options['profile-path']),
+      } })
+      const profileId = linked.ProviderAccountProfile?.profile?.id
+      assert.ok(profileId, 'product account linking must succeed')
+      options['account-profile'] = profileId
+      options['fleet-home'] = path.join(scratch, 'state')
+      options['fleet-kernel-url'] = kernelUrl
+    }
     await probe.close()
   }
   if (options.attached) {
@@ -167,6 +178,8 @@ try {
       if (route === '/xterm.css') return new Response(Bun.file(path.join(tools, 'node_modules/@xterm/xterm/css/xterm.css')))
       return new Response(`<!doctype html><link rel="stylesheet" href="/xterm.css"><style>body{background:#141414;margin:16px}</style><div id="terminal"></div><script src="/xterm.js"></script><script>
         window.term=new Terminal({cols:100,rows:35,fontSize:16,fontFamily:'monospace',allowProposedApi:true,scrollback:10000});term.open(document.querySelector('#terminal'));term.focus();
+        // The terminal host owns its native Copy shortcut, like Cmd-C in Terminal.app.
+        term.attachCustomKeyEventHandler(event=>!(event.ctrlKey && event.key==='c' && term.hasSelection()));
         window.openedLinks=[];term.options.linkHandler={activate:(event,text)=>openedLinks.push(text)};
         window.copies=[];term.parser.registerOscHandler(52,data=>{copies.push(data.split(';').slice(1).join(';'));return true});
         window.ws=new WebSocket('ws://'+location.host+'/terminal');ws.onmessage=e=>term.write(e.data);term.onData(data=>ws.send(data));
@@ -238,6 +251,48 @@ try {
     return rowOf(needle)
   }
   const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
+  // MP-08 / MP-10: the actual TUI must release terminal mouse ownership so
+  // native drag + system Copy works without OSC 52, then restore app input.
+  const nativeCopyCases = async needle => {
+    const at = await settledRowOf(needle)
+    assert.ok(at, 'native copy text is visible')
+    const mark = output.length
+    const oscCopies = (await copiedTexts()).length
+    await press('\x1b[18~') // F7: legacy Terminal.app function key
+    const mouseDisabled = /\x1b\[\?100[0236]l/.test(output.slice(mark))
+    const hint = await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select, Cmd-C; Esc/F7: mouse on'))
+    await capture('native-01-mouse-off')
+    const coords = await page.evaluate(({ x, y }) => {
+      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
+      return { x: rect.x, y: rect.y, cw: rect.width/term.cols, ch: rect.height/term.rows }
+    }, at)
+    await page.mouse.move(coords.x+coords.cw*(at.x+0.2), coords.y+coords.ch*(at.y+0.5))
+    await page.mouse.down()
+    await page.mouse.move(coords.x+coords.cw*(at.x+needle.length+0.2), coords.y+coords.ch*(at.y+0.5), { steps: 20 })
+    await page.mouse.up()
+    const nativeText = await page.evaluate(() => term.getSelection())
+    // Trusted browser Copy acts on xterm's native selection, not a Chariox
+    // clipboard RPC or OSC 52. Linux Ctrl-C corresponds to desktop Cmd-C.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await page.keyboard.press('Control+c')
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
+    await sleep(12_000) // selection and instructions survive inventory refresh
+    const retained = await page.evaluate(n => term.getSelection() === n, needle)
+    await capture('native-02-copied')
+    const restoreMark = output.length
+    await press('\x1b') // lone Esc, including parser timeout
+    const escaped = !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
+    const mouseRestored = /\x1b\[\?100[0236]h/.test(output.slice(restoreMark))
+    await capture('native-03-escaped')
+    await press('\x1b[18~'); await press('\x1b[18~')
+    const toggledBack = !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
+    const noOscCopy = (await copiedTexts()).length === oscCopies
+    const cell = { mouseDisabled, hint, nativeText, clipboardText, retained, escaped, mouseRestored, toggledBack, noOscCopy }
+    console.log(JSON.stringify({ items: ['MP-08', 'MP-10'], nativeCopy: cell }))
+    await writeFile(path.join(evidence, 'native-copy.json'), JSON.stringify(cell, null, 2))
+    assert.ok(mouseDisabled && hint && nativeText === needle && clipboardText === needle && retained && escaped && mouseRestored && toggledBack && noOscCopy, 'native selection/copy through real terminal input')
+    return cell
+  }
   // MP-08 / MP-10: send text in one PTY write, matching paste/SSH batching.
   const pasteCases = async (needle, beforePaste) => {
     const cells = []
@@ -312,6 +367,7 @@ try {
     await waitFor(async () => (await rowOf(marker)) !== null, 240_000)
     await sleep(4000)
     await capture('a02-response')
+    const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
     if (options['selection-review']) {
       // MP-08 / MP-10: real provider response, fast terminal drag, legacy copy
       // input, and typing after release. No fixture provider/login traffic.
@@ -335,11 +391,12 @@ try {
       const emptyCopyKeptAlive = tui.exitCode === null
       await capture('a05-typed-and-empty-copy')
       result = { items: ['MP-08', 'MP-10'], mode: 'selection-review', source: options.source,
+        kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
         cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
         dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), fragmentMouse: Boolean(options['fragment-mouse']), copyKey: options['copy-key'] ?? 'f6',
-        highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
-        acceptance: 'real provider and built TUI via PTY; desktop Terminal.app and hosted transport need separate observations' }
+        nativeCopy, highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
+        acceptance: 'real provider and built TUI via PTY; native clipboard uses a Linux browser terminal; Terminal.app/SSH and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
         && pasted.every(cell => cell.cleared && cell.inserted)
       console.log(JSON.stringify(result))
@@ -452,6 +509,8 @@ try {
     await press('\r')
   }
   await capture('01-waiting-room')
+  let nativeCopy = null
+  if (options['native-selection-review']) nativeCopy = await nativeCopyCases('Provider Accounts')
   // Select an ordinary text row via actual SGR mouse reports, then release.
   // Compare the terminal's cell colors while dragging and after release.
   const selection = await page.evaluate(() => {
@@ -522,13 +581,15 @@ try {
   const linkMark = output.length
   await press('c'); await sleep(300)
   await capture('05-copy-link')
+  const linkText = `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
+  const singleLink = output.split(linkText).length === 2
   const fullLink = output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)
   const exactCopy = (await page.evaluate(() => copies)).some(payload => Buffer.from(payload,'base64').toString() === url)
   // A terminal OpenTUI reports without OSC 52: honest guidance, no raw request.
   const osc52Declined = options['expect-osc52'] === 'declined'
   const honest = !output.slice(copyMark).includes('selection copied to clipboard') && (osc52Declined
-    ? output.slice(linkMark).includes('clipboard unavailable') && !output.includes('\x1b]52;')
-    : output.slice(linkMark).includes('unconfirmed'))
+    ? output.slice(linkMark).includes('Drag-select the URL, then press Cmd-C') && !output.includes('\x1b]52;')
+    : output.slice(linkMark).includes('Drag-select the URL, then press Cmd-C'))
   let deviceLink = false
   let transcriptLink = false
   let linkViewOnce = false
@@ -554,12 +615,12 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), nativeCopy, singleLink, retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   const copied = osc52Declined ? !exactCopy : exactCopy
   if (options['expect-red']) assert.ok(!retained || !keyboardCopy || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
-  else assert.ok(retained && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
+  else assert.ok(retained && singleLink && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
   if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'F6 must copy the retained selection only through OSC 52 support')
   if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
   }

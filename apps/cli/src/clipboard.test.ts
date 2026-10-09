@@ -11,7 +11,7 @@ test("MP-08/MP-11 SSH never copies to the server clipboard or promises OSC 52 de
   assert.equal(result, "requested")
   assert.equal(nativeCalls, 0)
   assert.equal(requested, "selected λ")
-  assert.match(clipboardCopyMessage(result), /unconfirmed.*native selection/)
+  assert.match(clipboardCopyMessage(result), /F7.*mouse.*drag-select.*Cmd-C/)
   assert.doesNotMatch(clipboardCopyMessage(result), /copied/)
 })
 
@@ -34,7 +34,7 @@ test("MP-08/MP-11 OpenTUI declining OSC 52 is unavailable, never a write around 
         remote, nativeCopy: async () => { throw Error("headless") },
       })
       assert.equal(unavailable, "unavailable")
-      assert.match(clipboardCopyMessage(unavailable), /native selection.*Copy/)
+      assert.match(clipboardCopyMessage(unavailable), /F7.*mouse.*drag-select.*Cmd-C/)
     }
   } finally {
     if (tty) Object.defineProperty(process.stdout, "isTTY", tty)

@@ -112,7 +112,7 @@ test("MP-08/MP-11 the link view copies through the renderer's OSC 52 gate", asyn
       assert.equal(await shown, true)
       assert.deepEqual(copies, [link])
       const written = readFileSync(outputPath, "utf8")
-      assert.ok(written.includes(supported ? "OSC 52, unconfirmed" : "clipboard unavailable"))
+      assert.ok(written.includes("Drag-select the URL, then press Cmd-C"))
       assert.ok(!written.includes("\x1b]52;"))
     }
   } finally {

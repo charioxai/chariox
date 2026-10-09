@@ -68,7 +68,7 @@ export function createProviderLoginLinkPresenter(
       write("\x1b[?1049l\x1b[0m\r\n\x1b[JProvider authorization link (Cmd-click if supported):\r\n")
       write(providerLoginLinkText(url))
       if (userCode && /^[A-Za-z0-9 -]{1,128}$/.test(userCode)) write(`Device code: ${userCode}\r\n`)
-      write("C copies the full URL; O opens a local browser; Enter returns to Chariox.\r\nNative selection + terminal Copy also works here.\r\n")
+      write("Drag-select the URL, then press Cmd-C. Cmd-double-click opens the link in Terminal.app.\r\nC requests clipboard copy; O opens a local browser; Enter/Esc returns to Chariox.\r\n")
       if (!localDesktopAvailable()) {
         write("Open this link on your desktop (SSH/headless terminal).\r\n")
       } else if (options.autoOpen) {
@@ -88,7 +88,7 @@ export function createProviderLoginLinkPresenter(
           busy = true
           const action = key.toLowerCase() === "c"
             ? copyTextToClipboard(url, renderer)
-              .then(result => write(`${clipboardCopyMessage(result)}\r\n`))
+              .then(result => write(`${result === "copied" ? clipboardCopyMessage(result) : "Drag-select the URL, then press Cmd-C; Enter/Esc returns to Chariox."}\r\n`))
             : (localDesktopAvailable()
               ? openExternalUrl(url).then(opened => write(opened ? "Browser open requested.\r\n" : "Could not open the browser; use the link above.\r\n"))
               : Promise.resolve(write("SSH/headless terminal: open the link on your desktop.\r\n")))

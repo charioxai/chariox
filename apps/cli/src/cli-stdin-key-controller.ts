@@ -14,6 +14,8 @@ export type CliStdinParser = {
 }
 
 export type CliStdinKeyControllerDeps = {
+  handleNativeSelectionKey?: (event: CliStdinKeyEvent) => boolean
+  nativeSelectionActive?: () => boolean
   createStdinParser: (onTimeoutFlush: () => void) => CliStdinParser
   kernelApprovalOwnsInput?: () => boolean
   dialogOverlayOpen: () => boolean
@@ -60,12 +62,13 @@ export function createCliStdinKeyController(
     let handled = false
     parser.drain((event) => {
       // Mouse reports and terminal responses keep the selection.
-      if (event.type === "paste") deps.clearTextSelection?.()
+      if (event.type === "paste" && !deps.nativeSelectionActive?.()) deps.clearTextSelection?.()
       else if (event.type === "key" && event.key) handled = handleKey(event.key) || handled
     })
     return handled
   }
   const handleKey = (event: CliStdinKeyEvent): boolean => {
+    if (deps.handleNativeSelectionKey?.(event)) return true
     // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
     // without extended keyboard support (where it is indistinguishable from Ctrl+C).
     const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))

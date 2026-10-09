@@ -7,10 +7,12 @@ type ClipboardRenderer = {
 
 export type ClipboardCopyResult = "copied" | "requested" | "unavailable"
 
+export const NATIVE_SELECTION_HINT = "Mouse off: drag-select, Cmd-C; Esc/F7: mouse on"
+export const NATIVE_SELECTION_FALLBACK = "F7: mouse off; drag-select, Cmd-C; Esc/F7: mouse on"
+
 export function clipboardCopyMessage(result: ClipboardCopyResult): string {
   if (result === "copied") return "copied to local clipboard"
-  if (result === "requested") return "clipboard request sent (OSC 52, unconfirmed); if empty, use native selection and Copy"
-  return "clipboard unavailable; use native selection and your terminal's Copy command"
+  return NATIVE_SELECTION_FALLBACK
 }
 
 export async function copyTextToClipboard(
