@@ -11,6 +11,7 @@
 // Dry run on an existing kernel (never sends a code; cancels at the code prompt):
 //   --kernel-url <ws url> --chariox-home <its home> --account <claude profile label> --session-args '<TUI provider args>'
 // A standalone TUI uses --compiled yes --cli <chariox> --ipc-module <built ipc.js>.
+// --launcher <tonight-login.sh> drives the actual owner launcher in the PTY.
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -24,6 +25,7 @@ const evidence = path.resolve(options.output)
 const profile = options.profile ?? 'xterm'
 const fixture = options['fixture-claude'] === 'yes'
 const attach = Boolean(options['kernel-url'])
+assert.ok(!options.launcher || attach, 'the owner launcher requires the existing-kernel dry-run mode')
 assert.ok(!attach || !fixture, 'an existing kernel must never use the fixture success flow')
 assert.ok(!attach || options.account === 'disposable-claude', 'existing-kernel login drills target only disposable-claude')
 assert.ok(['xterm', 'terminal-app'].includes(profile), 'profile must be xterm or terminal-app')
@@ -89,7 +91,7 @@ if (args[0] === 'setup-token') {
 }
 
 const label = attach ? options.account : `drill-${profile}-${process.pid}`
-const sessionAlias = attach ? `loginux-dry-${process.pid}` : label
+const sessionAlias = options.launcher ? `miguel-claude-login-drill-${process.pid}` : attach ? `loginux-dry-${process.pid}` : label
 const steps = []
 const record = (name, ok, detail = {}) => { steps.push({ name, ok, ...detail }); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`) }
 let kernel, tui, browser, frontend, output = ''
@@ -149,9 +151,10 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
 
-  tui = Bun.spawn([...(compiled ? [cli] : ['bun', cli]), '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
+  const clientCommand = [...(compiled ? [cli] : ['bun', cli]), '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
     // The session's own agent needs no Claude login; the login targets the new profile.
-    ...(options['session-args'] ?? '--provider opencode').split(' ')], {
+    ...(options['session-args'] ?? '--provider opencode').split(' ')]
+  tui = Bun.spawn(options.launcher ? [path.resolve(options.launcher), sessionAlias] : clientCommand, {
     cwd: workspace,
     env: { ...env, TERM: 'xterm-256color', SSH_CONNECTION: '203.0.113.7 50000 198.51.100.2 22', SSH_TTY: '/dev/pts/9',
       ...(profile === 'xterm' ? { TERM_PROGRAM: 'vscode' } : {}) },
@@ -289,7 +292,13 @@ try {
       fixture ? auth.ProviderAuthStatus.status.auth_state === 'authenticated' : auth.ProviderAuthStatus.status.auth_state !== 'authenticated',
       { authState: auth.ProviderAuthStatus.status.auth_state })
   }
-  await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
+  if (options.launcher) {
+    await press('\x05')
+    await waitFor(() => tui.exitCode !== null, 30_000, 'launcher exit and session cleanup')
+    record('owner launcher exits cleanly', tui.exitCode === 0)
+  } else {
+    await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
+  }
   await rpc.close()
   await writeFile(path.join(evidence, 'pty-output.log'), output.replaceAll(loginUrl, '<authorization URL>'))
   result = { items: ['MP-08', 'MP-11'], profile, dpr: Number(options.dpr ?? 1), fixtureClaude: fixture, cli,
