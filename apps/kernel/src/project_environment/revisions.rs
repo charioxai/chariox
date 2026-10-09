@@ -376,6 +376,7 @@ impl ProjectEnvironmentStore {
             snapshot.reviewed_by = saved.reviewed_by.clone();
             snapshot.project_requirements = saved.project_requirements.clone();
             // Revision contents remain immutable; attachment is a separate local projection.
+            // A detached saved folder has an empty local binding.
             let bindings: BTreeMap<_, _> = snapshot
                 .folders
                 .iter()
