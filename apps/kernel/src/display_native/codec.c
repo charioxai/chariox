@@ -153,8 +153,11 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     p.vui.b_fullrange=0;p.i_level_idc=51;
     row_rate_control(&p,rate);
     /* Quant offsets need AQ; x264 disables AQ at zero strength, so a
-     * negligible strength keeps the offsets and leaves rate control as is. */
-    if (protected&&!row->hardware){p.rc.i_aq_mode=X264_AQ_VARIANCE;p.rc.f_aq_strength=0.01f;}
+     * negligible strength keeps the offsets and leaves rate control as is.
+     * x264's VBV emergency QPs (52..69) zero coefficients, so masked
+     * macroblocks decode grey whatever their offset: protected rows stay
+     * within QP 51 and may overshoot the VBV instead. */
+    if (protected&&!row->hardware){p.rc.i_aq_mode=X264_AQ_VARIANCE;p.rc.f_aq_strength=0.01f;p.rc.i_qp_max=51;}
     if (x264_param_apply_profile(&p,"baseline")) return -1;
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,ew,eh)) return -1;

@@ -707,8 +707,9 @@ fn mp08_committed_canvas_plan_reencodes_only_changed_cells_without_a_scroll() {
 }
 #[test]
 fn mp11_protected_retina_rows_keep_the_mask_black_at_the_paced_rate() {
-    // MP-08/MP-11: dense detail starves a 1.5-frame VBV; an IDR used to decode
-    // the masked macroblocks grey, fail output_safe and drop every frame.
+    // MP-08/MP-11: dense detail starves a 1.5-frame VBV (x264 emergency QPs);
+    // masked macroblocks used to decode grey, fail output_safe and drop
+    // every frame.
     let (w, h) = (2560usize, 1600usize);
     let regions = [
         Rect {
@@ -724,20 +725,23 @@ fn mp11_protected_retina_rows_keep_the_mask_black_at_the_paced_rate() {
             bottom: 640,
         },
     ];
-    let mut state = 12345u32;
     for row_count in [1, 8] {
         let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, row_count, 0) });
         assert!(!codec.0.is_null());
         for frame in 0..6 {
-            let source: Vec<u8> = (0..w * h * 4)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 17;
-                    state ^= state << 5;
-                    if state & 1 == 1 {
-                        250
+            // Dense text-like strokes on white, scrolled each frame.
+            let source: Vec<u8> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .flat_map(|(x, y)| {
+                    let yy = y + frame * 37;
+                    let mut k = ((x / 3) as u32).wrapping_mul(2654435761)
+                        ^ ((yy / 3) as u32).wrapping_mul(40503);
+                    k ^= k >> 15;
+                    let ink = yy % 26 < 16 && k % 3 == 0;
+                    if ink {
+                        [30, 40, if k & 64 != 0 { 200 } else { 35 }, 255]
                     } else {
-                        (state >> 24) as u8
+                        [250, 248, 245, 255]
                     }
                 })
                 .collect();
