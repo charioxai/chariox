@@ -76,6 +76,9 @@ export async function measureSiteLatency({ page, pause, pair, samples = 40, seco
     const dark = n % 2 === 0;
     result.click_samples.push({ index: n, dark, ...await probe(page, { kind: 'click', ...centre(dark ? night : day) }, roi, luminance, { dark }) });
   }
+  // MP-08/MP-10: after repeated whole-page changes the canvas must settle to
+  // the source exactly (the echo ROI alone cannot see stale stripe rows).
+  await pause(3000); result.after_clicks_view = await pair('site-after-clicks');
   await command(page, 'navigate', { url: PORTAL }); await pause(8000);
   result.portal_view = await pair('site-portal');
   const search = (await controls(page, ['searchInput'])).searchInput;
@@ -95,6 +98,7 @@ export async function measureSiteLatency({ page, pause, pair, samples = 40, seco
     result.type_samples.push({ index: n, kind: a ? 'type' : 'backspace',
       ...await probe(page, a ? { kind: 'text', text: 'a' } : { kind: 'key', key: 'Backspace' }, box, glyph, { mask, want: a ? typed : empty, other: a ? empty : typed }) });
   }
+  await pause(3000); result.after_typing_view = await pair('site-after-typing');
   for (const key of ['click', 'type']) {
     result[key + '_drawn'] = distribution(result[key + '_samples'].map(s => s.latency_ms));
     result[key + '_raf'] = distribution(result[key + '_samples'].map(s => s.raf_latency_ms));
