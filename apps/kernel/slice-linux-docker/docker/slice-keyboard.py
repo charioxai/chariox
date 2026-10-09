@@ -119,7 +119,7 @@ def type_text(text, expected_target=None):
             from pathlib import Path
             spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
             fill_targets = importlib.util.module_from_spec(spec); spec.loader.exec_module(fill_targets)
-            fill_record = fill_targets.begin(expected_target['active_window'], text)
+            fill_record = fill_targets.begin(expected_target['active_window'], text, connection)
         keysyms = []
         for character in text:
             # Some layouts carry Linefeed, which Chromium accepts but GTK
