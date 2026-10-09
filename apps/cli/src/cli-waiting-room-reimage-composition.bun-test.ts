@@ -1,3 +1,4 @@
+import { createWaitingRoomBootstrapDefaultsController } from "./waiting-room-bootstrap-defaults.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
 import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -62,6 +63,21 @@ for (const [cliWorktree, kernelWorktree] of [["/repo-feature", "/repo"], ["/repo
     } finally { harness.cleanup() }
   })
 }
+
+reimageTest("MP-08/MP-11 initial workspace inventory cannot cancel pending provider defaults", async router => {
+  const harness = createHarness(router, { interactivePlacement: true })
+  const defaults = createWaitingRoomBootstrapDefaultsController({
+    state: harness.state, ownershipRevision: harness.ownershipRevision,
+    isAttached: () => false, apply: harness.composition.reconcileWaitingRoomProjection,
+  })
+  try {
+    await harness.initialize()
+    await new Promise(resolve => setImmediate(resolve))
+    defaults.apply({ provider: "codex", model: "gpt-6.1-sol", effort: "high" })
+    assert.equal(harness.state().providerId, "codex")
+    assert.equal(harness.ownershipRevision(), 0)
+  } finally { harness.cleanup() }
+})
 
 function reimageTest(name: string, run: (router: TestRouter) => Promise<void>) {
   test(`production Waiting Room reimage composition: ${name}`, async () => {
@@ -824,6 +840,7 @@ function createHarness(router: TestRouter, options: {
     attachments,
     rollbacks,
     state: () => waitingRoomState,
+    ownershipRevision: () => ownershipRevision,
     sessions: () => availableSessions as Array<{ id: string }>,
     projects: () => projects as Array<{ id: string; workspace_id: string }>,
     selectManagedWithoutReconcile: () => {
