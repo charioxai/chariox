@@ -367,6 +367,19 @@ try {
     if(packagedMode)assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
     await assert.rejects(access(path.join(source.outbound,approved.contextId)))
     steps.push({name:'owner-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
+    if(scenario==='project-only') {
+      // MP-07/MP-08: copying the same Project to the same target again adds a
+      // second target Project beside the first instead of failing terminally.
+      const repeated=await copy('05-owner-repeat')
+      assert.notEqual(repeated.contextId,approved.contextId);assert.equal(repeated.phase,'completed',JSON.stringify(repeated));assert(repeated.receipt)
+      const again=(await cli('06-owner-repeat-launch',target,['launch-target',repeated.contextId,repeated.planDigest])).ManagedContextLaunchTarget.target
+      assert.notEqual(again.development.projectId,launch.development.projectId)
+      const repeatedWorkspace=again.development.repositories[0].workspacePath
+      assert.notEqual(repeatedWorkspace,launch.development.repositories[0].workspacePath)
+      assert.equal(await readFile(path.join(repeatedWorkspace,'bootstrap.sh'),'utf8'),ordinary)
+      assert.equal(await readFile(path.join(launch.development.repositories[0].workspacePath,'bootstrap.sh'),'utf8'),ordinary)
+      steps.push({name:'owner-repeat-copy-adds-distinct-target-project',mpItems:['MP-07','MP-08','MP-10'],first:launch.development.projectId,repeated:again.development.projectId})
+    }
   } else if(encodedMode || packagedAttack) {
     const refused=await copy('02-encoded-refusal')
     assert.equal(refused.phase,'failed','MP-11 encoded credential must be refused on real copy path')
@@ -374,8 +387,7 @@ try {
     assert.equal(refused.receipt??null,null,'MP-11 no destination receipt on source refusal')
     steps.push({name:'encoded-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
   } else {
-  // MP-08/MP-10: inject on the first copy into a fresh target. A separate fresh
-  // copy of an already-imported Project conflicts with its Workspace binding.
+  // MP-08/MP-10: inject on the first copy into a fresh target.
   const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
   const launch=(await cli('03-target-launch',target,['launch-target',broken.contextId,broken.planDigest])).ManagedContextLaunchTarget.target
   const imported=launch.development.repositories[0].workspacePath
