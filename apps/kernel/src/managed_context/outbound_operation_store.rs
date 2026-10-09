@@ -92,11 +92,16 @@ impl ManagedContextOutboundOperationStore {
                     false,
                 ));
             }
-            if self.get(&saved_plan.context_id).is_some_and(|status| {
-                status.phase != ManagedContextOutboundOperationPhase::Completed
-                    && (status.phase != ManagedContextOutboundOperationPhase::Failed
-                        || status.retryable)
-            }) {
+            // Reuse a recoverable operation, or an unconsumed binding whose
+            // start was refused before status admission (e.g. busy slots).
+            if self.get(&saved_plan.context_id).map_or(
+                saved.consumption_attempted == Some(false),
+                |status| {
+                    status.phase != ManagedContextOutboundOperationPhase::Completed
+                        && (status.phase != ManagedContextOutboundOperationPhase::Failed
+                            || status.retryable)
+                },
+            ) {
                 return Ok(saved.ticket);
             }
         }
@@ -679,8 +684,8 @@ mod tests {
         let mut ticket = store
             .prepare_owner_ticket(&config, &runtime, selection.clone())
             .unwrap();
-        // MP-08/MP-11: a failed first status write cannot pin owner preparation
-        // to an operation that has no active execution.
+        // MP-08/MP-11: a failed first status write leaves no phantom operation;
+        // owner preparation reuses the unconsumed binding and can start it.
         let failed_context = ticket.context_plan.context_id().to_string();
         let blocked_status = root
             .join("outbound/.operations")
@@ -698,7 +703,7 @@ mod tests {
         ticket = store
             .prepare_owner_ticket(&config, &runtime, selection.clone())
             .unwrap();
-        assert_ne!(ticket.context_plan.context_id(), failed_context);
+        assert_eq!(ticket.context_plan.context_id(), failed_context);
         let plan = ticket.context_plan.package_binding();
         // MP-08/MP-11: ambiguous/noninteractive admission and a disconnected
         // source stop before creating an operation or reaching Cloud.
@@ -752,7 +757,7 @@ mod tests {
         assert!(reopened
             .authorize_status_owner(&foreign, &plan.context_id)
             .is_err());
-        let mut unavailable = selection;
+        let mut unavailable = selection.clone();
         unavailable.context_selection.development_setup =
             OwnerManagedDevelopmentSelection::SourceProject {
                 project_id: "missing-project".into(),
@@ -761,6 +766,60 @@ mod tests {
         assert!(reopened
             .prepare_owner_ticket(&config, &runtime, unavailable)
             .is_err());
+        // MP-08/MP-11: a start refused before status admission (both transfer
+        // slots busy) reuses its prepared binding instead of orphaning one per
+        // retry; reopening retires a legacy status-less binding no index names.
+        let held = (0..2)
+            .map(|index| {
+                reopened
+                    .start(&format!("context-slot-{index}"), "sha256:slot")
+                    .unwrap()
+                    .1
+                    .expect("occupy a transfer slot")
+            })
+            .collect::<Vec<_>>();
+        let mut busy = selection.clone();
+        busy.target.machine_id = "busy-target-machine".into();
+        let first = reopened
+            .prepare_owner_ticket(&config, &runtime, busy.clone())
+            .unwrap();
+        for _ in 0..4 {
+            let plan = first.context_plan.package_binding();
+            assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_err());
+            assert_eq!(
+                reopened
+                    .prepare_owner_ticket(&config, &runtime, busy.clone())
+                    .unwrap(),
+                first
+            );
+        }
+        drop(held);
+        write_owner_metadata(&reopened, "context-orphan-a");
+        write_owner_metadata(&reopened, "context-orphan-b");
+        let operations = root.join("outbound/.operations");
+        let reopened = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        reopened.reclaim_operation_metadata(None).unwrap();
+        assert!(!operations.join("context-orphan-a-owner.json").exists());
+        assert!(operations.join("context-orphan-b-owner.json").exists());
+        let names = fs::read_dir(&operations)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let bindings = names.iter().filter(|name| name.ends_with("-owner.json"));
+        let indexes = names.iter().filter(|name| {
+            name.strip_prefix("owner-")
+                .and_then(|name| name.strip_suffix(".json"))
+                .is_some_and(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        });
+        assert_eq!(
+            bindings.count(),
+            indexes.count(),
+            "one context binding per prepared owner plan"
+        );
+        let plan = first.context_plan.package_binding();
+        assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_ok());
         drop(router);
         fs::remove_dir_all(root).unwrap();
     }

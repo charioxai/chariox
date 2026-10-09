@@ -53,6 +53,8 @@ impl ManagedContextOutboundOperationStore {
         let mut disk_unfinished = BTreeSet::new();
         let mut disk_counts = BTreeMap::<String, usize>::new();
         let mut bindings: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
+        let mut indexed = BTreeSet::new();
+        let mut unconsumed = Vec::new();
         for entry in entries {
             let path = entry.path();
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -83,13 +85,19 @@ impl ManagedContextOutboundOperationStore {
                 if !valid_artifact_name(&plan.context_id) {
                     continue;
                 }
-                if name == format!("{}-owner.json", plan.context_id)
-                    || name
-                        == format!(
-                            "owner-{}.json",
-                            plan.plan_digest.trim_start_matches("sha256:")
-                        )
+                let index = name
+                    == format!(
+                        "owner-{}.json",
+                        plan.plan_digest.trim_start_matches("sha256:")
+                    );
+                if index {
+                    indexed.insert(plan.context_id.clone());
+                } else if name == format!("{}-owner.json", plan.context_id)
+                    && saved.consumption_attempted == Some(false)
                 {
+                    unconsumed.push((plan.context_id.clone(), path.clone()));
+                }
+                if index || name == format!("{}-owner.json", plan.context_id) {
                     bindings
                         .entry(plan.context_id)
                         .or_default()
@@ -102,6 +110,23 @@ impl ManagedContextOutboundOperationStore {
         // erased based on an older durable status.
         let mut state = self.state.lock().expect("operation retirement status lock");
         let active = self.active_context_ids();
+        // A binding whose plan index moved on and whose start never admitted a
+        // status was never consumed and can never be resumed; retire it.
+        for (context_id, path) in unconsumed {
+            if !indexed.contains(&context_id)
+                && !disk_counts.contains_key(&context_id)
+                && !state.contains_key(&context_id)
+                && !active.contains(&context_id)
+                && protected_context != Some(context_id.as_str())
+            {
+                fs::remove_file(path).map_err(|error| {
+                    outbound_service_io_error("retire orphaned owner binding", error)
+                })?;
+                sync_metadata_directory(&parent)?;
+                bindings.remove(&context_id);
+                entry_count = entry_count.saturating_sub(1);
+            }
+        }
         statuses.retain(|(status, _, retiring)| {
             terminal(status)
                 && !active.contains(&status.context_id)
