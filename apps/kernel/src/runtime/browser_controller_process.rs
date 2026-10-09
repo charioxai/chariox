@@ -3194,8 +3194,14 @@ done
                 .args(["--exact", &name, "--nocapture"])
                 .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
                 .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")
-                .env("CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER", "/fixture/openh264.so")
-                .env("CHARIOX_BROWSER_DISPLAY_OPENH264", "/fixture/libopenh264.so.8")
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                    "/fixture/openh264.so",
+                )
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264",
+                    "/fixture/libopenh264.so.8",
+                )
                 .env("CHARIOX_BROWSER_DISPLAY_LIBYUV", "/fixture/libyuv.so")
                 .env("CHARIOX_TEST_CONTROL_SECRET", "synthetic")
                 .status()
@@ -3228,9 +3234,12 @@ done
         backend.start().unwrap();
         let result = backend.host_request("host.browser", serde_json::json!({"op":"probe"}));
         backend.stop().unwrap();
-        assert_eq!(result.unwrap(), serde_json::json!({
-            "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
-            "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
-        }));
+        assert_eq!(
+            result.unwrap(),
+            serde_json::json!({
+                "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
+                "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
+            })
+        );
     }
 }
