@@ -121,8 +121,8 @@ credential handle plus observed tab/generation/document/node reference, never
 secret text. Only the host owner (local or configured Cloud identity) can use
 the host Vault. Collaborators keep separate browser profiles. The existing Room
 Vault service, unlock RuntimeInteraction and lifecycle read lock authorize the
-observed frame URL; focus, metadata and the editable password target are checked
-again after waits. The existing controller Fill enforces document/URL/masking
+observed frame URL; focus, metadata and the editable fill target are checked
+again after waits. The existing controller Fill enforces document/URL/fill-target binding
 and native-form submission. `submit=false` is the default. Browser profiles remain private kernel
 state. Arbitrary JavaScript and CDP are internal implementation seams only.
 
@@ -216,23 +216,20 @@ never saved as plaintext secret-bearing restore URLs. No secret-reading MCP
 endpoint exists. The obsolete unprotected host request/App methods are removed;
 appviews must use the unchanged async `kernel_browser_app_view` seam.
 
-PNG screenshots reuse the Room's trusted CDP region locator, including field,
-plaintext echo, iframe and opaque-media masks. A small bounded native PNG
-adapter applies the masks after capture. Content capture binds to the emulated
-CDP viewport rather than desktop window bounds; Room desktop binding stays
-unchanged. Unsupported/racing layouts use a
-whole-frame opaque mask. Screencast activity triggers that same protected
-screenshot path with one in-flight capture, a latest-frame bound and a 5Hz cap.
-Subscribers on one tab share one CDP source and acknowledgment. Raw protected
-screencast pixels never leave the controller. An opaque fallback is available
-immediately while a bound frame is pending, even without a repaint. This is a conservative frame source,
-not the display lane's final transport. The display lane must preserve the
-input/capture barrier, policy revision and protected pixel path for any new
-frame source; it must not consume raw CDP frames after secret insertion.
+MP-08/MP-11 protection follows Miguel's 2026-10-09 fill-target model. The
+kernel records each Vault fill's frame, backend node, document and generation.
+Every capture masks only that target's box when its current type is plain
+(input, textarea or contenteditable). Password fields render dots and stay
+visible; a show-password toggle gets covered on its next capture. Removed,
+cleared/replaced or navigated targets retire. Device-pixel boxes are shared by
+screenshots, browser video and desktop placement, including cross-origin fills
+at DPR1/2. Failed/racing target measurements drop the capture for retry.
+There are no echo, container/order/bidi/budget, iframe, media or browser-chrome
+masks. Metadata/log secret scrubbing remains separate from visual protection.
 
 MD-5 tests cover owner-only Vault admission, no secret arguments/results,
 focus revocation, dormant-profile retirement, sealed restart scrubbing, background
-content masks, pixel replacement and full-mask fallback. The native kernel replay
+exact fill-target masks, pixel replacement and capture retry. The native kernel replay
 also uses a disposable synthetic Vault/password fixture, deliberately echoes
 secret input, captures protected pixels, retires the credential and checks
 scrubbing/frames and process recovery. These checks do not establish a real
