@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
