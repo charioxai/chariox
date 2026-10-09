@@ -63,7 +63,14 @@ impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        // MP-08 / MP-11: scratch can live in protected service state, while
+        // real session workspaces must stay outside that state. Builder lanes
+        // provide their own disposable workspace parent without moving TMPDIR.
+        let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        assert!(root.is_absolute(), "test workspace parent must be absolute");
+        let path = root.join(format!(
             "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));

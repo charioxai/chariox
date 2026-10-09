@@ -147,7 +147,7 @@ try {
   const created=unwrap(await client.send(requests.createSessionRequest(workspace,workspace,'relost-workflows')), 'SessionCreated')
   sessionId=created.session.id
   const agent=unwrap(await client.send(requests.spawnAgentRequest(sessionId,'codex','workflow-codex',model,workspace,'low','build','yolo',undefined,undefined,undefined,profile.profile_id)), 'AgentSpawned').agent
-  unwrap(await client.send(requests.createAgentWorkflowRequest(sessionId,agent.id,'trigger','tui','Review')), 'AgentWorkflowCreated')
+  unwrap(await client.send(requests.createAgentWorkflowRequest(sessionId,agent.id,'trigger','tui','review')), 'AgentWorkflowCreated')
   const inventoryState=await stateUntil(s=>s.room_workflows?.workflow_count===1)
   const heading=inventoryState.room_workflows.workflows[0].label+' /'
   receipt.workflowLabel=inventoryState.room_workflows.workflows[0].label
