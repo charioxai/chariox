@@ -139,6 +139,14 @@ impl ClaudeSetupTokenScreen {
         None
     }
 
+    /// The official CLI keeps running after OAuth refusal and needs Enter to retry.
+    /// Project only this fixed phase, never provider error text or echoed codes.
+    pub fn authorization_retry_required(&self) -> bool {
+        let rows = self.rows();
+        rows.iter().any(|row| row.contains("OAuth error:"))
+            && rows.iter().any(|row| row.contains("Press Enter to retry"))
+    }
+
     fn rows(&self) -> Vec<Zeroizing<String>> {
         self.parser
             .screen()

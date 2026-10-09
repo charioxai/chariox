@@ -137,6 +137,7 @@ pub(super) async fn reconcile(
             owner_user_id,
             record,
             "Claude setup-token did not exit successfully; nothing was stored.",
+            "Claude authorization process failed. Nothing was stored. Choose Log in in Provider Accounts to try again.",
         );
     }
     let remaining = runtime_state
@@ -160,6 +161,7 @@ pub(super) async fn reconcile(
                 owner_user_id,
                 record,
                 "Claude setup-token finished without printing a Claude OAuth token; nothing was stored.",
+                "Claude did not return a setup token. Nothing was stored. Choose Log in in Provider Accounts to try again.",
             );
         }
         SetupTokenScan::Ambiguous => {
@@ -168,6 +170,7 @@ pub(super) async fn reconcile(
                 owner_user_id,
                 record,
                 "Claude setup-token printed more than one token; nothing was stored.",
+                "Claude returned ambiguous setup tokens. Nothing was stored. Choose Log in in Provider Accounts to try again.",
             );
         }
     };
@@ -177,7 +180,7 @@ pub(super) async fn reconcile(
         "Verifying the setup token with Claude…",
         crate::session::unix_epoch_ms(),
     )?;
-    if let Err(message) = verify(
+    if let Err(error) = check(
         runtime_state,
         owner_user_id,
         &record.account_profile,
@@ -185,7 +188,17 @@ pub(super) async fn reconcile(
     )
     .await
     {
-        return fail(runtime_state, owner_user_id, record, &message);
+        let notice = match &error {
+            ClaudeCredentialCheckError::Rejected => "Claude credential verification failed: the setup token was rejected, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to try again.",
+            ClaudeCredentialCheckError::Inconclusive(_) => "Claude credential verification failed: the network or Claude CLI could not complete the check. Nothing was stored. Check connectivity, then choose Log in in Provider Accounts to try again.",
+        };
+        return fail(
+            runtime_state,
+            owner_user_id,
+            record,
+            &verification_failure_message(error),
+            notice,
+        );
     }
     store_token(runtime_state, owner_user_id, record, token, None).await
 }
@@ -266,15 +279,19 @@ pub(super) async fn verify(
     account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), String> {
-    let checked = check(runtime_state, owner_user_id, account_profile, token).await;
-    match checked {
-        Ok(()) => Ok(()),
-        Err(ClaudeCredentialCheckError::Rejected) => Err(
-            "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
-        ),
-        Err(ClaudeCredentialCheckError::Inconclusive(reason)) => Err(format!(
+    check(runtime_state, owner_user_id, account_profile, token)
+        .await
+        .map_err(verification_failure_message)
+}
+
+fn verification_failure_message(error: ClaudeCredentialCheckError) -> String {
+    match error {
+        ClaudeCredentialCheckError::Rejected => {
+            "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to open the Claude authorization link.".to_string()
+        }
+        ClaudeCredentialCheckError::Inconclusive(reason) => format!(
             "Claude could not verify the setup token ({reason}). Nothing was stored. Check the network and the Claude CLI, then try again."
-        )),
+        ),
     }
 }
 
@@ -406,6 +423,7 @@ async fn store_token(
             owner_user_id,
             record,
             &format!("Storing the Claude setup token failed: {error}"),
+            "Saving the Claude setup token to the Chariox Vault failed. Choose Log in in Provider Accounts to try again.",
         ),
         Ok(ClaudeSetupTokenStoreOutcome::Stored) => {
             store.append_setup_token_note(
@@ -426,7 +444,11 @@ fn fail(
     owner_user_id: &str,
     record: &ProviderLoginProcessRecord,
     message: &str,
+    notice: &'static str,
 ) -> Result<ProviderLoginStatus, DaemonError> {
+    if let Some(login) = &record.setup_token {
+        login.set_failure_notice(notice);
+    }
     runtime_state
         .provider_login_process_store()
         .append_setup_token_note(

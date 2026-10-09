@@ -68,21 +68,28 @@ impl KernelRuntimeState {
             }
         }
         let outcome = match &result {
+            Ok(true) if login.login_kind == "terminal_setup_token" => {
+                let label = self.provider_account_profile_registry().get(owner, &login.provider, &login.account_profile)
+                    .map(|profile| profile.label).unwrap_or_else(|_| login.account_profile.clone());
+                Some(format!("Signed in to Claude · {label}. Verified setup token saved. Manage this account in Provider Accounts."))
+            }
             Ok(true) => None,
             Ok(false) => {
                 let cancelled = login.login_id.as_deref().and_then(|id| self.provider_login_process_store().record_for_owner(owner, id).ok())
                     .is_some_and(|record| record.state == ProviderLoginProcessState::Cancelled);
+                let failure_notice = login.login_id.as_deref().and_then(|id| self.provider_login_process_store().record_for_owner(owner, id).ok())
+                    .and_then(|record| record.setup_token.and_then(|login| login.failure_notice()));
                 Some(if cancelled {
                     "Provider sign-in cancelled. Choose Log in in Provider Accounts to try again."
                 } else {
-                    "Provider authorization or credential verification failed. Choose Log in in Provider Accounts to try again."
-                })
+                    failure_notice.unwrap_or("Provider authorization or credential verification failed. Choose Log in in Provider Accounts to try again.")
+                }.to_string())
             }
             Err(error) if super::runtime_interaction_owned_state::interaction_waits(error) => Some(
-                "Provider authorization could not open because another interaction is pending. Resolve it, then choose Log in in Provider Accounts to try again."
+                "Provider authorization could not open because another interaction is pending. Resolve it, then choose Log in in Provider Accounts to try again.".to_string()
             ),
             Err(_) => Some(
-                "Provider authorization could not complete on this machine. Choose Log in in Provider Accounts to try again."
+                "Provider authorization could not complete on this machine. Choose Log in in Provider Accounts to try again.".to_string()
             ),
         };
         if let Some(message) = outcome {
@@ -95,7 +102,7 @@ impl KernelRuntimeState {
                 self.owned
                     .attachment_store
                     .list_session_attachment_ids(session_id),
-                message,
+                &message,
             );
         }
         result
@@ -182,7 +189,13 @@ impl KernelRuntimeState {
                     receiver = None;
                     let Ok(reply) = reply else { return Ok(false) };
                     if reply.choice_id.as_deref() == Some("cancel") { return Ok(false) }
-                    let Some(mut input) = reply.reply else { return Ok(false) };
+                    let mut input = if reply.choice_id.as_deref() == Some("retry")
+                        && template.choices().iter().any(|choice| choice.id() == "retry") {
+                        String::new()
+                    } else {
+                        let Some(input) = reply.reply else { return Ok(false) };
+                        input
+                    };
                     input.push('\r');
                     let data_base64 = base64::engine::general_purpose::STANDARD.encode(input.as_bytes());
                     use zeroize::Zeroize;

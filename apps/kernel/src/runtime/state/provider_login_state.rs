@@ -45,6 +45,7 @@ struct ClaudeSetupTokenSecrets {
     new_vault_passphrase: Option<Zeroizing<String>>,
     hidden_inputs: Vec<Zeroizing<String>>,
     reader_finished: bool,
+    failure_notice: Option<&'static str>,
 }
 
 impl ClaudeSetupTokenSecrets {
@@ -110,6 +111,21 @@ impl ClaudeSetupTokenLogin {
             self.process(bytes);
         }
         Vec::new()
+    }
+
+    pub fn failure_notice(&self) -> Option<&'static str> {
+        self.secrets().failure_notice
+    }
+
+    pub fn set_failure_notice(&self, notice: &'static str) {
+        self.secrets().failure_notice = Some(notice);
+    }
+
+    fn authorization_retry_required(&self) -> bool {
+        self.secrets()
+            .screen
+            .as_ref()
+            .is_some_and(ClaudeSetupTokenScreen::authorization_retry_required)
     }
 
     pub fn reader_finished(&self) -> bool {
@@ -239,9 +255,17 @@ impl ProviderLoginProcessRecord {
         {
             return Some(self.vault_passphrase_interaction(prompt));
         }
-        let title = match self.operation {
-            ProviderAuthProcessOperation::Login => "Authenticate provider account",
-            ProviderAuthProcessOperation::Logout => "Log out provider account",
+        let retry_required = self
+            .setup_token
+            .as_ref()
+            .is_some_and(ClaudeSetupTokenLogin::authorization_retry_required);
+        let title = if retry_required {
+            "Retry Claude authorization"
+        } else {
+            match self.operation {
+                ProviderAuthProcessOperation::Login => "Authenticate provider account",
+                ProviderAuthProcessOperation::Logout => "Log out provider account",
+            }
         };
         let authorization_url = self.setup_token.as_ref().and_then(|login| {
             login
@@ -250,7 +274,9 @@ impl ProviderLoginProcessRecord {
                 .as_ref()
                 .and_then(ClaudeSetupTokenScreen::authorization_url)
         });
-        let message = if self.setup_token.is_some() {
+        let message = if retry_required {
+            "Claude could not accept the authorization response. Nothing was stored. Choose Retry authorization to open a fresh link, then authorize and paste the new code."
+        } else if self.setup_token.is_some() {
             "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below."
         } else if self.backend == ProviderLoginProcessBackend::Terminal {
             "Complete the provider-native terminal workflow. Its output is projected separately and responses are treated as secrets."
@@ -267,13 +293,30 @@ impl ProviderLoginProcessRecord {
             crate::session::RuntimeInteractionLevel::Warning,
             Some(title.to_string()),
             message,
-            vec![crate::session::RuntimeInteractionChoice::new(
-                "cancel",
-                "Cancel",
-                "cancel",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            )],
-            (self.backend == ProviderLoginProcessBackend::Terminal).then(|| {
+            if retry_required {
+                vec![
+                    crate::session::RuntimeInteractionChoice::new(
+                        "retry",
+                        "Retry authorization",
+                        "retry",
+                        Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+                    ),
+                    crate::session::RuntimeInteractionChoice::new(
+                        "cancel",
+                        "Cancel",
+                        "cancel",
+                        Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+                    ),
+                ]
+            } else {
+                vec![crate::session::RuntimeInteractionChoice::new(
+                    "cancel",
+                    "Cancel",
+                    "cancel",
+                    Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+                )]
+            },
+            (self.backend == ProviderLoginProcessBackend::Terminal && !retry_required).then(|| {
                 crate::session::RuntimeInteractionCustomChoice::secret(
                     "provider-response",
                     "Send response",
@@ -287,7 +330,11 @@ impl ProviderLoginProcessRecord {
         );
         if self.setup_token.is_some() {
             let mut start = self.start.clone();
-            start.auth_url = authorization_url;
+            start.auth_url = if retry_required {
+                None
+            } else {
+                authorization_url
+            };
             interaction = interaction.with_provider_login(crate::session::RuntimeProviderLogin {
                 kernel_id: self.kernel_id.clone(),
                 login: start,
@@ -718,6 +765,59 @@ mod tests {
             interaction.custom_choice().unwrap().input_kind(),
             crate::session::RuntimeInteractionInputKind::Secret
         );
+    }
+
+    // MP-08/MP-10/MP-11: a running official OAuth refusal needs a safe retry phase.
+    #[test]
+    fn setup_token_rejected_oauth_code_projects_retry_without_secrets() {
+        let store = ProviderLoginProcessStore::default();
+        let mut login = record("owner-a", "login-a");
+        login.setup_token = Some(ClaudeSetupTokenLogin::default());
+        login.start.login_kind = "terminal_setup_token".into();
+        store.insert(login).unwrap();
+        let status = store.append_output("owner-a", "login-a", [
+            b"https://claude.com/cai/oauth/authorize?code=true&client_id=fixture\r\nPaste code here if prompted > ".to_vec(),
+            b"\r\nOAuth error: Request failed with status code 400 secret-provider-detail\r\nPress Enter to retry.\r\n".to_vec(),
+        ], 2).unwrap();
+        assert_eq!(status.state, ProviderLoginProcessState::Running);
+        let interaction = status.interaction.unwrap();
+        assert_eq!(
+            interaction.title(),
+            Some("Retry Claude authorization"),
+            "MP-08/MP-10/MP-11 must surface the running OAuth refusal"
+        );
+        assert!(interaction
+            .message()
+            .contains("Claude could not accept the authorization response"));
+        assert!(!interaction.message().contains("secret-provider-detail"));
+        assert!(interaction
+            .choices()
+            .iter()
+            .any(|choice| choice.id() == "retry"));
+        assert!(interaction.custom_choice().is_none());
+        assert!(interaction
+            .provider_login()
+            .unwrap()
+            .login
+            .auth_url
+            .is_none());
+        assert!(interaction
+            .provider_login()
+            .unwrap()
+            .terminal_output_base64
+            .is_empty());
+        let status = store.append_output("owner-a", "login-a", [b"\x1b[2J\x1b[Hhttps://claude.com/cai/oauth/authorize?code=true&client_id=next\r\nPaste code here if prompted > ".to_vec()], 3).unwrap();
+        let interaction = status.interaction.unwrap();
+        assert_eq!(interaction.title(), Some("Authenticate provider account"));
+        assert!(interaction.custom_choice().is_some());
+        assert!(interaction
+            .provider_login()
+            .unwrap()
+            .login
+            .auth_url
+            .as_deref()
+            .unwrap()
+            .contains("client_id=next"));
     }
 
     #[test]

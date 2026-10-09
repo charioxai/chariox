@@ -980,6 +980,11 @@ async fn setup_token_expired_vault_observation_wins_over_authenticated_native() 
 }
 
 #[tokio::test]
+async fn setup_token_rejected_code_retry_reuses_child_and_publishes_success() {
+    first_use_fixture("enrollment-retry").await;
+}
+
+#[tokio::test]
 async fn setup_token_first_use_other_account_launch_and_replacement_do_not_wait() {
     first_use_fixture("concurrent").await;
 }
@@ -1058,7 +1063,7 @@ if [ "$1" = -p ]; then
     fi
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
   fi
-  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && [ '{mode}' = enrollment-two ]; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && {{ [ '{mode}' = enrollment-two ] || [ '{mode}' = enrollment-retry ]; }}; then
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
   fi
   [ '{mode}' = network ] && exit 3
@@ -1073,7 +1078,14 @@ echo login >> '{root}/logins'
 printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
 printf 'Paste code here if prompted > '
 IFS= read -r response
-if [ '{mode}' = enrollment-failed ] || [ '{mode}' = enrollment-two ]; then
+if [ '{mode}' = enrollment-retry ]; then
+  printf '\r\nOAuth error: Request failed with status code 400\r\nPress Enter to retry.\r\n'
+  IFS= read -r retry
+  [ -z "$retry" ] || exit 91
+  printf '\033[2J\033[Hhttps://claude.com/cai/oauth/authorize?code=true&client_id=next\r\nPaste code here if prompted > '
+  IFS= read -r response
+fi
+if [ '{mode}' = enrollment-failed ] || [ '{mode}' = enrollment-two ] || [ '{mode}' = enrollment-retry ]; then
   printf '%s\n' 'sk-ant-oat01-{replacement}'; exit 0
 fi
 exit 1
@@ -1378,7 +1390,7 @@ exit 1
             );
             let command = KernelCommand::from_local_request("enroll", None, None, &start);
             let response = router.dispatch(command, start.clone()).await?;
-            if mode == "enrollment-two" {
+            if matches!(mode, "enrollment-two" | "enrollment-retry") {
                 let second = router
                     .dispatch(
                         KernelCommand::from_local_request("enroll-second", None, None, &start),
@@ -1402,7 +1414,7 @@ exit 1
             {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            if mode == "enrollment-two" {
+            if matches!(mode, "enrollment-two" | "enrollment-retry") {
                 return router
                     .runtime_state
                     .prepare_provider_launch_request_with_vault(request, "repaired account")
@@ -1513,7 +1525,7 @@ exit 1
     assert!(interaction.message().contains("authorization link"));
     assert!(!interaction.message().contains("--replace"));
     assert!(!interaction.message().contains("claude setup-token"));
-    if mode == "enrollment-failed" || mode == "enrollment-two" {
+    if mode == "enrollment-failed" || matches!(mode, "enrollment-two" | "enrollment-retry") {
         let choice = interaction.custom_choice().unwrap().id();
         router
             .runtime_state
@@ -1525,6 +1537,36 @@ exit 1
             )
             .await
             .unwrap();
+        if mode == "enrollment-retry" {
+            let retry = wait_for_login_phase(&router, &session, "Retry Claude authorization").await;
+            assert!(retry.message().contains("Nothing was stored"));
+            assert!(retry.custom_choice().is_none());
+            router
+                .runtime_state
+                .resolve_runtime_interaction(session.id(), retry.id(), "retry", None)
+                .await
+                .unwrap();
+            let fresh =
+                wait_for_login_phase(&router, &session, "Authenticate provider account").await;
+            assert!(fresh
+                .provider_login()
+                .unwrap()
+                .login
+                .auth_url
+                .as_deref()
+                .unwrap()
+                .contains("client_id=next"));
+            router
+                .runtime_state
+                .resolve_runtime_interaction(
+                    session.id(),
+                    fresh.id(),
+                    fresh.custom_choice().unwrap().id(),
+                    Some("synthetic-secret-code-next"),
+                )
+                .await
+                .unwrap();
+        }
         let result = tokio::time::timeout(Duration::from_secs(10), &mut prepared)
             .await
             .unwrap();
@@ -1538,6 +1580,7 @@ exit 1
                 .provider_credential_env
                 .iter()
                 .any(|(_, value)| value == replacement));
+            wait_for_enrollment_notice(&router, &session, agent.id(), "Signed in to Claude").await;
             for provider in ["claude-p", "claude-headless"] {
                 let request = crate::provider::LaunchProviderRequest::new(
                     session.id(),
@@ -1595,6 +1638,37 @@ exit 1
         .runtime_state
         .provider_login_process_store()
         .has_running_for_profile("local", "claude", &profile.profile_id));
+}
+
+async fn wait_for_login_phase(
+    router: &CommandRouter,
+    session: &crate::session::RuntimeSession,
+    title: &str,
+) -> crate::session::RuntimeInteraction {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if let Some(interaction) = current.active_interactions().iter().find(|interaction| {
+                interaction.title() == Some(title)
+                    && (title != "Authenticate provider account"
+                        || interaction
+                            .provider_login()
+                            .and_then(|login| login.login.auth_url.as_deref())
+                            .is_some_and(|url| url.contains("client_id=next")))
+            }) {
+                return interaction.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("MP-08/MP-10/MP-11 must project the official OAuth retry phase")
 }
 
 async fn wait_for_enrollment_notice(
