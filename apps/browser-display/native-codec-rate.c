@@ -95,6 +95,39 @@ static void reset_restarts_without_reopening(void) {
     }
     free(pixels);puts("MP-08/MP-10 OpenH264 reset restarts the encoder with an IDR PASS");
 }
+/* MP-08/MP-10: the recovery key budget is unchanged even for noise. The
+ * presenter already admits 1280x720 motion on a 1920x1080 exact canvas. */
+static void noisy_recovery_key_fits(void) {
+  for (int size=0;size<2;size++) {
+    const int width=size?2560:1920,height=size?1600:1080;
+    uint8_t *pixels=malloc((size_t)width*height*4);assert(pixels);
+    uint32_t noise=17;
+    for (int n=0;n<width*height;n++) {
+        noise^=noise<<13;noise^=noise>>17;noise^=noise<<5;
+        pixels[n*4]=noise;pixels[n*4+1]=noise>>8;pixels[n*4+2]=noise>>16;pixels[n*4+3]=255;
+    }
+    expected=8000000;expected_max_qp=0;
+    void *codec=cx_codec_open(width,height,expected,1,0);assert(codec);
+    const char *output=getenv("CHARIOX_NATIVE_CODEC_PACKET_DIR");FILE *stream=NULL;
+    if(output) {char name[4096];assert(snprintf(name,sizeof(name),"%s/noise-%d.h264",output,width)<sizeof(name));stream=fopen(name,"wb");assert(stream);}
+    for (int f=0;f<3;f++) {
+        struct RowResult result[8];
+        int n=cx_codec_encode(codec,pixels,255,NULL,0,result);assert(n==1);
+        printf("MP-08/MP-10 noisy recovery key width=%d bytes=%zu bound=45000 reduced=%d\n",width,result[0].length,cx_codec_reduced(codec));fflush(stdout);
+        assert(result[0].key&&result[0].sequence==1&&result[0].length<=45000);
+        assert(cx_codec_reduced(codec));
+        if(stream)assert(fwrite(result[0].bytes,1,result[0].length,stream)==result[0].length);
+        /* No native pixel may be certified from the scaled reference. */
+        int bounds[4];cx_codec_repair_bounds(codec,pixels,NULL,255,0,0,width,height,bounds);
+        assert(bounds[0]==0&&bounds[1]==0&&bounds[2]==width&&bounds[3]==height);
+        n=cx_codec_encode(codec,pixels,0,NULL,0,result);assert(n==1);
+        assert(!result[0].key&&result[0].sequence==2&&result[0].reference==1&&cx_codec_reduced(codec));
+        if(stream)assert(fwrite(result[0].bytes,1,result[0].length,stream)==result[0].length);
+    }
+    if(stream)assert(!fclose(stream));
+    cx_codec_close(codec);free(pixels);
+  }
+}
 int main(int argc,char **argv) {
     if(argc==2) {
         void *codec=cx_codec_open(64,64,1000000,1,0);
@@ -146,4 +179,5 @@ int main(int argc,char **argv) {
     cx_codec_close(scaled);assert(opens==12&&retunes==9);free(pixels);puts("MP-08/MP-10 runtime OpenH264 rate contract PASS");
     full_page_change_fits_vbv();
     reset_restarts_without_reopening();
+    noisy_recovery_key_fits();
 }

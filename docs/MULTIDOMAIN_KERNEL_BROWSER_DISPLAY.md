@@ -14,8 +14,7 @@ and reduced software motion scale are implemented; exact settled pixels stay
 native DPR. Current results remain RED and the flag stays off. See the source-bound
 Phase 10 matrix and integration limits in the performance doc.
 
-MP-08/MP-10/MP-11 phase 28 (since protocol 466 only the contention fallback
-below): unprotected, whole-frame software motion at
+MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
 Resizing precedes color conversion. Reduced video certifies no native pixels;
 lossless repair restores native resolution. Protected, striped and hardware
@@ -23,6 +22,16 @@ frames retain native geometry. Capture manually redirects the owned window on
 its private X server, avoiding composition onto an unused root, and falls back
 to automatic redirection when another capture owns the manual redirect.
 These changes do not establish performance or live acceptance.
+
+MP-08/MP-10/MP-11 owner amendment, 2026-10-09: keep the 45,000-byte
+unprotected recovery-key contract and full fidelity at settle. If a native
+whole-frame software key exceeds that bound, retry once at the existing
+1280×720 or 1280×800 motion geometry and keep its delta chain at that size.
+If that key still cannot fit, refuse it through the existing exact fallback.
+Protected streams retain native geometry and their independent output guard.
+Reduced reconstruction certifies no native pixels, so exact repair covers the
+full raster. No client geometry or serialized contract is expanded. Actual
+end-to-end settle cost remains a live validation requirement.
 
 MP-08/MP-10 protocol 466 (relay unchanged): display frame events are binary.
 The encrypted plaintext is `CXD1`, a big-endian u32 header length, the JSON
@@ -44,8 +53,9 @@ cell byte-for-byte against the previous readback or the admitted base; WebP
 tiles cover the rest. Only an exact, unprotected canvas whose base is the
 delivered frame may receive moves, so scrolling text stays lossless and exact.
 Larger residuals use native-resolution video. Reduced 720p/800p whole-frame
-software motion engages only while host CPU idle stays below 10% (held at
-least 10 s) and is reported as `motion_reduced_contention`.
+software motion may engage after an oversized key, or while host CPU idle
+stays below 10% (held at least 10 s). Both use the existing
+`motion_reduced_contention` timing marker; it alone does not prove CPU saturation.
 
 When a readback skips the delivered frame, the worker plans moves (or a
 static residual) against its committed exact canvas instead; a refused plan
