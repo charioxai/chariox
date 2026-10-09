@@ -435,16 +435,17 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { revoked: true } };
       }
       if (request.method === "host.secret") {
+        // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
+        // loosen ordinary Vault secret insertion into password fields.
+        const codeInput = request.params.mask_code_input === true;
+        if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
+            request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
+          throw new UserDomainRefusal("not_granted");
+        }
         await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
-        // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
-        // loosen ordinary Vault secret insertion into password fields.
-        const codeInput = request.params.mask_code_input === true;
-        if (codeInput && !String(request.params.observed_by ?? "").startsWith("terminal:")) {
-          throw new UserDomainRefusal("not_granted");
-        }
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal });

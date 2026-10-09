@@ -109,12 +109,16 @@ function normalizeAction(action) {
     if (utf8ByteLength(action.text) > MAX_FILL_TEXT_BYTES) {
       throw invalidAction(`fill text exceeds ${MAX_FILL_TEXT_BYTES} UTF-8 bytes`);
     }
+    const expectedDocumentUrl = normalizeExpectedDocumentUrl(action.expected_document_url);
+    if (action.mask_code_input === true && expectedDocumentUrl === null) {
+      throw invalidAction("protected owner code requires a bound document URL");
+    }
     return {
       kind: "fill",
       text: action.text,
       append: action.append === true,
       submit: action.submit === true,
-      expectedDocumentUrl: normalizeExpectedDocumentUrl(action.expected_document_url),
+      expectedDocumentUrl,
       maskCodeInput: action.mask_code_input === true,
     };
   }

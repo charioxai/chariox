@@ -708,3 +708,13 @@ for (const event of ["focus", "input", "change"]) {
     else assert.equal(f.field.type, "password");
   });
 }
+
+test("MP-08/MP-10/MP-11 owner code without a document URL cannot fall back to native input", async () => {
+  const f = protectedCodeFixture("text");
+  await assert.rejects(performBrowserAction({
+    connection: f.connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a", nodeRef: "backend:104",
+    action: { kind: "fill", text: "fixture-only-code", mask_code_input: true },
+    timeoutMs: 500, sleep: async () => {},
+  }));
+  assert.equal(f.connection.calls.some(call => call.method.startsWith("Input.")), false);
+});
