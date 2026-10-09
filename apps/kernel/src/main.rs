@@ -37,7 +37,7 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         kernel_arguments::Command::PrepareProtectedSliceIdentity(port) => {
             let proof =
                 chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
-            println!("{}", proof);
+            println!("{proof}");
             return Ok(());
         }
         kernel_arguments::Command::Run => {}
