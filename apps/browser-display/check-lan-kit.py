@@ -11,3 +11,10 @@ for name in ['kernel-browser-raster-damage','kernel-browser-stripes']:
 print('MP-11: isolated xxhash/capture/stripe imports PASS')
 """
 subprocess.run([shutil.which('chroot') or '/usr/bin/chroot',str(kit),'/runtime/lib/ld-linux-x86-64.so.2','--library-path','/runtime/lib','/runtime/python/bin/python3','-c',script],env={'PYTHONHOME':'/runtime/python','PYTHONDONTWRITEBYTECODE':'1'},check=True)
+
+# MP-08/MP-10/MP-11: dlopen dependencies are absent from ELF NEEDED/ldd.
+# The worker opens both encoder and independent output decoder in the chroot.
+if (kit/'runtime/native-worker').is_file():
+ env={'CHARIOX_BROWSER_DISPLAY_OPENH264':'/runtime/lib/libopenh264.so.8','CHARIOX_BROWSER_DISPLAY_SOFTWARE':'1'}
+ if os.environ.get('CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER')=='libx264':env['CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER']='libx264'
+ subprocess.run([shutil.which('chroot') or '/usr/bin/chroot',str(kit),'/runtime/lib/ld-linux-x86-64.so.2','--library-path','/runtime/lib','/runtime/native-worker','--display-native-codec-probe'],env=env,check=True)

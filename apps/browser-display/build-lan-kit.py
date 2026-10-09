@@ -6,6 +6,7 @@ import hashlib,json,re,shutil,subprocess,sys,sysconfig,tarfile,os
 from pathlib import Path
 sys.dont_write_bytecode=True
 from lan_node_runtime import install as install_node
+from lan_codec_runtime import codec_roots
 from protocol_versions import PROTOCOL_FILES,versions
 binary,tools,pytools,out=map(Path,sys.argv[1:])
 checkout=Path(__file__).resolve().parents[2]
@@ -48,7 +49,9 @@ for name in ['av','av.libs']:copy(pytools/name,kit/'pytools'/name)
 libs=kit/'runtime/lib';libs.mkdir()
 roots=[kit/'runtime/node',kit/'runtime/kernel-tests',kit/'runtime/python/bin/python3']+list((kit/'runtime/python').rglob('*.so'))+list((kit/'pytools').rglob('*.so'))
 if native_worker:roots.append(kit/'runtime/native-worker')
-roots += [Path('/usr/lib/x86_64-linux-gnu')/n for n in ['libX11.so.6','libXext.so.6','libXdamage.so.1','libXcomposite.so.1','libxxhash.so.0']]
+dynamic_roots=[(Path('/usr/lib/x86_64-linux-gnu')/n,n) for n in ['libX11.so.6','libXext.so.6','libXdamage.so.1','libXcomposite.so.1','libxxhash.so.0']]
+if native_worker:dynamic_roots+=codec_roots(Path(native_worker))
+roots += [root for root,_ in dynamic_roots]
 for root in roots:
  text=subprocess.run(['ldd',str(root)],capture_output=True,text=True,check=False).stdout
  for name in re.findall(r'(?:=>\s+|^\s*)(/[^\s]+)',text,re.M):
@@ -56,13 +59,13 @@ for root in roots:
   if p.exists() and not (libs/p.name).exists():copy(p.resolve(),libs/p.name)
 # MP-11: Python dlopens xxhash as well as the X libraries; ldd cannot
 # discover those imports. Bundle each root and its resolved dependencies.
-for root in roots[-5:]:copy(root.resolve(),libs/root.name)
+for root,name in dynamic_roots:copy(root.resolve(),libs/name)
 subprocess.run([sys.executable,str(checkout/'apps/browser-display/check-lan-kit.py'),str(kit)],check=True)
 loader=libs/'ld-linux-x86-64.so.2'
 if not loader.exists():raise SystemExit('MD-DISPLAY: loader missing')
 wrappers=kit/'runtime/bin';wrappers.mkdir()
 for name,program in [('node','node'),('python3','python/bin/python3')]+([('native-worker','native-worker')] if native_worker else []):
- extra='export PYTHONHOME="$base/python"\n' if name=='python3' else ''
+ extra='export PYTHONHOME="$base/python"\n' if name=='python3' else 'export CHARIOX_BROWSER_DISPLAY_OPENH264="$base/lib/libopenh264.so.8"\n' if name=='native-worker' else ''
  wrapper=f'#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n{extra}exec "$base/lib/ld-linux-x86-64.so.2" --library-path "$base/lib" "$base/{program}" "$@"\n'
  (wrappers/name).write_text(wrapper);(wrappers/name).chmod(0o755)
 (kit/'run-lan.sh').write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$base/runtime/bin/node" "$base/apps/browser-display/lan-run.mjs" "$@"\n');(kit/'run-lan.sh').chmod(0o755)
