@@ -4,7 +4,7 @@
 // origin, desktop capture at the AT-SPI document origin proven by
 // browser-desktop-protection.py. Page JavaScript never participates.
 import { createHash } from 'node:crypto';
-import { redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
+import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 
 const MAX_FRAMES = 64, MAX_REGIONS = 4096, MAX_PAGES = 32, FRAME_TIMEOUT_MS = 500;
 const MARKERS = ['data-chariox-secret', 'data-chariox-observation-protected', 'data-observation-protected'];
@@ -53,7 +53,8 @@ async function nodeBox(connection, sessionId, backendNodeId, dpr) {
 // fields, policy target nodes and Vault value echoes (DOM strings and rendered
 // layout text, which alone holds CSS-generated content) are protected. While
 // Vault values are registered, opaque media are protected too: a page can draw
-// a value into them and delete every DOM echo. Frame and plugin owners are
+// a value into them and delete every DOM echo; so are containers whose visual
+// order may differ from DOM order (renderedTextEchoes). Frame and plugin owners are
 // returned for mapping or withholding (owner decision 2026-10-08: inspectable
 // frames, and media without Vault values, are not masked whole).
 export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
@@ -130,7 +131,7 @@ async function isolatedFrames(connection, top, frameIds) {
 }
 
 async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children, withheld) {
-  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, entry.sessionId);
+  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: policy.values.length ? RENDER_ORDER_STYLES : [] }, entry.sessionId);
   const pending = [{ index: 0, origin, clip }];
   const ownersBySession = new Map(children.map(child => [child.ownerBackendNodeId, child]));
   while (pending.length) {

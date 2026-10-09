@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { decodePng } from './kernel-browser-pixels.mjs';
 import { ProtectionGate, awaitPresented, fenceBrowserCapture, measureBrowserProtection } from './browser-protection-regions.mjs';
-import { VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from './browser-protection-fixture.mjs';
+import { locateBrowserRegions } from './browser-observation-regions.mjs';
+import { REORDERED, VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from './browser-protection-fixture.mjs';
 const executable = process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
 assert.ok(executable, 'Explicit installed Chromium required; never download a browser');
 
@@ -75,6 +76,33 @@ for (const dpr of [1, 2]) test(`DPR ${dpr}: Vault echoes and opaque media are pr
   assert.equal(census(crop(siblings), inBox(siblings, withValue.regions)).magenta, 0, 'the split value is masked');
   assert.equal(census(pixels, withValue.regions).magenta, 0, 'echoes, the canvas-drawn, generated and split values are masked');
   assert.equal(census(crop(media), inBox(media, withValue.regions)).cyan, 0, 'every medium is masked while a value is registered');
+}));
+
+// Flex row-reverse, CSS order, grid placement, absolute positioning, a bidi
+// override, a right-to-left line and a font-size:0 separator show the value
+// although DOM order never spells it. Both collectors (desktop transform and
+// Browser-panel masks) mask each line only while a value is registered.
+for (const dpr of [1, 2]) test(`DPR ${dpr}: containers whose visual order differs from DOM order are masked by both collectors`, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
+  const { result } = await connection.send('Runtime.evaluate', { returnByValue: true,
+    expression: `${JSON.stringify(REORDERED)}.map(id => document.getElementById('order-' + id).getBoundingClientRect()).map(b => [b.left, b.top, b.width, b.height])` }, sessionId);
+  const lines = result.value.map(box => box.map(v => Math.round(v * dpr)));
+  const pixels = await shot();
+  const crop = ([x, y, w, h]) => ({ width: w, pixels: Buffer.concat(Array.from({ length: h }, (_, row) => pixels.pixels.subarray(((y + row) * pixels.width + x) * 4, ((y + row) * pixels.width + x + w) * 4))) });
+  // Outward-rounded, as masks are painted.
+  const inBox = ([x, y], regions) => regions.map(([rx, ry, rw, rh]) => [Math.floor(rx) - x, Math.floor(ry) - y, Math.ceil(rx + rw) - Math.floor(rx), Math.ceil(ry + rh) - Math.floor(ry)]);
+  const panel = values => locateBrowserRegions([], browser, values, { contentTarget: targetId, contentScale: dpr });
+  const collectors = { transform: async values => (await measureBrowserProtection(browser, policy(values))).pages[0].regions, panel };
+  const hidden = [], exposed = [];
+  for (const [name, collect] of Object.entries(collectors)) {
+    const without = await collect([]), withValue = await collect([VAULT_VALUE]);
+    lines.forEach((line, i) => {
+      if (census(crop(line), inBox(line, without)).magenta <= 100 * dpr * dpr) hidden.push(`${name} ${REORDERED[i]}`);
+      const left = census(crop(line), inBox(line, withValue)).magenta;
+      if (left) exposed.push(`${name} ${REORDERED[i]}: ${left} px`);
+    });
+  }
+  assert.deepEqual(hidden, [], 'ordinary without a Vault value');
+  assert.deepEqual(exposed, [], 'reordered values are masked');
 }));
 
 test('a captcha frame stays visible; its region is not protected', () => withFixture(1, async ({ browser, connection, sessionId }) => {
