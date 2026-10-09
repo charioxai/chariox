@@ -650,10 +650,15 @@ async fn execute_local(
                 }
                 // MP-11 review R2: registered/unknown protection fences both
                 // text and shortcuts. Never pass registry values to a keyboard.
+                // #904 review @61b0a4ac6: clicks and AT-SPI actions can activate
+                // Paste, and a registered value in an ordinary native field has
+                // no password role for clipboard-owner admission to see.
                 if matches!(
                     &action,
                     crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
                     | crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { .. }
                 ) {
                     let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
                     let policy: serde_json::Value = serde_json::from_str(&policy)
