@@ -70,6 +70,25 @@ for (const dpr of [1, 2]) for (const collector of ['documentProtection', 'locate
   }));
 }
 
+// MP-08/MP-11: field-reference coverage is independent of matching value echoes.
+for (const dpr of [1, 2]) test(`MP-08/MP-11 DPR ${dpr}: registered field quads cover content pixels`, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
+  await connection.send('Runtime.evaluate', { expression:`document.body.innerHTML='<input id="password" type="password" style="position:fixed;left:550px;top:160px;width:280px;height:40px;background:#ff00ff;border:0"><button style="position:fixed;left:20px;top:20px;width:180px;height:80px;background:#00ffff;border:0">Continue</button>'` }, sessionId);
+  const { root } = await connection.send('DOM.getDocument', {}, sessionId);
+  const { nodeId } = await connection.send('DOM.querySelector', { nodeId:root.nodeId, selector:'#password' }, sessionId);
+  const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
+  const regions = await locateBrowserRegions([{target_id:targetId,node_ref:`backend:${node.backendNodeId}`}],browser,[],{contentTarget:targetId,contentScale:dpr});
+  const pixels = await shot(), raw = census(pixels), after = census(pixels,regions);
+  if (process.env.CHARIOX_PROTECTION_TEST_EVIDENCE) {
+    const out=process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,data=encodePng(pixels.width,pixels.height,pixels.pixels);
+    await writeFile(path.join(out,`field-dpr${dpr}-raw.png`),Buffer.from(data,'base64'));
+    await writeFile(path.join(out,`field-dpr${dpr}-masked.png`),Buffer.from(maskPng(data,regions,dpr),'base64'));
+    await writeFile(path.join(out,`field-dpr${dpr}.json`),JSON.stringify({items:['MP-08','MP-11'],dpr,raw,after,regions}));
+  }
+  assert(raw.magenta>10000*dpr*dpr,'MP-11 empty protected field renders canary pixels');
+  assert(after.cyan>=raw.cyan*.95,'MP-08 ordinary control remains visible');
+  assert.equal(after.magenta,0,'MP-11 registered field is covered at its capture coordinates');
+}));
+
 for (const dpr of [1, 2]) for (const kind of ['huge', 'overlap']) for (const collector of ['documentProtection', 'locateBrowserRegions']) {
   test(`MP-08/MP-11 DPR ${dpr} ${collector}: ${kind} glyph grid has a deadline`, { timeout: 15000 }, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
     await connection.send('Runtime.evaluate', { expression: `{
