@@ -66,7 +66,7 @@ test('MP-11: resource service reads only Chromium-loaded resources, strips URL, 
  const connection={async send(method,params){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'frame'},resources:[{url:'https://fixture/image'},{url:'https://fixture/svg'}]}};if(method==='Page.getResourceContent'){reads++;return {base64Encoded:true,content:params.url.endsWith('/svg')?Buffer.from('<svg onload="alert(1)"/>').toString('base64'):png};}throw Error('unexpected');}};
  const descriptors=[{key:'r0',url:'https://fixture/image',kind:'image'},{key:'r1',url:'https://fixture/svg',kind:'image'},{key:'r2',url:'http://private-address/unloaded',kind:'image'}];
  const result=await materializeMirrorResources(connection,'s',descriptors,[]);assert.equal(reads,2);assert.equal(result.resources.size,1);assert.equal(result.mapped.get('r1'),null);assert.equal(result.mapped.get('r2'),null);assert(!JSON.stringify([...result.resources.values()]).includes('https://fixture'));
- await assert.rejects(materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value']),/protected/);
+ assert.equal((await materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value'])).resources.size,1,'MP-11 value registration alone cannot mask media');
 });
 
 test('MP-11: resource cache is epoch bounded and oversized decoded images never reach the client',async()=>{
@@ -121,11 +121,11 @@ test('MP-11: CSS initial probe always closes its trusted blank target',async()=>
  }
 });
 
-test('MP-10/MP-11: fully opaque foreign/closed regions do not require compositor readback',async()=>{
+test('MP-10/MP-11: MP-11 foreign/closed regions display compositor pixels',async()=>{
  for(const reason of ['cross_origin_frame','opaque_shadow']){
   const {service,state,host}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'img',box:{x:5,y:5,width:30,height:20},reason};
-  host.screenshot=async()=>{throw Error('opaque region must not capture')};
-  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert.deepEqual(packet.tiles,[]);
+  let captures=0;const capture=host.screenshot;host.screenshot=async(...args)=>{captures++;return capture(...args)};
+  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert(packet.tiles.length>0);assert.equal(captures,1);
  }
 });
 

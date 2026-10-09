@@ -242,6 +242,7 @@ COPY apps/kernel/slice-linux-docker/docker/canonical-display.py /opt/chariox-sli
 COPY apps/kernel/slice-linux-docker/docker/canonical_vnc.py /opt/chariox-slice/canonical_vnc.py
 COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/chariox-slice/browser-controller-display.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-fill-targets.py /opt/chariox-slice/native-fill-targets.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py

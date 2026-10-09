@@ -26,16 +26,11 @@ test("MD-5: trusted mask replaces pixels while keeping unrelated pixels", () => 
   assert.deepEqual(decoded(original).pixel(8, 8), [255, 255, 255, 255]);
   assert.throws(() => maskPng(original.slice(0, -12), []), /frame/);
 });
-test("MD-5: failed/unknown layout masks the full frame without exposing capture", async () => {
-  let captures = 0;
-  const result = await captureProtectedPage({ ensureConnection: async () => { throw new Error("synthetic-only-secret"); } }, { target_id: "target" }, ["synthetic-only-secret"], [], async () => { captures++; return "raw-pixels"; });
-  assert.equal(result, wholeFrameMask());
-  assert.equal(captures, 0);
-  const frame = decoded(result);
-  assert.deepEqual([frame.width, frame.height], [1280, 800]);
-  assert.deepEqual(frame.pixel(0, 0), [0, 0, 0, 255]);
-  assert.deepEqual(frame.pixel(1279, 799), [0, 0, 0, 255]);
-  assert.equal(await captureProtectedPage({}, {}, [], [], async () => "ordinary"), "ordinary");
+test("MP-11: registration alone leaves every pixel visible; failed target lookup refuses capture", async () => {
+  let captures=0;
+  assert.equal(await captureProtectedPage({}, {}, ['synthetic-only-secret'], [], async()=>{captures++;return 'ordinary';}), 'ordinary');
+  await assert.rejects(captureProtectedPage({}, {target_id:'target'}, ['synthetic-only-secret'], [{target_id:'target'}], async()=>{captures++;return 'raw';}), /capture unavailable/);
+  assert.equal(captures,1);
 });
 
 // MD-DISPLAY-02/04: arbitrary RGB/RGBA rows exercise every PNG predictor,
