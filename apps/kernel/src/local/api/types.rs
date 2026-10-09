@@ -27,6 +27,7 @@ mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -62,6 +63,7 @@ pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -257,4 +259,7 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;
+/// Version 487 adds value-free Project Environment aggregates and reserves the
+/// complete Environment operation contract on top of 472 (developed as 471;
+/// MP-02/MP-03/MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 487;

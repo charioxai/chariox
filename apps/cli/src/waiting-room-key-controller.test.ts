@@ -143,6 +143,7 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
+    openProjectEnvironment: (projectId) => { calls.push(`environment:${projectId}`) },
     beginProjectRename: (projectId, name) => {
       calls.push(`rename:${projectId}:${name}`)
     },
@@ -207,3 +208,13 @@ function projectSummary(overrides: Partial<WaitingRoomProjectSummary> = {}): Wai
     ...overrides,
   }
 }
+
+// MP-08 / MP-10: No attached Session or Agent is required.
+test("ENV P01 V opens exactly the selected Project and ignores release/modifiers", () => {
+  const harness = createHarness({ state: waitingRoomState({ focus: "project-entry", projectIndex: 1 }), projects: [projectSummary(), projectSummary({ id: "second" })] })
+  harness.controller.handleKey({ name: "v", eventType: "release" })
+  harness.controller.handleKey({ name: "v", eventType: "press", ctrl: true })
+  assert.deepEqual(harness.calls(), [])
+  harness.controller.handleKey({ name: "v", eventType: "press" })
+  assert.deepEqual(harness.calls(), ["environment:second"])
+})

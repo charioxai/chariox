@@ -86,3 +86,7 @@ export { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 export type * from "./kernel-types.js"
 
 export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, type RoomBrowserArtifactOperation } from "./ipc-room-environment-requests.js"
+
+export * from "./project-environment-aggregate.js"
+
+export * from "./project-environment-aggregate-requests.js"

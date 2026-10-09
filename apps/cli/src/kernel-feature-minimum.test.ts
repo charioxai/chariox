@@ -55,3 +55,11 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
+
+// MP-08 / MP-10: VERSION(P01).
+test("standalone and reserved Project Environment operations require protocol 487", () => {
+  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
+  }
+})

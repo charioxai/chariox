@@ -31,7 +31,7 @@ export function waitingRoomProjectRows(
   const rows: WaitingRoomRow[] = [{
     id: "project-header",
     title: "Projects",
-    value: "Enter browses sessions • E renames • A/D confirm • R restores archived",
+    value: "Enter browses sessions • V Environment • E renames • A/D confirm • R restores archived",
     titleWidth: options.titleWidth,
     indent: 0,
     focused: false,
