@@ -132,6 +132,8 @@ test('MP-08 / MP-11 human pointer and chord input use the warm channel; agent an
   assert.deepEqual(oneShot.map(request=>[request.input.kind,request.agent_input??false]),[['text',false],['click',true],['key',true]]);
   assert.equal(warm.length,6);
   await adapter.close();
+});
+
 // MP-08 / MP-11 (owner 2026-10-09): registered Vault values are masked best effort
 // where they appear as accessible text and are redacted from OCR and clipboard text.
 test('MP-08 / MP-11 Vault values never black out the desktop and are redacted from OCR and clipboard text', async () => {
