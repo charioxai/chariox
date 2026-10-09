@@ -644,6 +644,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
       ...managedWaitingRoomRemote(),
+      inventoryStatus: deps.waitingRoomInventoryStatus(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
