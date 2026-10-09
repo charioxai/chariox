@@ -130,6 +130,23 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
+        // Branch union (multidomain browser/App views/Notes, A02 workflow
+        // notifications, A07 hand-off): safe projections, still redacted.
+        KernelBrowser,
+        VisibleRegionCaptured,
+        Notes,
+        UserAppViewOpened,
+        UserAppViewsListed,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewCallResult,
+        UserAppViewsChanged,
+        UserDomainInteractionAnswered,
+        WorkflowNotificationSourceRegistered,
+        WorkflowNotificationAttached,
+        WorkflowNotificationDetached,
+        WorkflowNotifications,
+        HandoffResolved,
         CloudRelayLoggedOut,
         KernelSudoRequested,
         KernelAccessGranted,
