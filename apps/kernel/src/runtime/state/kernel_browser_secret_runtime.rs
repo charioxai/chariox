@@ -310,7 +310,7 @@ fn scrub_browser_result(
     } else {
         None
     };
-    let mut result = protection.scrub(&scope, result)?;
+    let mut result = protection.scrub(scope, result)?;
     if let Some(mut data) = data {
         if display && !data.is_null() {
             // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
@@ -319,7 +319,7 @@ fn scrub_browser_result(
                 .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
             let payload = frame.remove("data_base64");
             let tiles = frame.remove("tiles");
-            data = protection.scrub(&scope, data)?;
+            data = protection.scrub(scope, data)?;
             if let Some(payload) = payload {
                 data["data_base64"] = payload;
             }
