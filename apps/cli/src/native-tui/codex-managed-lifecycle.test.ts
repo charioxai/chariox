@@ -40,6 +40,10 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       let result: unknown = {}
       if (r.method === "initialize") { tuiStarted = true; result = { userAgent: "fixture" } }
       if (r.method === "thread/start") result = { thread: { id: "display-thread" } }
+      if (r.method === "thread/resume") {
+        assert.deepEqual(r.params, { threadId: "managed-thread", excludeTurns: true })
+        result = { thread: { id: "managed-thread" } }
+      }
       if (r.method === "turn/start") {
         running = true
         promptContexts.push(compacted)

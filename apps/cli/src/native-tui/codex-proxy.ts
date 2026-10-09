@@ -36,6 +36,8 @@ type CodexProxyDebug = (label: string, payload: unknown) => void
 type CodexDownstream = {
   socket: WebSocket
   kind: "unknown" | "tui" | "kernel"
+  compaction?: { managedThreadId: string; displayThreadId: string; turnId?: string }
+  compactionPreparing?: boolean
 }
 
 type CodexProxyOptions = {
@@ -81,6 +83,7 @@ export function createCodexProjectionThreadTracker(options: {
       setProjectedThreadId(threadId)
     },
     isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
+    isDisplayThread: (threadId: unknown) => typeof threadId === "string" && threadId === tuiThreadId,
     isManagedThread: (threadId: string) => tuiThreadId !== null && threadId !== tuiThreadId && !ephemeralThreadIds.has(threadId),
     observeUpstreamThread: (threadId: string, ephemeral = false) => {
       if (ephemeral) ephemeralThreadIds.add(threadId)
@@ -116,6 +119,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     ephemeral: boolean
   }>()
   let nextUpstreamRequestId = 1
+  const internalRequests = new Map<unknown, (message: CodexJsonRpcMessage) => void>()
   let upstreamSocket: WebSocket | null = null
 
   const downstreamCounts = () => {
@@ -147,6 +151,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     socket.on("message", (raw) => handleUpstreamMessage(raw))
     socket.on("close", () => {
       options.debug("upstream_closed", { upstreamEndpoint: options.upstreamEndpoint })
+      for (const resolve of internalRequests.values()) resolve({ error: { code: -32000 } })
       for (const downstream of downstreams) downstream.socket.close()
     })
     socket.on("error", (error) => {
@@ -193,6 +198,24 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     sendUpstream({ ...message, id: upstreamId })
   }
 
+  const subscribeManagedCompactionThread = async (threadId: string) => {
+    const id = `chariox-proxy-control-${nextUpstreamRequestId++}`
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const response = await new Promise<CodexJsonRpcMessage>((resolve, reject) => {
+        internalRequests.set(id, resolve)
+        timer = setTimeout(() => reject(new Error("managed Codex subscription timed out")), 15_000)
+        // Rejoin an already-running thread with no policy overrides. Never
+        // hydrate its hidden instructions/history into the display response.
+        sendUpstream({ id, method: "thread/resume", params: { threadId, excludeTurns: true } })
+      })
+      if (response.error || extractCodexThreadId(response) !== threadId) throw new Error("managed Codex subscription was rejected")
+    } finally {
+      clearTimeout(timer)
+      internalRequests.delete(id)
+    }
+  }
+
   const messageForDownstream = (downstream: CodexDownstream, message: unknown) =>
     downstream.kind === "kernel" ? message : redactHiddenInstructionsFromJson(message)
 
@@ -236,14 +259,22 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       for (const downstream of downstreams) sendRaw(downstream.socket, raw)
       return
     }
+    if ([...downstreams].some(downstream => downstream.compaction)) options.debug("compaction_upstream_frame", { method: message.method, id: message.id, parameterKeys: Object.keys(message.params ?? {}), threadId: message.params?.threadId, conversationId: message.params?.conversationId, eventType: (message.params?.msg as { type?: unknown } | undefined)?.type, errorCode: (message.error as { code?: unknown } | undefined)?.code })
 
     if (message.id !== undefined && !message.method) {
+      const internal = internalRequests.get(message.id)
+      if (internal) {
+        internal(message)
+        return
+      }
+      if (typeof message.id === "string" && message.id.startsWith("chariox-proxy-control-")) return
       const pending = pendingRequests.get(message.id)
       if (!pending) {
         broadcast(message)
         return
       }
       pendingRequests.delete(message.id)
+      if (pending.method === "thread/compact/start" && message.error) delete pending.downstream.compaction
       const routedMessage = { ...message, id: pending.originalId }
       if (pending.method === "thread/start" && pending.downstream.kind !== "kernel" && message.result) {
         const threadId = extractCodexThreadId(message)
@@ -280,6 +311,21 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       && projectionThreadTracker.isManagedThread(notificationThreadId)) {
       for (const downstream of downstreams) {
         if (downstream.kind === "kernel") sendDownstream(downstream, message)
+        // MP-08 / MP-10 / MP-11: An explicit native compaction controls the
+        // managed conversation, but its own lifecycle belongs in the requesting
+        // display. Keep this exception bounded to that control and its turn.
+        const control = downstream.compaction
+        if (!control || control.managedThreadId !== notificationThreadId) continue
+        options.debug("managed_compaction_notification", { method: message.method, turnId: message.params?.turnId, turnIdFromTurn: (message.params?.turn as {id?:unknown} | undefined)?.id, itemType: (message.params?.item as { type?: unknown } | undefined)?.type })
+        const turn = message.params?.turn as { id?: unknown } | undefined
+        const turnId = message.params?.turnId ?? turn?.id
+        const item = message.params?.item as { type?: unknown } | undefined
+        if (message.method === "turn/started" && typeof turnId === "string" && !control.turnId) control.turnId = turnId
+        if (typeof turnId !== "string" || turnId !== control.turnId) continue
+        if (!["turn/started", "turn/completed", "thread/compacted", "error"].includes(message.method ?? "")
+          && !(["item/started", "item/completed"].includes(message.method ?? "") && item?.type === "contextCompaction")) continue
+        sendDownstream(downstream, { ...message, params: { ...message.params, threadId: control.displayThreadId } })
+        if (message.method === "turn/completed") delete downstream.compaction
       }
       return
     }
@@ -364,11 +410,25 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
         return
       }
       if (message.method === "thread/compact/start" && downstream.kind !== "kernel" && !ephemeral) {
-        void mapCodexNativeCompaction(message, options).then((mapped) => {
+        if (!projectionThreadTracker.isDisplayThread(message.params?.threadId)) {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: "Codex compaction must target the bound display thread" } })
+          return
+        }
+        if (downstream.compaction || downstream.compactionPreparing) {
+          sendDownstream(downstream, { id: message.id, error: { code: -32000, message: "managed Codex compaction is already active" } })
+          return
+        }
+        downstream.compactionPreparing = true
+        void mapCodexNativeCompaction(message, options).then(async (mapped) => {
+          await subscribeManagedCompactionThread(mapped.params!.threadId as string)
+          const fresh = await mapCodexNativeCompaction(message, options)
+          if (fresh.params!.threadId !== mapped.params!.threadId) throw new Error("managed Codex conversation changed during subscription")
+          downstream.compaction = { managedThreadId: mapped.params!.threadId as string, displayThreadId: message.params!.threadId as string }
+          options.debug("managed_compaction_mapped", downstream.compaction)
           forwardRequest(downstream, mapped)
         }).catch((error) => {
           sendDownstream(downstream, { id: message.id, error: { code: -32000, message: formatError(error) } })
-        })
+        }).finally(() => { delete downstream.compactionPreparing })
         return
       }
       forwardRequest(downstream, message)
