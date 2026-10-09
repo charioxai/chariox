@@ -189,8 +189,8 @@ impl KernelRuntimeState {
                     receiver = None;
                     let Ok(reply) = reply else { return Ok(false) };
                     if reply.choice_id.as_deref() == Some("cancel") { return Ok(false) }
-                    let mut input = if reply.choice_id.as_deref() == Some("retry")
-                        && template.choices().iter().any(|choice| choice.id() == "retry") {
+                    let mut input = if matches!(reply.choice_id.as_deref(), Some("retry" | "submit"))
+                        && template.choices().iter().any(|choice| Some(choice.id()) == reply.choice_id.as_deref()) {
                         String::new()
                     } else {
                         let Some(input) = reply.reply else { return Ok(false) };

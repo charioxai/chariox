@@ -765,9 +765,29 @@ pub(crate) async fn execute_send_provider_login_input_request(
     if let Some(login) = record.setup_token.as_ref() {
         login.hide_input(&data)?;
     }
-    runtime_state
-        .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, &data))
-        .await?;
+    // MP-08/MP-10/MP-11: Ink consumes a long code + CR in one input event
+    // as pasted text. Close the paste before sending Enter as its own event.
+    let code = data
+        .strip_suffix(b"\r")
+        .or_else(|| data.strip_suffix(b"\n"));
+    if let Some(code) = code.filter(|code| record.setup_token.is_some() && !code.is_empty()) {
+        let mut paste = zeroize::Zeroizing::new(Vec::with_capacity(code.len() + 12));
+        paste.extend_from_slice(b"\x1b[200~");
+        paste.extend_from_slice(code);
+        paste.extend_from_slice(b"\x1b[201~");
+        runtime_state
+            .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, &paste))
+            .await?;
+        // Let Ink commit its controlled input value before its submit callback.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        runtime_state
+            .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, b"\r"))
+            .await?;
+    } else {
+        runtime_state
+            .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, &data))
+            .await?;
+    }
     Ok(LocalDaemonResponse::ProviderLoginInputSent {
         login_id: request.login_id,
         byte_count: data.len(),

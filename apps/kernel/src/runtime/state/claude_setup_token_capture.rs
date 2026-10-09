@@ -139,6 +139,24 @@ impl ClaudeSetupTokenScreen {
         None
     }
 
+    // MP-08/MP-10/MP-11: an echoed code is still the input phase. Only
+    // leaving the official prompt can establish progress past submission.
+    pub fn authorization_input_visible(&self) -> bool {
+        self.rows()
+            .iter()
+            .any(|row| row.contains("Paste code here if prompted >"))
+    }
+
+    pub fn authorization_checking(&self) -> bool {
+        // A transient clear during an Ink redraw is not submission evidence.
+        self.rows().iter().any(|row| {
+            row.contains("Exchanging code for token")
+                || row.contains("Logging in")
+                || row.contains("Long-lived authentication token created successfully")
+                || row.contains("Your OAuth token")
+        }) && !self.authorization_input_visible()
+    }
+
     /// The official CLI keeps running after OAuth refusal and needs Enter to retry.
     /// Project only this fixed phase, never provider error text or echoed codes.
     pub fn authorization_retry_required(&self) -> bool {
