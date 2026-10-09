@@ -952,6 +952,19 @@ test('MP-10 a live viewer keeps the browser scale; another scale is emulated',()
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
+// MP-08/MP-11: on the owned Computer desktop the Browser window is the real
+// visible one; an emulated DPR outliving its viewer leaves it unbindable.
+test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last viewer',()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
+ const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+ assert.equal(subscribed.generation,tab.generation,'the shared desktop never restarts Chromium');
+ assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:2,mobile:false});
+ await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,1);assert.equal(host.scales.has(tab.tab_id),false);
+ }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
 // MP-08/MP-10: overlapping reconciles must not race one temporary tabs file.
 test("MP-08/MP-10 concurrent tab saves are serialized", async () => {
   const { mkdtemp, readFile, rm } = await import("node:fs/promises");

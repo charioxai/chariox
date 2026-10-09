@@ -180,6 +180,16 @@ export class KernelBrowserHost {
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
   }
+  // MP-08/MP-11: on the owned Computer desktop the Browser window is the
+  // visible one, and an emulated density leaves it unbindable (withheld):
+  // drop a tab's viewer emulation with its last Browser viewer or mirror.
+  async releaseTabScale(tabId) {
+    if(!this.chromium.desktop||!this.scales.has(tabId))return;
+    if([...this.displays.values()].some(s=>s.tab_id===tabId&&s.source_kind!=='desktop')||[...this.mirror.streams.values()].some(s=>s.tab_id===tabId))return;
+    this.scales.delete(tabId);
+    const tab=this.tabs.get(tabId);if(!tab)return;
+    try{const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);await connection.send('Emulation.clearDeviceMetricsOverride',{},sessionId);}catch{}
+  }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
       this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close().catch(()=>{});
@@ -411,7 +421,7 @@ export class KernelBrowserHost {
       if (this.displays.get(stream.subscription_id) !== stream) return;
       if(stream.source_kind==='desktop'){void this.desktopDisplay.remove(stream).catch(()=>{});return;}
       this.displays.delete(stream.subscription_id);
-      void stream.close().then(() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))return this.closeCompositors(stream.tab_id)}).catch(() => {});
+      void stream.close().then(async() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);}}).catch(() => {});
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
@@ -452,13 +462,13 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { if(stream.source_kind==='desktop')await this.desktopDisplay.remove(stream);else {await stream.close();this.displays.delete(id);} }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
-    if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);return {closed:true};}
+    if(command.op==='mirror_close') {const mirror=this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.streams.delete(command.subscription_id);await this.releaseTabScale(mirror.tab_id);return {closed:true};}
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
       if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
-      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))await this.closeCompositors(stream.tab_id); return { generation: this.generation, unsubscribed: true }; }
+      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);} return { generation: this.generation, unsubscribed: true }; }
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
