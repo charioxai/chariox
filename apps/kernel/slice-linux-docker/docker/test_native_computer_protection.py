@@ -132,9 +132,21 @@ class AgentInputClipboardTests(unittest.TestCase):
         self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
         self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
 class WarmChannelTests(unittest.TestCase):
+    def test_mp10_warm_physical_events_reuse_the_owned_x11_connection(self):
+        connection=SimpleNamespace(screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100),sync=lambda:None)
+        with patch.object(module,'load') as load,patch.object(module.xtest,'fake_input') as event:
+            held=set()
+            for action in ({'kind':'scroll','x':5,'y':5,'steps':1},
+                           {'kind':'keycode','keycode':38,'state':'down'},
+                           {'kind':'keycode','keycode':38,'state':'up'}):
+                module.channel_request({'op':'input','input':action},held,connection)
+            load.assert_not_called()
+            self.assertTrue(event.called)
+            self.assertEqual(held,set())
+
     def test_mp11_warm_channel_carries_only_human_input(self):
         events=[]
-        with patch.object(module,'input_action',side_effect=lambda action,processes:events.append((action['kind'],processes))):
+        with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None:events.append((action['kind'],processes))):
             held=set()
             for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
                             {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},
