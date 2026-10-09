@@ -169,7 +169,7 @@ def type_text(text, expected_target=None):
             time.sleep(0.04)
     finally:
         if expected_target is not None and fill_record is not None:
-            fill_targets.finish(fill_record)
+            fill_targets.finish(fill_record, text)
         # A second termination signal must not interrupt modifier restoration.
         # The caller retains SIGKILL as its bounded last-resort cleanup.
         for signum in (signal.SIGTERM, signal.SIGINT):
