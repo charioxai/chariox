@@ -138,9 +138,10 @@ export class NativeComputer {
     // masks a registered value shown as accessible text (best effort) and
     // browser windows keep their per-field/value masks; text is redacted below.
     const values=policy?.values??[];
+    const mask=command.op==='clipboard_read'&&Boolean(values.length || policy?.targets?.length);
     const browser_processes=await binding.browserProcesses?.();
     const processes=await binding.ownedProcesses?.()??[];
-    const observe=browser_protection=>this.execute({op:command.op,mask:false,values,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
+    const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
     // only for an unchanged, presented CDP measurement; otherwise whole windows.
     const browser=command.op==='clipboard_read'?null:binding.browser?.();

@@ -128,7 +128,7 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
   const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
   for(const op of ['screenshot','ocr','clipboard_read'])await adapter.request({op,surface_id:'surface',generation:'generation'},policy).then(result=>replies[op].result=result);
-  assert(sent.every(request=>request.mask===false&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'helper gets the values for best-effort boxes, never a whole-desktop mask');
+  assert(sent.every(request=>request.mask===(request.op==='clipboard_read')&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'best-effort boxes leave desktop visible; clipboard stays withheld');
   assert.equal(replies.ocr.result.text,'header [redacted] footer');
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');

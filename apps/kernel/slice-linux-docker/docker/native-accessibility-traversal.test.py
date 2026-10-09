@@ -52,6 +52,19 @@ class VirtualTable(Node):
             getAccessibleAtPoint=lambda x,y,coords: None if self.gap else self.children[(y//10)*2+x//10])
 
 
+class Label(Node):
+    """Showing native text whose characters sit 7px apart from x=10, y=20."""
+    def __init__(self, text, name='', readable=True):
+        super().__init__(name, 'label')
+        self.text, self.readable = text, readable
+    def getState(self): return types.SimpleNamespace(contains=lambda flag: flag == 1)
+    def queryComponent(self): return types.SimpleNamespace(getExtents=lambda coords: types.SimpleNamespace(x=10,y=20,width=7*len(self.text),height=14))
+    def queryText(self):
+        if not self.readable: raise NotImplementedError
+        return types.SimpleNamespace(characterCount=len(self.text), getText=lambda start, end: self.text[start:end],
+            getRangeExtents=lambda start, end, coords: types.SimpleNamespace(x=10+7*start, y=20, width=7*(end-start), height=14))
+
+
 class TraversalTest(unittest.TestCase):
     def setUp(self):
         self.desktop = Node('Desktop', 'desktop')
@@ -79,6 +92,18 @@ class TraversalTest(unittest.TestCase):
         for name, module in self.saved.items():
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
+
+    def test_vault_values_mask_only_native_text_that_shows_them(self):
+        """Vault (Miguel 2026-10-09): no window blackout, best effort per string."""
+        self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [Node('Writer', 'frame', [
+            Label('id: v-secret, ok'), Label('V-SECRET'), Label('ordinary'), Label('v-secret', readable=False), Label('xxxxxxxx', name='v-secret'), Label('see v-secret', name='see v-secret')])])])
+        processes = [{'pid': 200, 'started': '1'}]
+        tree = self.driver.snapshot(processes, values=['v-secret'])
+        self.assertTrue(tree['available'] and not tree['protected'])
+        # Text ranges (exact and upper case), the node of a value only its name shows
+        # (a label whose name is its text masks the range only); unreadable text is not checked.
+        self.assertEqual(sorted(tree['masks']), [[10, 20, 56, 14], [10, 20, 56, 14], [38, 20, 56, 14], [38, 20, 56, 14]])
+        self.assertEqual(self.driver.snapshot(processes)['masks'], [])
 
     def snapshot(self, applications):
         self.desktop = Node('Desktop', 'desktop', applications)
