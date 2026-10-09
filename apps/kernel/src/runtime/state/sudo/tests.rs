@@ -757,10 +757,11 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 }
 
 #[tokio::test]
-async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
+async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
     let f = fixture();
-    // Official harnesses cache discovery before the first turn. The interface
-    // must already exist then, without granting an ordinary turn authority.
+    // MP-08/MP-10/MP-11: ordinary turns do not advertise the sudo tool.
+    // The authorized turn refreshes cached catalogs before dispatch, and
+    // both sides of the turn still recheck live authority on every call.
     let initial_catalog = f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer");
@@ -769,7 +770,7 @@ async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
         .runtime_tool_specs_for_auth_token("unknown-token")
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
-    assert!(initial_catalog
+    assert!(!initial_catalog
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
     assert!(f
@@ -875,7 +876,7 @@ async fn sudo_runtime_mcp_catalog_is_stable_but_authority_ends_at_yield() {
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &turn.agent_id)
         .unwrap();
-    assert!(f
+    assert!(!f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()

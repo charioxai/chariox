@@ -333,7 +333,7 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "MERGE_HASH_PENDING"
+        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
     );
 }
 
