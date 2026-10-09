@@ -134,6 +134,24 @@ impl KernelRuntimeState {
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
+        // MP-08 / MP-10 / MP-11: Vault UI is an await boundary. A retired
+        // starting run must not verify credentials or begin account recovery.
+        if run.state() == crate::provider::ProviderRunState::Starting
+            && self
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .ok()
+                .is_none_or(|current| {
+                    current.state() != crate::provider::ProviderRunState::Starting
+                        || current.started_at_ms() != run.started_at_ms()
+                })
+        {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: "provider run retired while awaiting Vault unlock".to_string(),
+            });
+        }
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
             crate::account_profile::provider_account_authority_owner_user_id(

@@ -919,8 +919,9 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
     )));
     std::fs::create_dir_all(&test_root.0).expect("workflow test root should be created");
     let test_root_path = test_root.0.to_string_lossy().to_string();
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(test_root.0.join("state.db").display().to_string());
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             &test_root_path,
