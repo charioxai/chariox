@@ -44,7 +44,7 @@ CX_AV_FUNCTIONS(CX_POINTER)
 static __typeof__(&x264_encoder_open) cx_x264_encoder_open;
 /* openh264.c */
 int cx_openh264_available(void);
-void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,int min_qp);
+void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model);
 int cx_openh264_rate(void *encoder,int bitrate);
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key);
 void cx_openh264_close(void *encoder);
@@ -132,7 +132,7 @@ struct Row {
     const uint8_t *recon_y,*recon_uv;
     int recon_y_stride,recon_uv_stride;
 };
-struct Codec { int width,height,bitrate,row_count,reduced,enc_width,enc_height,openh264; struct Row rows[8]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+struct Codec { int width,height,bitrate,row_count,reduced,enc_width,enc_height,openh264; struct Row rows[8]; double models[8][2]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
 /* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
 static _Thread_local struct Codec *diagnosing;
 static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
@@ -182,6 +182,7 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count,int r
         if(!c->device&&!c->diagnostic[0])diagnostic_append(c,"No accessible VAAPI render device /dev/dri/renderD128..143\n");
         if(!c->device)c->fallback=1;
     }
+    for (int r=0;r<8;r++) c->models[r][0]=c->models[r][1]=0.02; /* OpenH264 bits per activity at QP 45 (Wikipedia IDR) */
     c->width=c->enc_width=width;c->height=c->enc_height=height;c->bitrate=bitrate;c->row_count=row_count;c->reduced=reduced!=0;
     c->masked=malloc((size_t)width*height*4);
     if (!c->masked) { cx_codec_close(c);return NULL; }
@@ -243,7 +244,7 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected,int cons
         long cores=sysconf(_SC_NPROCESSORS_ONLN);
         int threads=c->row_count==1?(int)(cores-1<1?1:cores-1>4?4:cores-1):1;
         /* x264 rates are kbit/s; OpenH264's API takes bit/s. */
-        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate*1000,threads,protected?36:0,constrained?36:0))) return -1;
+        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate*1000,threads,protected?36:0,c->models[row-c->rows]))) return -1;
         /* Own I420 planes, laid out as an x264 picture for the shared converters. */
         size_t luma=(size_t)ew*eh,chroma=(size_t)((ew+1)/2)*((eh+1)/2);
         if (!(row->planes=malloc(luma+2*chroma))) return -1;
