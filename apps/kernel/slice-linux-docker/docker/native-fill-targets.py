@@ -105,9 +105,9 @@ def begin(expected_window, value, connection=None):
         text = node.queryText()
         offset, selected = text.caretOffset, 0
         if text.getNSelections():
-            selection = text.getSelection(0)
-            offset = min(selection.startOffset, selection.endOffset)
-            selected = abs(selection.endOffset - selection.startOffset)
+            start, end = text.getSelection(0)
+            offset = min(start, end)
+            selected = abs(end - start)
         update(lambda targets: [t for t in targets if (t['pid'],t['path']) != (target['pid'],target['path'])] + [target])
         return node, target, (text.characterCount, offset, selected)
     except Exception: raise ValueError('Vault fill field unavailable') from None
