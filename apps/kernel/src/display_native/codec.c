@@ -46,6 +46,7 @@ static __typeof__(&x264_encoder_open) cx_x264_encoder_open;
 int cx_openh264_available(void);
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model);
 int cx_openh264_rate(void *encoder,int bitrate);
+int cx_openh264_restart(void *encoder);
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key);
 void cx_openh264_close(void *encoder);
 #define CX_TEXT2(x) #x
@@ -118,7 +119,7 @@ struct Row {
     void *openh264;
     uint8_t *planes; /* I420 storage of rows whose picture x264 did not allocate. */
     x264_picture_t picture;
-    int allocated,width,height;
+    int allocated,width,height,protected;
     AVCodecContext *hardware;
     AVFrame *staging;
     AVCodecContext *decoder;
@@ -233,7 +234,7 @@ static void row_rate_control(x264_param_t *p,int rate) {
     p->rc.i_vbv_buffer_size=row_vbv(rate);p->rc.b_filler=0;
 }
 static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
-    int rate=row_rate(c,h);
+    int rate=row_rate(c,h);row->protected=protected;
     /* A failed h264_vaapi init is software from this first key onward. */
     if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);motion_geometry(c,protected);}}
     int ew=c->row_count==1?c->enc_width:c->width,eh=c->row_count==1?c->enc_height:h;
@@ -422,7 +423,12 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         if (same)continue;
         int protected=0;
         for (size_t n=0;n<count;n++) if (regions[n].top<bottom && regions[n].bottom>y)protected=1;
-        if ((resets&(1u<<r)) || (!row->codec&&!row->hardware&&!row->openh264) || row->width!=c->enc_width || row->height!=(c->row_count==1?c->enc_height:h)) { row_close(row);if(row_open(c,row,h,protected))return -1; }
+        int moved=row->width!=c->enc_width || row->height!=(c->row_count==1?c->enc_height:h);
+        /* MP-08/MP-10: every stripes<->video switch resets; recreating an
+         * OpenH264 encoder and its decoder cost more than the IDR itself
+         * (~40 ms at Retina). Same geometry and protection restart with an IDR. */
+        if ((resets&(1u<<r)) && row->openh264 && !moved && row->protected==protected) { if(cx_openh264_restart(row->openh264))return -1;row->sequence=0; }
+        else if ((resets&(1u<<r)) || (!row->codec&&!row->hardware&&!row->openh264) || moved) { row_close(row);if(row_open(c,row,h,protected))return -1; }
         at=cpu_ms();
         uint8_t **plane=row->picture.img.plane;int *stride=row->picture.img.i_stride;
         if (c->row_count==1&&c->enc_width!=c->width) {

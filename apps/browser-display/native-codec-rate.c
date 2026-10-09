@@ -72,6 +72,27 @@ static void full_page_change_fits_vbv(void) {
     }
     free(light);free(dark);puts("MP-08/MP-10 OpenH264 full-page change fits the x264 VBV PASS");
 }
+/* MP-08/MP-10: a pipeline reset (every stripes<->video switch) restarts the
+ * same OpenH264 encoder with an IDR carrying its parameter sets; recreating
+ * it cost more than the IDR. */
+static void reset_restarts_without_reopening(void) {
+    const int width=1280,height=800;unsigned char *pixels=malloc(width*height*4);
+    for (int rows=1;rows<=8;rows+=7) {
+        struct RowResult result[8];expected=8000000/rows;expected_max_qp=0;
+        void *codec=cx_codec_open(width,height,8000000,rows,0);assert(codec);
+        for (int f=0;f<3;f++) {
+            memset(pixels,f*90,width*height*4);
+            int before=opens,n=cx_codec_encode(codec,pixels,255,NULL,0,result);assert(n==rows);
+            assert(f==0?opens==before+rows:opens==before);
+            for (int r=0;r<n;r++) {
+                int sps=0;for (size_t i=0;i+3<result[r].length;i++) sps|=!result[r].bytes[i]&&!result[r].bytes[i+1]&&result[r].bytes[i+2]==1&&(result[r].bytes[i+3]&31)==7;
+                assert(result[r].key&&result[r].sequence==1&&sps);
+            }
+        }
+        cx_codec_close(codec);
+    }
+    free(pixels);puts("MP-08/MP-10 OpenH264 reset restarts the encoder with an IDR PASS");
+}
 int main(int argc,char **argv) {
     if(argc==2) {
         void *codec=cx_codec_open(64,64,1000000,1,0);
@@ -122,4 +143,5 @@ int main(int argc,char **argv) {
     assert(cx_codec_reduced(scaled));
     cx_codec_close(scaled);assert(opens==12&&retunes==9);free(pixels);puts("MP-08/MP-10 runtime OpenH264 rate contract PASS");
     full_page_change_fits_vbv();
+    reset_restarts_without_reopening();
 }
