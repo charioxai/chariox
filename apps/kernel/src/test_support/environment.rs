@@ -77,13 +77,33 @@ pub(crate) fn isolate_environment_test() -> bool {
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    #[cfg(unix)]
+    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child)
+        .expect("isolated environment child ownership should be captured");
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        {
+            signals
+                .kill_group()
+                .expect("isolated environment group must remain owned");
+            signals
+                .kill_owned_processes()
+                .expect("isolated environment descendants must remain owned");
+            signals
+                .kill_child()
+                .expect("isolated environment child must remain owned");
         }
-        let _ = child.kill();
+        #[cfg(not(unix))]
+        {
+            assert!(
+                child.id() > 1 && child.id() <= i32::MAX as u32,
+                "invalid child PID"
+            );
+            child
+                .kill()
+                .expect("isolated environment child should stop");
+        }
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();
