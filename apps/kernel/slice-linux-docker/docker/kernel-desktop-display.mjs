@@ -39,7 +39,8 @@ export class DesktopDisplay {
     const stream=new DisplayStream({subscription_id:id,tab_id:binding.surface_id,desktop_generation:binding.generation,
       source_kind:'desktop',observed_by:scope,codec,bitrate:command.bitrate,device_scale_factor:command.device_scale_factor,
       css_width:binding.width/command.device_scale_factor,css_height:binding.height/command.device_scale_factor,
-      dependencies:command.codecs.includes('chariox-video-dependencies-v1'),relay_binary:command.codecs.includes('chariox-relay-binary-v96')},{timing:this.host.timing});
+      dependencies:command.codecs.includes('chariox-video-dependencies-v1'),
+      stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec),relay_binary:command.codecs.includes('chariox-relay-binary-v96')},{timing:this.host.timing});
     this.host.displays.set(id,stream);this.host.armDisplayExpiry(stream);
     return {generation:this.host.generation,subscription_id:id,codec,bitrate:command.bitrate,device_scale_factor:command.device_scale_factor,source:{kind:'desktop',surface_id:binding.surface_id,generation:binding.generation,width:binding.width,height:binding.height}};
   }
@@ -52,7 +53,7 @@ export class DesktopDisplay {
     if(command.op!=='screenshot'||!stream.acceptsCredit(command.after_sequence))throw new UserDomainRefusal('stale_reference');
     const policy=this.host.protection,source=await this.ensureSource();
     const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(id)===stream&&this.host.chromium.desktop?.binding()===binding;
-    if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,valid:lifetimeValid,timing:this.host.timing});}
+    if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,valid:lifetimeValid,timing:this.host.timing});}
     const valid=()=>!signal?.aborted&&lifetimeValid();
     // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
     // briefly for the next frame (the kernel pump paces the stream).

@@ -114,3 +114,15 @@ test('MP-08/MP-11 Vault values reach the desktop capture without a whole-desktop
   await rm(root,{recursive:true,force:true});
  }
 });
+
+test('MP-08/MP-10/MP-11 desktop sparse video uses only the negotiated shared stripe codec',async()=>{
+ for(const [codecs,expected] of [[['avc1.420033','chariox-stripes-v1'],true],[['avc1.420033'],false],[['vp8','chariox-stripes-v1'],true],[['vp09.00.10.08','chariox-stripes-v1'],false]]) {
+  const {host}=fixture();let options;
+  const source={closed:false,sample:()=>null,close:async()=>{},valid:()=>true};
+  const display=new DesktopDisplay(host,{createSource:async()=>source,createProducer:(_source,_encoder,value)=>{options=value;return {waitReady:async()=>{},take:()=>null,invalidate(){},close:async()=>{}}}});
+  const sub=await display.subscribe({...command,codecs},'human');
+  await display.request({op:'screenshot',display_subscription_id:sub.subscription_id,generation:1,after_sequence:0},'human');
+  assert.equal(options.stripes,expected);
+  await display.close();
+ }
+});
