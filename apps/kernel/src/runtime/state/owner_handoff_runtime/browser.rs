@@ -99,7 +99,7 @@ impl KernelRuntimeState {
                 text: value.expose_secret().to_owned(),
                 append: false,
                 submit: false,
-                expected_document_url: Some(url),
+                expected_document_url: Some(url.clone()),
             },
             _ => return outcome(id, HandoffStatus::Failed, kind, Some("invalid_action")),
         };
@@ -126,7 +126,7 @@ impl KernelRuntimeState {
                 user,
                 Some(&admission),
                 "host.secret",
-                Self::handoff_input_params(target, actor, handoff.kind, locator),
+                Self::handoff_input_params(target, actor, handoff.kind, locator, &url),
                 true,
             )
             .await
@@ -147,9 +147,17 @@ impl KernelRuntimeState {
         actor: &str,
         kind: crate::session::HandoffKind,
         action: BrowserLocatorAction,
+        expected_document_url: &str,
     ) -> serde_json::Value {
         let mask_code_input = kind == crate::session::HandoffKind::Code
             && matches!(&action, BrowserLocatorAction::Fill { .. });
+        let is_click = matches!(&action, BrowserLocatorAction::Click);
+        let mut action = json!(action);
+        if is_click {
+            // Kernel-derived fence on the private controller request. Public
+            // BrowserLocatorAction and client/relay contracts stay unchanged.
+            action["expected_document_url"] = json!(expected_document_url);
+        }
         json!({"tab_id":target.tab_id,"generation":target.generation,
             "document_id":target.document_id,"node_ref":target.node_ref,
             "action":action,"observed_by":actor,"mask_code_input":mask_code_input})

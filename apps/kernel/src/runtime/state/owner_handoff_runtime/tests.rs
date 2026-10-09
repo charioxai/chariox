@@ -614,10 +614,34 @@ fn mp08_mp10_mp11_a07_only_owner_code_fill_opts_into_native_masking() {
                 submit: false,
                 expected_document_url: Some("https://console.hetzner.cloud/firewalls".into()),
             },
+            "https://console.hetzner.cloud/firewalls",
         );
         assert_eq!(params["mask_code_input"], expected);
         assert_eq!(params["observed_by"], "terminal:owner");
         assert_eq!(params["node_ref"], h.target.node_ref);
         assert_eq!(params["action"]["submit"], false);
     }
+}
+
+#[test]
+fn mp08_mp10_mp11_a07_owner_click_retains_full_url_on_private_controller_request() {
+    let h = handoff();
+    let url = "https://console.hetzner.cloud/firewalls?id=first#confirm";
+    let params = KernelRuntimeState::handoff_input_params(
+        &h.target,
+        "terminal:owner",
+        HandoffKind::Click,
+        BrowserLocatorAction::Click,
+        url,
+    );
+    assert_eq!(params["action"]["kind"], "click");
+    assert_eq!(params["action"]["expected_document_url"], url);
+    assert_eq!(params["observed_by"], "terminal:owner");
+    assert_eq!(params["document_id"], h.target.document_id);
+    assert_eq!(params["node_ref"], h.target.node_ref);
+    assert_eq!(
+        BrowserLocatorAction::Click.controller_value(),
+        json!({ "kind": "click" }),
+        "public controller actions do not gain a caller-controlled hand-off fence"
+    );
 }

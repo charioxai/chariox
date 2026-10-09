@@ -42,6 +42,47 @@ test("click auto-waits for a stable actionable element and uses native input", a
   );
 });
 
+test("MP-08/MP-10/MP-11: owner click refuses query/fragment changes with unchanged document and node", async () => {
+  for (const seam of ["poll", "input_wait", "hover"]) {
+    for (const changedUrl of ["https://example.test/confirm?id=other", "https://example.test/confirm?id=first#other"]) {
+      const connection = new FakeActionConnection([
+        { state: "ready", x: 50, y: 75, width: 100, height: 30 },
+      ]);
+      const expectedUrl = "https://example.test/confirm?id=first";
+      connection.documentUrl = expectedUrl;
+      const send = connection.send.bind(connection);
+      connection.send = async (method, params, sessionId) => {
+        if (seam === "hover" && method === "Input.dispatchMouseEvent" && params.type === "mouseMoved") {
+          connection.documentUrl = changedUrl;
+        }
+        return send(method, params, sessionId);
+      };
+      await assert.rejects(performBrowserAction({
+        connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+        nodeRef: "backend:103", action: { kind: "click", expected_document_url: expectedUrl },
+        sleep: async () => { if (seam === "poll") connection.documentUrl = changedUrl; },
+        withInput: operation => {
+          if (seam === "input_wait") connection.documentUrl = changedUrl;
+          return operation();
+        },
+      }), { code: "stale_document_reference" }, `${seam}: ${changedUrl}`);
+      assert.equal(connection.loaderId, "loader-a");
+      assert.equal(connection.calls.some(call => call.method === "Input.dispatchMouseEvent" && call.params.type === "mousePressed"), false);
+    }
+  }
+});
+
+test("MP-08/MP-10/MP-11: unchanged owner click URL retains native input", async () => {
+  const connection = new FakeActionConnection([{ state: "ready", x: 50, y: 75, width: 100, height: 30 }]);
+  connection.documentUrl = "https://example.test/confirm?id=first#same";
+  await performBrowserAction({
+    connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a",
+    nodeRef: "backend:103", action: { kind: "click", expected_document_url: connection.documentUrl },
+    sleep: async () => {},
+  });
+  assert.deepEqual(connection.calls.filter(call => call.method === "Input.dispatchMouseEvent").map(call => call.params.type), ["mouseMoved", "mousePressed", "mouseReleased"]);
+});
+
 test("detached elements reject before polling or input and release their remote object", async () => {
   const connection = new FakeActionConnection([{ state: "detached" }]);
   await assert.rejects(performBrowserAction({
@@ -537,6 +578,9 @@ class FakeActionConnection {
       return { object: { objectId: "object-1" } };
     }
     if (method === "Runtime.callFunctionOn") {
+      if (params.functionDeclaration.includes("return this.ownerDocument.defaultView.location.href")) {
+        return { result: { value: this.documentUrl } };
+      }
       if (params.functionDeclaration.includes("scrollIntoView")) {
         return {
           result: {

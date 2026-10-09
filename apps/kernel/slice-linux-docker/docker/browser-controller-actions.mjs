@@ -100,7 +100,7 @@ export function assertNotCancelled(signal) {
 
 function normalizeAction(action) {
   if (action?.kind === "click") {
-    return { kind: "click" };
+    return { kind: "click", expectedDocumentUrl: normalizeExpectedDocumentUrl(action.expected_document_url) };
   }
   if (action?.kind === "fill") {
     if (typeof action.text !== "string") {
@@ -380,8 +380,18 @@ async function executeAction(
 ) {
   assertNotCancelled(signal);
   if (action.kind === "click") {
+    const assertTarget = action.expectedDocumentUrl === null ? async () => {} : async () => {
+      const response = await connection.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: "function() { return this.ownerDocument.defaultView.location.href; }",
+        returnByValue: true,
+      }, sessionId);
+      if (response.exceptionDetails || response.result?.value !== action.expectedDocumentUrl) {
+        throw new BrowserActionError("stale_document_reference", "owner click target URL changed before input");
+      }
+    };
     return {
-      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal),
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal, assertTarget),
     };
   }
   if (action.kind === "submit") {
@@ -599,10 +609,15 @@ async function submitNearestForm(connection, sessionId, objectId) {
   }
 }
 
-async function dispatchClick(connection, sessionId, x, y, signal) {
+async function dispatchClick(connection, sessionId, x, y, signal, assertTarget = async () => {}) {
+  await assertTarget();
   if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
     return true;
   }
+  assertNotCancelled(signal);
+  // Hover handlers can change a SPA URL without replacing the loader/node.
+  // Revalidate after mouse movement, immediately before the button press.
+  await assertTarget();
   assertNotCancelled(signal);
   if (await dispatchMouseEvent(connection, sessionId, {
     type: "mousePressed",

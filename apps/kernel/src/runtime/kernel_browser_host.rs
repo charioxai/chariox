@@ -807,6 +807,7 @@ mod tests {
             actor,
             crate::session::HandoffKind::Click,
             crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+            "https://www.hetzner.com/firewalls",
         );
         assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
             "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");

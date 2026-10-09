@@ -650,6 +650,24 @@ test('private CDP pipe loss retires the browser generation even while child is l
 }));
 
 // MP-08 / MP-10 / MP-11 A07: the code exception is an internal owner path.
+test("MP-08/MP-10/MP-11 owner click keeps the kernel-bound full URL through host dispatch", () => using(async ({ host }) => {
+  const url = "https://example.test/confirm?id=first#confirm";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  let captured;
+  host.browser.performAction = async action => { captured = action; return {}; };
+  const result = await host.handle({ id: "owner-click", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:103", observed_by: "terminal:owner",
+    action: { kind: "click", expected_document_url: url },
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(captured.action.kind, "click");
+  assert.equal(captured.action.expected_document_url, url);
+  assert.equal(captured.document_id, tab.document_id);
+  assert.equal(captured.node_ref, "backend:103");
+}));
+
 test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "https://example.test/verification" });
   const tab = opened.tabs[0];
