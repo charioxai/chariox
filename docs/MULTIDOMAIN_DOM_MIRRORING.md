@@ -15,6 +15,10 @@ browser inside a slice, a Cloud runtime proxy, or a second input authority.
 remain for one protocol version (TUI/tests) and are superseded for web clients.
 v2 follows rrweb's model instead of a per-credit computed-style dump:
 
+- **One observer per viewer.** Each subscription has its own observer instance
+  in the isolated world (ids, mutation journal, listeners), so one viewer's
+  snapshot or reset never touches another's; it stops when the subscription
+  closes or expires.
 - **Snapshot, then deltas.** One pre-order snapshot per document (`reset`),
   then MutationObserver deltas as ops: `children` (reconcile a parent's child
   list; new subtrees carried as records), `attr`, `text`, `css`, `adopted`,
@@ -57,10 +61,14 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   observer's world from the page's bytes, half its CSS size, WebP, wrapped in an
   SVG of the original pixel size so the layout does not change. Its exact bytes
   replace it under the same key once the view settles (settled pixels stay
-  exact). CSS images and frame resources keep the earlier order.
+  exact). CSS images and frame resources keep the earlier order. A packet takes
+  the next resource only within its 256 KB budget; a larger resource travels
+  alone, and only after a second without viewer input (splitting it needs a
+  protocol change).
 - **Frames.** Same-origin frames are part of the document. Cross-origin frames
   are mirrored through their own CDP session/isolated world with the same
-  observer (ids and resource keys rebased per frame slot); nested or
+  observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM
+  cannot read are read through the child's CDP session); nested or
   unattachable frames, canvas/video/plugins are opaque regions painted from
   masked lossless captures (at most 1 Hz until video regions land).
 - **Input** is node-addressed with the viewer's offset inside the node; the
@@ -79,7 +87,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   resnapshot on a gap and independent client validation.
 - **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
   packet; the web client shows protected video and retries the mirror after
-  30 s, doubling to 10 min.
+  30 s, doubling to 10 min. A retired subscription (`stale or foreign mirror`)
+  or a credit failure streak longer than 15 s ends the mirror the same way;
+  shorter streaks back off (250 ms to 4 s). A packet that fails to apply asks
+  for a reset; later packets still apply.
 
 MP-11 rules for v2 (owner decision, Miguel 2026-10-09 11:30 UTC, replacing the
 earlier variant scanning): only the fields the kernel filled from the Vault are
