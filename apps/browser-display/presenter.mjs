@@ -215,7 +215,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   });
   try { await transport.subscribeDisplay?.(binding); }
   catch (error) {
-    off(); presenter.close();
+    off(); presenter.close({preserveFrame:true});
     await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }).catch(() => {});
     throw error;
   }
