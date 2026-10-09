@@ -473,6 +473,7 @@ export class BrowserCdpClient {
     await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
       target_id: target.targetId,
+      ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",

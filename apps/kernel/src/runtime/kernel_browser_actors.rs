@@ -308,14 +308,23 @@ impl KernelBrowserActors {
         &mut self,
         state: &Value,
         actor: &EnvironmentActor,
+        source_tab: Option<&str>,
+        openers: &Value,
     ) -> Result<(), String> {
+        let same_generation = state["generation"].as_u64() == Some(self.generation);
         let discovered = state["tabs"]
             .as_array()
             .map(|tabs| {
                 tabs.iter()
                     .filter_map(|tab| {
                         let id = tab["tab_id"].as_str()?;
-                        self.tab(id).is_err().then(|| id.to_string())
+                        // MP-08: a coincident native tab is not evidence of this
+                        // actor's creation. Only Chromium's opener links it to
+                        // the mutated target; explicit open is handled separately.
+                        (same_generation
+                            && self.tab(id).is_err()
+                            && source_tab.is_some_and(|source| openers[id] == source))
+                        .then(|| id.to_string())
                     })
                     .collect::<Vec<_>>()
             })
@@ -476,6 +485,72 @@ mod tests {
 mod visible_tab_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn mp08_native_tab_during_agent_mutation_has_no_agent_opener() {
+        let mut model = KernelBrowserActors::default();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"}]}))
+            .unwrap();
+        let actor = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Mara");
+        let (action, _) = model
+            .begin(
+                actor.clone(),
+                &json!({"op":"navigate","tab_id":"host-a","generation":1}),
+            )
+            .unwrap();
+        let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"next"},{"tab_id":"native-human","document_id":"human"}]});
+        model
+            .reconcile_attributed(&state, &actor, Some("host-a"), &Value::Null)
+            .unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        model.project_tabs(&mut state);
+        assert!(state["tabs"][1]["opened_by"].is_null());
+        assert_eq!(state["agent_activity"]["tab_id"], "host-a");
+    }
+
+    #[test]
+    fn mp08_only_popup_from_mutated_tab_gets_agent_attribution() {
+        let mut model = KernelBrowserActors::default();
+        model.reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"},{"tab_id":"other","document_id":"other"}]})).unwrap();
+        let actor = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Mara");
+        let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"},{"tab_id":"other","document_id":"other"},{"tab_id":"popup","document_id":"popup"},{"tab_id":"native-human","document_id":"human"},{"tab_id":"other-popup","document_id":"other-popup"}]});
+        model
+            .reconcile_attributed(
+                &state,
+                &actor,
+                Some("host-a"),
+                &json!({"popup":"host-a","other-popup":"other"}),
+            )
+            .unwrap();
+        model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][2]["opened_by"]["actor_id"], "agent:a");
+        assert!(state["tabs"][3]["opened_by"].is_null());
+        assert!(state["tabs"][4]["opened_by"].is_null());
+        assert_eq!(state["agent_activity"]["tab_id"], "popup");
+        assert_eq!(state["agent_activity"]["sequence"], 1);
+    }
+
+    #[test]
+    fn mp08_browser_restart_does_not_attribute_restored_popups_to_mutation() {
+        let mut model = KernelBrowserActors::default();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"}]}))
+            .unwrap();
+        let actor = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Mara");
+        let mut state = json!({"generation":2,"tabs":[{"tab_id":"host-a","document_id":"a"},{"tab_id":"restored","document_id":"restored"}]});
+        model
+            .reconcile_attributed(
+                &state,
+                &actor,
+                Some("host-a"),
+                &json!({"restored":"host-a"}),
+            )
+            .unwrap();
+        model.project_tabs(&mut state);
+        assert!(state["tabs"][1]["opened_by"].is_null());
+        assert!(state["agent_activity"].is_null());
+    }
+
     #[test]
     fn mp08_agent_activity_is_visible_without_changing_input_ownership() {
         let mut model = KernelBrowserActors::default();

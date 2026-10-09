@@ -13,7 +13,7 @@ while IFS= read -r request; do
  case "$request" in
  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
- *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","generation":1,"tab_id":"host-agent","tabs":[{"tab_id":"host-agent","document_id":"doc","url":"https://developer.mozilla.org","title":"MDN"}]}}\n' "$id" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","generation":1,"tab_id":"host-agent","_tab_openers":{"unrelated":"host-agent"},"tabs":[{"tab_id":"host-agent","document_id":"doc","url":"https://developer.mozilla.org","title":"MDN"}]}}\n' "$id" ;;
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac
 done
@@ -55,6 +55,7 @@ done
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
     for result in receipts {
+        assert!(result.get("_tab_openers").is_none());
         assert_eq!(result["tabs"][0]["opened_by"]["actor_id"], "agent:mara");
         assert_eq!(result["tabs"][0]["opened_by"]["display_label"], "mara");
         assert_eq!(result["tabs"][0]["title"], "MDN");

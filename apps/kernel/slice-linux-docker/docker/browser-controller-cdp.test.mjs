@@ -1612,3 +1612,17 @@ test("isolated-world focus keeps the physical visibility captured by input emula
   assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
   await browser.close();
 });
+
+
+test("MP-08 CDP reconciliation retains Chromium popup creation origins", async () => {
+  const connection = new FakeConnection(), send = connection.send.bind(connection)
+  connection.send = async (method, ...args) => {
+    const result = await send(method, ...args)
+    if (method === "Target.getTargets") result.targetInfos.find(target => target.targetId === "target-b").openerId = "target-a"
+    return result
+  }
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection})
+  const state = await browser.reconcile(viewport)
+  assert.equal(state.tabs.find(tab => tab.target_id === "target-b").opener_target_id, "target-a")
+  assert(!Object.hasOwn(state.tabs.find(tab => tab.target_id === "target-a"), "opener_target_id"))
+})

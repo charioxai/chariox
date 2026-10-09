@@ -169,8 +169,14 @@ export class KernelBrowserHost {
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    return redactObservation({ state: "ready", generation: this.generation,
-      tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
+    const idsByTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab.tab_id]));
+    // MP-08: private creation evidence for the kernel, stripped before client projection.
+    const _tab_openers = Object.fromEntries([...this.tabs.values()].flatMap(tab => {
+      const opener = idsByTarget.get(tab.opener_target_id);
+      return opener ? [[tab.tab_id, opener]] : [];
+    }));
+    return redactObservation({ state: "ready", generation: this.generation, _tab_openers,
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");

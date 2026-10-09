@@ -648,3 +648,17 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));
+
+
+test("MP-08 popup origins stay internal and distinguish unrelated native tabs", () => using(async ({host,pages}) => {
+  const opened = await host.request({op:"open",url:"https://en.wikipedia.org"})
+  const opener = host.tabs.get(opened.tab_id).target_id
+  pages.set("native-human", {url:"https://github.com"})
+  pages.set("popup", {url:"https://www.wikipedia.org",opener_target_id:opener})
+  const state = await host.request({op:"state"})
+  const popup = state.tabs.find(tab => tab.url === "https://www.wikipedia.org")
+  const native = state.tabs.find(tab => tab.url === "https://github.com")
+  assert.equal(state._tab_openers[popup.tab_id], opened.tab_id)
+  assert.equal(state._tab_openers[native.tab_id], undefined)
+  assert(!JSON.stringify(state.tabs).includes("opener_target_id"))
+}))

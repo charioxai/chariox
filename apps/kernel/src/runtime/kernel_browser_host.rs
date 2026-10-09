@@ -509,10 +509,23 @@ impl KernelBrowserHost {
         // Reconcile authority with full controller state before applying a
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
+        // Creation evidence belongs to the private controller seam. Never expose
+        // it in the serialized client result or use it to widen capability grants.
+        let tab_openers = result
+            .as_mut()
+            .ok()
+            .and_then(|state| state.as_object_mut())
+            .and_then(|state| state.remove("_tab_openers"))
+            .unwrap_or(Value::Null);
         if let Ok(state) = &result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if mutation {
-                ledger.reconcile_attributed(state, &browser_actor(admission, &request_params))?;
+                ledger.reconcile_attributed(
+                    state,
+                    &browser_actor(admission, &request_params),
+                    request_params["tab_id"].as_str(),
+                    &tab_openers,
+                )?;
             } else {
                 ledger.reconcile(state)?;
             }
