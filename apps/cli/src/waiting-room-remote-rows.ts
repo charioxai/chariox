@@ -10,12 +10,18 @@ import {
   remoteKernelReadinessCounts,
 } from "@chariox/kernel-client/shell-remote-format"
 
+export function waitingRoomInventoryPending(remote: WaitingRoomRemoteState, hasCachedSessions = false): boolean {
+  return remote.inventoryStatus === "loading" || (remote.inventoryStatus === "error"
+    && !hasCachedSessions && !(remote.machines?.length) && !waitingRoomRemoteKernels(remote).length
+    && !(remote.projects?.length))
+}
+
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,
   remote: WaitingRoomRemoteState,
   titleWidth: number,
 ): WaitingRoomRow[] {
-  const inventoryLoading = remote.inventoryStatus === "loading"
+  const inventoryLoading = waitingRoomInventoryPending(remote)
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const relay = remote.relay ?? null
   const machines = remote.machines ?? []
