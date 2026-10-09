@@ -990,6 +990,14 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        // This test covers unlock policy; the token was already verified.
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
         crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 
