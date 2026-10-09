@@ -5,6 +5,11 @@ import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
 const retired = new WeakMap();
+const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
+export function pruneBrowserFillTargets(browser,connection) {
+  const dead=retired.get(connection);
+  for(const [key,target] of browser.fillTargets??[])if(dead?.has(fillKey(target))||target.browser_generation!==browser.browserGeneration)browser.fillTargets.delete(key);
+}
 const digest = value => createHash('sha256').update(value).digest('hex');
 const frameTree = async (connection, sessionId) => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
 const visit = (tree, id) => tree.frame.id === id ? tree.frame : (tree.childFrames ?? []).map(child => visit(child,id)).find(Boolean);
@@ -35,9 +40,10 @@ export async function recordBrowserFill(connection, options, value, revision) {
     functionDeclaration:`function(){ const fields=globalThis.__charioxFilledFields??=new WeakMap();const state={changed:false};fields.set(this,state);
       this.addEventListener('input',event=>{if(event.isTrusted)state.changed=true;}); }`},sessionId);}
   finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},sessionId).catch(()=>{});}
-  return {kind:'browser',target_id:targetId,document_id:documentId,node_ref:nodeRef,
+  const target={kind:'browser',target_id:targetId,document_id:options.trackingDocumentId??documentId,node_ref:options.trackingNodeRef??nodeRef,
     frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
+  retired.get(connection)?.delete(fillKey(target));return target;
 }
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
@@ -64,22 +70,30 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const {cssVisualViewport:visual}=await connection.send('Page.getLayoutMetrics',{},sessionId);
   const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
-  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(JSON.stringify(t)));
+  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(fillKey(t)));
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
-    const seen=new Set(),origins=new Map([[frames[0],[0,0]]]);
+    const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
+    const toViewport=async entry=>{
+      if(transforms.has(entry))return transforms.get(entry);
+      const up=await toViewport(entry.parent);
+      const owner=await connection.send('DOM.getFrameOwner',{frameId:entry.frame.id},entry.parent.sessionId);
+      const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.parent.sessionId);
+      const quad=model.content;rect(quad);
+      const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:entry.frame.id,worldName:'chariox-fill-viewport'},entry.sessionId);
+      const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,expression:'[innerWidth,innerHeight]'},entry.sessionId);
+      const [width,height]=result.value??[];
+      if(!(width>0&&height>0)||Math.abs(quad[0]+quad[4]-quad[2]-quad[6])>.1||Math.abs(quad[1]+quad[5]-quad[3]-quad[7])>.1)throw Error('MP-11: fill frame transform unavailable');
+      const map=([x,y])=>up([quad[0]+x*(quad[2]-quad[0])/width+y*(quad[6]-quad[0])/height,
+        quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
+      transforms.set(entry,map);return map;
+    };
     for(const entry of frames) {
-      if(entry.parent) {
-        const owner=await connection.send('DOM.getFrameOwner',{frameId:entry.frame.id},entry.parent.sessionId);
-        const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.parent.sessionId);
-        const box=rect(model.content),up=origins.get(entry.parent);
-        origins.set(entry,[up[0]+box[0],up[1]+box[1]]);
-      }
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
       if(!candidates.length)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
       for(const target of candidates) {
-        const key=JSON.stringify(target),backendNodeId=targetNode(target,entry);
+        const key=fillKey(target),backendNodeId=targetNode(target,entry);
         const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
         if(!raw)continue;
         const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
@@ -89,14 +103,16 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
-        const [x,y,w,h]=rect(model.border),origin=origins.get(entry),s=metrics.dpr;
+        const map=await toViewport(entry),quad=[];
+        for(let i=0;i<8;i+=2)quad.push(...map(model.border.slice(i,i+2)));
+        const [x,y,w,h]=rect(quad),s=metrics.dpr;
         if(w<=0||h<=0)continue;
-        const left=Math.max(0,Math.floor((x+origin[0])*s)),upper=Math.max(0,Math.floor((y+origin[1])*s));
-        const right=Math.min(page.viewport[0],Math.ceil((x+origin[0]+w)*s)),bottom=Math.min(page.viewport[1],Math.ceil((y+origin[1]+h)*s));
+        const left=Math.max(0,Math.floor(x*s)),upper=Math.max(0,Math.floor(y*s));
+        const right=Math.min(page.viewport[0],Math.ceil((x+w)*s)),bottom=Math.min(page.viewport[1],Math.ceil((y+h)*s));
         if(right>left&&bottom>upper)page.regions.push([left,upper,right-left,bottom-upper]);
       }
     }
-    for(const target of targets)if(!seen.has(JSON.stringify(target)))dead.add(JSON.stringify(target));
+    for(const target of targets)if(!seen.has(fillKey(target)))dead.add(fillKey(target));
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;
@@ -119,7 +135,7 @@ export async function measureBrowserProtection(browser,policy) {
       if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],chrome:false,...measured});
     } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
   }
-  return {pages};
+  pruneBrowserFillTargets(browser,connection);return {pages};
 }
 
 async function withSession(connection, targetId, run) {
@@ -158,8 +174,7 @@ export async function measurePresented(browser, policy) {
 
 // Measure, let the measured layout reach the screen, capture, re-measure. A
 // changed page, window, frame tree or region set retries with a fresh
-// measurement; after `attempts` it captures fail-closed: capture(null) must
-// protect every browser pixel it cannot bind.
+// measurement; after `attempts` it refuses the capture rather than inventing a visual mask.
 export async function fenceBrowserCapture(browser, policy, capture, attempts = 3) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const before = await measurePresented(browser, policy);
@@ -170,13 +185,13 @@ export async function fenceBrowserCapture(browser, policy, capture, attempts = 3
     try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy); } catch {}
     if (after && protectionDigest(after) === protectionDigest(before)) return result;
   }
-  return capture(null);
+  throw Error('MP-11: fill-target capture fence unavailable');
 }
 
 // Streams: a frame captured with protection serial S is released only when a
 // measurement that began after its capture still equals S. New protection is
 // adopted only after two equal measurements separated by a presented frame
-// (measure() awaits one first); meanwhile serial 0 withholds every browser pixel.
+// (measure() awaits one first); meanwhile serial 0 refuses release.
 export class ProtectionGate {
   constructor(measure) { this.measure = measure; this.serial = 0; this.current = null; this.candidate = null; }
   get protection() { return this.current?.measurement ?? null; }

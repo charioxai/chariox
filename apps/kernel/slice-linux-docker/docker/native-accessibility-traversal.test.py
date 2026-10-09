@@ -109,25 +109,6 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(result['masks'], [[10, 20, 80, 30]])
         self.assertEqual(result['nodes'], [])
 
-    def snapshot(self, applications):
-        self.desktop = Node('Desktop', 'desktop', applications)
-        return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
-
-    def foreground(self, pid=200, name='Writer'):
-        window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
-            get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
-        root = types.SimpleNamespace(id=1,get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]),translate_coords=lambda *args:types.SimpleNamespace(x=100,y=80))
-        window.id=9
-        window.query_tree=lambda:types.SimpleNamespace(parent=root)
-        window.get_geometry=lambda:types.SimpleNamespace(x=100,y=80,width=300,height=200,border_width=0)
-        self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
-        self.connection.create_resource_object = lambda kind, value: window
-
-    def test_mp08_foreground_binds_exact_owned_frame(self):
-        self.foreground()
-        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
-        self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]})
-
     def test_mp08_mp11_scaled_frame_geometry_does_not_turn_echoes_into_masks(self):
         self.foreground()
         text=Label('v-secret',name='Plain text')
@@ -142,12 +123,6 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(self.driver.native_frame_scale([50,40,150,100],[100,80,300,200],[100,80,300,200]),2)
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[100,80,300,240],[100,80,300,240]))
         self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[150,120,450,300],[150,120,450,300]))
-
-    def test_mp11_foreign_foreground_does_not_select_owned_frame(self):
-        self.foreground(pid=999)
-        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
-        self.assertIsNone(tree['active_window'])
-        self.assertFalse(tree['complete'])
 
     def test_mp11_unattributed_dock_does_not_block_owned_focus_input(self):
         # MP-11 (#904 Room drill): tint2 maps a dock without _NET_WM_PID. It stays
@@ -192,6 +167,37 @@ class TraversalTest(unittest.TestCase):
         self.desktop=Node('Desktop','desktop',[owned])
         with self.assertRaises(self.driver.NativeInputDenied):self.driver.input_target([{'pid':200,'started':'1'}])
 
+    def test_mp08_mp11_registered_values_do_not_scan_native_text(self):
+        self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [Node('Writer', 'frame', [Label('v-secret'), Label('ordinary')])])])
+        tree = self.driver.snapshot([{'pid': 200, 'started': '1'}], values=['v-secret'])
+        self.assertTrue(tree['available'])
+        self.assertEqual(tree['masks'], [])
+
+    def snapshot(self, applications):
+        self.desktop = Node('Desktop', 'desktop', applications)
+        return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
+
+    def foreground(self, pid=200, name='Writer'):
+        window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
+            get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
+        root = types.SimpleNamespace(id=1,get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]),translate_coords=lambda *args:types.SimpleNamespace(x=100,y=80))
+        window.id=9
+        window.query_tree=lambda:types.SimpleNamespace(parent=root)
+        window.get_geometry=lambda:types.SimpleNamespace(x=100,y=80,width=300,height=200,border_width=0)
+        self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
+        self.connection.create_resource_object = lambda kind, value: window
+
+    def test_mp08_foreground_binds_exact_owned_frame(self):
+        self.foreground()
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
+        self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]})
+
+    def test_mp11_foreign_foreground_does_not_select_owned_frame(self):
+        self.foreground(pid=999)
+        tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
+        self.assertIsNone(tree['active_window'])
+        self.assertFalse(tree['complete'])
+
     def test_mp11_ambiguous_foreground_does_not_select_a_frame(self):
         self.foreground()
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame'),Node('Writer','frame')])])
@@ -209,9 +215,9 @@ class TraversalTest(unittest.TestCase):
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
         self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
-        # Unmeasured, moved/resized or navigated windows stay withheld whole.
+        # Unmeasured, moved/resized or navigated windows have no fill placement.
         for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'url': 'https://other.test/'}]}]:
-            self.assertEqual(snapshot(protection)['masks'], [[100, 80, 300, 200]])
+            self.assertEqual(snapshot(protection)['masks'], [])
             self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
         # Browser accessibility content remains withheld from the structured tree.
         self.assertTrue(all(node['name'] == '[protected]' for node in snapshot({'pages': [page]})['nodes']))
@@ -244,7 +250,6 @@ class TraversalTest(unittest.TestCase):
         tree = self.snapshot([Node('Calc', 'application', controls)])
         self.assertTrue(tree['available'])
         self.assertFalse(tree['complete'])
-        self.assertFalse(tree['traversed'])
         self.assertLessEqual(len(tree['nodes']), 8192)
 
     def test_mp08_virtual_table_covers_visible_cells_without_enumerating_billions(self):
@@ -310,16 +315,16 @@ class TraversalTest(unittest.TestCase):
         self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
         self.connection.create_resource_object = lambda kind, value: window
 
-    def test_mp08_owned_window_without_accessibility_masks_only_its_frame(self):
+    def test_mp08_owned_window_without_accessibility_has_no_visual_mask(self):
         self.terminal(201)
         tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
         self.assertTrue(tree['available'])
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
-        self.assertEqual(tree['masks'], [[20, 30, 246, 152]])
+        self.assertEqual(tree['masks'], [])
 
-    def test_mp11_override_redirect_popups_are_masked_while_an_owned_window_is_uncovered(self):
+    def test_mp11_override_redirect_popups_have_no_visual_mask(self):
         # Menus, completion lists and tooltips are outside _NET_CLIENT_LIST.
         popup = lambda x, map_state: types.SimpleNamespace(
             get_attributes=lambda: types.SimpleNamespace(map_state=map_state, override_redirect=1),
@@ -329,7 +334,7 @@ class TraversalTest(unittest.TestCase):
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152], [300, 40, 102, 62]])
-        self.assertEqual(tree['masks'], tree['uncovered'])
+        self.assertEqual(tree['masks'], [])
 
     def stacked(self, order, stacking=True):
         # MP-08: owned xterm (9, no AT-SPI) and owned Writer (10) frames in WM stacking order.
@@ -350,25 +355,25 @@ class TraversalTest(unittest.TestCase):
         self.connection.screen = lambda: types.SimpleNamespace(width_in_pixels=1280,height_in_pixels=800,root=root)
         self.connection.create_resource_object = lambda kind, value: windows[value]
 
-    def test_mp08_owned_window_below_an_owned_app_masks_only_its_exposed_part(self):
+    def test_mp08_owned_window_below_an_owned_app_has_no_visual_mask(self):
         self.stacked([9, 10])
         tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
         self.assertTrue(tree['complete'])
         self.assertFalse(tree['protected'])
         # MP-11: unknown-content window still recorded (clipboard and completeness stay closed).
         self.assertEqual(tree['uncovered'], [[20, 30, 246, 152]])
-        # Writer frame 100,80 300x200 covers the xterm's lower right; only the rest is blacked out.
-        self.assertEqual(tree['masks'], [[20, 30, 246, 50], [20, 80, 80, 102]])
+        # Visibility does not invent a Vault fill target.
+        self.assertEqual(tree['masks'], [])
         # Masking an owned window below must not unbind the focused Writer frame.
         self.assertEqual(tree['active_window'], {'pid': 200, 'started': '1', 'path': [0]})
 
-    def test_mp11_owned_window_above_or_unknown_stacking_masks_its_whole_frame(self):
+    def test_mp11_owned_window_above_or_unknown_stacking_has_no_visual_mask(self):
         for order, stacking in [([10, 9], True), ([9, 10], False)]:
             self.stacked(order, stacking)
             tree = self.snapshot([Node('Office', 'application', [Node('Writer', 'frame')])])
-            self.assertEqual(tree['masks'], [[20, 30, 246, 152]])
+            self.assertEqual(tree['masks'], [])
 
-    def test_mp11_foreign_or_unattributed_window_still_masks_the_desktop(self):
+    def test_mp11_foreign_or_unattributed_window_denies_input_authority(self):
         for pid in [999, None]:
             self.terminal(pid)
             if pid is None:
@@ -399,7 +404,7 @@ class TraversalTest(unittest.TestCase):
             Node('nested-frame-canary','document web'),Node('shadow-private-canary','text')])])
         tree=self.snapshot([browser])
         self.assertNotIn('canary',str(tree))
-        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertEqual(tree['masks'], [])
         self.assertTrue(all(node['protected'] and not node['actions'] for node in tree['nodes']))
 
     def test_mp08_mp11_known_browser_content_is_opaque_without_accessibility_queries(self):
@@ -413,20 +418,20 @@ class TraversalTest(unittest.TestCase):
         tree=self.driver.snapshot(processes, browser_processes=processes)
         self.assertTrue(tree['available'])
         self.assertTrue(tree['complete'])
-        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertEqual(tree['masks'], [])
         self.assertEqual(tree['nodes'][0]['name'],'[protected]')
         self.assertTrue(tree['nodes'][0]['protected'])
         self.assertEqual(tree['nodes'][0]['actions'],[])
         self.assertIsNone(tree['active_window'])
         browser.getRoleName.assert_not_called()
 
-    def test_mp11_finding3_popup_is_masked_on_an_all_accessible_desktop(self):
+    def test_mp11_finding3_popup_has_no_visual_mask(self):
         popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
             get_geometry=lambda:types.SimpleNamespace(x=300,y=40,width=100,height=60,border_width=1))
         self.terminal(200,[popup])
         frame=Node('xterm','frame');frame.rect=types.SimpleNamespace(x=20,y=30,width=246,height=152)
         tree=self.snapshot([Node('Office','application',[frame])])
-        self.assertEqual(tree['masks'],[[300,40,102,62]])
+        self.assertEqual(tree['masks'], [])
 
     def test_mp11_r3_hidden_selection_window_has_no_desktop_pixels(self):
         for bounds, expected in [((-100,-100,1,1),[]),((-5,40,15,60),[[0,40,10,60]]),((1270,790,20,20),[[1270,790,10,10]])]:
@@ -436,19 +441,19 @@ class TraversalTest(unittest.TestCase):
             self.terminal(200,[popup])
             frame=Node('xterm','frame');frame.rect=types.SimpleNamespace(x=20,y=30,width=246,height=152)
             tree=self.snapshot([Node('Office','application',[frame])])
-            self.assertEqual(tree['masks'],expected)
+            self.assertEqual(tree['masks'], [])
 
     def test_mp11_finding4_same_pid_unmatched_window_has_no_coverage(self):
         self.terminal(200)
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
-        self.assertEqual(tree['masks'],[[20,30,246,152]])
+        self.assertEqual(tree['masks'], [])
         self.assertIsNone(tree['active_window'])
 
-    def test_mp11_finding4_ambiguous_or_wrong_geometry_never_subtracts_masks(self):
+    def test_mp11_finding4_ambiguous_or_wrong_geometry_denies_input_authority(self):
         for frames in [[Node('Writer','frame'),Node('Writer','frame')],[Node('Other','frame')],[]]:
             self.stacked([9,10])
             tree=self.snapshot([Node('Office','application',frames)])
-            self.assertEqual(tree['masks'],[[20,30,246,152],[100,80,300,200]])
+            self.assertEqual(tree['masks'], [])
             self.assertIsNone(tree['active_window'])
 
     def test_mp11_finding1_repeated_focus_checks_use_live_ancestors_and_leaf(self):

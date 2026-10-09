@@ -4,7 +4,7 @@ browser-protection-regions.mjs measures every frame of every visible page in
 device pixels relative to its content viewport. Chromium's own AT-SPI document
 extents prove where each viewport is on the desktop. A browser window is
 precise only when its visible pages and its documents pair one-to-one by URL,
-viewport size and exact window geometry; otherwise it stays wholly masked.
+viewport size and exact window geometry; unproven filled-field placement refuses capture.
 """
 import math
 from collections import deque
@@ -13,7 +13,6 @@ MAX_NODES = 2048
 MAX_DEPTH = 24
 MAX_DOCUMENTS = 64
 PAD_DIP = 4      # Matches CDP image masking: borders, shadows, outward rounding.
-STATUS_DIP = 24  # Link-status bubble over the content bottom.
 MIN_SCALE, MAX_SCALE = .25, 4
 
 
@@ -98,35 +97,35 @@ def _clip(rect, outer):
 def _screen_scale(window, client):
     """Device pixels per screen DIP proven by the X11 client geometry, or None."""
     if not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, (int, float)) for v in window) or window[2] <= 0:
-        return []
+        return None
     scale = client[2]/window[2]
     if not MIN_SCALE <= scale <= MAX_SCALE:
-        return []
+        return None
     slack = 0 if scale == round(scale) else 1  # Fractional scales round DIP to pixels.
     exact = all(abs(dip*scale-px) <= slack for dip, px in zip(window, client))
     return scale if exact else None
 
 
 def window_masks(protection, client, frame, docs):
-    """Masks for one browser X window, or None to withhold the whole window.
+    """Exact fill masks for one browser X window, or None to refuse capture.
 
     client: X11 client rectangle; frame: window-manager frame rectangle;
     docs: document_rects() of the window's application. The AT-SPI document
     rectangle proves where the page viewport is; the X11 geometry proves the
     screen scale. A page whose density is emulated (devicePixelRatio not the
-    screen scale times its page zoom) has no provable mapping: withheld.
+    screen scale times its page zoom) has no provable fill mapping.
     """
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
         return None
     pages = [page for page in protection['pages'] if _screen_scale(page.get('window'), client)]
     inside = [doc for doc in docs if _inside(doc['rect'], client)]
     if not pages or len(pages) != len(inside):
-        return None  # A page without proven pixels, or unmeasured web content.
+        return None  # Capture retries an unbound filled field without a broad mask.
     scale = _screen_scale(pages[0]['window'], client)
     if any(_screen_scale(page['window'], client) != scale for page in pages):
         return None
     masks, used = [], set()
-    pad, status = math.ceil(PAD_DIP*scale), math.ceil(STATUS_DIP*scale)
+    pad = math.ceil(PAD_DIP*scale)
     for doc in inside:
         x, y, width, height = doc['rect']
         def fits(page):

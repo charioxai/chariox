@@ -48,16 +48,13 @@ def capture_masked(policy, locate, capture, native=None):
                 next_coverage = native() if native else None
                 if before != after or coverage != next_coverage:
                     continue  # Drop only this frame. Re-locate and re-capture.
-                if coverage is not None:
-                    if not coverage['available'] or not coverage['complete']:
-                        continue
                 registered = mask_image(image, before)
                 if coverage is None:
                     return registered
                 try:
                     # Native masks already include window borders and stacking
                     # subtraction. Do not pad into an accessible window above.
-                    return mask_image(registered, coverage.get('masks', coverage.get('uncovered', [])), margin=0)
+                    return mask_image(registered, coverage.get('masks', []), margin=0)
                 finally:
                     registered.close()
             finally:

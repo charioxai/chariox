@@ -34,7 +34,7 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   };
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
-  assert.deepEqual(await run({ ensureConnection: async () => { throw new Error('closed'); } }), [null]);
+  await assert.rejects(run({ ensureConnection: async () => { throw new Error('closed'); } }), /fill-target capture fence unavailable/);
   // Owner 2026-10-09: Vault values never black out the desktop; browser windows
   // keep their per-field/value masks from the same measured protection.
   assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
@@ -70,7 +70,7 @@ test('MP-08 immediate physical key and text are distinct and wake capture after 
 
 test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop generation', async () => {
   const root=await mkdtemp(path.join(os.tmpdir(),'chariox-warm-generation-'));
-  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:process.env.PATH,HOME:root,LANG:'C.UTF-8'}});
   const owned=await desktop.start();
   let current = { ...binding, environment: { ...owned.environment, ...publicDependencies } };
   const adapter = new NativeComputer({ placement: 'host', binding: () => current });

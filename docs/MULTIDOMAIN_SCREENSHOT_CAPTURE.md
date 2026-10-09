@@ -60,10 +60,10 @@ Native panels use a client-side DOM render. Native Apps render the visible
 iframe viewport over a dedicated parent-bound MessagePort; the App channel API
 has no capture method, the signed UI never receives the selected region or
 capture port, and the parent/window/origin/view binding is checked. The host
-then crops/composes that frame. Password/Vault/passkey regions are blacked out
-using original visible geometry after rendering as well as during DOM cloning.
-Unregistered embedded documents/custom or shadow content are opaque protected
-blocks. The client does not crawl cross-origin documents or capture offscreen
+then crops/composes that frame. MP-08/MP-11: the earlier prototype
+password/passkey/opaque-block masking described here is superseded by Miguel’s
+2026-10-09 fill-target model. Kernel capture covers only recorded Vault-filled
+plain fields; password dots and other content remain visible. The client does not crawl cross-origin documents or capture offscreen
 content. Native DOM rendering is a prototype: canvas/image content is supported;
 unsupported/tainted resources fail rather than invoke a page screenshot service.
 DOM rasterization is not a browser compositor API, so fonts, pseudo-elements,

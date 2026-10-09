@@ -304,7 +304,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     withheld+=pid in measured and precise is None
                     if visible:
                         uncovered.append(visible)
-                        masks.extend([visible] if precise is None else [part for part in (visible_rect(mask,screen) for mask in precise) if part])
+                        masks.extend(part for part in (visible_rect(mask,screen) for mask in (precise or [])) if part)
                 elif stacked and masks:
                     masks=[part for region in masks for part in subtract(region,rect)]
                 if covered and window_id==active_id:
@@ -317,7 +317,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 if attributes.override_redirect and attributes.map_state==X.IsViewable:
                     geometry=child.get_geometry()
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
-                    if visible:uncovered.append(visible);masks.append(visible)
+                    if visible:uncovered.append(visible)
         finally:connection.close()
         # MP-11: browser pixels are placed by the CDP transform above; the
         # structured browser app stays withheld (titles, OTP/payment/private

@@ -238,6 +238,7 @@ export class BrowserCdpClient {
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
         this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
         this.cookieWriterFence = null;
@@ -266,6 +267,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
@@ -385,6 +387,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
@@ -703,8 +706,7 @@ export class BrowserCdpClient {
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, async options => {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration}, rawRequest.action.text, ++this.fillRevision);
-          Object.assign(target, {document_id:documentId,node_ref:rawRequest.node_ref});
+          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
         }
         return performBrowserAction(options);
@@ -1167,6 +1169,7 @@ export class BrowserCdpClient {
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
     }
     if (message?.method === "Browser.downloadWillBegin") {

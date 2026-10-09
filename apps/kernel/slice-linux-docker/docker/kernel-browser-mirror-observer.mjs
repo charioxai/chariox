@@ -4,7 +4,7 @@ export const mirrorObserverExpression = initial => `(${installMirrorObserver.toS
 function installMirrorObserver(initialStyles = {}) {
   if (globalThis.__charioxMirror) return true;
   const ids = new WeakMap();let observed = new WeakSet();
-  let serial = 0, live = new Map(), revision = 0, protectedVariants=[], maskedNodes=new WeakSet();
+  let serial = 0, live = new Map(), revision = 0, maskedNodes=new WeakSet();
   const observer = new MutationObserver(() => { revision++; });
   const watch = root => {
     if (observed.has(root)) return;
@@ -21,22 +21,19 @@ function installMirrorObserver(initialStyles = {}) {
     return {x:r.x,y:r.y,width:r.width,height:r.height};
   };
   const snapshots = new Map();
-  const read = (variants = [], opaqueRegions = [], subscription = null, reset = false) => {
+  const read = (_ignoredValues = [], opaqueRegions = [], subscription = null, reset = false) => {
     observer.disconnect();observed=new WeakSet();
-    protectedVariants=[];
-    variants=[];
-    const records = [], resources = [], fonts = [], nextLive = new Map(), marked = new WeakSet();
+    const records = [], resources = [], fonts = [], nextLive = new Map();
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
     let textSize = 0;
-    const tainted = () => false; // Visual protection comes only from filled plain fields.
     // MP-08/MP-10/MP-11: exact same-read CSS sharing for plain leaf paragraphs.
     // Same parent, tag, raw attributes, box size and complete selector match set
     // imply the same author cascade + inheritance. Uninspectable/grouped/nested/
     // pseudo CSS, shadows, frames and animations disable it. Nothing persists
     // across reads, so property-only or stylesheet mutations cannot stale it.
     let selectors=null;
-    if(!variants.length&&!document.getAnimations().length)try {
+    if(!document.getAnimations().length)try {
       selectors=[];
       for(const sheet of [...document.styleSheets,...document.adoptedStyleSheets])for(const rule of sheet.cssRules) {
         if(rule.type===CSSRule.FONT_FACE_RULE)continue;
@@ -56,12 +53,12 @@ function installMirrorObserver(initialStyles = {}) {
         if(property.startsWith('--') || property.startsWith('animation') || property.startsWith('transition') || ['content','cursor'].includes(property)) continue;
         const value=computed.getPropertyValue(property);
         if(value===initialStyles[property] && !['direction','unicode-bidi','color','background-color','border-top-color','border-right-color','border-bottom-color','border-left-color'].includes(property))continue;
-        if(value.length<=2048 && !forbiddenCss.test(value) && !tainted(value)) out[property]=value;
+        if(value.length<=2048 && !forbiddenCss.test(value)) out[property]=value;
       }
       // Inline URLs are never shipped. Computed image URLs become kernel resource refs.
-      if (!pseudo && !variants.length && resourcesAllowed) {
+      if (!pseudo && resourcesAllowed) {
         const value=computed.backgroundImage, match=/^url\("([^"\n]+)"\)$/.exec(value);
-        if(match && !tainted(match[1])) { const key=`r${resources.length}`; resources.push({key,url:match[1],kind:'image'}); out['background-image']=`resource:${key}`; }
+        if(match) { const key=`r${resources.length}`; resources.push({key,url:match[1],kind:'image'}); out['background-image']=`resource:${key}`; }
       }
       if(sharedKey)sharedStyles.set(sharedKey,out);
       return out;
@@ -73,7 +70,7 @@ function installMirrorObserver(initialStyles = {}) {
       const record={id:id(node),parent,children:[],kind:'element'};
       nextLive.set(record.id,node); records.push(record);
       if(node.nodeType===3) {
-        record.kind=marked.has(node)?'mask':'text'; record.text=marked.has(node)?'':node.data;record.box=box(node);if(record.kind==='mask'){record.box=box(node);record.tag='div';record.style={display:'inline-block',width:`${record.box.width}px`,height:`${record.box.height}px`,background:'black'};}
+        record.kind='text';record.text=node.data;record.box=box(node);
         textSize+=record.text.length; if(textSize>2097152) throw new Error('mirror text bounds');
         return done(record);
       }
@@ -89,13 +86,13 @@ function installMirrorObserver(initialStyles = {}) {
         record.style=safeStyle(node,null,true,record.box);
         // MP-08/MP-10: viewport first. Offscreen simple flow blocks retain their
         // layout but hydrate descendants on the following bounded credit.
-        // Source scan/protection precedes this deferral; user scrolling affects
+        // Exact filled-field protection precedes deferral; user scrolling affects
         // only the source until the next packet restores the real subtree.
         if(reset&&record.box.y>=innerHeight&&['p','pre','li'].includes(tag)&&record.style.display==='block'&&(record.style.position??'static')==='static'&&!node.shadowRoot) {
           record.kind='tile';record.reason='viewport_deferred';return done(record);
         }
         record.attributes={};
-        for(const attr of node.attributes) if((attributes.has(attr.name)||tag==='slot'&&attr.name==='name') && attr.value.length<=2048 && !tainted(attr.value)) record.attributes[attr.name]=attr.value;
+        for(const attr of node.attributes) if((attributes.has(attr.name)||tag==='slot'&&attr.name==='name') && attr.value.length<=2048) record.attributes[attr.name]=attr.value;
         // MP-08/MP-11: preserve inert editing semantics, never arbitrary values.
         if(node.hasAttribute('contenteditable'))record.attributes.contenteditable=['true','false','plaintext-only'].includes(node.contentEditable)?node.contentEditable:(node.isContentEditable?'true':'false');
         // No name/id/data-* attributes, URLs, event handlers, provider/page secrets.
@@ -121,7 +118,7 @@ function installMirrorObserver(initialStyles = {}) {
         for(const pseudo of ['::before','::after']) {
           const content=getComputedStyle(node,pseudo).content;
           if(content && content!=='none' && content!=='normal') {
-            if(tainted(content) || !/^"[^"\\]*"$/.test(content)) {record.kind='tile';record.tag='img';record.reason='unsupported_pseudo';return done(record);}
+            if(!/^"[^"\\]*"$/.test(content)) {record.kind='tile';record.tag='img';record.reason='unsupported_pseudo';return done(record);}
             record.pseudo[pseudo]={text:content.slice(1,-1),style:safeStyle(node,pseudo)};
           }
         }
@@ -132,7 +129,7 @@ function installMirrorObserver(initialStyles = {}) {
       return done(record);
     };
     watch(document); const root=visit(document.documentElement);
-    if(!variants.length) {
+    {
       const usedFamilies=new Set(records.filter(n=>n.kind!=='mask').flatMap(n=>(n.style?.['font-family']??'').split(',').map(s=>s.trim().replaceAll('"','').replaceAll("'",'').toLowerCase())));
       let ruleCount=0;
       const collect = (rules,base) => {
@@ -184,7 +181,7 @@ function installMirrorObserver(initialStyles = {}) {
   };
   const unprotected = node => {
     for(let ancestor=node,depth=0;ancestor&&depth<128;depth++) {
-      if(maskedNodes.has(ancestor)||ancestor.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||/password|one-time-code|cc-/i.test(ancestor.autocomplete??'')||protectedVariants.some(v=>[ancestor.value??'',...Array.from(ancestor.attributes??[],a=>a.value)].some(s=>s.includes(v))))throw new Error('mirror protected input ancestor');
+      if(maskedNodes.has(ancestor)||ancestor.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')||/password|one-time-code|cc-/i.test(ancestor.autocomplete??''))throw new Error('mirror protected input ancestor');
       ancestor=ancestor.parentElement??ancestor.getRootNode()?.host??ancestor.ownerDocument?.defaultView?.frameElement;
     }
   };
@@ -251,7 +248,7 @@ function installMirrorObserver(initialStyles = {}) {
     if(!a?.isConnected||!b?.isConnected||a.nodeType!==3||b.nodeType!==3||a.ownerDocument!==b.ownerDocument||!Number.isInteger(request.anchor_offset)||!Number.isInteger(request.focus_offset)||request.anchor_offset<0||request.anchor_offset>a.length||request.focus_offset<0||request.focus_offset>b.length) throw new Error('mirror invalid selection');
     const range=a.ownerDocument.createRange(),pa=a.ownerDocument.createRange(),pb=a.ownerDocument.createRange();pa.setStart(a,request.anchor_offset);pa.collapse(true);pb.setStart(b,request.focus_offset);pb.collapse(true);
     if(pa.compareBoundaryPoints(Range.START_TO_START,pb)>0){range.setStart(b,request.focus_offset);range.setEnd(a,request.anchor_offset);}else{range.setStart(a,request.anchor_offset);range.setEnd(b,request.focus_offset);}
-    for(const node of live.values())if(node.ownerDocument===a.ownerDocument && (maskedNodes.has(node) || node.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]') || protectedVariants.some(v=>(node.nodeValue??node.value??'').includes(v))) && range.intersectsNode(node))throw new Error('mirror selection intersects protected content');
+    for(const node of live.values())if(node.ownerDocument===a.ownerDocument && (maskedNodes.has(node) || node.matches?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]')) && range.intersectsNode(node))throw new Error('mirror selection intersects protected content');
     const selection=a.ownerDocument.getSelection();selection.setBaseAndExtent(a,request.anchor_offset,b,request.focus_offset);return true;
   };
   // MP-10: private CDP diagnostics expose geometry of already-sanitized text only.

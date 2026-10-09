@@ -13,7 +13,7 @@ helpers=lambda accessibility:(lambda name: accessibility if name=='native-access
 class ProtectionTests(unittest.TestCase):
     def test_mp08_mp11_password_dots_leave_desktop_visible_and_only_plaintext_value_is_masked(self):
         # Password roles still protect structured text/input; their dots are safe
-        # pixels. A registered value shown in an ordinary entry is a local mask.
+        # pixels. Only an explicit recorded plain fill contributes a local mask.
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
         for masks in ([],[[2,1,2,2]]):
@@ -21,7 +21,7 @@ class ProtectionTests(unittest.TestCase):
                 tree={'available':True,'complete':True,'protected':True,
                       'nodes':[{'role':'password text','protected':True,'name':'[protected]'}],
                       'masks':masks,'uncovered':[]}
-                with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+                with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree,capture_snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
                     result=module.main({'op':'screenshot','mask':False,'processes':[],'values':['synthetic-only']})
                 self.assertFalse(result['protected'])
                 with module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64']))) as image:
@@ -33,25 +33,25 @@ class ProtectionTests(unittest.TestCase):
     def test_mp11_opaque_browser_keeps_unknown_clipboard_contents_withheld(self):
         tree={'available':True,'complete':True,'protected':False,
               'nodes':[{'protected':True,'name':'[protected]'}],'uncovered':[]}
-        accessibility=SimpleNamespace(snapshot=lambda *args:tree)
+        accessibility=SimpleNamespace(snapshot=lambda *args:tree,capture_snapshot=lambda *args:tree)
         with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard),patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'private-browser-canary')) as read:
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
         read.assert_not_called()
 
     def test_mp11_r2_unknown_clipboard_source_is_withheld_with_public_coverage(self):
         tree={'available':True,'complete':True,'protected':False,'nodes':[]}
-        with patch.object(module,'load',side_effect=lambda name:SimpleNamespace(snapshot=lambda *args:tree) if name=='native-accessibility' else x11 if name=='native-x11' else clipboard), patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'unknown-source-canary')):
+        with patch.object(module,'load',side_effect=lambda name:SimpleNamespace(snapshot=lambda *args:tree,capture_snapshot=lambda *args:tree) if name=='native-accessibility' else x11 if name=='native-x11' else clipboard), patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'unknown-source-canary')):
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
 
     def test_mp11_public_coverage_without_a_clipboard_source_remains_withheld(self):
         before={'available':True,'complete':True,'protected':False,'nodes':[]}
-        accessibility=SimpleNamespace(snapshot=lambda *args:before)
+        accessibility=SimpleNamespace(snapshot=lambda *args:before,capture_snapshot=lambda *args:before)
         with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard),patch.object(module.subprocess,'run',return_value=SimpleNamespace(stdout=b'public')):
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
-    def test_mp08_uncovered_owned_window_is_blacked_out_not_the_desktop(self):
-        # Owned app stacked above covers x>=4 of the terminal frame: only the exposed part is blacked out.
+    def test_mp08_mp11_only_explicit_fill_masks_affect_pixels(self):
+        # Uncovered authority bounds do not contribute visual masks.
         tree={'available':True,'complete':True,'protected':False,'nodes':[],'uncovered':[[2,1,3,2]],'masks':[[2,1,2,2]]}
-        accessibility=SimpleNamespace(snapshot=lambda *args:tree)
+        accessibility=SimpleNamespace(snapshot=lambda *args:tree,capture_snapshot=lambda *args:tree)
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
         with patch.object(module,'load',side_effect=helpers(accessibility)),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
@@ -62,14 +62,14 @@ class ProtectionTests(unittest.TestCase):
             self.assertEqual(image.getpixel((1,1)),(200,200,200));self.assertEqual(image.getpixel((5,1)),(200,200,200));self.assertEqual(image.getpixel((2,3)),(200,200,200))
             # A terminal selection may hold typed secrets: keep the clipboard closed.
             self.assertEqual(module.main({'op':'clipboard_read','mask':False,'processes':[]}),{'text':'[protected]'})
-    def test_mp11_missing_masks_falls_back_to_whole_uncovered_frames(self):
+    def test_mp11_missing_fill_masks_preserves_uncovered_frames(self):
         tree={'available':True,'complete':True,'protected':False,'nodes':[],'uncovered':[[2,1,3,2]]}
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
-        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree,capture_snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
             result=module.main({'op':'screenshot','mask':False,'processes':[]})
             image=module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64'])))
-            self.assertEqual(image.getpixel((4,2)),(0,0,0))
+            self.assertEqual(image.getpixel((4,2)),(200,200,200))
     def test_mp08_mp11_browser_protection_fences_both_snapshots_and_reports_withheld_windows(self):
         calls=[]
         def snapshot(*args):
@@ -78,7 +78,7 @@ class ProtectionTests(unittest.TestCase):
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
         protection={'pages':[]}
-        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=snapshot))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=snapshot,capture_snapshot=snapshot))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
             result=module.main({'op':'screenshot','mask':False,'processes':[],'browser_protection':protection})
         self.assertEqual([call[2] for call in calls],[protection,protection])
         self.assertEqual(result['browser_withheld'],1)
@@ -159,31 +159,17 @@ class WarmChannelTests(unittest.TestCase):
                 module.channel_request({'op':'input','input':{'kind':kind,**extra}},held)
             self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None)])
             self.assertEqual(held,{38})
-class VaultValueBoxTests(unittest.TestCase):
-    """MP-08 / MP-11 (owner 2026-10-09): best-effort Vault boxes from accessible text."""
-    def test_mp11_registered_value_masks_only_its_text_range(self):
-        accessibility=module.load('native-accessibility')
-        class Text:
-            characterCount=30
-            def getText(self,start,end):return 'user: synthetic-vault-value ok'[start:end]
-            def getRangeExtents(self,start,end,coords):return (100+start,50,(end-start)*7,14)
-        class Node:
-            name='Login form'
-            def queryText(self):return Text()
-            def queryComponent(self):raise NotImplementedError
-        boxes=accessibility.value_boxes(Node(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0))
-        self.assertEqual(boxes,[[106,50,147,14]])
-        class Named:
-            name='synthetic-vault-value'
-            def queryText(self):raise NotImplementedError
-            def queryComponent(self):return SimpleNamespace(getExtents=lambda coords:SimpleNamespace(x=5,y=6,width=70,height=12))
-        self.assertEqual(accessibility.value_boxes(Named(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0)),[[5,6,70,12]])
-        class Unknown:
-            name='plain'
-            def queryText(self):raise RuntimeError('cannot be checked')
-            def queryComponent(self):raise RuntimeError('cannot be checked')
-        self.assertEqual(accessibility.value_boxes(Unknown(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0)),[])
-        self.assertEqual(accessibility.value_boxes(Named(),[],SimpleNamespace(DESKTOP_COORDS=0)),[])
+class CaptureEvidenceTests(unittest.TestCase):
+    def test_mp08_mp11_capture_uses_fill_evidence_and_keeps_input_authority_separate(self):
+        from unittest.mock import Mock
+        strict = Mock(side_effect=AssertionError('input authority must not define capture coverage'))
+        fields = Mock(return_value={'available':True,'complete':True,'masks':[],'browser_withheld':0})
+        accessibility = SimpleNamespace(snapshot=strict,capture_snapshot=fields)
+        with patch.object(module,'load',return_value=accessibility),patch.object(module,'capture',return_value=module.Image.new('RGB',(8,4),'white')):
+            result=module.main({'op':'screenshot','mask':False,'processes':[]})
+        strict.assert_not_called()
+        self.assertEqual(fields.call_count,2)
+        self.assertFalse(result['protected'])
 
 
 if __name__=='__main__':unittest.main()
