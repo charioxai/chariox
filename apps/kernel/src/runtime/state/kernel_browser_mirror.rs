@@ -142,7 +142,15 @@ mod tests {
         let wire = mirror_wire_result(true, typeahead.clone()).unwrap();
         assert_eq!(wire["encoding"], "gzip");
         assert_eq!(wire["resources"], typeahead["resources"]);
-        let noise: String = (0..1400u32).map(|i| char::from(b'!' + ((i.wrapping_mul(2654435761) >> 7) % 90) as u8)).collect();
+        let mut state = 0x9e37_79b9u32;
+        let noise: String = (0..1400)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                char::from(b'!' + (state % 90) as u8)
+            })
+            .collect();
         let random = json!({"wire":2,"sequence":4,"ops":[{"op":"text","id":"n2","text":noise}],"resources":[],"tiles":[]});
         assert_eq!(mirror_wire_result(true, random.clone()).unwrap(), random);
         let v1 = json!({"sequence":1,"nodes":[]});
