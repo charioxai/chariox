@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: trusted CDP layout, re-located before/after every frame.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { withBrowserFrames } from './browser-controller-frames.mjs';
-import { redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
+import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 import { fileURLToPath } from 'node:url';
 
 function quadRegion(quad) {
@@ -84,7 +84,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate
           // value-bearing inputs using raw, trusted layout; never retry insertion.
-          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
+          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
           const document = snapshot.documents?.[0], strings = snapshot.strings ?? [];
           const nodes = document?.nodes ?? {}, layout = document?.layout ?? {};
           const input = nodes.inputValue ?? {};
@@ -120,7 +120,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (placement?.whole) regions.push(desktop(origin, placement.whole));
           if (!placement?.origin) continue;
           const frameSnapshot = frame.sessionId === sessionId && snapshot ? snapshot
-            : await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, frame.sessionId);
+            : await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, frame.sessionId);
           if (frame.sessionId === sessionId) snapshot = frameSnapshot;
           const strings = frameSnapshot.strings ?? [], documents = frameSnapshot.documents ?? [];
           const echoed = index => typeof strings[index] === 'string' && redactObservation(strings[index], values) !== strings[index];

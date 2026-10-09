@@ -101,27 +101,262 @@ export function redactObservation(value, protectedValues) {
 }
 
 // MP-08/MP-11: layout entries of one DOMSnapshot document whose rendered text
-// echoes a protected value. CSS-generated content (::before, ::after,
-// ::marker, ::first-letter, counters) has no DOM value, so text is joined per
-// element in visual order; snapshots list ::after before text children.
-// Unreadable layout text fails closed.
+// echoes a protected value. Rendered text, incl. CSS-generated content
+// (::before, ::after, ::marker, ::first-letter, counters) that has no DOM
+// value, is flattened over the whole document in visual order (snapshots list
+// pseudo-elements before children), so a value split across nested or sibling
+// elements still matches. A second flattening reads displaced, clipped and
+// transparent subtrees as separate runs and skips invisible text (hidden,
+// alpha or opacity below 0.1, font-size below 4px), so pieces that only such
+// a subtree separates in DOM order still match. A match protects every
+// contributing entry and the box of their nearest common laid-out ancestor;
+// unreadable text or a match without such a container fails closed.
+//
+// Visual order can differ from DOM order (coordinator rule 2026-10-09). While
+// values are registered, a container whose order can differ is masked, per
+// container, never the page, unless its trusted layout boxes prove DOM reading
+// order: flex/grid/-webkit-box containers with reversed, column-wrapped,
+// column-flow or dense placement, CSS order or explicit grid placement; tables
+// whose captions or header/footer groups move; block containers whose negative
+// margins add up to half an em. Glyph order inside one text run cannot be
+// observed, so the block container of a bidi override, a direction change,
+// bidi controls or right-to-left letters is masked. Displaced glyphs (absolute,
+// fixed, sticky, offset relative, float, transform) less than 1em from other
+// glyphs mask both block containers. Glyphs 1em or more apart are separate
+// words or columns, as in any layout. The snapshot must carry
+// RENDER_ORDER_STYLES (and textBoxes for per-line boxes).
+export const RENDER_ORDER_STYLES = ["display", "position", "float", "order", "flex-direction", "flex-wrap", "grid-auto-flow",
+  "grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end", "-webkit-box-direction", "-webkit-box-ordinal-group",
+  "caption-side", "direction", "unicode-bidi", "top", "right", "bottom", "left",
+  "margin-top", "margin-right", "margin-bottom", "margin-left", "transform", "translate", "rotate", "scale", "offset-path",
+  "overflow-x", "overflow-y", "clip", "clip-path", "visibility", "opacity", "-webkit-text-fill-color", "font-size"];
+const PSEUDO_ORDER = { "::marker": 0, "::first-letter": 1, "::before": 2, "::after": 5 };
+const BIDI_TEXT = /[\u0590-\u08ff\u200e\u200f\u202a-\u202e\u2066-\u2069\ufb1d-\ufdff\ufe70-\ufefc\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
+const CLEAR = /^transparent$|^rgba\(([^,]*,){3}\s*0(\.0\d*)?\)$|\/\s*(0(\.0\d*)?|\d(\.\d+)?%)\)$/; // Alpha below 0.1.
+const GRID_PLACEMENT = ["grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end"];
+const TABLE_RANK = { "table-header-group": 1, "table-row-group": 2, "table-row": 2, "table-footer-group": 3 };
 export function renderedTextEchoes(strings, document, protectedValues) {
-  const echoes = new Set(), groups = new Map();
+  const echoes = new Set();
   if (!protectedValues.length) return echoes;
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
-  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
-    const piece = layout.text?.[k];
-    if (piece === -1) continue;
-    if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
-    const node = layout.nodeIndex[k], name = strings[nodes.nodeName?.[node]] ?? "";
-    const key = nodes.nodeType?.[node] === 3 || name.startsWith("::") ? nodes.parentIndex?.[node] : node;
-    const group = groups.get(key) ?? { head: "", tail: "", entries: [] };
-    group[name === "::after" ? "tail" : "head"] += strings[piece];
-    group.entries.push(k);
-    groups.set(key, group);
+  const count = nodes.nodeName?.length ?? 0, parent = [], depth = [], children = [], roots = [], entries = new Map(), css = new Map();
+  for (let i = 0; i < count; i++) {
+    const up = nodes.parentIndex?.[i] ?? -1;
+    if (!Number.isInteger(up) || up >= i) throw new Error("MP-11: unordered snapshot");
+    parent.push(up < 0 ? -1 : up); depth.push(up < 0 ? 0 : depth[up] + 1); children.push([]);
+    (up < 0 ? roots : children[up]).push(i);
   }
-  for (const { head, tail, entries } of groups.values()) {
-    if (redactObservation(head + tail, protectedValues) !== head + tail) entries.forEach((k) => echoes.add(k));
+  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
+    const node = layout.nodeIndex[k];
+    if (!Number.isInteger(node) || node < 0 || node >= count) throw new Error("MP-11: unknown layout node");
+    (entries.get(node) ?? entries.set(node, []).get(node)).push(k);
+  }
+  const name = (i) => strings[nodes.nodeName[i]] ?? "";
+  const px = (value) => parseFloat(value) || 0;
+  const displaced = (s) => /absolute|fixed|sticky/.test(s.position) || s.float !== "none" ||
+    (s.position === "relative" && ["top", "right", "bottom", "left"].some((p) => px(s[p]) !== 0)) ||
+    ["transform", "translate", "rotate", "scale", "offset-path"].some((p) => s[p] !== "none");
+  const rows = new Map(); // Most entries share a style row: hash -> [[row, style]].
+  for (const [i, ks] of entries) {
+    if (name(i) === "#document") continue;
+    const row = layout.styles?.[ks[0]];
+    if (!Array.isArray(row) || row.length !== RENDER_ORDER_STYLES.length) throw new Error("MP-11: unknown render-order styles");
+    let hash = 0, style;
+    for (let j = 0; j < row.length; j++) hash = (hash * 31 + row[j]) | 0;
+    const bucket = rows.get(hash) ?? rows.set(hash, []).get(hash);
+    for (let b = 0; !style && b < bucket.length; b++) {
+      let j = 0;
+      while (j < row.length && bucket[b][0][j] === row[j]) j++;
+      if (j === row.length) style = bucket[b][1];
+    }
+    if (!style) {
+      if (!row.every((s) => typeof strings[s] === "string")) throw new Error("MP-11: unknown render-order styles");
+      style = Object.fromEntries(RENDER_ORDER_STYLES.map((property, j) => [property, strings[row[j]]]));
+      const out = /absolute|fixed/.test(style.position), faint = px(style.opacity) < 0.1, moved = displaced(style);
+      // separate: read as a run of its own; hidden: no visible glyphs.
+      const d = style.display;
+      Object.assign(style, { out, faint, moved, separate: moved || style["overflow-x"] !== "visible" || style["overflow-y"] !== "visible" || style["clip-path"] !== "none" || faint,
+        hidden: style.visibility !== "visible" || px(style["font-size"]) < 4 || CLEAR.test(style["-webkit-text-fill-color"]),
+        flex: /flex/.test(d), grid: /grid/.test(d), box: /box/.test(d), table: /^(inline-)?table$/.test(d), inline: /^(inline|contents|ruby|ruby-text)$/.test(d) });
+      bucket.push([row, style]);
+    }
+    css.set(i, style);
+  }
+  const order = (i) => PSEUDO_ORDER[name(i)] ?? (name(i).startsWith("::") ? 3 : 4);
+  children.forEach((list) => list.sort((a, b) => order(a) - order(b)));
+  // Pass 1: one run in DOM visual order. Pass 2: separated subtrees are runs of their own, invisible text is skipped.
+  const flatten = (split) => {
+    let flat = "";
+    const spans = [], runs = [roots]; // spans: [start, end, layout entry, node], in flat order.
+    while (runs.length) {
+      const run = runs.shift();
+      for (const stack = [...run].reverse(); stack.length;) {
+        const i = stack.pop(), s = css.get(i);
+        if (split && s && i !== run[0] && s.separate) { runs.push([i]); continue; }
+        for (const k of entries.get(i) ?? []) {
+          const piece = layout.text?.[k];
+          if (piece === -1) continue;
+          if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
+          if (split && s.hidden) continue;
+          if (strings[piece]) spans.push([flat.length, flat.length + strings[piece].length, k, i]);
+          flat += strings[piece];
+        }
+        for (let c = children[i].length - 1; c >= 0; c--) stack.push(children[i][c]);
+      }
+      flat += "\0";
+    }
+    return [flat, spans];
+  };
+  const common = (a, b) => { while (a !== b && a >= 0 && b >= 0) depth[a] >= depth[b] ? (a = parent[a]) : (b = parent[b]); return a === b ? a : -1; };
+  for (const [flat, spans] of [flatten(false), flatten(true)]) {
+    for (const variant of observationProtectedVariants(protectedValues)) {
+      for (let at = flat.indexOf(variant); at >= 0; at = flat.indexOf(variant, at + 1)) {
+        let low = 0, high = spans.length;
+        while (low < high) { const mid = (low + high) >> 1; spans[mid][1] <= at ? (low = mid + 1) : (high = mid); }
+        let container;
+        for (let s = low; s < spans.length && spans[s][0] < at + variant.length; s++) {
+          echoes.add(spans[s][2]);
+          container = container === undefined ? spans[s][3] : common(container, spans[s][3]);
+        }
+        while (container >= 0 && !entries.has(container)) container = parent[container];
+        if (!(container >= 0)) throw new Error("MP-11: rendered text without a laid-out container");
+        entries.get(container).forEach((k) => echoes.add(k));
+      }
+    }
+  }
+  const blockOf = (i) => {
+    while (i >= 0 && (!css.has(i) || name(i) === "#text" || css.get(i).inline)) i = parent[i];
+    if (i < 0) throw new Error("MP-11: uncertain order without a container");
+    return i;
+  };
+  const mask = (i) => entries.get(i).forEach((k) => echoes.add(k));
+  const corners = ([x, y, w, h] = []) => {
+    if (![x, y, w, h].every(Number.isFinite)) throw new Error("MP-11: unknown text bounds");
+    return [x, y, x + w, y + h];
+  };
+  const lines = new Map(); // Layout entry -> per-line text boxes.
+  (document.textBoxes?.layoutIndex ?? []).forEach((k, j) => (lines.get(k) ?? lines.set(k, []).get(k)).push(document.textBoxes.bounds?.[j]));
+  // Per node: nearest displaced ancestor-or-self, faded (opacity below 0.1)
+  // and the clip of overflow boxes it cannot escape (absolute/fixed escape).
+  const mover = new Array(count).fill(-1), faded = new Array(count).fill(false), clip = new Array(count).fill(null);
+  const glyphs = new Map(), extent = new Array(count).fill(null); // Visible, clipped line boxes per text entry; their extent per node.
+  const grow = (i, b) => { const e = extent[i]; extent[i] = e ? [Math.min(e[0], b[0]), Math.min(e[1], b[1]), Math.max(e[2], b[2]), Math.max(e[3], b[3])] : b; };
+  const ALL = [-Infinity, -Infinity, Infinity, Infinity];
+  for (let i = 0; i < count; i++) {
+    const s = css.get(i), up = parent[i];
+    mover[i] = up >= 0 ? mover[up] : -1; faded[i] = up >= 0 && faded[up]; clip[i] = up >= 0 ? clip[up] : null;
+    if (s && name(i) !== "#text") {
+      if (s.moved) mover[i] = i;
+      if (s.faint) faded[i] = true;
+      if (s.out) clip[i] = null;
+      const r = s.out && /^rect\(([^,]+),([^,]+),([^,]+),([^)]+)\)$/.exec(s.clip);
+      if (s["overflow-x"] !== "visible" || s["overflow-y"] !== "visible" || r) {
+        const b = corners(layout.bounds?.[entries.get(i)[0]]), c = clip[i] ?? ALL;
+        if (s["overflow-x"] !== "visible") clip[i] = [Math.max(c[0], b[0]), c[1], Math.min(c[2], b[2]), c[3]];
+        if (s["overflow-y"] !== "visible") clip[i] = [(clip[i] ?? c)[0], Math.max(c[1], b[1]), (clip[i] ?? c)[2], Math.min(c[3], b[3])];
+        // clip: rect(top, right, bottom, left) of an absolutely positioned box, from its border-box origin.
+        if (r) {
+          const [t, right, bottom, l] = r.slice(1).map((v, j) => (v.trim() === "auto" ? [b[1], b[2], b[3], b[0]][j] : b[j % 2 ? 0 : 1] + px(v)));
+          const o = clip[i] ?? c;
+          clip[i] = [Math.max(o[0], l), Math.max(o[1], t), Math.min(o[2], right), Math.min(o[3], bottom)];
+        }
+      }
+    }
+    if (!s || s.hidden || faded[i]) continue;
+    for (const k of entries.get(i)) {
+      if (layout.text?.[k] === -1 || !/\S/.test(strings[layout.text?.[k]] ?? "")) continue;
+      const c = clip[i] ?? ALL, seen = [];
+      for (const line of lines.get(k) ?? [layout.bounds?.[k]]) {
+        const b = corners(line), x0 = Math.max(b[0], c[0]), y0 = Math.max(b[1], c[1]), x1 = Math.min(b[2], c[2]), y1 = Math.min(b[3], c[3]);
+        if (x1 - x0 >= 2 && y1 - y0 >= 2) seen.push([x0, y0, x1, y1]); // Narrower: no legible glyph.
+      }
+      if (seen.length) { glyphs.set(k, seen); seen.forEach((b) => grow(i, b)); }
+    }
+  }
+  // In-flow glyph extents; out-of-flow glyphs are left to the proximity check.
+  const outOfFlow = (i) => name(i) !== "#text" && css.has(i) && (css.get(i).out || css.get(i).float !== "none");
+  for (let i = count - 1; i > 0; i--) if (extent[i] && parent[i] >= 0 && !outOfFlow(i)) grow(parent[i], extent[i]);
+  // Rendered flow of a container in DOM order: line boxes of inline content,
+  // glyph extents of block-level children and items; out-of-flow boxes are
+  // left to the proximity check below.
+  const flow = (i, out = []) => {
+    for (const c of children[i]) {
+      const s = css.get(c);
+      if (outOfFlow(c)) continue;
+      if (!s || name(c) === "#text" || s.inline) {
+        for (const k of entries.get(c) ?? []) out.push(...(glyphs.get(k) ?? []));
+        flow(c, out);
+      } else if (extent[c]) out.push(extent[c]);
+    }
+    return out;
+  };
+  // Rendered in DOM reading order: the nearest box less than 1em to the right
+  // on the same line is the next one in DOM order, the nearest less than 1em
+  // below comes later; boxes overlapping on a line are uncertain. Farther
+  // boxes are separate words or columns, as in any layout.
+  const ordered = (boxes, em) => boxes.length <= 2000 && boxes.every((a, j) => {
+    let right = -1, below = -1;
+    for (let m = 0; m < boxes.length; m++) {
+      const b = boxes[m];
+      if (m === j) continue;
+      if (Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > Math.min(a[3] - a[1], b[3] - b[1]) / 2) {
+        if (b[0] < a[2] - 1 && b[2] > a[0] + 1) return false;
+        if (b[0] >= a[2] - 1 && b[0] - a[2] < em && (right < 0 || b[0] < boxes[right][0])) right = m;
+      } else if (b[1] + b[3] > a[1] + a[3] && Math.min(a[2], b[2]) > Math.max(a[0], b[0]) && b[1] - a[3] < em && (below < 0 || b[1] < boxes[below][1])) below = m;
+    }
+    return (right < 0 || right === j + 1) && (below < 0 || below > j);
+  });
+  const items = (i) => children[i].flatMap((c) => (!css.has(c) ? items(c) : name(c) === "#text" || css.get(c).out ? [] : [css.get(c)]));
+  const rank = (s) => (s.display === "table-caption" ? (s["caption-side"] === "bottom" ? 4 : 0) : TABLE_RANK[s.display]);
+  const suspects = new Set(), pulled = new Map();
+  for (const [i, s] of css) {
+    if (name(i) === "#text") {
+      if (entries.get(i).some((k) => BIDI_TEXT.test(strings[layout.text?.[k]] ?? ""))) mask(blockOf(i));
+      continue;
+    }
+    let up = parent[i];
+    while (up >= 0 && !css.has(up)) up = parent[up];
+    const outer = css.get(up), { flex, grid, box, table } = s;
+    const kids = flex || grid || box || table ? items(i) : [];
+    const ranks = table ? kids.map(rank).filter((r) => r !== undefined) : [];
+    if ((flex && (/reverse/.test(s["flex-direction"] + s["flex-wrap"]) || (s["flex-direction"].startsWith("column") && s["flex-wrap"] !== "nowrap"))) ||
+      (grid && /column|dense/.test(s["grid-auto-flow"])) || (box && s["-webkit-box-direction"] === "reverse") ||
+      ((flex || grid || box) && kids.some((k) => k.order !== "0" || k["-webkit-box-ordinal-group"] !== "1" || (grid && GRID_PLACEMENT.some((p) => k[p] !== "auto")))) ||
+      ranks.some((r, j) => j > 0 && r < ranks[j - 1])) suspects.add(i);
+    // Glyph order inside one text run is not observable: bidi reordering masks its block container.
+    if (/override|plaintext/.test(s["unicode-bidi"]) || s.direction !== (outer?.direction ?? "ltr")) mask(blockOf(i));
+    const item = /^inline/.test(s.display) || Boolean(outer && (outer.flex || outer.grid || outer.box));
+    const pull = s.out ? 0 : Math.max(0, -px(s["margin-top"])) + Math.max(0, -px(s["margin-bottom"])) +
+      (item ? Math.max(0, -px(s["margin-left"])) + Math.max(0, -px(s["margin-right"])) : 0);
+    if (pull) { const at = blockOf(up >= 0 ? up : i); pulled.set(at, (pulled.get(at) ?? 0) + pull); }
+  }
+  // Negative margins move following content by their sum: below half an em they cannot reorder glyphs.
+  for (const [at, pull] of pulled) if (pull >= px(css.get(at)["font-size"]) / 2) suspects.add(at);
+  for (const i of suspects) if (!ordered(flow(i), px(css.get(i)["font-size"]))) mask(i);
+  // Displaced glyphs within 1em of glyphs outside their displaced subtree.
+  const pre = [], size = new Array(count).fill(1), cells = new Map(), CELL = 128;
+  for (const stack = [...roots].reverse(); stack.length;) { const i = stack.pop(); pre[i] = pre.length; for (let c = children[i].length - 1; c >= 0; c--) stack.push(children[i][c]); }
+  for (let i = count - 1; i >= 0; i--) if (parent[i] >= 0) size[parent[i]] += size[i];
+  const near = []; // Line boxes grown by half an em: a gap below 1em joins them.
+  for (const k of glyphs.keys()) {
+    const i = layout.nodeIndex[k], em = px(css.get(i)["font-size"]) / 2;
+    for (const b of glyphs.get(k)) {
+      const rect = [b[0] - em, b[1] - em, b[2] + em, b[3] + em, i];
+      near.push(rect);
+      for (let x = Math.floor(rect[0] / CELL); x <= Math.floor(rect[2] / CELL); x++) {
+        for (let y = Math.floor(rect[1] / CELL); y <= Math.floor(rect[3] / CELL); y++) (cells.get(`${x},${y}`) ?? cells.set(`${x},${y}`, []).get(`${x},${y}`)).push(rect);
+      }
+    }
+  }
+  const within = (i, d) => pre[d] <= pre[i] && pre[i] < pre[d] + size[d];
+  for (const a of near) {
+    const d = mover[a[4]];
+    if (d < 0) continue;
+    for (let x = Math.floor(a[0] / CELL); x <= Math.floor(a[2] / CELL); x++) for (let y = Math.floor(a[1] / CELL); y <= Math.floor(a[3] / CELL); y++) {
+      for (const b of cells.get(`${x},${y}`) ?? []) {
+        if (!within(b[4], d) && a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]) { mask(blockOf(a[4])); mask(blockOf(b[4])); }
+      }
+    }
   }
   return echoes;
 }

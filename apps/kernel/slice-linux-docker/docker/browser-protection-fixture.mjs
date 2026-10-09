@@ -14,8 +14,24 @@ const M = 'background:#ff00ff', C = 'background:#00ffff';
 const page = body => `<!doctype html><meta charset=utf-8><body style="margin:0;font:14px sans-serif">${body}</body>`;
 // Query flags: novault (no Vault echo text), nomarkers (secret fields only).
 // Mirrored/rotated frames paint their password field away from its layout x.
-// Vault value without a DOM echo: drawn into a canvas, and rendered as an
-// adopted-stylesheet ::before + text + ::after; both scripts remove themselves.
+// Vault value without a DOM echo: drawn into a canvas, rendered as an
+// adopted-stylesheet ::before + nested inline text + ::after (both scripts
+// remove themselves), and split across sibling spans. Reordered: lines that
+// show the value although DOM order never spells it (coordinator rule
+// 2026-10-09), separated so that no two lines spell it either.
+export const REORDERED = ['reverse', 'css', 'grid', 'absolute', 'bidi', 'rtl', 'hidden'];
+function reorderHtml() {
+  const a = VAULT_VALUE.slice(0, 17), b = VAULT_VALUE.slice(17);
+  return `<div style="position:absolute;left:300px;top:418px;z-index:2;background:#fff;color:#ff00ff;font:bold 14px sans-serif;line-height:20px">${[
+    `<div style="display:flex;flex-direction:row-reverse;justify-content:flex-end"><span>${b}</span><span>${a}</span></div>`,
+    `<div style="display:flex"><span style="order:1">${b}</span><span>${a}</span></div>`,
+    `<div style="display:grid;grid-template-columns:max-content max-content"><span style="grid-column:2">${b}</span><span style="grid-area:1/1">${a}</span></div>`,
+    `<div><span style="position:relative;display:inline-block"><span style="position:absolute;left:100%;white-space:nowrap">${b}</span>${a}</span></div>`,
+    `<div><bdo dir=rtl>${[...VAULT_VALUE].reverse().join('')}</bdo></div>`,
+    `<div dir=rtl style="text-align:left"><span dir=ltr>${b}</span><span dir=ltr>${a}</span></div>`,
+    `<div>${a}<span style="font-size:0">XYZ</span>${b}</div>`,
+  ].map((line, i) => line.replace('<div', `<div id=order-${REORDERED[i]}`)).join('<div style="color:#000;font-size:6px;line-height:6px">.</div>')}</div>`;
+}
 export function fixtureHtml(url, cross) {
   const markers = !url.includes('nomarkers');
   switch (url.split('?')[0]) {
@@ -45,7 +61,9 @@ export function fixtureHtml(url, cross) {
       ${url.includes('novault') ? '' : `<canvas id=drawn width=340 height=30 style="position:absolute;left:640px;top:80px"></canvas>
         <script>{ const c = document.getElementById('drawn').getContext('2d'); c.fillStyle = '#ff00ff'; c.font = 'bold 24px sans-serif';
           c.fillText(${JSON.stringify(VAULT_VALUE)}, 0, 24); document.currentScript.remove(); }</script>
-        <div id=generated style="position:absolute;left:640px;top:122px;color:#ff00ff;font:bold 18px sans-serif">${VAULT_VALUE.slice(16, 21)}</div>
+        <div id=generated style="position:absolute;left:640px;top:122px;color:#ff00ff;font:bold 18px sans-serif"><span>${VAULT_VALUE.slice(16, 18)}<b>${VAULT_VALUE.slice(18, 21)}</b></span></div>
+        <div id=siblings style="position:absolute;left:640px;top:148px;color:#ff00ff;font:bold 14px sans-serif"><span>${VAULT_VALUE.slice(0, 11)}</span><span>${VAULT_VALUE.slice(11)}</span></div>
+        ${reorderHtml()}
         <script>{ const sheet = new CSSStyleSheet();
           sheet.replaceSync('#generated::before { content: ${JSON.stringify(VAULT_VALUE.slice(0, 16))} } #generated::after { content: ${JSON.stringify(VAULT_VALUE.slice(21))} }');
           document.adoptedStyleSheets = [sheet]; document.currentScript.remove(); }</script>`}
@@ -57,6 +75,16 @@ export function fixtureHtml(url, cross) {
         document.getElementById('same').onload = e => e.target.contentWindow.scrollTo(0, 360);</script>`);
   }
 }
+
+// Unit snapshots: Chromium's computed values of RENDER_ORDER_STYLES for a plain block.
+export const DEFAULT_RENDER_STYLE = {
+  display: 'block', position: 'static', float: 'none', order: '0', 'flex-direction': 'row', 'flex-wrap': 'nowrap', 'grid-auto-flow': 'row',
+  'grid-row-start': 'auto', 'grid-row-end': 'auto', 'grid-column-start': 'auto', 'grid-column-end': 'auto', '-webkit-box-direction': 'normal',
+  '-webkit-box-ordinal-group': '1', 'caption-side': 'top', direction: 'ltr', 'unicode-bidi': 'normal',
+  top: 'auto', right: 'auto', bottom: 'auto', left: 'auto', 'margin-top': '0px', 'margin-right': '0px', 'margin-bottom': '0px', 'margin-left': '0px',
+  transform: 'none', translate: 'none', rotate: 'none', scale: 'none', 'offset-path': 'none', 'overflow-x': 'visible', 'overflow-y': 'visible',
+  clip: 'auto', 'clip-path': 'none', visibility: 'visible', opacity: '1', '-webkit-text-fill-color': 'rgb(0, 0, 0)', 'font-size': '16px',
+};
 
 export async function serveFixture() {
   const server = createServer((request, response) => {
