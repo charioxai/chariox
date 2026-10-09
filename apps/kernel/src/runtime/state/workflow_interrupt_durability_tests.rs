@@ -1491,17 +1491,29 @@ async fn kernel_access_workflow_control_resume_rechecks_settlement_wait() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_app_wait() {
-    revoked_remote_workflow_interrupt(false).await;
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_app_wait() {
+    revoked_remote_workflow_interrupt(false, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_discovery_wait(
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_discovery_wait(
 ) {
-    revoked_remote_workflow_interrupt(true).await;
+    revoked_remote_workflow_interrupt(true, true).await;
 }
 
-async fn revoked_remote_workflow_interrupt(discovery: bool) {
+// MP-08 / MP-11: both stop dispositions acknowledge their committed settlement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_committed_workflow_control_remote_stop_survives_revocation_at_app_wait() {
+    revoked_remote_workflow_interrupt(false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_committed_workflow_control_remote_stop_survives_revocation_at_discovery_wait(
+) {
+    revoked_remote_workflow_interrupt(true, false).await;
+}
+
+async fn revoked_remote_workflow_interrupt(discovery: bool, pause: bool) {
     use crate::runtime::state::kernel_access::test_support::worker_spy::WorkerSpy;
     use std::sync::atomic::Ordering;
     let worker = WorkerSpy::new(discovery);
@@ -1558,10 +1570,17 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
         )
         .unwrap();
     let grant = state.insert_access_grant_for_test(&fixture.session_id);
-    let request = LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
-        session_id: fixture.session_id.clone(),
-        workflow_run_ref: fixture.workflow_run_id.clone(),
-    });
+    let request = if pause {
+        LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    } else {
+        LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    };
     let runtime = crate::runtime::workflow_actor::WorkflowRuntime::new(
         state.clone(),
         state.owned.session_projection.clone(),
