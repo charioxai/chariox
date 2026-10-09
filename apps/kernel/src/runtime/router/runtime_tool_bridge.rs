@@ -148,14 +148,22 @@ impl CommandRouter {
             .await
     }
 
-    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
+    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call<R>(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        release_response: impl FnOnce(
+            crate::transport::runtime_tools::RuntimeToolResult,
+        ) -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+            .dispatch_forwarded_workflow_runtime_tool_call(
+                context,
+                tool_name,
+                arguments,
+                release_response,
+            )
             .await
     }
 

@@ -372,6 +372,7 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    #[cfg(test)]
     pub(super) fn complete_remote_prompt_owner(
         &self,
         session_id: &str,
@@ -379,29 +380,12 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        self.complete_remote_prompt_owner_with_termination(
-            session_id,
-            agent_id,
-            remote_provider_run_id,
-            next_queued_prompt,
-            None,
-        )
-    }
-
-    pub(super) fn complete_remote_prompt_owner_with_termination(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        remote_provider_run_id: &str,
-        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
         self.complete_remote_prompt_owner_for_receipt(
             session_id,
             agent_id,
             remote_provider_run_id,
             next_queued_prompt,
-            provider_termination,
+            None,
             None,
         )
     }
