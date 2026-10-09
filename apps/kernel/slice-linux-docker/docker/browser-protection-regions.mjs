@@ -57,7 +57,7 @@ async function nodeBox(connection, sessionId, backendNodeId, dpr) {
 // order may differ from DOM order (renderedTextEchoes). Frame and plugin owners are
 // returned for mapping or withholding (owner decision 2026-10-08: inspectable
 // frames, and media without Vault values, are not masked whole).
-export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
+export function documentProtection(snapshot, index, { values = [], targetNodes = new Set(), viewport } = {}) {
   const document = snapshot.documents[index], strings = snapshot.strings ?? [];
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
   const count = nodes.nodeName?.length ?? 0;
@@ -81,7 +81,7 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
   }
-  const regions = [], owners = [], overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow);
+  const regions = [], owners = [], overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow, viewport);
   const scroll = [document.scrollOffsetX ?? 0, document.scrollOffsetY ?? 0];
   if (!scroll.every(Number.isFinite)) throw new Error('MP-11: unknown document scroll');
   regions.push(...overflow.regions.map(([x,y,w,h]) => [x-scroll[0],y-scroll[1],w,h]));
@@ -139,7 +139,10 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
   while (pending.length) {
     const doc = pending.shift();
     if ((snapshot.documents?.length ?? 0) <= doc.index) throw new Error('MP-11: missing frame document');
-    const { regions: own, owners } = documentProtection(snapshot, doc.index, { values: policy.values, targetNodes });
+    const document = snapshot.documents[doc.index];
+    const viewport = [doc.clip[0] - doc.origin[0] + (document.scrollOffsetX ?? 0),
+      doc.clip[1] - doc.origin[1] + (document.scrollOffsetY ?? 0), doc.clip[2], doc.clip[3]];
+    const { regions: own, owners } = documentProtection(snapshot, doc.index, { values: policy.values, targetNodes, viewport });
     const place = rect => { const placed = intersect([rect[0] + doc.origin[0], rect[1] + doc.origin[1], rect[2], rect[3]], doc.clip); if (placed) regions.push(placed); return placed; };
     own.forEach(place);
     for (const owner of owners) {
