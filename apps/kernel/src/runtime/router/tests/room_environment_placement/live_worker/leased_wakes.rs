@@ -1219,6 +1219,22 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     let next = worker
         .run_for(&fixture, &agent, accepted.prompt_id.as_deref().unwrap())
         .await;
+    let continuation_context = if restart_worker {
+        let app = worker.router.app.lock().await;
+        let active = app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                next.session_id(),
+                next.agent_instance_id().unwrap(),
+            )
+            .unwrap()
+            .expect("the restarted worker holds the continuation");
+        Some((
+            active.prompt().contains("MP-10 A10 correlated result"),
+            active.hidden_system_context().to_string(),
+        ))
+    } else {
+        None
+    };
     let next_token = next.runtime_mcp_auth_token().unwrap().to_string();
     let listed = worker
         .router
@@ -1237,6 +1253,17 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     let remaining_windows = fixture.home.runtime_state.list_sudo_turns(&owner);
     worker.stop().await;
     fixture.stop().await;
+    if let Some((current_wake, context)) = continuation_context {
+        assert!(current_wake, "context must belong to this admitted wake");
+        assert!(
+            context.contains("MP-10 A10 list the host's sessions"),
+            "a fresh continuation must retain the original user request"
+        );
+        assert!(
+            context.contains("MP-10 A10 waits on its timer"),
+            "a fresh continuation must retain its previous yield state"
+        );
+    }
     assert!(delivered.is_ok(), "{delivered:?}");
     assert!(accepted.prompt_id.is_some());
     if restart_worker {
