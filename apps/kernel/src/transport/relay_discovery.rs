@@ -20,6 +20,8 @@ use chariox_relay::protocol::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
+mod authorization;
+
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
 const RELAY_METADATA_RETRY_BASE_DELAY_MS: u64 = 250;
@@ -535,13 +537,7 @@ async fn query_relay_once_inner(
             operation: "relay_metadata_query",
             message: "relay_url is not configured".to_string(),
         })?;
-    let relay_token = config
-        .relay_token
-        .clone()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "relay_metadata_query",
-            message: "relay_token is not configured".to_string(),
-        })?;
+    let relay_token = authorization::metadata_token(config).await?;
     let request_timeout = Duration::from_millis(config.relay_request_timeout_ms);
     #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
@@ -856,3 +852,6 @@ mod tests {
             .expect("metadata websocket server should finish");
     }
 }
+
+#[cfg(test)]
+mod authorization_tests;
