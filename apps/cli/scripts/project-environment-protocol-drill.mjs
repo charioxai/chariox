@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MP-03/MP-08/MP-10: live protocol 471, using product-authorized client profiles.
+// MP-03/MP-08/MP-10: live protocol 487, using product-authorized client profiles.
 // Build kernel-client first. Run against a disposable kernel with no live sessions.
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
@@ -30,7 +30,7 @@ const profile = JSON.parse(await readFile(privateProfile, "utf8"))
 assert(profile.endpoint && profile.options, "foreign profile requires endpoint and normal LocalIpcClient options")
 const owner = new LocalIpcClient(options["--kernel-url"])
 const foreign = new LocalIpcClient(profile.endpoint, profile.options)
-const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project read without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
+const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 487, scope: "live owned Project read without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
 let projectId, sessionId
 let stage = "empty-kernel-precondition"
 async function liveSessions() {
@@ -55,7 +55,7 @@ async function directoryDigest() {
 try {
   assert.equal((await liveSessions()).length, 0, "use an empty disposable kernel")
   const workspace = path.resolve(options["--workspace"] ?? repo)
-  const created = (await owner.send(requests.createSessionRequest(workspace, workspace, "Protocol 471", undefined, null, null, null, null, { kind: "new" }))).SessionCreated
+  const created = (await owner.send(requests.createSessionRequest(workspace, workspace, "Protocol 487", undefined, null, null, null, null, { kind: "new" }))).SessionCreated
   assert(created)
   projectId = created.session.project_id; sessionId = created.session.id
   const bootstrap = (await owner.send(requests.getSessionStateRequest(sessionId))).SessionState.session
@@ -84,7 +84,7 @@ try {
   const before = await directoryDigest()
   const destination = path.join(evidence, "must-not-be-exported.json")
   const response = await owner.send({ ExportProjectEnvironment: {
-    projectId, operationId: "protocol-471-reserved-export", expectedRevision: snapshot.revision,
+    projectId, operationId: "protocol-487-reserved-export", expectedRevision: snapshot.revision,
     revisionDigest: snapshot.content_digest, selectedItems: [], selectedFiles: [], destination: { kind: "file", path: destination },
   } })
   assert.deepEqual(response, { EnvironmentUnsupportedFeature: { feature: "export", supported_schema: 1 } })
@@ -107,6 +107,6 @@ try {
     assert.equal(report.cleanup.sessions, 0); assert(report.cleanup.ownedProjectRemoved)
   } catch { report.result = "FAIL"; report.cleanup = { failed: true }; process.exitCode = 1 }
   owner.close(); foreign.close()
-  await writeFile(path.join(evidence, "protocol-471.json"), JSON.stringify(report, null, 2) + "\n")
+  await writeFile(path.join(evidence, "protocol-487.json"), JSON.stringify(report, null, 2) + "\n")
 }
 console.log(JSON.stringify(report))

@@ -37,5 +37,5 @@ export function isProjectEnvironmentRequest(request: unknown): boolean {
   return request !== null && typeof request === "object" && names.some(name => name in request)
 }
 export function requireProjectEnvironmentProtocol(request: unknown, version: number | null | undefined): void {
-  if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < 471)) throw new Error(`Project Environment requires protocol 471 or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
+  if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < 487)) throw new Error(`Project Environment requires protocol 487 or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
 }

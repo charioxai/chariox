@@ -1,7 +1,7 @@
 // MP-08 / MP-10: Shared Web/TUI projection; no client-owned observations.
 import type { ProjectEnvironment, Requirement, RequirementSpec, RequirementOrigin } from "./kernel-types-project-environment-aggregate.js"
 
-export const projectEnvironmentMinimumProtocolVersion = 471
+export const projectEnvironmentMinimumProtocolVersion = 487
 export function getProjectEnvironmentRequest(projectId: string) {
   return { GetProjectEnvironment: { projectId } } as const
 }

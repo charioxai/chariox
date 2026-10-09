@@ -1,4 +1,4 @@
-//! MP-08: Full protocol-471 Environment contract. P01 serves Get only.
+//! MP-08: Full protocol-487 Environment contract. P01 serves Get only.
 use super::*;
 use crate::project_environment::*;
 

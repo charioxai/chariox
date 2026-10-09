@@ -1,7 +1,7 @@
 import type { ProjectEnvironmentManifestEntry, ProjectEnvironmentManifest, ProjectEnvironmentLocator, ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStepKind } from "./kernel-types-project-environment.js"
 import type { ProjectEnvironmentReview } from "./project-environment-review.js"
 
-// MP-02 / MP-03 / MP-08: protocol 471 value-free Project Environment contract.
+// MP-02 / MP-03 / MP-08: protocol 487 value-free Project Environment contract.
 
 export type EnvironmentLineage = { readonly project_id: string; readonly environment_id: string }
 

@@ -4,8 +4,8 @@ import test from "node:test"
 import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion, projectEnvironmentSections } from "./project-environment-aggregate.js"
 import type { ProjectEnvironment } from "./kernel-types-project-environment-aggregate.js"
 
-test("ENV P01 query has no agent/session and requires allocated protocol 471", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 471)
+test("ENV P01 query has no agent/session and requires allocated protocol 487", () => {
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 487)
   assert.deepEqual(getProjectEnvironmentRequest("project"), { GetProjectEnvironment: { projectId: "project" } })
 })
 
@@ -30,12 +30,12 @@ test("ENV VERSION(P01) gates the complete reserved operation family", async () =
   const { requireProjectEnvironmentProtocol, projectEnvironmentOperationRequest, isProjectEnvironmentRequest } = await import("./project-environment-aggregate-requests.js")
   const request = projectEnvironmentOperationRequest("GetProjectEnvironment", { projectId: "project" })
   assert.equal(isProjectEnvironmentRequest(request), true)
-  assert.throws(() => requireProjectEnvironmentProtocol(request, 470), /471/)
-  assert.throws(() => requireProjectEnvironmentProtocol(request, undefined), /471/)
-  assert.doesNotThrow(() => requireProjectEnvironmentProtocol(request, 471))
+  assert.throws(() => requireProjectEnvironmentProtocol(request, 472), /487/)
+  assert.throws(() => requireProjectEnvironmentProtocol(request, undefined), /487/)
+  assert.doesNotThrow(() => requireProjectEnvironmentProtocol(request, 487))
   for (const kind of ["DetectProjectEnvironment", "PreviewEnvironmentDiff", "SaveProjectEnvironmentRevision", "PlanProjectEnvironment", "ApplyProjectEnvironment", "CheckProjectEnvironment", "GetEnvironmentOperation", "CancelEnvironmentOperation", "RetryEnvironmentOperation", "ExportProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
     assert.equal(isProjectEnvironmentRequest({ [kind]: {} }), true)
-    assert.throws(() => requireProjectEnvironmentProtocol({ [kind]: {} }, 470), /471/)
+    assert.throws(() => requireProjectEnvironmentProtocol({ [kind]: {} }, 472), /487/)
   }
   assert.doesNotThrow(() => requireProjectEnvironmentProtocol({ ListProjects: {} }, 435))
 })
