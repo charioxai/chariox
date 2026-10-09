@@ -119,6 +119,18 @@ try {
       } })
       const profileId = linked.ProviderAccountProfile?.profile?.profile_id
       assert.ok(profileId, 'product account linking must succeed')
+      // MP-08 / MP-10: linking records an unknown auth observation. Use the
+      // documented product status refresh before prompt admission; never run
+      // an official login or mutate shared credentials in the drill.
+      const refreshed = await probe.send({ RefreshProviderAccountProfile: {
+        provider: options.provider ?? 'codex', account_profile: profileId,
+      } })
+      const authState = refreshed.ProviderAccountProfile?.profile?.auth_state
+      await writeFile(path.join(evidence, 'linked-profile-status.json'), JSON.stringify({
+        items: ['MP-08','MP-10'], linkedAuthState: linked.ProviderAccountProfile.profile.auth_state,
+        refreshedAuthState: authState,
+      }, null, 2))
+      assert.equal(authState, 'authenticated', 'product-linked profile must be verified before prompt admission')
       options['account-profile'] = profileId
       options['fleet-home'] = path.join(scratch, 'state')
       options['fleet-kernel-url'] = kernelUrl
