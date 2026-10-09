@@ -20,6 +20,40 @@ impl Drop for RecoveryClaim {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    // MP-08/MP-10/MP-11: workflow preparation and detached startup must make
+    // the same recovery decision as ordinary/leased cold launches, before
+    // credential resolution. Supplied and registered setup tokens still win.
+    pub(super) fn missing_copied_claude_login_requires_recovery(
+        &self,
+        provider: &str,
+        owner_user_id: &str,
+        account_profile: &str,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<bool, DaemonError> {
+        if crate::provider::canonical_provider_family(provider) != Some("claude")
+            || credentials.contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        {
+            return Ok(false);
+        }
+        let owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &self.config_projection.snapshot(),
+            owner_user_id,
+        );
+        let profile = self
+            .provider_account_profiles
+            .get(&owner, "claude", account_profile)?;
+        Ok(self
+            .provider_account_profiles
+            .copied_login_artifact_missing(&owner, "claude", &profile.profile_id)?
+            && !crate::provider::provider_account_credential_registered(
+                &owner,
+                "claude",
+                &profile.profile_id,
+            )?)
+    }
+}
+
 impl KernelRuntimeState {
     /// A cold receiving Claude copy can lose its file before a harness exists to
     /// report an auth failure. Create only a waiting run so admission keeps the work;
@@ -28,32 +62,19 @@ impl KernelRuntimeState {
         &self,
         request: &crate::provider::LaunchProviderRequest,
     ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
-        if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
-            || request.agent_id.is_none()
-            || request
-                .provider_credential_env
-                .contains_nonempty(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        if request.agent_id.is_none()
             // MP-08/MP-10/MP-11: reuse a live native TUI before creating a waiting run.
             || self.owned.live_native_tui_run_for_launch(request).is_some()
         {
             return Ok(None);
         }
-        let owner = self.provider_account_authority_owner_user_id(&request.owner_user_id);
-        let profile =
-            self.owned
-                .provider_account_profiles
-                .get(&owner, "claude", &request.account_profile)?;
-        if !self
-            .owned
-            .provider_account_profiles
-            .copied_login_artifact_missing(&owner, "claude", &profile.profile_id)?
-            || crate::provider::provider_account_credential_registered(
-                &owner,
-                "claude",
-                &profile.profile_id,
-            )?
-        {
-            return Ok(None); // Retain supplied and registered setup-token fallbacks.
+        if !self.owned.missing_copied_claude_login_requires_recovery(
+            &request.provider,
+            &request.owner_user_id,
+            &request.account_profile,
+            &request.provider_credential_env,
+        )? {
+            return Ok(None);
         }
         let request = self
             .owned

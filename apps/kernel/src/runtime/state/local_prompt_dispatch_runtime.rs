@@ -4442,6 +4442,40 @@ impl KernelRuntimeState {
                 Some(run) => run,
                 None => return,
             };
+            // MP-08/MP-10/MP-11: keep the admitted workflow run and queued node
+            // while the receiving human logs in. Do not resolve the absent copy
+            // or spawn a provider process before the shared recovery interaction.
+            match state.owned.missing_copied_claude_login_requires_recovery(
+                run.provider(),
+                run.owner_user_id(),
+                run.account_profile(),
+                &provider_credential_env,
+            ) {
+                Ok(false) => {}
+                recovery => {
+                    let started = crate::app::StartedProviderLaunch {
+                        run,
+                        previous_active_run_id: None,
+                        provider_credential_env,
+                    };
+                    let result = match recovery {
+                        Ok(_) => {
+                            state
+                                .try_provider_launch_auth_recovery(&started, "not_logged_in")
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if !matches!(result, Ok(true)) {
+                        let error = result.err().unwrap_or_else(|| DaemonError::LocalTransport {
+                            operation: "recover cold workflow copied Claude login",
+                            message: "receiving login recovery could not start".into(),
+                        });
+                        state.fail_provider_launch(&started, &error).await;
+                    }
+                    return;
+                }
+            }
             let resolved_provider_credentials = if provider_credential_env.is_empty() {
                 Some(
                     state

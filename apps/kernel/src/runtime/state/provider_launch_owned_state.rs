@@ -102,7 +102,13 @@ impl KernelRuntimeOwnedState {
             request,
             runtime_mcp_url,
         )?;
-        if self.provider_launch_request_uses_vaulted_account_credential(&request)? {
+        if self.missing_copied_claude_login_requires_recovery(
+            &request.provider,
+            &request.owner_user_id,
+            &request.account_profile,
+            &request.provider_credential_env,
+        )? || self.provider_launch_request_uses_vaulted_account_credential(&request)?
+        {
             return self.attach_project_environment(request);
         }
         let request = self.attach_provider_account_credentials(request)?;

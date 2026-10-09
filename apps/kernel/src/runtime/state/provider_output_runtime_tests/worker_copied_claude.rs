@@ -926,3 +926,159 @@ async fn review_app_missing_claude_copy_token_launch_retains_auth_mode() {
         .is_empty());
     fixture.app.lock().await.shutdown_cleanup().unwrap();
 }
+
+// MP-08/MP-10/MP-11: local workflow admission shares cold-copy recovery with
+// ordinary prompts, retaining the prepared node and its tool/context binding.
+impl WorkerFixture {
+    async fn local_workflow(&self) -> ((String, String, String), String, String) {
+        let local = self.local_agent(false).await;
+        let app = self.app.lock().await;
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(&local.0, Some("copy-recovery".into()))
+            .unwrap();
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(&local.0, workflow.id(), &local.1)
+            .unwrap();
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(&local.0, workflow.id(), node.id(), Some("entry".into()))
+            .unwrap();
+        app.sessions_mut()
+            .set_workflow_endpoint_owner(&local.0, workflow.id(), endpoint.id(), "owner".into())
+            .unwrap();
+        (local, workflow.id().into(), endpoint.id().into())
+    }
+
+    async fn invoke_local_workflow(
+        &self,
+        local: &(String, String, String),
+        workflow: &str,
+        endpoint: &str,
+        prompt: &str,
+    ) -> crate::session::WorkflowRun {
+        let response = self
+            .local_request(crate::local::LocalDaemonRequest::InvokeWorkflowEndpoint(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: local.0.clone(),
+                    workflow_ref: workflow.into(),
+                    endpoint_ref: endpoint.into(),
+                    queue_ref: None,
+                    prompt: Some(prompt.into()),
+                    publication_invocation: None,
+                },
+            ))
+            .await
+            .expect("a cold local workflow must admit its node before receiving login recovery");
+        let crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } = response
+        else {
+            panic!("workflow invocation response");
+        };
+        workflow_run
+    }
+}
+
+#[tokio::test]
+async fn review_local_workflow_missing_claude_copy_retains_node_and_requests_login() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let (local, workflow, endpoint) = fixture.local_workflow().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    let workflow_run = fixture
+        .invoke_local_workflow(&local, &workflow, &endpoint, "retained-local-workflow")
+        .await;
+    let session = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let session = fixture
+                .runtime
+                .owned
+                .session_store
+                .get_session(&local.0)
+                .unwrap();
+            if session.active_interaction_for_agent(&local.1).is_some() {
+                break session;
+            }
+            fixture.runtime.pump_transport_runtime().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("detached local workflow must request receiving login before resolving credentials");
+    let interaction = session.active_interaction_for_agent(&local.1).unwrap();
+    assert_eq!(
+        interaction.title(),
+        Some("Log in to Claude on this machine")
+    );
+    assert!(interaction.provider_login_is_human_only());
+    let run = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&local.0, &local.1)
+        .unwrap();
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+    assert!(run.workflow_tools_enabled());
+    assert!(run.runtime_mcp_server_url().is_some());
+    let queued = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&session, &local.1)
+        .unwrap();
+    assert_eq!(queued.prompt(), "retained-local-workflow");
+    assert_eq!(queued.workflow_run_id(), Some(workflow_run.id()));
+    assert_eq!(
+        queued.workflow_node_run_id(),
+        Some(workflow_run.node_runs()[0].id())
+    );
+    assert!(!queued.hidden_system_context().is_empty());
+    assert_eq!(
+        run.workflow_fresh_context_node_run_id(),
+        queued.workflow_node_run_id()
+    );
+    assert!(fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &local.1)
+        .is_none());
+    for marker in ["synthetic-process-started", "UNEXPECTED_LOGIN"] {
+        assert!(!fixture.credential.parent().unwrap().join(marker).exists());
+    }
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+#[tokio::test]
+async fn review_local_workflow_missing_claude_copy_with_registered_token_delivers() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let fixture = WorkerFixture::new(true).await;
+    let (local, workflow, endpoint) = fixture.local_workflow().await;
+    std::fs::remove_file(&fixture.credential).unwrap();
+    fixture.register_token();
+    fixture
+        .invoke_local_workflow(&local, &workflow, &endpoint, "token-local-workflow")
+        .await;
+    fixture.wait_for_prompt("token-local-workflow").await;
+    let run = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&local.0, &local.1)
+        .unwrap();
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Running);
+    assert!(run.workflow_tools_enabled());
+    assert!(fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
