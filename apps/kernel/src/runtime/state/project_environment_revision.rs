@@ -21,6 +21,12 @@ impl KernelRuntimeState {
                 .private_runtime_state_root(),
         );
         let _lock = store.lock_briefly_async(project.id()).await?;
+        let project = self.owned.session_store.get_project(&request.project_id)?;
+        if project.owner_user_id() != user {
+            return Err(environment_error(
+                "caller does not own the selected Project",
+            ));
+        }
         let current = store.snapshot_locked(&project)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentDiff {
             diff: environment_revision_diff(&current, &request.draft)?,
@@ -45,6 +51,12 @@ impl KernelRuntimeState {
                 .private_runtime_state_root(),
         );
         let _lock = store.lock_briefly_async(project.id()).await?;
+        let project = self.owned.session_store.get_project(&request.project_id)?;
+        if project.owner_user_id() != user {
+            return Err(environment_error(
+                "caller does not own the selected Project",
+            ));
+        }
         let current = store.snapshot_locked(&project)?;
         let (environment, diff) = store.save_revision_locked(&current, &request, user)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff })

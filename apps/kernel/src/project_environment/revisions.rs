@@ -97,6 +97,17 @@ fn validate_draft(
         {
             return Err(environment_error("folder identity cannot be edited"));
         }
+        if original.local_workspace_binding.is_empty()
+            && environment_draft(current)
+                .folders
+                .iter()
+                .find(|saved| saved.folder_id == folder.folder_id)
+                != Some(folder)
+        {
+            return Err(environment_error(
+                "Environment revision conflict; folder is no longer attached; refresh and review",
+            ));
+        }
         text(&folder.label, 256)?;
     }
     let before = environment_draft(current);

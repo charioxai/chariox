@@ -1898,3 +1898,64 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
         assert_eq!(diff.target_digest, current.content_digest);
     }
 }
+
+// MP-08 / MP-10 / MP-11: a queued save validates the Project it actually locks.
+#[test]
+fn envp02b_waiting_save_reloads_topology_at_zero_and_saved_revision() {
+    for save_first in [false, true] {
+        let harness = envp02b_harness();
+        let initial = envp02b_read(&harness);
+        if save_first {
+            harness.dispatch(envp02b_save(&initial, "Saved")).unwrap();
+        }
+        let before = envp02b_read(&harness);
+        let mut value = serde_json::to_value(envp02b_save(&before, "Queued")).unwrap();
+        value["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["label"] =
+            serde_json::json!("Detached edit");
+        let LocalDaemonRequest::SaveProjectEnvironmentRevision(request) =
+            serde_json::from_value(value).unwrap()
+        else {
+            panic!("Save request")
+        };
+        let runtime = harness.runtime_state();
+        let holder = envp02b_hold_lock(&harness, std::time::Duration::from_millis(400));
+        let task = harness.spawn_test_task(async move {
+            runtime
+                .save_project_environment_revision(request, "local")
+                .await
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Fixture mutation represents a topology update completed before Save owns the lock.
+        harness.with_app_mut(|app| {
+            let mut project = app.sessions().get_project("edit-project").unwrap().clone();
+            project.replace_workspace_ids(vec!["/plain/other".into()]);
+            app.sessions_mut().restore_projects(vec![project]);
+        });
+        holder.join().unwrap();
+        assert!(
+            harness.block_on_test_task(task).unwrap().is_err(),
+            "queued save must reject detached folder edits"
+        );
+        assert_eq!(envp02b_read(&harness).revision, before.revision);
+    }
+}
+
+// MP-08 / MP-10 / MP-11: user topology mutation shares save admission.
+#[test]
+fn envp02b_workspace_update_waits_for_environment_lock() {
+    let harness = envp02b_harness();
+    let holder = envp02b_hold_lock(&harness, std::time::Duration::from_millis(400));
+    let runtime = harness.runtime_state();
+    let task = harness.spawn_test_task(async move {
+        runtime
+            .update_project_workspaces("edit-project", vec!["/plain/other".into()], "local")
+            .await
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !task.is_finished(),
+        "workspace mutation must wait for save admission"
+    );
+    holder.join().unwrap();
+    harness.block_on_test_task(task).unwrap().unwrap();
+}
