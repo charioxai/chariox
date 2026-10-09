@@ -2,6 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativeComputer, nativeInput, executeNative } from './native-computer.mjs';
+import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
 const publicDependencies=Object.fromEntries(['PYTHONPATH','LD_LIBRARY_PATH','GI_TYPELIB_PATH'].filter(key=>process.env[key]).map(key=>[key,process.env[key]]));
 test('MP-11 native input rejects stale placement and invalid physical events', () => {
@@ -65,7 +69,10 @@ test('MP-08 immediate physical key and text are distinct and wake capture after 
 });
 
 test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop generation', async () => {
-  let current = { ...binding, environment: { ...publicDependencies, PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' } };
+  const root=await mkdtemp(path.join(os.tmpdir(),'chariox-warm-generation-'));
+  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+  const owned=await desktop.start();
+  let current = { ...binding, environment: { ...owned.environment, ...publicDependencies } };
   const adapter = new NativeComputer({ placement: 'host', binding: () => current });
   try {
     await adapter.primeKeyboard();
@@ -75,7 +82,7 @@ test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop g
     assert.notEqual(adapter.keyboard.child.pid, first.pid);
     assert(first.exitCode !== null || first.signalCode !== null);
     assert.equal(adapter.held.size, 0);
-  } finally { await adapter.close(); }
+  } finally { await adapter.close(); await desktop.stop(); await rm(root,{recursive:true,force:true}); }
 });
 
 test('MP-08 native text is rejected before dispatch when it cannot fit the RPC budget', async () => {
