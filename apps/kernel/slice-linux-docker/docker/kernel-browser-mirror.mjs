@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mirrorInitialStyles } from './kernel-browser-mirror-styles.mjs';
 import { mirrorObserverExpression } from './kernel-browser-mirror-observer.mjs';
 import { materializeMirrorResources,MirrorTreeHasher } from './kernel-browser-mirror-resources.mjs';
-import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
+import { sanitizeMirrorTree } from './kernel-browser-mirror-sanitize.mjs';
 import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
@@ -83,14 +83,24 @@ export class MirrorService {
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
     if(!Array.isArray(command.drift_nodes)||command.drift_nodes.length>64||command.drift_nodes.some(id=>!stream.previous?.nodes.some(n=>n.id===id&&n.kind==='element'))) throw new Error('MP-11: invalid drift report');
     for(const id of command.drift_nodes)stream.fallback.add(id);
-    // Registered Vault target geometry and plaintext/media echoes use the SAME
-    // trusted CDP locator as screenshots. A failed locator fences DOM output.
+    // MP-08/MP-11: use the screenshot collector's live field identity/type check.
+    // Bind nodes in the mirror world rather than comparing different coordinate spaces.
     const targets=policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
-    const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
+    await this.evaluate(world,'globalThis.__charioxMirror.resetFillTargets()');
+    if(targets.length||this.host.browser.fillTargets?.size)await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
+      // Foreign renderer descendants are compositor tiles, not mirrored nodes.
+      if(field.sessionId!==world.sessionId)return;
+      const {object}=await world.connection.send('DOM.resolveNode',{backendNodeId:field.backendNodeId,executionContextId:world.contextId},world.sessionId);
+      if(!object?.objectId)throw Error('MP-11: mirror fill target unavailable');
+      try {
+        const reply=await world.connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,functionDeclaration:'function(){return globalThis.__charioxMirror.addFillTarget(this)}'},world.sessionId);
+        if(reply.exceptionDetails||reply.result?.value!==true)throw Error('MP-11: mirror fill target unavailable');
+      }finally{await world.connection.send('Runtime.releaseObject',{objectId:object.objectId},world.sessionId).catch(()=>{});}
+    }});
     mark('regions');
     let source;stream.fullFallback=false;
     let fallbackReason=null;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify([])},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch(error) {
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read([],[],${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch(error) {
       fallbackReason=error.mirrorReason??'observer_unavailable';
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
@@ -134,6 +144,7 @@ export class MirrorService {
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
     const sourceRevision=source.revision??0;
     delete source.resources;delete source.revision;source.selection??=null;
+    if(sanitizeMirrorTree(source,policy.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;fallbackReason='tile_under_transform';}
@@ -147,8 +158,8 @@ export class MirrorService {
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
     if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
-    // MP-10/MP-11: permanently opaque foreign/closed regions render protected
-    // placeholders; they need no source pixels or compositor crop bandwidth.
+    // MP-08/MP-11: opaque subtrees use protected compositor tiles.
+    // Ordinary foreign-frame and closed-shadow pixels remain visible.
     const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
     const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));

@@ -200,13 +200,15 @@ export function cropProtectedPng(data,clip,scale=1){
   }
   return {width,height,data_base64:encodePng(width,height,pixels)};
 }
-export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
+export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}) {
   if (!targets.length && !browser.fillTargets?.size) return capture();
   try {
     const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
     if (JSON.stringify(before) !== JSON.stringify(after)) throw Error("MP-11: fill target moved during capture");
-    return maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale);
+    const masked=maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale);
+    onMaskedRegions(before);
+    return masked;
   } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
 }

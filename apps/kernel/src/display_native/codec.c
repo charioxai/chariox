@@ -134,7 +134,7 @@ struct Row {
     const uint8_t *recon_y,*recon_uv;
     int recon_y_stride,recon_uv_stride;
 };
-struct Codec { int width,height,bitrate,row_count,reduced,enc_width,enc_height,openh264; struct Row rows[8]; double models[8][2]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+struct Codec { int width,height,bitrate,row_count,reduced,key_reduced,enc_width,enc_height,openh264; struct Row rows[8]; double models[8][2]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
 /* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
 static _Thread_local struct Codec *diagnosing;
 static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
@@ -214,14 +214,14 @@ static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     row->staging->format=AV_PIX_FMT_NV12;row->staging->width=c->width;row->staging->height=h;
     return av_frame_get_buffer(row->staging,32);
 }
-/* MP-08/MP-10/MP-11: motion is native resolution. Only a session opened as
- * the measured-contention fallback reduces unprotected whole-frame software
- * motion to a geometry the presenter admits; working hardware stays native.
+/* MP-08/MP-10/MP-11: unprotected whole-frame software motion may reduce for
+ * contention or an oversized recovery key, to a geometry already admitted
+ * by the presenter. Working hardware and protected streams stay native.
  * Native exact repair restores the original raster; scaled reconstruction
  * certifies no native pixels. */
 static void motion_geometry(struct Codec *c,int protected) {
     c->enc_width=c->width;c->enc_height=c->height;
-    if(c->row_count!=1||protected||(c->device&&!c->fallback)||!c->reduced)return;
+    if(c->row_count!=1||protected||(c->device&&!c->fallback)||!(c->reduced||c->key_reduced))return;
     if(c->width==1920&&c->height==1080){c->enc_width=1280;c->enc_height=720;}
     else if(c->width==2560&&c->height==1600){c->enc_width=1280;c->enc_height=800;}
 }
@@ -476,6 +476,25 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         else if(row->openh264)packet_offset=length;
         else for (int i=0;i<n;i++) { if(nals[i].i_payload<0 || packet_offset+nals[i].i_payload>(size_t)length)return -1;memcpy(row->packet+packet_offset,nals[i].p_payload,nals[i].i_payload);packet_offset+=nals[i].i_payload;if(nals[i].i_type==NAL_SLICE_IDR)key=1; }
         if (packet_offset!=(size_t)length)return -1;
+        /* MP-08/MP-10 (owner 2026-10-09): a noise IDR can exceed the
+         * unchanged 45 KB recovery contract even at QP 51. Retry once at
+         * the presenter's existing reduced geometry, then keep that geometry
+         * for its delta chain. Full-resolution exact repair certifies every
+         * pixel later. Protected rows retain their existing native output
+         * guard and aggregate budget. Unprotected keys without a bounded
+         * admitted geometry take the exact fallback. */
+        if(c->row_count==1&&!count&&key&&length>45000) {
+            int retry=!count&&!c->key_reduced&&!(c->device&&!c->fallback)&&
+                c->enc_width==c->width&&
+                ((c->width==1920&&c->height==1080)||(c->width==2560&&c->height==1600));
+            for(int i=0;i<8;i++)row_close(&c->rows[i]);
+            if(retry){
+                double spent[6];memcpy(spent,c->cpu,sizeof(spent));c->key_reduced=1;
+                int n=cx_codec_encode(c,source,255,regions,count,results);
+                for(int i=0;i<6;i++)c->cpu[i]+=spent[i];return n;
+            }
+            return -2;
+        }
         at=cpu_ms();
         int safe=output_safe(row,row->packet,length,c->width,h,y,regions,count);
         c->cpu[4]+=cpu_ms()-at;
