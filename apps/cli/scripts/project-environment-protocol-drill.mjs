@@ -38,8 +38,8 @@ async function liveSessions() {
 }
 async function directoryDigest() {
   const home = process.env.CHARIOX_HOME
-  const kernels = await readdir(path.join(home, "kernels")).catch(error => { if (error.code === "ENOENT") return []; throw error })
-  const directories = [path.join(home, "state", "project-environments"), ...kernels.map(kernel => path.join(home, "kernels", kernel, "project-environments"))]
+  const kernels = await readdir(path.join(home, "kernels"), { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error })
+  const directories = [path.join(home, "state", "project-environments"), ...kernels.filter(entry => entry.isDirectory()).map(kernel => path.join(home, "kernels", kernel.name, "project-environments"))]
   const hash = createHash("sha256")
   let found = false
   for (const directory of directories.sort()) {
@@ -94,8 +94,9 @@ try {
   assert.equal((await liveSessions()).length, 0)
   report.checks.push({ name: "reserved-export-no-side-effects", passed: true })
   report.result = "PASS"
-} catch {
-  report.result = "FAIL"; report.firstFailingSeam = stage; process.exitCode = 1
+} catch (error) {
+  // The error code alone is payload-free and names the failing mechanism.
+  report.result = "FAIL"; report.firstFailingSeam = stage; report.firstFailureCode = error?.code ?? error?.name; process.exitCode = 1
 } finally {
   try {
     if (projectId) {
