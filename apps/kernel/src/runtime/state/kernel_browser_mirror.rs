@@ -67,15 +67,13 @@ impl KernelRuntimeState {
 
 /// Only v2 packets (`mirror_next` results) are compressed; subscribe/close
 /// replies keep their plain fields (`subscription_id`, `wire`). A small delta
-/// (an echo) travels plain: inflating it would only add a client task hop.
+/// (an echo) travels plain: inflating it would only add a client task hop. A
+/// larger body travels gzip-compressed only when that is smaller on the wire.
 fn mirror_wire_result(next: bool, result: Value) -> Result<Value, DaemonError> {
-    if next
-        && result.get("wire").and_then(Value::as_u64) == Some(2)
-        && serde_json::to_vec(&result).map_or(true, |body| body.len() >= 2048)
-    {
-        return compress_mirror_packet(result);
+    if !next || result.get("wire").and_then(Value::as_u64) != Some(2) {
+        return Ok(result);
     }
-    Ok(result)
+    compress_mirror_packet(result)
 }
 
 /// MP-08/MP-10: a protocol 482 packet travels gzip-compressed after the Vault
@@ -91,13 +89,25 @@ fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
     let tiles = object.remove("tiles").unwrap_or_else(|| json!([]));
     let body = serde_json::to_vec(&packet)
         .map_err(|_| host_error("MP-11: invalid mirror packet".into()))?;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-    encoder
-        .write_all(&body)
-        .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
-    let compressed = encoder
-        .finish()
-        .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
+    let mut compressed = None;
+    if body.len() >= 1024 {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder
+            .write_all(&body)
+            .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
+        let gzip = encoder
+            .finish()
+            .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
+        if gzip.len().div_ceil(3) * 4 + 64 < body.len() {
+            compressed = Some(gzip);
+        }
+    }
+    let Some(compressed) = compressed else {
+        let object = packet.as_object_mut().expect("checked mirror packet object");
+        object.insert("resources".into(), resources);
+        object.insert("tiles".into(), tiles);
+        return Ok(packet);
+    };
     Ok(json!({
         "wire": 2,
         "encoding": "gzip",
@@ -123,6 +133,17 @@ mod tests {
         assert_eq!(mirror_wire_result(true, packet).unwrap()["encoding"], "gzip");
         let echo = json!({"wire":2,"sequence":2,"ops":[{"op":"form","id":"n9"}],"resources":[],"tiles":[]});
         assert_eq!(mirror_wire_result(true, echo.clone()).unwrap(), echo);
+        // A keystroke-sized typeahead delta (1-2 KB of repetitive records) is
+        // smaller compressed; an incompressible body of that size stays plain.
+        let ops: Vec<Value> = (0..12).map(|i| json!({"op":"text","id":format!("n{}", 2700 + i),"text":"suggestion text"})).collect();
+        let typeahead = json!({"wire":2,"sequence":3,"ops":ops,"resources":[{"key":"r1","data_base64":"AAAA"}],"tiles":[]});
+        assert!(serde_json::to_vec(&typeahead).unwrap().len() < 2048);
+        let wire = mirror_wire_result(true, typeahead.clone()).unwrap();
+        assert_eq!(wire["encoding"], "gzip");
+        assert_eq!(wire["resources"], typeahead["resources"]);
+        let noise: String = (0..1400u32).map(|i| char::from(b'!' + ((i.wrapping_mul(2654435761) >> 7) % 90) as u8)).collect();
+        let random = json!({"wire":2,"sequence":4,"ops":[{"op":"text","id":"n2","text":noise}],"resources":[],"tiles":[]});
+        assert_eq!(mirror_wire_result(true, random.clone()).unwrap(), random);
         let v1 = json!({"sequence":1,"nodes":[]});
         assert_eq!(mirror_wire_result(true, v1.clone()).unwrap(), v1);
     }
