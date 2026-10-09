@@ -120,3 +120,20 @@ test("MP-08/MP-11 over SSH the link opens in the plain view, whose paste fills t
   assert.equal(local.shown.length, 0)
   assert.equal(local.flashes.at(-1)!.message, "Opened the link in your browser")
 })
+
+test("MP-08/MP-11 ordinary terminal logins preserve the official CLI prompts before and after a URL", () => {
+  for (const auth_url of [null, "https://auth.openai.com/authorize"]) {
+    const h = harness([status("running")])
+    const terminal: RuntimeInteraction = {
+      ...interaction,
+      message: "Complete the provider's official login.",
+      provider_login: {
+        kernel_id: "fleet",
+        login: { ...interaction.provider_login!.login, provider: "opencode", login_kind: "terminal", auth_url },
+        terminal_output_base64: output("Select provider\nOpenAI\nSelect login method\nChatGPT"),
+      },
+    }
+    assert.equal(h.controller.stripState(terminal), null, "the generic renderer must retain the message and terminal output")
+    h.controller.dispose()
+  }
+})

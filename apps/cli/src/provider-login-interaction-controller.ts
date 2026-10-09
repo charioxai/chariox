@@ -145,6 +145,9 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     if (!projection) return null
     const ref = refOf(interaction)
     if (ref) track(ref)
+    // Ordinary terminal logins need the official CLI's provider/method prompts
+    // throughout the flow, including after it prints an authorization URL.
+    if (projection.login.login_kind === "terminal") return null
     const view = providerLoginView(
       projection,
       interaction.custom_choice?.id,

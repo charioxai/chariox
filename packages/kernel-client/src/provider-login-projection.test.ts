@@ -24,3 +24,8 @@ test("MP-08/MP-11 login view numbers the steps and names the failure the provide
   assert.equal(providerLoginProblem(output("Paste code here if prompted >")), null)
   assert.equal(providerLoginProblem(output("Paste code here if prompted >"), true), "Paste code here if prompted >")
 })
+
+test("MP-08/MP-11 a provider-response terminal choice is not necessarily an OAuth code", () => {
+  const projection = { kernel_id: "worker", login: { provider: "opencode", account_profile: "work", login_kind: "terminal" }, terminal_output_base64: "" }
+  assert.equal(providerLoginView(projection, "provider-response").takesCode, false)
+})

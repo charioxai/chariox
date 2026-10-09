@@ -33,8 +33,8 @@ export function providerLoginName(provider: string): string {
   return PROVIDER_NAMES[provider] ?? provider
 }
 
-/** The response field of a provider-native login waiting for a pasted code
- * (`provider-response`), as opposed to its vault passphrase phases. */
+/** The provider-native response choice; only the setup-token flow treats it
+ * as a pasted OAuth code. Ordinary terminal logins may ask other questions. */
 export const PROVIDER_LOGIN_CODE_CHOICE_ID = "provider-response"
 
 export type ProviderLoginView = {
@@ -54,7 +54,8 @@ export function providerLoginView(
 ): ProviderLoginView {
   const name = providerLoginName(projection.login.provider)
   const url = safeProviderLoginUrl(projection.login.verification_url ?? projection.login.auth_url ?? "")
-  const takesCode = customChoiceId === PROVIDER_LOGIN_CODE_CHOICE_ID
+  const takesCode = projection.login.login_kind === "terminal_setup_token"
+    && customChoiceId === PROVIDER_LOGIN_CODE_CHOICE_ID
   const userCode = projection.login.user_code
   return {
     title: `Sign in to ${name} · ${accountLabel}`,
