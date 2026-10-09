@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "kernel-browser-mirror-sanitize.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs"),
+    ),
+    (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),
     ),
