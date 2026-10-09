@@ -60,7 +60,10 @@ impl KernelRuntimeState {
                 );
                 return;
             }
-            let started = match state.owned.start_provider_launch(launch_request) {
+            let started = match state
+                .owned
+                .start_provider_relaunch(launch_request, terminated_run_id_for_policy.as_deref())
+            {
                 Ok(started) => started,
                 Err(error) => {
                     crate::logging::warn_with_fields(

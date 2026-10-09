@@ -120,6 +120,36 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    // MP-08/MP-10/MP-11: login and policy reloads continue the same workflow.
+    // Restore its identity before the replacement harness can discover MCP tools.
+    pub(super) fn start_provider_relaunch(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        previous_run_id: Option<&str>,
+    ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
+        let previous_workflow_run = previous_run_id
+            .map(|run_id| self.provider_store.get_run(run_id))
+            .transpose()?
+            .filter(|run| {
+                run.workflow_tools_enabled()
+                    && run.session_id() == request.session_id
+                    && run.agent_instance_id() == request.agent_id.as_deref()
+            });
+        let mut started = self.start_provider_launch(request)?;
+        if let Some(previous) = previous_workflow_run {
+            started.run = self
+                .provider_store
+                .enable_workflow_tools(started.run.id())?;
+            if let Some(node_run_id) = previous.workflow_fresh_context_node_run_id() {
+                started.run = self
+                    .provider_store
+                    .mark_workflow_fresh_context(started.run.id(), node_run_id)?;
+            }
+            self.provider_run_projection.update(started.run.clone());
+        }
+        Ok(started)
+    }
+
     pub(super) fn resume_provider_run_for_session(
         &self,
         session_id: &str,

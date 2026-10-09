@@ -6,6 +6,7 @@ use crate::transport::relay_peer::*;
 struct WorkerFixture {
     root: crate::test_support::TestWorktree,
     app: Arc<Mutex<DaemonApp>>,
+    router: crate::runtime::router::CommandRouter,
     runtime: KernelRuntimeState,
     account: String,
     credential: std::path::PathBuf,
@@ -22,13 +23,25 @@ if [[ "$1" == "auth" && "$2" == "status" ]]; then
   printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"pro"}'
   exit 0
 fi
+if [[ "$1" == "-p" && "$2" == "/usage" ]]; then
+  : > "$CLAUDE_CONFIG_DIR/synthetic-usage-probed"
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"duration_api_ms":0,"num_turns":0,"total_cost_usd":0,"result":"Current session: 17% used\nCurrent week (all models): 41% used","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}'
+  exit 0
+fi
 if [[ "$1" == "auth" && "$2" == "login" ]]; then
+  if [[ -f "$CLAUDE_CONFIG_DIR/allow-synthetic-login" ]]; then
+    umask 077
+    printf '%s' '{"claudeAiOauth":{"refreshToken":"synthetic-refresh","accessToken":"synthetic-access","expiresAt":9999999999999}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+    : > "$CLAUDE_CONFIG_DIR/synthetic-login-completed"
+    exit 0
+  fi
   : > "$CLAUDE_CONFIG_DIR/UNEXPECTED_LOGIN"
   exit 1
 fi
 : > "$CLAUDE_CONFIG_DIR/synthetic-process-started"
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$CLAUDE_CONFIG_DIR/synthetic-prompts"
+  while [[ -f "$CLAUDE_CONFIG_DIR/hold-synthetic-result" ]]; do sleep 0.02; done
   printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"synthetic worker completed"}'
 done
 "#).unwrap();
@@ -87,7 +100,14 @@ done
         let credential =
             std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json");
         let app = Arc::new(Mutex::new(app));
-        let runtime = owned_runtime_state(&app).await;
+        let lanes = app.lock().await.provider_run_operation_lanes();
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity_and_provider_lanes(
+                Arc::clone(&app),
+                16,
+                lanes,
+            );
+        let runtime = router.runtime_state();
         assert!(!crate::provider::provider_account_credential_uses_vault(
             "owner", "claude", &account
         )
@@ -95,6 +115,7 @@ done
         Self {
             root,
             app,
+            router,
             runtime,
             account,
             credential,
@@ -184,12 +205,50 @@ done
 
     async fn wait_for_prompt(&self, prompt: &str) {
         let marker = self.credential.parent().unwrap().join("synthetic-prompts");
-        tokio::time::timeout(Duration::from_secs(10), async {
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             while !std::fs::read_to_string(&marker).is_ok_and(|text| text.contains(prompt)) {
                 self.runtime.pump_transport_runtime().await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.expect("the production worker must deliver the admitted prompt to the synthetic native harness");
+        })
+        .await;
+        if result.is_err() {
+            for run in self.runtime.owned.provider_store.list_runs() {
+                let session = self
+                    .runtime
+                    .owned
+                    .session_store
+                    .get_session(run.session_id())
+                    .unwrap();
+                eprintln!(
+                    "synthetic dispatch timeout: run={} state={:?} workflow={} interactions={:?}",
+                    run.id(),
+                    run.state(),
+                    run.workflow_tools_enabled(),
+                    session
+                        .active_interactions()
+                        .iter()
+                        .map(|interaction| interaction.title())
+                        .collect::<Vec<_>>()
+                );
+            }
+            eprintln!(
+                "synthetic login completed={} artifact exists={} harness started={}",
+                marker
+                    .parent()
+                    .unwrap()
+                    .join("synthetic-login-completed")
+                    .exists(),
+                self.credential.exists(),
+                marker
+                    .parent()
+                    .unwrap()
+                    .join("synthetic-process-started")
+                    .exists()
+            );
+            self.app.lock().await.shutdown_cleanup().unwrap();
+        }
+        result.expect("the production worker must deliver the admitted prompt to the synthetic native harness");
     }
 }
 
@@ -469,13 +528,6 @@ impl WorkerFixture {
         &self,
         request: crate::local::LocalDaemonRequest,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let lanes = self.app.lock().await.provider_run_operation_lanes();
-        let router =
-            crate::runtime::router::CommandRouter::with_interactive_capacity_and_provider_lanes(
-                Arc::clone(&self.app),
-                16,
-                lanes,
-            );
         let mut caller = crate::runtime::command::KernelCaller::default()
             .with_connection_class(crate::local::KernelConnectionClass::Terminal);
         caller.user_id = Some("owner".into());
@@ -487,7 +539,7 @@ impl WorkerFixture {
             None,
             &request,
         );
-        router.dispatch(command, request).await
+        self.router.dispatch(command, request).await
     }
 
     async fn local_launch(
@@ -941,6 +993,9 @@ impl WorkerFixture {
             .sessions_mut()
             .add_workflow_node(&local.0, workflow.id(), &local.1)
             .unwrap();
+        app.sessions_mut()
+            .set_workflow_node_can_complete_run(&local.0, workflow.id(), node.id(), true)
+            .unwrap();
         let endpoint = app
             .sessions_mut()
             .create_workflow_endpoint(&local.0, workflow.id(), node.id(), Some("entry".into()))
@@ -1048,6 +1103,143 @@ async fn review_local_workflow_missing_claude_copy_retains_node_and_requests_log
     for marker in ["synthetic-process-started", "UNEXPECTED_LOGIN"] {
         assert!(!fixture.credential.parent().unwrap().join(marker).exists());
     }
+    // MP-08/MP-10/MP-11: drive receiving login through the actual recovery
+    // continuation, then exercise the replacement's authenticated workflow tools.
+    // These opt-in files affect only this isolated synthetic provider/profile.
+    let profile_dir = fixture.credential.parent().unwrap();
+    std::fs::write(profile_dir.join("allow-synthetic-login"), "").unwrap();
+    std::fs::write(profile_dir.join("hold-synthetic-result"), "").unwrap();
+    fixture
+        .runtime
+        .resolve_runtime_interaction(&local.0, interaction.id(), "login", None)
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("retained-local-workflow").await;
+    assert!(profile_dir.join("synthetic-login-completed").exists());
+    let replacement = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&local.0, &local.1)
+        .unwrap();
+    assert_ne!(replacement.id(), run.id());
+    let tool_names = fixture
+        .runtime
+        .runtime_tool_specs_for_auth_token_async(
+            replacement.runtime_mcp_auth_token().unwrap().to_string(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    // Settle fixture processes on RED too, before the failing identity assertion.
+    if !replacement.workflow_tools_enabled() {
+        fixture.app.lock().await.shutdown_cleanup().unwrap();
+    }
+    assert!(
+        replacement.workflow_tools_enabled(),
+        "login relaunch lost workflow tools"
+    );
+    assert_eq!(
+        replacement.workflow_fresh_context_node_run_id(),
+        queued.workflow_node_run_id()
+    );
+    use crate::transport::runtime_tools::{
+        ACK_WORKFLOW_TURN_TOOL, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+    };
+    for tool in [
+        ACK_WORKFLOW_TURN_TOOL,
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+    ] {
+        assert!(
+            tool_names.contains(tool),
+            "replacement MCP discovery omitted {tool}"
+        );
+    }
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&local.0)
+        .unwrap();
+    let active = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &local.1)
+        .unwrap();
+    // Admission replaces the provisional queue id with a durable prompt id.
+    assert_eq!(active.prompt(), queued.prompt());
+    assert_eq!(active.workflow_run_id(), queued.workflow_run_id());
+    assert_eq!(active.workflow_node_run_id(), queued.workflow_node_run_id());
+    assert_eq!(
+        active.hidden_system_context(),
+        queued.hidden_system_context()
+    );
+    let delivery_token = session
+        .workflow_runs()
+        .iter()
+        .find(|candidate| candidate.id() == workflow_run.id())
+        .unwrap()
+        .node_runs()[0]
+        .turn_envelope()
+        .unwrap()
+        .delivery_token()
+        .to_string();
+    let auth = replacement.runtime_mcp_auth_token().unwrap();
+    let acknowledged = fixture
+        .runtime
+        .dispatch_authenticated_runtime_tool_call(
+            auth,
+            ACK_WORKFLOW_TURN_TOOL,
+            serde_json::json!({"delivery_token": delivery_token}),
+        )
+        .await
+        .unwrap();
+    assert!(acknowledged.ok);
+    let submitted = fixture.runtime.dispatch_authenticated_runtime_tool_call(
+        auth, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+        serde_json::json!({"workflow_output_json": "{\"answer\":\"recovered\"}", "delivery_token": delivery_token}),
+    ).await.unwrap();
+    assert!(submitted.ok);
+    std::fs::remove_file(profile_dir.join("hold-synthetic-result")).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            fixture.runtime.pump_transport_runtime().await;
+            // MP-08/MP-10/MP-11: completed runs move into workflow history.
+            let response = fixture
+                .local_request(crate::local::LocalDaemonRequest::GetWorkflowRun(
+                    crate::local::GetWorkflowRunRequest {
+                        session_id: local.0.clone(),
+                        workflow_run_ref: workflow_run.id().to_string(),
+                    },
+                ))
+                .await
+                .unwrap();
+            let crate::local::LocalDaemonResponse::WorkflowRun {
+                workflow_run: completed,
+            } = response
+            else {
+                panic!("workflow history response");
+            };
+            if completed.status() == crate::session::WorkflowRunStatus::Completed {
+                assert_eq!(completed.final_output_valid(), Some(true));
+                assert_eq!(
+                    completed.final_output().unwrap().message(),
+                    "{\"answer\":\"recovered\"}"
+                );
+                assert_eq!(
+                    completed.node_runs()[0].status(),
+                    crate::session::WorkflowNodeRunStatus::Completed
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("retained node must complete after receiving login and output submission");
     fixture.app.lock().await.shutdown_cleanup().unwrap();
 }
 
