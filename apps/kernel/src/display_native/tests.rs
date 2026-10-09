@@ -358,7 +358,7 @@ fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
     }
     let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, 1, 0) });
     assert!(!codec.0.is_null());
-    for _ in 0..3 {
+    for cycle in 0..3 {
         let mut rows = [RowResult::default(); 8];
         assert_eq!(
             unsafe {
@@ -375,13 +375,72 @@ fn mp08_native_recovery_keys_fit_the_paced_link_before_any_rate_feedback() {
         );
         assert!(rows[0].key != 0 && rows[0].sequence == 1);
         let packet = unsafe { std::slice::from_raw_parts(rows[0].bytes, rows[0].length) };
-        assert_eq!(sps_size(packet), (1920, 1088), "the native 1080p key");
+        let reduced = unsafe { ffi::cx_codec_reduced(codec.0) } == 1;
+        assert_eq!(
+            sps_size(packet),
+            if reduced { (1280, 720) } else { (1920, 1088) },
+            "MP-08/MP-10: only admitted motion geometry"
+        );
         // Twice the 50ms VBV budget leaves headers room without a 300ms key.
         assert!(
             rows[0].length <= 45000,
             "MP-08/MP-10: unpaced recovery key: {}",
             rows[0].length
         );
+        // Reduced motion certifies no native pixels; the existing lossless
+        // repair must restore every source pixel, including after a reset.
+        if reduced {
+            let mut bounds = [0; 4];
+            unsafe {
+                ffi::cx_codec_repair_bounds(
+                    codec.0,
+                    source.as_ptr(),
+                    std::ptr::null(),
+                    255,
+                    0,
+                    0,
+                    w as i32,
+                    h as i32,
+                    bounds.as_mut_ptr(),
+                );
+            }
+            assert_eq!(bounds, [0, 0, w as i32, h as i32]);
+            if cycle == 0 {
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                let plan = super::exact::ExactPlan {
+                    pixels: source.clone(),
+                    tiles: Vec::new(),
+                    rectangles: (0..h)
+                        .step_by(128)
+                        .map(|y| [0, y as i32, w as i32, (y + 128).min(h) as i32])
+                        .collect(),
+                    w: w as i32,
+                    h: h as i32,
+                    patch: false,
+                    repair_only: true,
+                    revision: Some(1),
+                    started: 0.,
+                };
+                let repair = plan.finish().unwrap();
+                let mut restored = vec![0; w * h * 3];
+                let mut bytes = 0;
+                for tile in repair["repair_tiles"].as_array().unwrap() {
+                    let data = STANDARD
+                        .decode(tile["data_base64"].as_str().unwrap())
+                        .unwrap();
+                    bytes += data.len();
+                    let (tw, th, rgb) = webp_rgb(&data);
+                    let y = tile["y"].as_u64().unwrap() as usize;
+                    assert_eq!(tw as usize, w);
+                    assert_eq!(th as u64, tile["height"].as_u64().unwrap());
+                    restored[y * w * 3..(y + th as usize) * w * 3].copy_from_slice(&rgb);
+                }
+                for (source, exact) in source.chunks_exact(4).zip(restored.chunks_exact(3)) {
+                    assert_eq!(exact, &[source[2], source[1], source[0]]);
+                }
+                println!("MP-08/MP-10 noise repair: {bytes} lossless bytes, every native RGB pixel restored");
+            }
+        }
     }
 }
 
