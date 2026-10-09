@@ -630,7 +630,8 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
     let compact = normalized_lower.replace(' ', "");
     let modern_idle_composer = compact.split('❯').skip(1).any(|after_prompt_glyph| {
         let footer = after_prompt_glyph.chars().take(256).collect::<String>();
-        footer.contains("⏵⏵") && footer.contains("shift+tabtocycle")
+        (footer.contains("⏵⏵") && footer.contains("shift+tabtocycle"))
+            || (footer.contains("manualmodeon") && footer.contains("←foragents"))
     });
     (normalized_lower.contains("try \"write a test for")
         || compact.contains("try\"writeatestfor")

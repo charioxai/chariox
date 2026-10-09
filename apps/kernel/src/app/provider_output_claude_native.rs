@@ -1521,8 +1521,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if !force_post_stop_ready
                 && !prompt_typed_for_headless
                 && !claude_headless_composer_visible(&recent)
-                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
             {
+                // Elapsed startup time cannot prove readiness: input and Enter
+                // can otherwise reach Claude's default No/exit trust selector
+                // before its first PTY frame is processed.
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id);
                 return Ok(());
             }

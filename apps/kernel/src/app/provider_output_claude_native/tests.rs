@@ -1467,6 +1467,79 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
 }
 
 #[test]
+fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() {
+    let worktree = crate::test_support::TestWorktree::new("claude-slow-composer");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "slow-composer-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-slow-composer-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    fs::write(&context, "").unwrap();
+    fs::write(&events, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "slow-composer-run",
+        &context,
+        &events,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    let mut aged = serde_json::to_value(&run).unwrap();
+    aged["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(aged).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    app.record_native_prompt_started_with_attachments(
+        session.id(),
+        attachment.id(),
+        attachment.id(),
+        agent.id(),
+        "Task 1 must reach the composer, never a startup selector",
+        Vec::new(),
+    )
+    .unwrap();
+    let context = context.display().to_string();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+        .unwrap();
+    let before_composer = claude_native_marker(&context);
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+        .unwrap();
+    let after_composer = claude_native_marker(&context);
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        before_composer, None,
+        "elapsed startup grace is not evidence that the provider can accept a prompt"
+    );
+    assert!(after_composer.is_some_and(|marker| marker.starts_with("submit-wait:")));
+}
+
+#[test]
 fn claude_workspace_trust_accepts_yes_first_without_selecting_no() {
     workspace_trust_approval_fixture("❯ 1. Yes, I trust this folder\n2. No, exit", "\n");
 }
@@ -2734,6 +2807,19 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
 }
 
 #[test]
+fn claude_headless_composer_detects_manual_mode_footer_only_with_prompt_glyph() {
+    assert!(claude_headless_composer_visible(
+        "Claude Code v2.1.292\n❯ \n⏸ manual mode on · ← for agents"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "Claude Code v2.1.292\nmanual mode on · ← for agents"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "Quick safety check: trust this folder?\n❯ No, exit\nYes, I trust this folder\nmanual mode on · ← for agents"
+    ));
+}
+
+#[test]
 fn claude_headless_composer_detects_current_cycle_footer_only_with_prompt_glyph() {
     assert!(claude_headless_composer_visible(
         "──────────────── ❯ ──────────────── ⏵⏵ mode (shift+tab to cycle)"
@@ -2803,6 +2889,11 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
     let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").unwrap();
     fs::write(&events_file, "").unwrap();
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏸ manual mode on · ← for agents",
+    )
+    .unwrap();
     let mut run = startup_readiness_run(
         session.id(),
         agent.id(),
