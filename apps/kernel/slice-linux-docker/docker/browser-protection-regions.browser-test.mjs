@@ -53,13 +53,14 @@ for (const dpr of [1, 2]) for (const [label, values, query] of [['snapshot', [VA
   }, query));
 }
 
-// The canvas draws the value and an adopted-stylesheet ::before generates it;
-// both scripts are gone: no DOM string echoes it, only the rendered layout text.
+// The canvas draws the value, an adopted-stylesheet ::before/::after around
+// nested inline text generates it, and sibling spans split it; the scripts are
+// gone: no DOM string echoes it, only the rendered layout text.
 for (const dpr of [1, 2]) test(`DPR ${dpr}: Vault echoes and opaque media are protected only while values are registered`, () => withFixture(dpr, async ({ browser, connection, sessionId, shot }) => {
   const { result } = await connection.send('Runtime.evaluate', { returnByValue: true,
-    expression: `[...document.querySelectorAll('script,style')].some(source => source.text?.includes(${JSON.stringify(VAULT_VALUE)}) || source.textContent.includes(${JSON.stringify(VAULT_VALUE.slice(0, 12))})) ? null : ['drawn', 'media', 'generated'].map(id => document.getElementById(id).getBoundingClientRect()).map(b => [b.left, b.top, b.width, b.height])` }, sessionId);
+    expression: `[...document.querySelectorAll('script,style')].some(source => source.text?.includes(${JSON.stringify(VAULT_VALUE)}) || source.textContent.includes(${JSON.stringify(VAULT_VALUE.slice(0, 12))})) ? null : ['drawn', 'media', 'generated', 'siblings'].map(id => document.getElementById(id).getBoundingClientRect()).map(b => [b.left, b.top, b.width, b.height])` }, sessionId);
   assert.ok(result.value, 'the drawing and styling scripts are gone');
-  const [drawn, media, generated] = result.value.map(box => box.map(v => Math.round(v * dpr)));
+  const [drawn, media, generated, siblings] = result.value.map(box => box.map(v => Math.round(v * dpr)));
   const pixels = await shot();
   const without = (await measureBrowserProtection(browser, policy())).pages[0];
   const withValue = (await measureBrowserProtection(browser, policy([VAULT_VALUE]))).pages[0];
@@ -69,8 +70,10 @@ for (const dpr of [1, 2]) test(`DPR ${dpr}: Vault echoes and opaque media are pr
   assert.ok(census(crop(media), inBox(media, without.regions)).cyan === media[2] * media[3], 'media stay visible without a Vault value');
   assert.ok(census(crop(generated), inBox(generated, without.regions)).magenta > 50 * dpr * dpr, 'the generated value is ordinary without a Vault value');
   assert.ok(census(pixels, without.regions).magenta > 0, 'the echo paragraph is ordinary without a Vault value');
+  assert.ok(census(crop(siblings), inBox(siblings, without.regions)).magenta > 50 * dpr * dpr, 'the split value is ordinary without a Vault value');
   assert.equal(census(crop(generated), inBox(generated, withValue.regions)).magenta, 0, 'the generated value is masked');
-  assert.equal(census(pixels, withValue.regions).magenta, 0, 'echoes, the canvas-drawn and the generated value are masked');
+  assert.equal(census(crop(siblings), inBox(siblings, withValue.regions)).magenta, 0, 'the split value is masked');
+  assert.equal(census(pixels, withValue.regions).magenta, 0, 'echoes, the canvas-drawn, generated and split values are masked');
   assert.equal(census(crop(media), inBox(media, withValue.regions)).cyan, 0, 'every medium is masked while a value is registered');
 }));
 

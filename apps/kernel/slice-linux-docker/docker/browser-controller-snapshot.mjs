@@ -101,27 +101,59 @@ export function redactObservation(value, protectedValues) {
 }
 
 // MP-08/MP-11: layout entries of one DOMSnapshot document whose rendered text
-// echoes a protected value. CSS-generated content (::before, ::after,
-// ::marker, ::first-letter, counters) has no DOM value, so text is joined per
-// element in visual order; snapshots list ::after before text children.
-// Unreadable layout text fails closed.
+// echoes a protected value. Rendered text, incl. CSS-generated content
+// (::before, ::after, ::marker, ::first-letter, counters) that has no DOM
+// value, is flattened over the whole document in visual order (snapshots list
+// pseudo-elements before children), so a value split across nested or sibling
+// elements still matches. A match protects every contributing entry and the
+// box of their nearest common laid-out ancestor; unreadable text or a match
+// without such a container fails closed.
+const PSEUDO_ORDER = { "::marker": 0, "::first-letter": 1, "::before": 2, "::after": 5 };
 export function renderedTextEchoes(strings, document, protectedValues) {
-  const echoes = new Set(), groups = new Map();
+  const echoes = new Set();
   if (!protectedValues.length) return echoes;
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
-  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
-    const piece = layout.text?.[k];
-    if (piece === -1) continue;
-    if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
-    const node = layout.nodeIndex[k], name = strings[nodes.nodeName?.[node]] ?? "";
-    const key = nodes.nodeType?.[node] === 3 || name.startsWith("::") ? nodes.parentIndex?.[node] : node;
-    const group = groups.get(key) ?? { head: "", tail: "", entries: [] };
-    group[name === "::after" ? "tail" : "head"] += strings[piece];
-    group.entries.push(k);
-    groups.set(key, group);
+  const count = nodes.nodeName?.length ?? 0, parent = [], depth = [], children = [], roots = [], entries = new Map();
+  for (let i = 0; i < count; i++) {
+    const up = nodes.parentIndex?.[i] ?? -1;
+    if (!Number.isInteger(up) || up >= i) throw new Error("MP-11: unordered snapshot");
+    parent.push(up < 0 ? -1 : up); depth.push(up < 0 ? 0 : depth[up] + 1); children.push([]);
+    (up < 0 ? roots : children[up]).push(i);
   }
-  for (const { head, tail, entries } of groups.values()) {
-    if (redactObservation(head + tail, protectedValues) !== head + tail) entries.forEach((k) => echoes.add(k));
+  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
+    const node = layout.nodeIndex[k];
+    if (!Number.isInteger(node) || node < 0 || node >= count) throw new Error("MP-11: unknown layout node");
+    (entries.get(node) ?? entries.set(node, []).get(node)).push(k);
+  }
+  const order = (i) => { const name = strings[nodes.nodeName[i]] ?? ""; return PSEUDO_ORDER[name] ?? (name.startsWith("::") ? 3 : 4); };
+  let flat = "";
+  const spans = []; // [start, end, layout entry, node], in flat order.
+  for (const stack = roots.reverse(); stack.length;) {
+    const i = stack.pop();
+    for (const k of entries.get(i) ?? []) {
+      const piece = layout.text?.[k];
+      if (piece === -1) continue;
+      if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
+      if (strings[piece]) spans.push([flat.length, flat.length + strings[piece].length, k, i]);
+      flat += strings[piece];
+    }
+    const next = children[i].sort((a, b) => order(a) - order(b));
+    for (let c = next.length - 1; c >= 0; c--) stack.push(next[c]);
+  }
+  const common = (a, b) => { while (a !== b && a >= 0 && b >= 0) depth[a] >= depth[b] ? (a = parent[a]) : (b = parent[b]); return a === b ? a : -1; };
+  for (const variant of observationProtectedVariants(protectedValues)) {
+    for (let at = flat.indexOf(variant); at >= 0; at = flat.indexOf(variant, at + 1)) {
+      let low = 0, high = spans.length;
+      while (low < high) { const mid = (low + high) >> 1; spans[mid][1] <= at ? (low = mid + 1) : (high = mid); }
+      let container;
+      for (let s = low; s < spans.length && spans[s][0] < at + variant.length; s++) {
+        echoes.add(spans[s][2]);
+        container = container === undefined ? spans[s][3] : common(container, spans[s][3]);
+      }
+      while (container >= 0 && !entries.has(container)) container = parent[container];
+      if (!(container >= 0)) throw new Error("MP-11: rendered text without a laid-out container");
+      entries.get(container).forEach((k) => echoes.add(k));
+    }
   }
   return echoes;
 }
