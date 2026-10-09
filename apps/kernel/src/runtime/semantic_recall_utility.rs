@@ -80,6 +80,7 @@ pub(crate) fn parse_semantic_recall_search_utility_output(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn semantic_recall_search_utility_prompt(
     input: &SemanticRecallSearchUtilityInput,
     candidates: &[SemanticRecallMatch],

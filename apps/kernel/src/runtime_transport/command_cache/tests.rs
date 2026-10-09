@@ -24,6 +24,8 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     for request in [
         serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
         serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
+        // MP-11 A07: owner hand-off input is physical and never replayed.
+        serde_json::json!({"RespondToHandoff":{"session_id":"s","interaction_id":"handoff-o","action":{"kind":"enter_value","value":"fixture"}}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
         assert!(!request_is_cacheable(&request));
@@ -46,7 +48,8 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             "ControlAppWorker",
             "UninstallApp",
             "OpenUserAppView",
-            "CallUserAppView"
+            "CallUserAppView",
+            "RespondToHandoff"
         ]
     );
 }

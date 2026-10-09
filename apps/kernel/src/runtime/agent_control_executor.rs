@@ -84,12 +84,10 @@ pub(crate) async fn execute_grant_agent_extension_request(
             Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
         }
         ExtensionKind::Script => {
-            let environment = request
-                .environment
-                .ok_or_else(|| DaemonError::InvalidConfig {
-                    field: "environment",
-                    message: "script extension grants require an environment",
-                })?;
+            let environment = request.environment.ok_or(DaemonError::InvalidConfig {
+                field: "environment",
+                message: "script extension grants require an environment",
+            })?;
             ensure_script_exists(request.workspace_id.as_deref(), &request.name)?;
             ensure_environment_exists(request.workspace_id.as_deref(), &environment)?;
             let grant = crate::extension::ExtensionGrant::script(request.name, environment);

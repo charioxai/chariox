@@ -85,6 +85,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing invoke_workflow_endpoint_with_context operation signature and explicit context arguments"
+    )]
     fn invoke_workflow_endpoint_with_context(
         &mut self,
         session_id: &str,
@@ -461,6 +465,10 @@ impl SessionService {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_workflow_prompt operation signature and explicit context arguments"
+    )]
     pub fn enqueue_workflow_prompt(
         &mut self,
         session_id: &str,
@@ -575,6 +583,10 @@ impl SessionService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit enqueue_workflow_prompt_and_maybe_create_run state or return type at the existing boundary"
+    )]
     pub fn enqueue_workflow_prompt_and_maybe_create_run(
         &mut self,
         session_id: &str,
@@ -738,7 +750,11 @@ impl SessionService {
         let mut queued = session
             .workflow_queued_prompts()
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(crate::session::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = session.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue

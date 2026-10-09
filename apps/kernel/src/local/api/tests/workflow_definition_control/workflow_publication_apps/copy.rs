@@ -35,6 +35,7 @@ fn deployed(harness: &LocalRouterTestHarness, label: &str, consent: bool) -> Dep
     harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
             ConfigureAppAutomationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Inject,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 0,
@@ -300,6 +301,10 @@ fn a_consented_app_bound_deployment_runs_as_an_independent_copy() {
     // The automation feeds the copy's publication.
     assert_eq!(copy.automations.len(), 1);
     assert_eq!(copy.automations[0].automation_id, "reminders");
+    assert_eq!(
+        copy.automations[0].delivery_mode,
+        crate::local::NotificationDeliveryMode::Inject
+    );
     assert_eq!(copy.automations[0].session_id, session_id);
     assert_eq!(
         copy.automations[0].publication_id,

@@ -85,6 +85,7 @@ pub(crate) enum LifecycleError {
     #[error("app_lifecycle_notification_not_dispatched")]
     NotificationNotDispatched,
     #[error("app_lifecycle_worker_exit")]
+    #[allow(dead_code)] // Existing worker lifecycle error vocabulary.
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
     Supervisor,

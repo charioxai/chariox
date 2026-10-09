@@ -103,6 +103,7 @@ fn configure_automation(
             "alice",
             catalog.clone(),
             AppAutomationMutation::Configure {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 automation_id: "automation".into(),
                 expected_revision: 0,
                 event_name: "changed".into(),

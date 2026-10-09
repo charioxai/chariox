@@ -4,6 +4,22 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) fn relay_workflow_notification(
+        &self,
+        kernel: &str,
+        owner: &str,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state
+            .receive_workflow_notification_peer(kernel, owner, request)
+    }
+    pub(crate) fn notification_peer_owner(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
+        self.runtime_state.notification_peer_owner(identity)
+    }
+
     pub(crate) fn lease_worker_selected_home(
         &self,
     ) -> Option<crate::config::LeaseWorkerHomeCaller> {

@@ -462,6 +462,10 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &self,
         session_id: String,
@@ -515,6 +519,10 @@ impl ProviderProcessServiceStore {
     ) -> Result<(), DaemonError> {
         self.write()
             .enqueue_structured_prompt_abort(session_id, provider_run_id)
+    }
+
+    pub(crate) fn structured_submit_epoch(&self) -> u64 {
+        self.read().structured_submit_epoch()
     }
 
     pub(crate) fn drain_finished_structured_prompt_submit_jobs(

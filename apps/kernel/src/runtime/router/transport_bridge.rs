@@ -243,12 +243,28 @@ impl CommandRouter {
     pub(crate) async fn refresh_remote_relay_inventory_projection(
         &self,
     ) -> Result<(), DaemonError> {
+        let (_, previous) = self.remote_relay_inventory_projection.snapshot();
         crate::transport::relay_client::refresh_remote_inventory_projection(
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),
         )
         .await?;
         let (_, workers) = self.remote_relay_inventory_projection.snapshot();
+        if previous
+            .iter()
+            .map(|p| (&p.kernel_id, &p.public_key))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            != workers
+                .iter()
+                .map(|p| (&p.kernel_id, &p.public_key))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        {
+            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+                self.runtime_state
+                    .refresh_notification_sources_from_inventory(&profile.user_id, true)
+                    .await?;
+            }
+        }
         let authenticated_workers = {
             let relay_state = self.relay_state.read().await;
             workers

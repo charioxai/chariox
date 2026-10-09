@@ -7,8 +7,10 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import { createKernelApprovalController, type KernelApprovalView } from "./kernel-approval-controller.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 
 const view: KernelApprovalView = {
+  choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }], handoffEntry: null,
   open: false, count: 1, criticalCount: 0, index: 0, selected: null, pending: false, connected: true, error: null,
   interaction: {
     id: "approval-1", kernel_operation_id: "install-1", kind: "permission", level: "warning",
@@ -16,6 +18,56 @@ const view: KernelApprovalView = {
     choices: [{ id: "deny", label: "Deny", reply: "deny" }, { id: "allow", label: "Allow", reply: "allow" }],
     requested_at_ms: 1,
   },
+}
+
+for (const kind of ["access_grant", "access_extension"] as const) {
+  for (const sessionId of ["legacy-session", "kernel-access"]) {
+    for (const approve of [false, true]) {
+      test(`access popup ${kind} ${approve ? "approval" : "refusal"} preserves ${sessionId} contract`, async () => {
+        const h = await createTestRenderer({ width: 100, height: 36, useThread: false })
+        let listener!: (event: unknown) => void
+        const requests: Record<string, any>[] = []
+        const notices: string[] = []
+        const client = {
+          onKernelEvent(callback: typeof listener) { listener = callback; return () => {} },
+          async send(request: Record<string, any>) {
+            requests.push(request)
+            return sessionId === "kernel-access"
+              ? { KernelAccessDecisionResponded: { interaction_id: "access-test" } }
+              : { InteractionResponded: { interaction_id: "access-test", session: { id: sessionId, agents: [] } } }
+          },
+        }
+        let dispose!: () => void
+        const composition = createRoot(cleanup => {
+          dispose = cleanup
+          return createCliKernelApprovalComposition({
+            client: client as never, renderer: h.renderer,
+            session: () => ({ id: sessionId, agents: [] }) as unknown as RuntimeSession,
+            connected: () => true, attached: () => true, kernelConnected: () => true,
+            flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
+            currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
+            notify(message) { notices.push(message) },
+          })
+        })
+        try {
+          const prompt: PasskeyPrompt = {
+            kind, session_id: sessionId, interaction_id: "access-test", title: "External access", message: "Review access",
+            approve_choice_id: "approve", refuse_choice_id: "refuse", requested_at_ms: 1, expires_at_ms: 300_001,
+          }
+          listener({ event: "passkey_prompts_changed", prompts: [prompt] })
+          const key = (name: string, extra = {}) => composition.handleKey({ name, preventDefault() {}, stopPropagation() {}, ...extra })
+          key("f8")
+          if (approve) { for (const sequence of "test-proof") key(sequence, { sequence }); key("return") }
+          else key("r", { ctrl: true })
+          await new Promise(resolve => setTimeout(resolve, 0))
+          assert.equal(requests.length, 1)
+          assert.equal(requests[0]?.RespondToInteraction.session_id, sessionId)
+          assert.equal(requests[0]?.RespondToInteraction.choice_id, approve ? "approve" : "refuse")
+          assert.deepEqual(notices, [])
+        } finally { dispose(); h.renderer.destroy() }
+      })
+    }
+  }
 }
 
 const shortcutCases = [
@@ -84,6 +136,7 @@ test("actual OpenTUI keyboard delivery isolates approval choices from the focuse
   })
   harness.renderer.root.add(prompt)
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => ({ id: "session-1", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
@@ -156,7 +209,7 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
   surface.assign(box)
   try {
     for (const [title, payload] of [["Open a link from an App", "Exact URL: https://example.org/a?x=%20"], ["Copy text from an App", 'Text (11 UTF-8 bytes): "copy\\ntext"']] as const) {
-      surface.render({ ...view, open: true, interaction: { id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
+      surface.render({ ...view, open: true, choices: [{ id: "decline", label: "Decline", reply: "deny" }], interaction: { id: "app_host_0123456789abcdef0123456789abcdef", kernel_operation_id: "host_action:0123456789abcdef0123456789abcdef", kind: "permission", level: "warning", requested_at_ms: 1, title,
         message: `${payload}\nOnly alice can answer.\n/app host accept`, choices: [{ id: "decline", label: "Decline", reply: "deny" }] } }, { width: 100, height: 26 })
       await harness.renderOnce()
       const frame = harness.captureCharFrame()
@@ -166,6 +219,35 @@ test("App clipboard and link offers show the payload, explicit typed acceptance 
       assert.match(frame, /Decline/)
       assert.doesNotMatch(frame, /› Decline/)
     }
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 A07: trusted TUI renders the exact safe diff and masked entry", async () => {
+  const harness = await createTestRenderer({ width: 110, height: 42, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(harness.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  const handoff = { kind: "secret" as const, reason: "owner_authorization" as const,
+    agent_id: "agent", task_id: "task", obligation_id: "o",
+    explanation: "Enter the missing password", target: {tab_id: "tab", generation: 1,
+      document_id: "doc", node_ref: "backend:1", origin: "https://github.com", path: "/login", label: "Password"},
+    change: [{op: "keep" as const, text: "tcp 22 remains"}, {op: "add" as const, text: "tcp 443 from any"}],
+    expires_at_ms: Date.now() + 60000, save_to_vault_offered: true }
+  try {
+    surface.render({ ...view, open: true, choices: [{id: "cancel", label: "Cancel", reply: "cancel"}],
+      interaction: {id: "handoff-o", kernel_operation_id: "handoff-o", kind: "permission", level: "warning", requested_at_ms: 1, title: "Protected step", message: "Owner input required", handoff,
+        choices: [{id: "cancel", label: "Cancel", reply: "cancel"}]},
+      handoffEntry: {kind: "secret", length: 8, saveToVault: false, saveOffered: true},
+    }, { width: 110, height: 42 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /https:\/\/github.com\/login/)
+    assert.match(frame, /tcp 22 remains/)
+    assert.match(frame, /\+ tcp 443 from any/)
+    assert.match(frame, /\/cloud open/)
+    assert.match(frame, /[•*]{8}/)
+    assert.doesNotMatch(frame, /secret-value/)
   } finally { harness.renderer.destroy() }
 })
 
@@ -231,6 +313,7 @@ test("OpenTUI Ctrl+G terminal bytes open approvals and preserve focused draft", 
   const prompt = new TextareaRenderable(h.renderer, { initialValue: "draft kept" })
   h.renderer.root.add(prompt)
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => ({ id: "session", agents: [], active_interactions: [view.interaction!] }) as unknown as RuntimeSession,
     connected: () => true, onView() {}, scroll() {},
     onOpen: () => prompt.blur(), onClose: () => prompt.focus(),
@@ -291,4 +374,24 @@ test("shared approval command opener handles waiting room, empty session and pen
     assert.equal(prompt.focused, false)
     assert.equal(prompt.plainText, "draft kept")
   } finally { dispose(); h.renderer.destroy() }
+})
+
+
+test("MP-08 / MP-10 / MP-11 general interaction panel renders structured requester metadata", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createKernelApprovalRenderer(h.renderer, { show() {}, choose() {} })
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: true, interaction: { ...view.interaction!,
+      message: "Requester: forged display label",
+      requester: { executable: "/opt/outside\nagent", pid: 43, process_start_id: "9876543210123456789", process_exec_version: 0 },
+    } }, { width: 100, height: 40 })
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Requester: External program · PID 43/)
+    assert.ok(frame.includes('Executable: "/opt/outside\\nagent"'))
+    assert.match(frame, /Process start: 9876543210123456789/)
+  } finally { h.renderer.destroy() }
 })

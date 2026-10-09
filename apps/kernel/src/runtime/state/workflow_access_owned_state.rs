@@ -111,6 +111,18 @@ impl KernelRuntimeOwnedState {
                     ));
                 }
             }
+            // Recheck persisted definitions too: restored workflows may predate
+            // the binding fence. Do this before enqueue or provider preflight.
+            if let LocalDaemonRequest::InvokeWorkflowEndpoint(r) = request {
+                let workflow = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
+                for node in workflow.nodes() {
+                    let target = self.agent_store.get_agent(node.agent_id())?;
+                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                }
+            }
             if matches!(
                 request,
                 LocalDaemonRequest::ListWorkflowRuns(_)
@@ -122,6 +134,15 @@ impl KernelRuntimeOwnedState {
             }
         }
         match request {
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_) => {
+                Err(DaemonError::LocalTransport {
+                    operation: "workflow.notifications",
+                    message: "workflow notifications require the owning user's command".into(),
+                })
+            }
             LocalDaemonRequest::CreateWorkflow(_) | LocalDaemonRequest::ListWorkflows(_) => Ok(()),
             // A generated workflow belongs to a person's own agent.
             LocalDaemonRequest::CreateAgentWorkflow(_) => Err(DaemonError::LocalTransport {
@@ -386,6 +407,28 @@ impl KernelRuntimeOwnedState {
             workflow.controlled_by_metaagent_id() == Some(metaagent_id)
         };
         if admitted {
+            if self.config_projection.snapshot().room_agent_tools
+                && operation == "resume workflow run"
+            {
+                let actor = self.agent_store.get_agent(metaagent_id)?;
+                // A saved run can retain old bindings; its remaining graph can
+                // also contain nodes it has not reached yet.
+                let targets = workflow
+                    .nodes()
+                    .iter()
+                    .map(|node| node.agent_id())
+                    .chain(workflow_run.node_runs().iter().map(|node| node.agent_id()))
+                    .chain(
+                        workflow_run
+                            .runtime_agent_ids_by_node()
+                            .values()
+                            .map(String::as_str),
+                    );
+                for target_id in targets {
+                    let target = self.agent_store.get_agent(target_id)?;
+                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                }
+            }
             Ok(())
         } else {
             Err(DaemonError::LocalTransport {

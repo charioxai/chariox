@@ -156,6 +156,10 @@ impl SessionService {
         Ok(workflow_run.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_workflow_turn operation signature and explicit context arguments"
+    )]
     pub fn prepare_workflow_turn(
         &mut self,
         session_id: &str,
@@ -552,6 +556,10 @@ impl SessionService {
         Ok(workflow_run.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_workflow_run_output_submission operation signature and explicit context arguments"
+    )]
     fn submit_workflow_run_output_submission(
         &mut self,
         session_id: &str,

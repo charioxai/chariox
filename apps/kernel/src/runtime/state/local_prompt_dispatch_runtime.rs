@@ -75,7 +75,7 @@ fn current_starting_workflow_provider_run(
 }
 
 impl KernelRuntimeOwnedState {
-    fn prompt_dispatch_matches_active_prompt(
+    pub(super) fn prompt_dispatch_matches_active_prompt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<bool, DaemonError> {
@@ -134,8 +134,1385 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+impl KernelRuntimeState {
+    pub(super) async fn enqueue_prompt_dispatch(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<bool, DaemonError> {
+        {
+            let owned = &self.owned;
+            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                return Ok(false);
+            }
+            let has_managed_process = owned
+                .provider_process_tracking
+                .read()
+                .run_processes
+                .contains_key(&dispatch.provider_run_id);
+            if has_managed_process {
+                let recipients = owned
+                    .attachment_store
+                    .list_session_attachment_ids(&dispatch.session_id);
+                let _ = self
+                    .pump_owned_provider_output(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        recipients,
+                        false,
+                    )
+                    .await?;
+                if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                    return Ok(false);
+                }
+            }
+            let result = self
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+                .await;
+            if result.as_ref().is_ok_and(|accepted| *accepted) {
+                owned.update_metaagent_event_prompt_delivery_for_prompt(
+                    &dispatch.prompt_id,
+                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
+                    None,
+                );
+            }
+            self.record_agent_event_dispatch_result(dispatch, &result)?;
+            result
+        }
+    }
+
+    /// A substitute run serves only the turn it reruns. A later turn bound to
+    /// it moves to a fresh run of the agent's configured profile.
+    async fn dispatch_off_finished_turn_substitute(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        if dispatch.steering {
+            return Ok(None);
+        }
+        let Ok(run) = self.owned.provider_store.get_run(&dispatch.provider_run_id) else {
+            return Ok(None);
+        };
+        if run
+            .turn_substitute()
+            .is_none_or(|turn| turn.prompt_id == dispatch.prompt_id)
+        {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        else {
+            return Ok(None);
+        };
+        self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
+            .await;
+        let provider_run_id = self
+            .with_app_side_effect(|app| {
+                if prompt.workflow_run_id().is_some() {
+                    crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
+                        app,
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &prompt,
+                    )
+                } else {
+                    app.ensure_prompt_provider_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
+                }
+            })
+            .await?;
+        Ok(Some(crate::app::KernelPromptDispatch {
+            provider_run_id,
+            ..dispatch.clone()
+        }))
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_after_liveness(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        owned: &KernelRuntimeOwnedState,
+    ) -> Result<(), DaemonError> {
+        self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+        owned: &KernelRuntimeOwnedState,
+    ) -> Result<bool, DaemonError> {
+        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+            return Ok(false);
+        }
+        if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
+            return Box::pin(
+                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
+            )
+            .await;
+        }
+        if !dispatch.steering {
+            let provider_run = owned
+                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+            owned.mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(dispatch.provider_run_id.clone()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
+        }
+        let internal_recovery =
+            is_internal_recovery_prompt_attachment(&dispatch.source_attachment_id);
+        let provider_run = owned
+            .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: dispatch.provider_run_id.clone(),
+                state: provider_run.state(),
+                operation: "submit prompt",
+            });
+        }
+        let mut hidden_system_context = owned.hidden_context_with_failed_requests(
+            &dispatch.agent_id,
+            &dispatch.hidden_system_context,
+        );
+        if owned.config_projection.snapshot().room_agent_tools {
+            if !dispatch.steering {
+                owned.durable_state_store.agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::Begin {
+                        owner: owned
+                            .session_store
+                            .get_session(&dispatch.session_id)?
+                            .owner_user_id()
+                            .into(),
+                        room: dispatch.session_id.clone(),
+                        agent: dispatch.agent_id.clone(),
+                        prompt: dispatch.prompt_id.clone(),
+                        run: Some(dispatch.provider_run_id.clone()),
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?;
+            }
+            if let Some(task) = owned
+                .durable_state_store
+                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
+                .into_iter()
+                .find(|t| t.prompt_id == dispatch.prompt_id)
+            {
+                hidden_system_context = join_hidden_context(&hidden_system_context, &format!("<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>", task.task_id, dispatch.prompt_id));
+            }
+        }
+        if owned
+            .provider_store
+            .run_uses_structured_prompt_io(&provider_run)
+        {
+            if !internal_recovery {
+                self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
+                    .await;
+            }
+            if !dispatch.steering {
+                owned.note_prompt_started(&dispatch.provider_run_id);
+            }
+            let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.source_attachment_id,
+                &provider_run,
+                &dispatch.prompt,
+            );
+            let granted_skill_context = owned.granted_skill_hidden_context(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &prompt_with_handoff,
+            )?;
+            let hidden_system_context =
+                join_hidden_context(&hidden_system_context, &granted_skill_context);
+            let (source_client_id, _source_user_id) =
+                owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
+            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
+                &dispatch.agent_id,
+                owned
+                    .agent_store
+                    .get_agent(&dispatch.agent_id)?
+                    .is_metaagent(),
+                source_client_id.as_deref(),
+                &hidden_system_context,
+            );
+            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                return Ok(false);
+            }
+            owned.bind_agent_event_submission(dispatch)?;
+            let result = owned.provider_store.enqueue_structured_prompt_submit(
+                dispatch.session_id.clone(),
+                dispatch.provider_run_id.clone(),
+                dispatch.agent_id.clone(),
+                dispatch.prompt_id.clone(),
+                dispatch
+                    .target_active_prompt_id
+                    .as_deref()
+                    .unwrap_or(&dispatch.prompt_id),
+                &provider_run,
+                &prompt_with_handoff,
+                &hidden_system_context,
+                &dispatch.attachments,
+                mode,
+                dispatch.steering,
+            );
+            return result.map(|()| true);
+        }
+        if !internal_recovery
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(
+                &dispatch.source_attachment_id,
+            )
+        {
+            match owned
+                .attachment_store
+                .get_attachment(&dispatch.source_attachment_id)
+            {
+                Ok(attachment) if attachment.session_id() != dispatch.session_id => {
+                    return Err(DaemonError::AttachmentNotInSession {
+                        session_id: dispatch.session_id.clone(),
+                        attachment_id: dispatch.source_attachment_id.clone(),
+                    });
+                }
+                Ok(_) | Err(DaemonError::AttachmentNotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.source_attachment_id,
+            &provider_run,
+            &dispatch.prompt,
+        );
+        let prompt_with_hidden_context =
+            join_hidden_context(&hidden_system_context, &prompt_with_handoff);
+        let provider_prompt = owned.apply_granted_skill_summary(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &prompt_with_hidden_context,
+        )?;
+        let uses_claude_native_bridge =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
+        let provider_pty_input =
+            crate::app::terminal_input::provider_prompt_input(&provider_prompt);
+        if !internal_recovery {
+            self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
+                .await;
+            owned.terminal_stream.record_input(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.source_attachment_id,
+                if uses_claude_native_bridge {
+                    provider_prompt.as_bytes()
+                } else {
+                    &provider_pty_input
+                },
+            );
+        }
+        let mut has_managed_process = owned
+            .provider_process_tracking
+            .read()
+            .run_processes
+            .contains_key(&dispatch.provider_run_id);
+        if crate::provider::provider_run_is_claude_headless(&provider_run) && !has_managed_process {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10_000);
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                has_managed_process = owned
+                    .provider_process_tracking
+                    .read()
+                    .run_processes
+                    .contains_key(&dispatch.provider_run_id);
+                if has_managed_process {
+                    break;
+                }
+            }
+            if !has_managed_process {
+                return Err(DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: format!(
+                        "provider process for `{}` was not ready",
+                        dispatch.provider_run_id
+                    ),
+                });
+            }
+        }
+        if !has_managed_process {
+            if dispatch.steering {
+                return Ok(false);
+            }
+            if !dispatch.steering {
+                let session = owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(_settlement_claim) = owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Ok(false);
+                };
+                owned.note_prompt_started(&dispatch.provider_run_id);
+                owned.mark_active_prompt_delivery(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(dispatch.provider_run_id.clone()),
+                    provider_run.provider_session_id().map(str::to_string),
+                )?;
+                owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
+            }
+            owned.bind_agent_event_submission(dispatch)?;
+            return Ok(true);
+        }
+        if uses_claude_native_bridge {
+            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
+                session_id: dispatch.session_id.clone(),
+                provider_run_id: dispatch.provider_run_id.clone(),
+                agent_id: dispatch.agent_id.clone(),
+                prompt_id: dispatch.prompt_id.clone(),
+                target_active_prompt_id: dispatch.target_active_prompt_id.clone(),
+                source_attachment_id: dispatch.source_attachment_id.clone(),
+                prompt: dispatch.prompt.clone(),
+                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &provider_run,
+                    &hidden_system_context,
+                ),
+                attachments: dispatch.attachments.clone(),
+                prompt_origin: dispatch.prompt_origin,
+                external_provider: dispatch.external_provider.clone(),
+                external_provider_session_id: dispatch.external_provider_session_id.clone(),
+                external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
+                steering: dispatch.steering,
+            };
+            let provider_run = provider_run.clone();
+            // Claude-headless confirms injection asynchronously via the
+            // context-file marker; retry with the app lock released between
+            // attempts so a slow provider cannot stall the whole daemon.
+            // Claude's first interactive composer can take longer than the
+            // normal warm-start path while it restores local state. Keep the
+            // dispatch pending until UserPromptSubmit proves the provider
+            // accepted it; the retry loop releases the app lock between
+            // attempts, so this grace period does not block other sessions.
+            let deadline = tokio::time::Instant::now() + CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT;
+            loop {
+                let attempt = self
+                    .with_app_side_effect(|app| {
+                        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "dispatch prompt",
+                                message: "prompt changed before native dispatch".into(),
+                            });
+                        }
+                        owned.bind_agent_event_submission(dispatch)?;
+                        app.process_claude_native_prompt_dispatch_attempt_for_runtime(
+                            &dispatch.session_id,
+                            &dispatch.provider_run_id,
+                            &provider_run,
+                            &dispatch_with_handoff,
+                        )
+                    })
+                    .await?;
+                match attempt {
+                    crate::app::ClaudeNativeDispatchAttempt::Completed => break,
+                    crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        if let Some(message) =
+                            claude_native_dispatch_terminal_failure(&provider_run)
+                        {
+                            return Err(DaemonError::ProviderProtocol {
+                                provider_run_id: dispatch.provider_run_id.clone(),
+                                operation: "submit Claude headless prompt",
+                                message,
+                            });
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(DaemonError::LocalTransport {
+                                operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+                                message: format!(
+                                    "provider `{}` did not acknowledge prompt `{}` after PTY injection",
+                                    dispatch.provider_run_id, dispatch.prompt_id
+                                ),
+                            });
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            // Claude's hook acknowledgement consumes the failure note. PTY
+            // injection alone does not prove the provider accepted its context.
+            owned.consume_pending_context_handoff(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &provider_run,
+            );
+            if !dispatch.steering {
+                let session = owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(_settlement_claim) = owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Ok(false);
+                };
+                owned.note_prompt_started(&dispatch.provider_run_id);
+                owned.mark_active_prompt_delivery(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(dispatch.provider_run_id.clone()),
+                    provider_run.provider_session_id().map(str::to_string),
+                )?;
+            }
+            return Ok(true);
+        }
+        let provider_run_id = dispatch.provider_run_id.clone();
+        let writer = self
+            .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&provider_run_id))
+            .await?;
+        let provider_run_id = dispatch.provider_run_id.clone();
+        let owned_for_write = owned.clone();
+        let dispatch_for_write = dispatch.clone();
+        let write_task = tokio::task::spawn_blocking(move || {
+            if !owned_for_write.ensure_prompt_dispatch_matches_active_prompt(&dispatch_for_write)? {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch prompt",
+                    message: "prompt changed before PTY dispatch".into(),
+                });
+            }
+            owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
+            writer.write_input(&provider_pty_input)
+        });
+        match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
+            Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
+                operation: "write provider PTY input",
+                message: error.to_string(),
+            })??,
+            Err(_) => {
+                return Err(DaemonError::PtyWrite {
+                    provider_run_id,
+                    message: "timed out after 15 seconds of provider backpressure".to_string(),
+                });
+            }
+        }
+        owned.consume_delivered_turn_context(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            &provider_run,
+        );
+        if !dispatch.steering {
+            let session = owned.session_store.get_session(&dispatch.session_id)?;
+            let Some(_settlement_claim) = owned
+                .prompt_state_owner
+                .try_claim_active_prompt_delivery_settlement(
+                    &session,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                )
+            else {
+                return Ok(false);
+            };
+            owned.note_prompt_started(&dispatch.provider_run_id);
+            owned.mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(dispatch.provider_run_id.clone()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
+        }
+        Ok(true)
+    }
+
+    pub(super) async fn fail_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        let mut next_dispatch = None;
+        let dispatch_owns_active_prompt = self
+            .owned
+            .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt {
+            let run = self
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)?;
+            if self
+                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        let failed_provider_run = dispatch_owns_active_prompt
+            .then(|| {
+                self.owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .ok()
+            })
+            .flatten()
+            .filter(|run| {
+                claude_headless_dispatch_failure_requires_provider_retirement(run, &error)
+            });
+        let retire_failed_provider = failed_provider_run.is_some();
+        let mut _delivery_settlement_claim = None;
+        if retire_failed_provider {
+            if let Some(provider_run) = failed_provider_run
+                .as_ref()
+                .filter(|_| claude_headless_dispatch_failure_invalidates_resume(&error))
+            {
+                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(settlement_claim) = self
+                    .owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Err(error);
+                };
+                let Some(active_prompt) = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &dispatch.agent_id)
+                else {
+                    return Err(error);
+                };
+                let Some(expected_provider_session_id) = active_prompt
+                    .durable_delivery_provider_session_id()
+                    .map(str::to_string)
+                else {
+                    return Err(error);
+                };
+                let dispatching_status = active_prompt.status();
+                if self
+                    .owned
+                    .compare_and_mark_active_prompt_delivery_failure(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                        &expected_provider_session_id,
+                        (dispatching_status, crate::session::PromptStatus::Cancelling),
+                    )?
+                    .is_none()
+                {
+                    return Err(error);
+                }
+                match self.clear_unresponsive_provider_resume_state(
+                    provider_run,
+                    &expected_provider_session_id,
+                ) {
+                    Ok(
+                        crate::agent::ProviderResumeClearOutcome::Cleared
+                        | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
+                    ) => {}
+                    Ok(crate::agent::ProviderResumeClearOutcome::Superseded {
+                        current_provider_session_id,
+                    }) => {
+                        self.owned.restore_active_prompt_after_resume_superseded(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            &dispatch.prompt_id,
+                            &dispatch.provider_run_id,
+                            &expected_provider_session_id,
+                            &current_provider_session_id,
+                        )?;
+                        return Err(error);
+                    }
+                    Err(clear_error) => return Err(clear_error),
+                }
+                _delivery_settlement_claim = Some(settlement_claim);
+            }
+            if let Ok(outcome) = self
+                .owned
+                .provider_store
+                .terminate_run_provider_only(&dispatch.session_id, &dispatch.provider_run_id)
+            {
+                let _ = self.owned.clear_active_provider_run_session_pointer(
+                    &dispatch.session_id,
+                    outcome.run().id(),
+                );
+                self.owned
+                    .provider_run_projection
+                    .update(outcome.into_run());
+            }
+            let provider_run_id = dispatch.provider_run_id.clone();
+            let (_, process_key) = self
+                .with_app_side_effect(move |app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&dispatch.provider_run_id, process_key);
+        }
+        let mut restart_provider_for_queued_prompt = false;
+        {
+            let owned = &self.owned;
+            owned.update_metaagent_event_prompt_delivery_for_prompt(
+                &dispatch.prompt_id,
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
+                Some(error.to_string()),
+            );
+            let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
+                &owned.session_store.get_session(&dispatch.session_id)?,
+                &dispatch.agent_id,
+            );
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|prompt| prompt.id() == dispatch.prompt_id)
+            {
+                let _ = self.inject_metaagent_turn_failure_event(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    Some(&dispatch.provider_run_id),
+                    &error.to_string(),
+                );
+            }
+            // A dispatch completion can arrive after the prompt has already been
+            // settled and the next queued prompt has become active.  Only the
+            // exact dispatch prompt may be failed or cancelled; treating any
+            // active prompt as a match lets a stale provider error cancel the
+            // replacement prompt and strand the queue.
+            let failed_prompt_matches = failed_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
+            let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
+            if failed_prompt_matches {
+                owned.record_provider_failure_output(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.agent_id,
+                    &dispatch_failure,
+                );
+            }
+            let (should_advance, released_claim) = match owned
+                .settle_failed_local_prompt_without_advance(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                    &dispatch_failure,
+                ) {
+                Ok(Some(released_claim)) => (true, released_claim),
+                Ok(None) => (false, false),
+                Err(settlement_error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_delivery",
+                        "failed to settle prompt after dispatch failure",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "provider_run_id": dispatch.provider_run_id,
+                            "error": settlement_error.to_string(),
+                        }),
+                    );
+                    let cancelled = failed_prompt_matches
+                        && owned
+                            .cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id)
+                            .is_ok();
+                    let released_claim = if cancelled {
+                        owned.clear_prompt_activity(&dispatch.provider_run_id)
+                    } else {
+                        false
+                    };
+                    (cancelled, released_claim)
+                }
+            };
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|_| should_advance && failed_prompt_matches)
+            {
+                let adapter_key = owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .map(|run| run.adapter_key().to_string())
+                    .unwrap_or_default();
+                owned.record_failed_request(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &adapter_key,
+                    &dispatch.agent_id,
+                    failed_prompt,
+                    &dispatch_failure,
+                );
+            }
+            if should_advance && retire_failed_provider {
+                restart_provider_for_queued_prompt = owned
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(
+                        &owned.session_store.get_session(&dispatch.session_id)?,
+                        &dispatch.agent_id,
+                    )
+                    .is_some();
+            } else if should_advance {
+                match owned.advance_next_queued_prompt_dispatch(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.provider_run_id,
+                ) {
+                    Ok(dispatch) => next_dispatch = dispatch,
+                    Err(advance_error) => {
+                        let recipients = owned
+                            .attachment_store
+                            .list_session_attachment_ids(&dispatch.session_id);
+                        owned.record_notice(
+                            &dispatch.session_id,
+                            Some(&dispatch.provider_run_id),
+                            recipients,
+                            format!(
+                                "Queued prompt remained pending after dispatch failure: {advance_error}"
+                            ),
+                        );
+                    }
+                }
+            }
+            let _ = owned.session_snapshot(&dispatch.session_id);
+            let recipients = owned
+                .attachment_store
+                .list_session_attachment_ids(&dispatch.session_id);
+            owned.record_notice(
+                &dispatch.session_id,
+                Some(&dispatch.provider_run_id),
+                recipients,
+                format!("Prompt dispatch failed after acknowledgement: {error}"),
+            );
+            if released_claim {
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
+        }
+        if let Some(next_dispatch) = next_dispatch {
+            self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
+        }
+        if restart_provider_for_queued_prompt {
+            let session_id = dispatch.session_id.clone();
+            let agent_id = dispatch.agent_id.clone();
+            let replacement_provider_run_id = self
+                .with_app_side_effect(move |app| {
+                    app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
+                })
+                .await?;
+            if let Some(replacement_dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &replacement_provider_run_id,
+            )? {
+                self.spawn_prompt_dispatch(
+                    replacement_dispatch,
+                    self.provider_runtime_lanes.clone(),
+                );
+            }
+        }
+        Err(error)
+    }
+
+    pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        if self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            // Accepted prompts and their entry receipts remain for authoritative
+            // restart. A failed writer cannot authorize new provider dispatch.
+            return;
+        }
+        for (session_id, agent_id) in dispatches.project_queue_promotions {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state
+                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
+                    .await;
+            });
+        }
+        for task in dispatches.starting_metaagent_tasks {
+            let state = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = state.start_queued_metaagent_task(task.clone()).await {
+                    let session_id = state
+                        .owned
+                        .agent_store
+                        .get_agent(task.metaagent_id())
+                        .map(|agent| agent.session_id().to_string())
+                        .unwrap_or_default();
+                    if !session_id.is_empty() {
+                        let mut sessions = state.owned.session_store.write();
+                        let _ = sessions.block_metaagent_task(
+                            &session_id,
+                            task.metaagent_id(),
+                            format!("queued Meta task failed to start: {error}"),
+                        );
+                        let _ = sessions.requeue_metaagent_task_front(&session_id, task.clone());
+                        drop(sessions);
+                        let _ = state.owned.persist_workflow_runtime_session(
+                            &session_id,
+                            "metaagent_task_start_failed",
+                        );
+                    }
+                    state.owned.record_notice(
+                        &session_id,
+                        None,
+                        state
+                            .owned
+                            .attachment_store
+                            .list_session_attachment_ids(&session_id),
+                        format!("Queued Meta task `{}` failed to start: {error}", task.id()),
+                    );
+                }
+            });
+        }
+        let mut provider_run_retirements = dispatches.provider_run_retirements;
+        for provider_run_id in dispatches.starting_provider_runs {
+            let retired_provider_run_ids = provider_run_retirements
+                .remove(&provider_run_id)
+                .unwrap_or_default();
+            if retired_provider_run_ids.is_empty() {
+                self.spawn_detached_workflow_provider_launch(provider_run_id);
+            } else {
+                self.spawn_detached_workflow_provider_launch_after_retiring(
+                    provider_run_id,
+                    retired_provider_run_ids,
+                );
+            }
+        }
+        for retired_provider_run_ids in provider_run_retirements.into_values() {
+            self.spawn_retired_workflow_provider_cleanup(retired_provider_run_ids);
+        }
+        for dispatch in dispatches.local {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        for dispatch in dispatches.remote {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+    }
+
+    async fn start_queued_metaagent_task(
+        &self,
+        task: crate::session::QueuedMetaagentTask,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(task.metaagent_id())?;
+        let session_id = agent.session_id().to_string();
+        self.activate_meta_mode_for_prompt(&session_id, agent.id(), task.task_markdown())
+            .await?;
+        let task_attachment_id = self.ensure_metaagent_task_attachment(&session_id, &agent)?;
+        let prompt = crate::session::PromptQueueItem::new(
+            format!("pending-draft:{}", task.id()),
+            task_attachment_id,
+            agent.id(),
+            task.task_markdown(),
+            crate::session::PromptStatus::Queued,
+        )
+        .with_hidden_system_context(Self::meta_mode_entered_hidden_context()?)
+        .with_attachments(task.attachments().to_vec());
+        let mut submission = self
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await?;
+        if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
+            (&submission.outcome, submission.dispatch.as_ref())
+        {
+            self.start_active_turn_with_trace_id(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                prompt.id(),
+                &dispatch.provider_run_id,
+                task.id(),
+            );
+        }
+        if let Some(dispatch) = submission.dispatch.take() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        if let Some(dispatch) = submission.remote_dispatch.take() {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+        if let Err(error) = self
+            .owned
+            .persist_workflow_runtime_session(&session_id, "metaagent_task_started")
+        {
+            self.owned.record_notice(
+                &session_id,
+                None,
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(&session_id),
+                format!(
+                    "Meta task started, but its session snapshot could not be persisted: {error}"
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
+        self.spawn_detached_workflow_provider_launch_after_retiring(provider_run_id, Vec::new());
+    }
+
+    fn spawn_retired_workflow_provider_cleanup(&self, retired_provider_run_ids: Vec<String>) {
+        if retired_provider_run_ids.is_empty() {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    fn spawn_detached_workflow_provider_launch_after_retiring(
+        &self,
+        provider_run_id: String,
+        retired_provider_run_ids: Vec<String>,
+    ) {
+        let claim = {
+            let mut claims = self
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !claims.insert(provider_run_id.clone()) {
+                return;
+            }
+            DetachedWorkflowProviderLaunchClaim {
+                provider_run_id: provider_run_id.clone(),
+                claims: Arc::clone(&self.detached_workflow_provider_launches),
+            }
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _claim = claim;
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            let mut provider_credential_env = state
+                .owned
+                .take_pending_provider_launch_credentials(&provider_run_id);
+            let run = match current_starting_workflow_provider_run(
+                &state.owned.provider_store,
+                &provider_run_id,
+            ) {
+                Some(run) => run,
+                None => return,
+            };
+            let resolved_provider_credentials = if provider_credential_env.is_empty() {
+                Some(
+                    state
+                        .resolve_provider_account_credentials_for_run_with_vault(
+                            &run,
+                            "launch workflow provider run",
+                        )
+                        .await,
+                )
+            } else {
+                None
+            };
+            let run = match current_starting_workflow_provider_run(
+                &state.owned.provider_store,
+                &provider_run_id,
+            ) {
+                Some(run) => run,
+                None => return,
+            };
+            if let Some(resolved_provider_credentials) = resolved_provider_credentials {
+                match resolved_provider_credentials {
+                    Ok(credentials) => provider_credential_env = credentials,
+                    Err(error) => {
+                        let started = crate::app::StartedProviderLaunch {
+                            run,
+                            previous_active_run_id: None,
+                            provider_credential_env,
+                        };
+                        state.fail_provider_launch(&started, &error).await;
+                        return;
+                    }
+                }
+            }
+            let started = crate::app::StartedProviderLaunch {
+                run: run.clone(),
+                previous_active_run_id: None,
+                provider_credential_env,
+            };
+            let spawn_result = state
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
+                })
+                .await;
+            if let Err(error) = spawn_result {
+                state.fail_provider_launch(&started, &error).await;
+                return;
+            }
+            state.owned.provider_run_projection.update(run.clone());
+            let runtime_init_delay_ms = state
+                .owned
+                .config_projection
+                .snapshot()
+                .provider_runtime_init_delay_ms;
+            if runtime_init_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
+            }
+            let initialization_permit =
+                state.provider_runtime_lanes.acquire(&provider_run_id).await;
+            if current_starting_workflow_provider_run(&state.owned.provider_store, &provider_run_id)
+                .is_none_or(|current| current.started_at_ms() != started.run.started_at_ms())
+            {
+                drop(initialization_permit);
+                let cleanup_id = provider_run_id.clone();
+                let _ = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&cleanup_id)
+                    })
+                    .await;
+                return;
+            }
+            let provider_credential_env = started.provider_credential_env.clone();
+            let binding = tokio::task::spawn_blocking(move || {
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize workflow provider runtime",
+                message: error.to_string(),
+            });
+            drop(initialization_permit);
+            match binding {
+                Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
+                Ok(Err(error)) | Err(error) => {
+                    state.fail_provider_launch(&started, &error).await;
+                }
+            }
+        });
+    }
+
+    pub(super) async fn enqueue_prompt_abort(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) -> Result<(), DaemonError> {
+        {
+            let owned = &self.owned;
+            self.reap_structured_prompt_jobs_and_dispatch();
+            self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
+                .await?;
+            let provider_run = owned
+                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+            if provider_run.state() != crate::provider::ProviderRunState::Running {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id: dispatch.provider_run_id.clone(),
+                    state: provider_run.state(),
+                    operation: "submit prompt",
+                });
+            }
+            if owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run)
+            {
+                return owned.provider_store.enqueue_structured_prompt_abort(
+                    dispatch.session_id.clone(),
+                    dispatch.provider_run_id.clone(),
+                );
+            }
+            owned.terminal_stream.record_input(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.source_attachment_id,
+                b"\x03",
+            );
+            self.with_app_side_effect(|app| {
+                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
+            })
+            .await?;
+            Ok(())
+        }
+    }
+
+    pub(super) async fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
+        {
+            let owned = &self.owned;
+            owned
+                .provider_store
+                .structured_prompt_io_in_flight(provider_run_id)
+        }
+    }
+
+    pub(super) async fn fail_prompt_abort(
+        &self,
+        dispatch: crate::app::KernelPromptAbortDispatch,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        {
+            let owned = &self.owned;
+            let recipients = owned
+                .attachment_store
+                .list_session_attachment_ids(&dispatch.session_id);
+            owned.record_notice(
+                &dispatch.session_id,
+                Some(&dispatch.provider_run_id),
+                recipients,
+                format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
+            );
+            Err(error)
+        }
+    }
+
+    /// Reaps finished structured prompt jobs through the shared follow-up dispatcher.
+    pub(super) fn reap_structured_prompt_jobs_and_dispatch(&self) {
+        self.spawn_workflow_prompt_dispatches(self.owned.reap_structured_prompt_jobs());
+    }
+
+    pub(crate) fn spawn_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            }
+        });
+    }
+
+    pub(crate) fn spawn_queued_prompt_steer_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                let recipients = state
+                    .owned
+                    .attachment_store
+                    .list_session_attachment_ids(&dispatch.session_id);
+                state.owned.record_notice(
+                    &dispatch.session_id,
+                    Some(&dispatch.provider_run_id),
+                    recipients,
+                    format!("Queued prompt steer dispatch failed: {error}"),
+                );
+            }
+        });
+    }
+
+    pub(crate) fn spawn_prompt_abort(
+        &self,
+        dispatch: crate::app::KernelPromptAbortDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            let structured = state
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| {
+                    state
+                        .owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                });
+            loop {
+                let completion_signal =
+                    structured.then(|| state.owned.provider_store.run_actor_completion_signal());
+                let mut completion_sequence = completion_signal
+                    .as_ref()
+                    .map(|signal| signal.sequence())
+                    .unwrap_or_default();
+                let outcome = match state.enqueue_prompt_abort(&dispatch).await {
+                    Ok(()) if !structured => {
+                        if let Ok(provider_run) = state
+                            .owned
+                            .provider_store
+                            .get_run(&dispatch.provider_run_id)
+                        {
+                            if let Some(agent_id) = provider_run.agent_instance_id() {
+                                if let Ok(session) =
+                                    state.owned.session_store.get_session(&dispatch.session_id)
+                                {
+                                    if let Some(prompt) = state
+                                        .owned
+                                        .prompt_state_owner
+                                        .active_prompt_for_agent(&session, agent_id)
+                                    {
+                                        let _ = state
+                                            .owned
+                                            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+                                    }
+                                }
+                                let _ = state
+                                    .owned
+                                    .finalize_local_prompt_cancellation_with_queued_advance(
+                                        &dispatch.session_id,
+                                        agent_id,
+                                        Some(&dispatch.provider_run_id),
+                                    );
+                            }
+                        }
+                        PromptAbortDispatchOutcome::Done
+                    }
+                    Ok(()) => loop {
+                        let completion_signal = completion_signal
+                            .as_ref()
+                            .expect("structured abort should have a completion signal");
+                        completion_signal
+                            .wait_for_change_after(completion_sequence)
+                            .await;
+                        completion_sequence = completion_signal.sequence();
+                        state.reap_structured_prompt_jobs_and_dispatch();
+                        let prompt_is_still_cancelling = state
+                            .owned
+                            .provider_store
+                            .get_run(&dispatch.provider_run_id)
+                            .ok()
+                            .and_then(|run| run.agent_instance_id().map(str::to_string))
+                            .and_then(|agent_id| {
+                                state
+                                    .owned
+                                    .session_store
+                                    .get_session(&dispatch.session_id)
+                                    .ok()
+                                    .and_then(|session| {
+                                        state
+                                            .owned
+                                            .prompt_state_owner
+                                            .active_prompt_for_agent(&session, &agent_id)
+                                    })
+                            })
+                            .is_some_and(|prompt| {
+                                prompt.status() == crate::session::PromptStatus::Cancelling
+                            });
+                        if !prompt_is_still_cancelling {
+                            state.spawn_workflow_prompt_dispatches(
+                                state.owned.workflow_retry_blocked_claims(),
+                            );
+                            let _ = state.owned.session_snapshot(&dispatch.session_id);
+                            break PromptAbortDispatchOutcome::Done;
+                        }
+                    },
+                    Err(_)
+                        if state
+                            .structured_prompt_io_in_flight(&dispatch.provider_run_id)
+                            .await =>
+                    {
+                        PromptAbortDispatchOutcome::Retry
+                    }
+                    Err(error) => {
+                        let _ = state.fail_prompt_abort(dispatch.clone(), error).await;
+                        PromptAbortDispatchOutcome::Done
+                    }
+                };
+                match outcome {
+                    PromptAbortDispatchOutcome::Done => break,
+                    PromptAbortDispatchOutcome::Retry => {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn join_hidden_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        (first, "") => first.to_string(),
+        ("", second) => second.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
+    }
+}
+
+use super::restart_recovery_runtime::is_internal_recovery_prompt_attachment;
+
+enum PromptAbortDispatchOutcome {
+    Done,
+    Retry,
+}
+
 #[cfg(test)]
-mod tests {
+pub(in crate::runtime::state) mod tests {
+    mod inbox_recovery;
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -1257,7 +2634,7 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt() -> (
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt() -> (
         crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
@@ -1585,6 +2962,10 @@ mod tests {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing dispatch operation signature and explicit context arguments"
+    )]
     fn dispatch(
         session_id: &str,
         agent_id: &str,
@@ -3422,1349 +4803,4 @@ mod tests {
     async fn mp11_retirement_during_init_delay_prevents_credential_binding() {
         mp11_retirement_launch_fixture(true).await;
     }
-}
-
-impl KernelRuntimeState {
-    pub(super) async fn enqueue_prompt_dispatch(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> Result<(), DaemonError> {
-        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
-            .await
-            .map(|_| ())
-    }
-
-    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> Result<bool, DaemonError> {
-        {
-            let owned = &self.owned;
-            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(false);
-            }
-            let has_managed_process = owned
-                .provider_process_tracking
-                .read()
-                .run_processes
-                .contains_key(&dispatch.provider_run_id);
-            if has_managed_process {
-                let recipients = owned
-                    .attachment_store
-                    .list_session_attachment_ids(&dispatch.session_id);
-                let _ = self
-                    .pump_owned_provider_output(
-                        &dispatch.session_id,
-                        &dispatch.provider_run_id,
-                        recipients,
-                        false,
-                    )
-                    .await?;
-                if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                    return Ok(false);
-                }
-            }
-            let result = self
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
-                .await;
-            if result.as_ref().is_ok_and(|accepted| *accepted) {
-                owned.update_metaagent_event_prompt_delivery_for_prompt(
-                    &dispatch.prompt_id,
-                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
-                    None,
-                );
-            }
-            result
-        }
-    }
-
-    /// A substitute run serves only the turn it reruns. A later turn bound to
-    /// it moves to a fresh run of the agent's configured profile.
-    async fn dispatch_off_finished_turn_substitute(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
-        if dispatch.steering {
-            return Ok(None);
-        }
-        let Ok(run) = self.owned.provider_store.get_run(&dispatch.provider_run_id) else {
-            return Ok(None);
-        };
-        if run
-            .turn_substitute()
-            .is_none_or(|turn| turn.prompt_id == dispatch.prompt_id)
-        {
-            return Ok(None);
-        }
-        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-        let Some(prompt) = self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &dispatch.agent_id)
-            .filter(|prompt| prompt.id() == dispatch.prompt_id)
-        else {
-            return Ok(None);
-        };
-        self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
-            .await;
-        let provider_run_id = self
-            .with_app_side_effect(|app| {
-                if prompt.workflow_run_id().is_some() {
-                    crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
-                        app,
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        &prompt,
-                    )
-                } else {
-                    app.ensure_prompt_provider_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
-                }
-            })
-            .await?;
-        Ok(Some(crate::app::KernelPromptDispatch {
-            provider_run_id,
-            ..dispatch.clone()
-        }))
-    }
-
-    pub(super) async fn enqueue_prompt_dispatch_after_liveness(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-        owned: &KernelRuntimeOwnedState,
-    ) -> Result<(), DaemonError> {
-        self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
-            .await
-            .map(|_| ())
-    }
-
-    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-        owned: &KernelRuntimeOwnedState,
-    ) -> Result<bool, DaemonError> {
-        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-            return Ok(false);
-        }
-        if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
-            return Box::pin(
-                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
-            )
-            .await;
-        }
-        if !dispatch.steering {
-            let provider_run = owned
-                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
-            owned.mark_active_prompt_delivery(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &dispatch.prompt_id,
-                crate::session::DurablePromptDeliveryPhase::Dispatching,
-                Some(dispatch.provider_run_id.clone()),
-                provider_run.provider_session_id().map(str::to_string),
-            )?;
-        }
-        let internal_recovery =
-            is_internal_recovery_prompt_attachment(&dispatch.source_attachment_id);
-        let provider_run = owned
-            .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
-        if provider_run.state() != crate::provider::ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: dispatch.provider_run_id.clone(),
-                state: provider_run.state(),
-                operation: "submit prompt",
-            });
-        }
-        let hidden_system_context = owned.hidden_context_with_failed_requests(
-            &dispatch.agent_id,
-            &dispatch.hidden_system_context,
-        );
-        if owned
-            .provider_store
-            .run_uses_structured_prompt_io(&provider_run)
-        {
-            if !internal_recovery {
-                self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
-                    .await;
-            }
-            if !dispatch.steering {
-                owned.note_prompt_started(&dispatch.provider_run_id);
-            }
-            let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &dispatch.source_attachment_id,
-                &provider_run,
-                &dispatch.prompt,
-            );
-            let granted_skill_context = owned.granted_skill_hidden_context(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &prompt_with_handoff,
-            )?;
-            let hidden_system_context =
-                join_hidden_context(&hidden_system_context, &granted_skill_context);
-            let (source_client_id, _source_user_id) =
-                owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
-            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
-                &dispatch.agent_id,
-                owned
-                    .agent_store
-                    .get_agent(&dispatch.agent_id)?
-                    .is_metaagent(),
-                source_client_id.as_deref(),
-                &hidden_system_context,
-            );
-            if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                return Ok(false);
-            }
-            let result = owned.provider_store.enqueue_structured_prompt_submit(
-                dispatch.session_id.clone(),
-                dispatch.provider_run_id.clone(),
-                dispatch.agent_id.clone(),
-                dispatch.prompt_id.clone(),
-                dispatch
-                    .target_active_prompt_id
-                    .as_deref()
-                    .unwrap_or(&dispatch.prompt_id),
-                &provider_run,
-                &prompt_with_handoff,
-                &hidden_system_context,
-                &dispatch.attachments,
-                mode,
-                dispatch.steering,
-            );
-            return result.map(|()| true);
-        }
-        if !internal_recovery
-            && !crate::scheduler::runtime::is_workflow_prompt_attachment(
-                &dispatch.source_attachment_id,
-            )
-        {
-            match owned
-                .attachment_store
-                .get_attachment(&dispatch.source_attachment_id)
-            {
-                Ok(attachment) if attachment.session_id() != dispatch.session_id => {
-                    return Err(DaemonError::AttachmentNotInSession {
-                        session_id: dispatch.session_id.clone(),
-                        attachment_id: dispatch.source_attachment_id.clone(),
-                    });
-                }
-                Ok(_) | Err(DaemonError::AttachmentNotFound { .. }) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &dispatch.source_attachment_id,
-            &provider_run,
-            &dispatch.prompt,
-        );
-        let prompt_with_hidden_context =
-            join_hidden_context(&hidden_system_context, &prompt_with_handoff);
-        let provider_prompt = owned.apply_granted_skill_summary(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_hidden_context,
-        )?;
-        let uses_claude_native_bridge =
-            crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
-        let provider_pty_input =
-            crate::app::terminal_input::provider_prompt_input(&provider_prompt);
-        if !internal_recovery {
-            self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
-                .await;
-            owned.terminal_stream.record_input(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                if uses_claude_native_bridge {
-                    provider_prompt.as_bytes()
-                } else {
-                    &provider_pty_input
-                },
-            );
-        }
-        let mut has_managed_process = owned
-            .provider_process_tracking
-            .read()
-            .run_processes
-            .contains_key(&dispatch.provider_run_id);
-        if crate::provider::provider_run_is_claude_headless(&provider_run) && !has_managed_process {
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10_000);
-            while tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                has_managed_process = owned
-                    .provider_process_tracking
-                    .read()
-                    .run_processes
-                    .contains_key(&dispatch.provider_run_id);
-                if has_managed_process {
-                    break;
-                }
-            }
-            if !has_managed_process {
-                return Err(DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
-                    message: format!(
-                        "provider process for `{}` was not ready",
-                        dispatch.provider_run_id
-                    ),
-                });
-            }
-        }
-        if !has_managed_process {
-            if dispatch.steering {
-                return Ok(false);
-            }
-            if !dispatch.steering {
-                let session = owned.session_store.get_session(&dispatch.session_id)?;
-                let Some(_settlement_claim) = owned
-                    .prompt_state_owner
-                    .try_claim_active_prompt_delivery_settlement(
-                        &session,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                    )
-                else {
-                    return Ok(false);
-                };
-                owned.note_prompt_started(&dispatch.provider_run_id);
-                owned.mark_active_prompt_delivery(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(dispatch.provider_run_id.clone()),
-                    provider_run.provider_session_id().map(str::to_string),
-                )?;
-                owned.consume_failed_requests(&dispatch.agent_id, &dispatch.prompt_id);
-            }
-            return Ok(true);
-        }
-        if uses_claude_native_bridge {
-            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
-                session_id: dispatch.session_id.clone(),
-                provider_run_id: dispatch.provider_run_id.clone(),
-                agent_id: dispatch.agent_id.clone(),
-                prompt_id: dispatch.prompt_id.clone(),
-                target_active_prompt_id: dispatch.target_active_prompt_id.clone(),
-                source_attachment_id: dispatch.source_attachment_id.clone(),
-                prompt: dispatch.prompt.clone(),
-                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &provider_run,
-                    &hidden_system_context,
-                ),
-                attachments: dispatch.attachments.clone(),
-                prompt_origin: dispatch.prompt_origin,
-                external_provider: dispatch.external_provider.clone(),
-                external_provider_session_id: dispatch.external_provider_session_id.clone(),
-                external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
-                steering: dispatch.steering,
-            };
-            let provider_run = provider_run.clone();
-            // Claude-headless confirms injection asynchronously via the
-            // context-file marker; retry with the app lock released between
-            // attempts so a slow provider cannot stall the whole daemon.
-            // Claude's first interactive composer can take longer than the
-            // normal warm-start path while it restores local state. Keep the
-            // dispatch pending until UserPromptSubmit proves the provider
-            // accepted it; the retry loop releases the app lock between
-            // attempts, so this grace period does not block other sessions.
-            let deadline = tokio::time::Instant::now() + CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT;
-            loop {
-                let attempt = self
-                    .with_app_side_effect(|app| {
-                        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "dispatch prompt",
-                                message: "prompt changed before native dispatch".into(),
-                            });
-                        }
-                        app.process_claude_native_prompt_dispatch_attempt_for_runtime(
-                            &dispatch.session_id,
-                            &dispatch.provider_run_id,
-                            &provider_run,
-                            &dispatch_with_handoff,
-                        )
-                    })
-                    .await?;
-                match attempt {
-                    crate::app::ClaudeNativeDispatchAttempt::Completed => break,
-                    crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
-                        if let Some(message) =
-                            claude_native_dispatch_terminal_failure(&provider_run)
-                        {
-                            return Err(DaemonError::ProviderProtocol {
-                                provider_run_id: dispatch.provider_run_id.clone(),
-                                operation: "submit Claude headless prompt",
-                                message,
-                            });
-                        }
-                        if tokio::time::Instant::now() >= deadline {
-                            return Err(DaemonError::LocalTransport {
-                                operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
-                                message: format!(
-                                    "provider `{}` did not acknowledge prompt `{}` after PTY injection",
-                                    dispatch.provider_run_id, dispatch.prompt_id
-                                ),
-                            });
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                }
-            }
-            // Claude's hook acknowledgement consumes the failure note. PTY
-            // injection alone does not prove the provider accepted its context.
-            owned.consume_pending_context_handoff(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &provider_run,
-            );
-            if !dispatch.steering {
-                let session = owned.session_store.get_session(&dispatch.session_id)?;
-                let Some(_settlement_claim) = owned
-                    .prompt_state_owner
-                    .try_claim_active_prompt_delivery_settlement(
-                        &session,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                    )
-                else {
-                    return Ok(false);
-                };
-                owned.note_prompt_started(&dispatch.provider_run_id);
-                owned.mark_active_prompt_delivery(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    crate::session::DurablePromptDeliveryPhase::Delivered,
-                    Some(dispatch.provider_run_id.clone()),
-                    provider_run.provider_session_id().map(str::to_string),
-                )?;
-            }
-            return Ok(true);
-        }
-        let provider_run_id = dispatch.provider_run_id.clone();
-        let writer = self
-            .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&provider_run_id))
-            .await?;
-        let provider_run_id = dispatch.provider_run_id.clone();
-        let owned_for_write = owned.clone();
-        let dispatch_for_write = dispatch.clone();
-        let write_task = tokio::task::spawn_blocking(move || {
-            if !owned_for_write.ensure_prompt_dispatch_matches_active_prompt(&dispatch_for_write)? {
-                return Err(DaemonError::LocalTransport {
-                    operation: "dispatch prompt",
-                    message: "prompt changed before PTY dispatch".into(),
-                });
-            }
-            writer.write_input(&provider_pty_input)
-        });
-        match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
-            Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
-                operation: "write provider PTY input",
-                message: error.to_string(),
-            })??,
-            Err(_) => {
-                return Err(DaemonError::PtyWrite {
-                    provider_run_id,
-                    message: "timed out after 15 seconds of provider backpressure".to_string(),
-                });
-            }
-        }
-        owned.consume_delivered_turn_context(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &dispatch.prompt_id,
-            &provider_run,
-        );
-        if !dispatch.steering {
-            let session = owned.session_store.get_session(&dispatch.session_id)?;
-            let Some(_settlement_claim) = owned
-                .prompt_state_owner
-                .try_claim_active_prompt_delivery_settlement(
-                    &session,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    &dispatch.provider_run_id,
-                )
-            else {
-                return Ok(false);
-            };
-            owned.note_prompt_started(&dispatch.provider_run_id);
-            owned.mark_active_prompt_delivery(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &dispatch.prompt_id,
-                crate::session::DurablePromptDeliveryPhase::Delivered,
-                Some(dispatch.provider_run_id.clone()),
-                provider_run.provider_session_id().map(str::to_string),
-            )?;
-        }
-        Ok(true)
-    }
-
-    pub(super) async fn fail_prompt_dispatch(
-        &self,
-        dispatch: crate::app::KernelPromptDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        let mut next_dispatch = None;
-        let dispatch_owns_active_prompt = self
-            .owned
-            .prompt_dispatch_matches_active_prompt(&dispatch)?;
-        if dispatch_owns_active_prompt {
-            let run = self
-                .owned
-                .provider_store
-                .get_run(&dispatch.provider_run_id)?;
-            if self
-                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
-                .await?
-            {
-                return Ok(());
-            }
-        }
-        let failed_provider_run = dispatch_owns_active_prompt
-            .then(|| {
-                self.owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)
-                    .ok()
-            })
-            .flatten()
-            .filter(|run| {
-                claude_headless_dispatch_failure_requires_provider_retirement(run, &error)
-            });
-        let retire_failed_provider = failed_provider_run.is_some();
-        let mut _delivery_settlement_claim = None;
-        if retire_failed_provider {
-            if let Some(provider_run) = failed_provider_run
-                .as_ref()
-                .filter(|_| claude_headless_dispatch_failure_invalidates_resume(&error))
-            {
-                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-                let Some(settlement_claim) = self
-                    .owned
-                    .prompt_state_owner
-                    .try_claim_active_prompt_delivery_settlement(
-                        &session,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                    )
-                else {
-                    return Err(error);
-                };
-                let Some(active_prompt) = self
-                    .owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &dispatch.agent_id)
-                else {
-                    return Err(error);
-                };
-                let Some(expected_provider_session_id) = active_prompt
-                    .durable_delivery_provider_session_id()
-                    .map(str::to_string)
-                else {
-                    return Err(error);
-                };
-                let dispatching_status = active_prompt.status();
-                if self
-                    .owned
-                    .compare_and_mark_active_prompt_delivery_failure(
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                        &expected_provider_session_id,
-                        (dispatching_status, crate::session::PromptStatus::Cancelling),
-                    )?
-                    .is_none()
-                {
-                    return Err(error);
-                }
-                match self.clear_unresponsive_provider_resume_state(
-                    provider_run,
-                    &expected_provider_session_id,
-                ) {
-                    Ok(
-                        crate::agent::ProviderResumeClearOutcome::Cleared
-                        | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
-                    ) => {}
-                    Ok(crate::agent::ProviderResumeClearOutcome::Superseded {
-                        current_provider_session_id,
-                    }) => {
-                        self.owned.restore_active_prompt_after_resume_superseded(
-                            &dispatch.session_id,
-                            &dispatch.agent_id,
-                            &dispatch.prompt_id,
-                            &dispatch.provider_run_id,
-                            &expected_provider_session_id,
-                            &current_provider_session_id,
-                        )?;
-                        return Err(error);
-                    }
-                    Err(clear_error) => return Err(clear_error),
-                }
-                _delivery_settlement_claim = Some(settlement_claim);
-            }
-            if let Ok(outcome) = self
-                .owned
-                .provider_store
-                .terminate_run_provider_only(&dispatch.session_id, &dispatch.provider_run_id)
-            {
-                let _ = self.owned.clear_active_provider_run_session_pointer(
-                    &dispatch.session_id,
-                    outcome.run().id(),
-                );
-                self.owned
-                    .provider_run_projection
-                    .update(outcome.into_run());
-            }
-            let provider_run_id = dispatch.provider_run_id.clone();
-            let (_, process_key) = self
-                .with_app_side_effect(move |app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
-                })
-                .await
-                .unwrap_or((false, None));
-            self.owned
-                .remove_provider_process_tracking_for_run(&dispatch.provider_run_id, process_key);
-        }
-        let mut restart_provider_for_queued_prompt = false;
-        {
-            let owned = &self.owned;
-            owned.update_metaagent_event_prompt_delivery_for_prompt(
-                &dispatch.prompt_id,
-                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
-                Some(error.to_string()),
-            );
-            let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(
-                &owned.session_store.get_session(&dispatch.session_id)?,
-                &dispatch.agent_id,
-            );
-            if let Some(failed_prompt) = failed_prompt
-                .as_ref()
-                .filter(|prompt| prompt.id() == dispatch.prompt_id)
-            {
-                let _ = self.inject_metaagent_turn_failure_event(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    failed_prompt,
-                    Some(&dispatch.provider_run_id),
-                    &error.to_string(),
-                );
-            }
-            // A dispatch completion can arrive after the prompt has already been
-            // settled and the next queued prompt has become active.  Only the
-            // exact dispatch prompt may be failed or cancelled; treating any
-            // active prompt as a match lets a stale provider error cancel the
-            // replacement prompt and strand the queue.
-            let failed_prompt_matches = failed_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
-            let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
-            if failed_prompt_matches {
-                owned.record_provider_failure_output(
-                    &dispatch.session_id,
-                    &dispatch.provider_run_id,
-                    &dispatch.agent_id,
-                    &dispatch_failure,
-                );
-            }
-            let (should_advance, released_claim) = match owned
-                .settle_failed_local_prompt_without_advance(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
-                    &dispatch.provider_run_id,
-                    &dispatch_failure,
-                ) {
-                Ok(Some(released_claim)) => (true, released_claim),
-                Ok(None) => (false, false),
-                Err(settlement_error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.prompt_delivery",
-                        "failed to settle prompt after dispatch failure",
-                        serde_json::json!({
-                            "session_id": dispatch.session_id,
-                            "agent_id": dispatch.agent_id,
-                            "prompt_id": dispatch.prompt_id,
-                            "provider_run_id": dispatch.provider_run_id,
-                            "error": settlement_error.to_string(),
-                        }),
-                    );
-                    let cancelled = failed_prompt_matches
-                        && owned
-                            .cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id)
-                            .is_ok();
-                    let released_claim = if cancelled {
-                        owned.clear_prompt_activity(&dispatch.provider_run_id)
-                    } else {
-                        false
-                    };
-                    (cancelled, released_claim)
-                }
-            };
-            if let Some(failed_prompt) = failed_prompt
-                .as_ref()
-                .filter(|_| should_advance && failed_prompt_matches)
-            {
-                let adapter_key = owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)
-                    .map(|run| run.adapter_key().to_string())
-                    .unwrap_or_default();
-                owned.record_failed_request(
-                    &dispatch.session_id,
-                    &dispatch.provider_run_id,
-                    &adapter_key,
-                    &dispatch.agent_id,
-                    failed_prompt,
-                    &dispatch_failure,
-                );
-            }
-            if should_advance && retire_failed_provider {
-                restart_provider_for_queued_prompt = owned
-                    .prompt_state_owner
-                    .peek_next_queued_prompt(
-                        &owned.session_store.get_session(&dispatch.session_id)?,
-                        &dispatch.agent_id,
-                    )
-                    .is_some();
-            } else if should_advance {
-                match owned.advance_next_queued_prompt_dispatch(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.provider_run_id,
-                ) {
-                    Ok(dispatch) => next_dispatch = dispatch,
-                    Err(advance_error) => {
-                        let recipients = owned
-                            .attachment_store
-                            .list_session_attachment_ids(&dispatch.session_id);
-                        owned.record_notice(
-                            &dispatch.session_id,
-                            Some(&dispatch.provider_run_id),
-                            recipients,
-                            format!(
-                                "Queued prompt remained pending after dispatch failure: {advance_error}"
-                            ),
-                        );
-                    }
-                }
-            }
-            let _ = owned.session_snapshot(&dispatch.session_id);
-            let recipients = owned
-                .attachment_store
-                .list_session_attachment_ids(&dispatch.session_id);
-            owned.record_notice(
-                &dispatch.session_id,
-                Some(&dispatch.provider_run_id),
-                recipients,
-                format!("Prompt dispatch failed after acknowledgement: {error}"),
-            );
-            if released_claim {
-                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
-            }
-        }
-        if let Some(next_dispatch) = next_dispatch {
-            self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
-        }
-        if restart_provider_for_queued_prompt {
-            let session_id = dispatch.session_id.clone();
-            let agent_id = dispatch.agent_id.clone();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
-                })
-                .await?;
-            if let Some(replacement_dispatch) = self.owned.advance_next_queued_prompt_dispatch(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(
-                    replacement_dispatch,
-                    self.provider_runtime_lanes.clone(),
-                );
-            }
-        }
-        Err(error)
-    }
-
-    pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
-        if self
-            .owned
-            .durable_state_store
-            .require_writer_healthy()
-            .is_err()
-        {
-            // Accepted prompts and their entry receipts remain for authoritative
-            // restart. A failed writer cannot authorize new provider dispatch.
-            return;
-        }
-        for (session_id, agent_id) in dispatches.project_queue_promotions {
-            let state = self.clone();
-            tokio::spawn(async move {
-                state
-                    .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
-                    .await;
-            });
-        }
-        for task in dispatches.starting_metaagent_tasks {
-            let state = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = state.start_queued_metaagent_task(task.clone()).await {
-                    let session_id = state
-                        .owned
-                        .agent_store
-                        .get_agent(task.metaagent_id())
-                        .map(|agent| agent.session_id().to_string())
-                        .unwrap_or_default();
-                    if !session_id.is_empty() {
-                        let mut sessions = state.owned.session_store.write();
-                        let _ = sessions.block_metaagent_task(
-                            &session_id,
-                            task.metaagent_id(),
-                            format!("queued Meta task failed to start: {error}"),
-                        );
-                        let _ = sessions.requeue_metaagent_task_front(&session_id, task.clone());
-                        drop(sessions);
-                        let _ = state.owned.persist_workflow_runtime_session(
-                            &session_id,
-                            "metaagent_task_start_failed",
-                        );
-                    }
-                    state.owned.record_notice(
-                        &session_id,
-                        None,
-                        state
-                            .owned
-                            .attachment_store
-                            .list_session_attachment_ids(&session_id),
-                        format!("Queued Meta task `{}` failed to start: {error}", task.id()),
-                    );
-                }
-            });
-        }
-        let mut provider_run_retirements = dispatches.provider_run_retirements;
-        for provider_run_id in dispatches.starting_provider_runs {
-            let retired_provider_run_ids = provider_run_retirements
-                .remove(&provider_run_id)
-                .unwrap_or_default();
-            if retired_provider_run_ids.is_empty() {
-                self.spawn_detached_workflow_provider_launch(provider_run_id);
-            } else {
-                self.spawn_detached_workflow_provider_launch_after_retiring(
-                    provider_run_id,
-                    retired_provider_run_ids,
-                );
-            }
-        }
-        for retired_provider_run_ids in provider_run_retirements.into_values() {
-            self.spawn_retired_workflow_provider_cleanup(retired_provider_run_ids);
-        }
-        for dispatch in dispatches.local {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        for dispatch in dispatches.remote {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
-    }
-
-    async fn start_queued_metaagent_task(
-        &self,
-        task: crate::session::QueuedMetaagentTask,
-    ) -> Result<(), DaemonError> {
-        let agent = self.owned.agent_store.get_agent(task.metaagent_id())?;
-        let session_id = agent.session_id().to_string();
-        self.activate_meta_mode_for_prompt(&session_id, agent.id(), task.task_markdown())
-            .await?;
-        let task_attachment_id = self.ensure_metaagent_task_attachment(&session_id, &agent)?;
-        let prompt = crate::session::PromptQueueItem::new(
-            format!("pending-draft:{}", task.id()),
-            task_attachment_id,
-            agent.id(),
-            task.task_markdown(),
-            crate::session::PromptStatus::Queued,
-        )
-        .with_hidden_system_context(Self::meta_mode_entered_hidden_context()?)
-        .with_attachments(task.attachments().to_vec());
-        let mut submission = self
-            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.clone(),
-                prompt,
-                force_queue: false,
-                refresh_projection: true,
-            })
-            .await?;
-        if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
-            (&submission.outcome, submission.dispatch.as_ref())
-        {
-            self.start_active_turn_with_trace_id(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                prompt.id(),
-                &dispatch.provider_run_id,
-                task.id(),
-            );
-        }
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
-        if let Err(error) = self
-            .owned
-            .persist_workflow_runtime_session(&session_id, "metaagent_task_started")
-        {
-            self.owned.record_notice(
-                &session_id,
-                None,
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(&session_id),
-                format!(
-                    "Meta task started, but its session snapshot could not be persisted: {error}"
-                ),
-            );
-        }
-        Ok(())
-    }
-
-    fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
-        self.spawn_detached_workflow_provider_launch_after_retiring(provider_run_id, Vec::new());
-    }
-
-    fn spawn_retired_workflow_provider_cleanup(&self, retired_provider_run_ids: Vec<String>) {
-        if retired_provider_run_ids.is_empty() {
-            return;
-        }
-        let state = self.clone();
-        tokio::spawn(async move {
-            for retired_provider_run_id in retired_provider_run_ids {
-                let cleanup_run_id = retired_provider_run_id.clone();
-                if let Err(error) = state
-                    .with_app_side_effect(move |app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&cleanup_run_id)
-                    })
-                    .await
-                {
-                    crate::logging::warn_with_fields(
-                        "daemon.provider",
-                        "failed to retire workflow provider process",
-                        serde_json::json!({
-                            "provider_run_id": retired_provider_run_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-        });
-    }
-
-    fn spawn_detached_workflow_provider_launch_after_retiring(
-        &self,
-        provider_run_id: String,
-        retired_provider_run_ids: Vec<String>,
-    ) {
-        let claim = {
-            let mut claims = self
-                .detached_workflow_provider_launches
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !claims.insert(provider_run_id.clone()) {
-                return;
-            }
-            DetachedWorkflowProviderLaunchClaim {
-                provider_run_id: provider_run_id.clone(),
-                claims: Arc::clone(&self.detached_workflow_provider_launches),
-            }
-        };
-        let state = self.clone();
-        tokio::spawn(async move {
-            let _claim = claim;
-            for retired_provider_run_id in retired_provider_run_ids {
-                let cleanup_run_id = retired_provider_run_id.clone();
-                if let Err(error) = state
-                    .with_app_side_effect(move |app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&cleanup_run_id)
-                    })
-                    .await
-                {
-                    crate::logging::warn_with_fields(
-                        "daemon.provider",
-                        "failed to retire workflow provider process",
-                        serde_json::json!({
-                            "provider_run_id": retired_provider_run_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-            let mut provider_credential_env = state
-                .owned
-                .take_pending_provider_launch_credentials(&provider_run_id);
-            let run = match current_starting_workflow_provider_run(
-                &state.owned.provider_store,
-                &provider_run_id,
-            ) {
-                Some(run) => run,
-                None => return,
-            };
-            let resolved_provider_credentials = if provider_credential_env.is_empty() {
-                Some(
-                    state
-                        .resolve_provider_account_credentials_for_run_with_vault(
-                            &run,
-                            "launch workflow provider run",
-                        )
-                        .await,
-                )
-            } else {
-                None
-            };
-            let run = match current_starting_workflow_provider_run(
-                &state.owned.provider_store,
-                &provider_run_id,
-            ) {
-                Some(run) => run,
-                None => return,
-            };
-            if let Some(resolved_provider_credentials) = resolved_provider_credentials {
-                match resolved_provider_credentials {
-                    Ok(credentials) => provider_credential_env = credentials,
-                    Err(error) => {
-                        let started = crate::app::StartedProviderLaunch {
-                            run,
-                            previous_active_run_id: None,
-                            provider_credential_env,
-                        };
-                        state.fail_provider_launch(&started, &error).await;
-                        return;
-                    }
-                }
-            }
-            let started = crate::app::StartedProviderLaunch {
-                run: run.clone(),
-                previous_active_run_id: None,
-                provider_credential_env,
-            };
-            let spawn_result = state
-                .with_app_side_effect(|app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
-                })
-                .await;
-            if let Err(error) = spawn_result {
-                state.fail_provider_launch(&started, &error).await;
-                return;
-            }
-            state.owned.provider_run_projection.update(run.clone());
-            let runtime_init_delay_ms = state
-                .owned
-                .config_projection
-                .snapshot()
-                .provider_runtime_init_delay_ms;
-            if runtime_init_delay_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
-            }
-            let initialization_permit =
-                state.provider_runtime_lanes.acquire(&provider_run_id).await;
-            if current_starting_workflow_provider_run(&state.owned.provider_store, &provider_run_id)
-                .is_none_or(|current| current.started_at_ms() != started.run.started_at_ms())
-            {
-                drop(initialization_permit);
-                let cleanup_id = provider_run_id.clone();
-                let _ = state
-                    .with_app_side_effect(move |app| {
-                        crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&cleanup_id)
-                    })
-                    .await;
-                return;
-            }
-            let provider_credential_env = started.provider_credential_env.clone();
-            let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
-                    &run,
-                    &provider_credential_env,
-                )
-            })
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "initialize workflow provider runtime",
-                message: error.to_string(),
-            });
-            drop(initialization_permit);
-            match binding {
-                Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
-                Ok(Err(error)) | Err(error) => {
-                    state.fail_provider_launch(&started, &error).await;
-                }
-            }
-        });
-    }
-
-    pub(super) async fn enqueue_prompt_abort(
-        &self,
-        dispatch: &crate::app::KernelPromptAbortDispatch,
-    ) -> Result<(), DaemonError> {
-        {
-            let owned = &self.owned;
-            self.reap_structured_prompt_jobs_and_dispatch();
-            self.reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
-                .await?;
-            let provider_run = owned
-                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
-            if provider_run.state() != crate::provider::ProviderRunState::Running {
-                return Err(DaemonError::InvalidProviderRunState {
-                    provider_run_id: dispatch.provider_run_id.clone(),
-                    state: provider_run.state(),
-                    operation: "submit prompt",
-                });
-            }
-            if owned
-                .provider_store
-                .run_uses_structured_prompt_io(&provider_run)
-            {
-                return owned.provider_store.enqueue_structured_prompt_abort(
-                    dispatch.session_id.clone(),
-                    dispatch.provider_run_id.clone(),
-                );
-            }
-            owned.terminal_stream.record_input(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                b"\x03",
-            );
-            self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
-            })
-            .await?;
-            Ok(())
-        }
-    }
-
-    pub(super) async fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
-        {
-            let owned = &self.owned;
-            owned
-                .provider_store
-                .structured_prompt_io_in_flight(provider_run_id)
-        }
-    }
-
-    pub(super) async fn fail_prompt_abort(
-        &self,
-        dispatch: crate::app::KernelPromptAbortDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        {
-            let owned = &self.owned;
-            let recipients = owned
-                .attachment_store
-                .list_session_attachment_ids(&dispatch.session_id);
-            owned.record_notice(
-                &dispatch.session_id,
-                Some(&dispatch.provider_run_id),
-                recipients,
-                format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
-            );
-            Err(error)
-        }
-    }
-
-    /// Reaps finished structured prompt jobs through the shared follow-up dispatcher.
-    pub(super) fn reap_structured_prompt_jobs_and_dispatch(&self) {
-        self.spawn_workflow_prompt_dispatches(self.owned.reap_structured_prompt_jobs());
-    }
-
-    pub(crate) fn spawn_prompt_dispatch(
-        &self,
-        dispatch: crate::app::KernelPromptDispatch,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                let _ = state.fail_prompt_dispatch(dispatch, error).await;
-            }
-        });
-    }
-
-    pub(crate) fn spawn_queued_prompt_steer_dispatch(
-        &self,
-        dispatch: crate::app::KernelPromptDispatch,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                let recipients = state
-                    .owned
-                    .attachment_store
-                    .list_session_attachment_ids(&dispatch.session_id);
-                state.owned.record_notice(
-                    &dispatch.session_id,
-                    Some(&dispatch.provider_run_id),
-                    recipients,
-                    format!("Queued prompt steer dispatch failed: {error}"),
-                );
-            }
-        });
-    }
-
-    pub(crate) fn spawn_prompt_abort(
-        &self,
-        dispatch: crate::app::KernelPromptAbortDispatch,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            let structured = state
-                .owned
-                .provider_store
-                .get_run(&dispatch.provider_run_id)
-                .is_ok_and(|run| {
-                    state
-                        .owned
-                        .provider_store
-                        .run_uses_structured_prompt_io(&run)
-                });
-            loop {
-                let completion_signal =
-                    structured.then(|| state.owned.provider_store.run_actor_completion_signal());
-                let mut completion_sequence = completion_signal
-                    .as_ref()
-                    .map(|signal| signal.sequence())
-                    .unwrap_or_default();
-                let outcome = match state.enqueue_prompt_abort(&dispatch).await {
-                    Ok(()) if !structured => {
-                        if let Ok(provider_run) = state
-                            .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                        {
-                            if let Some(agent_id) = provider_run.agent_instance_id() {
-                                if let Ok(session) =
-                                    state.owned.session_store.get_session(&dispatch.session_id)
-                                {
-                                    if let Some(prompt) = state
-                                        .owned
-                                        .prompt_state_owner
-                                        .active_prompt_for_agent(&session, agent_id)
-                                    {
-                                        let _ = state
-                                            .owned
-                                            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-                                    }
-                                }
-                                let _ = state
-                                    .owned
-                                    .finalize_local_prompt_cancellation_with_queued_advance(
-                                        &dispatch.session_id,
-                                        agent_id,
-                                        Some(&dispatch.provider_run_id),
-                                    );
-                            }
-                        }
-                        PromptAbortDispatchOutcome::Done
-                    }
-                    Ok(()) => loop {
-                        let completion_signal = completion_signal
-                            .as_ref()
-                            .expect("structured abort should have a completion signal");
-                        completion_signal
-                            .wait_for_change_after(completion_sequence)
-                            .await;
-                        completion_sequence = completion_signal.sequence();
-                        state.reap_structured_prompt_jobs_and_dispatch();
-                        let prompt_is_still_cancelling = state
-                            .owned
-                            .provider_store
-                            .get_run(&dispatch.provider_run_id)
-                            .ok()
-                            .and_then(|run| run.agent_instance_id().map(str::to_string))
-                            .and_then(|agent_id| {
-                                state
-                                    .owned
-                                    .session_store
-                                    .get_session(&dispatch.session_id)
-                                    .ok()
-                                    .and_then(|session| {
-                                        state
-                                            .owned
-                                            .prompt_state_owner
-                                            .active_prompt_for_agent(&session, &agent_id)
-                                    })
-                            })
-                            .is_some_and(|prompt| {
-                                prompt.status() == crate::session::PromptStatus::Cancelling
-                            });
-                        if !prompt_is_still_cancelling {
-                            state.spawn_workflow_prompt_dispatches(
-                                state.owned.workflow_retry_blocked_claims(),
-                            );
-                            let _ = state.owned.session_snapshot(&dispatch.session_id);
-                            break PromptAbortDispatchOutcome::Done;
-                        }
-                    },
-                    Err(_)
-                        if state
-                            .structured_prompt_io_in_flight(&dispatch.provider_run_id)
-                            .await =>
-                    {
-                        PromptAbortDispatchOutcome::Retry
-                    }
-                    Err(error) => {
-                        let _ = state.fail_prompt_abort(dispatch.clone(), error).await;
-                        PromptAbortDispatchOutcome::Done
-                    }
-                };
-                match outcome {
-                    PromptAbortDispatchOutcome::Done => break,
-                    PromptAbortDispatchOutcome::Retry => {
-                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                    }
-                }
-            }
-        });
-    }
-}
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}
-
-use super::restart_recovery_runtime::is_internal_recovery_prompt_attachment;
-
-enum PromptAbortDispatchOutcome {
-    Done,
-    Retry,
 }

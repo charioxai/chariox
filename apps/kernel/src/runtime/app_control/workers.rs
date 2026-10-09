@@ -281,6 +281,7 @@ impl AppControlService {
     /// readiness and durable activation proof. It must retain AppWorkerOwner and
     /// serialize replacement for this installation through its complete drain.
     /// This registry provides discovery, not lifecycle admission or resource caps.
+    #[cfg(test)]
     pub(crate) fn publish_app_worker(
         &self,
         owner: &str,

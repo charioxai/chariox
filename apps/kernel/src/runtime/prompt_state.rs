@@ -457,7 +457,11 @@ impl PromptStateOwner {
                     message: "target agent is busy; retry when its provider is ready".to_string(),
                 });
             }
-            let pending_prompt_id = owner.next_pending_prompt_id();
+            let pending_prompt_id = if prompt.durable_operation_id().is_some() {
+                prompt.id().to_string()
+            } else {
+                owner.next_pending_prompt_id()
+            };
             let state = owner.ensure_agent_state(session, &agent_id);
             if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
                 crate::logging::warn_with_fields(
@@ -1172,6 +1176,11 @@ impl PromptStateOwner {
             }
         }
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
+        let prompt_id = if front.durable_operation_id().is_some() {
+            front.id().to_string()
+        } else {
+            prompt_id
+        };
         let mut active = state
             .queued_prompts
             .pop_front()
@@ -1214,6 +1223,7 @@ impl PromptStateOwner {
         Ok(prompt)
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_external_active_prompt(
         &self,
         session: &RuntimeSession,

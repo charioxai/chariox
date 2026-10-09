@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
@@ -202,6 +204,10 @@ impl RelayOutgoingSender {
         (Self::new(priority_tx, event_tx), priority_rx, event_rx)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_send typed error contract"
+    )]
     pub(crate) fn try_send(
         &self,
         envelope: RelayEnvelope,

@@ -51,6 +51,9 @@ pub(crate) struct KernelBrowserAdmission {
 }
 
 impl KernelBrowserAdmission {
+    pub(crate) fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
     /// Focus epochs have no authority callback. While holding the actor model,
     /// check only atomic revocation: callbacks may acquire the host lock, whose
     /// retirement path takes host then model. Full authority is checked outside.
@@ -66,9 +69,12 @@ impl KernelBrowserAdmission {
         mut self,
         authority: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
+        // MP-11 A07: an added task/grant fence must retain the existing
+        // terminal-lifetime fence used during physical CDP dispatch.
+        let previous = self.cancellation.clone();
         self.cancellation = Arc::new(BrowserCancellation::for_authority(
             self.epoch.clone(),
-            authority,
+            move || !previous.requested() && authority(),
         ));
         self
     }
@@ -268,6 +274,27 @@ impl KernelBrowserHost {
             Self::check_admission_epoch(&state, admission)?;
         }
         Ok(())
+    }
+    /// MP-11 A07: immutable product grant identity for a durable pending action.
+    pub(crate) fn grant_identity(
+        &self,
+        admission: &KernelBrowserAdmission,
+    ) -> Result<String, String> {
+        self.check_admission(Some(admission))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| "MP-11: browser grant lock poisoned")?;
+        Self::check_admission_epoch(&state, admission)?;
+        let agent = admission
+            .agent
+            .as_deref()
+            .ok_or("MP-11: source agent grant required")?;
+        Ok(state
+            .access
+            .grant(&admission.user, agent)?
+            .subscription_owner
+            .clone())
     }
     /// MD-N4 / MP-11: a note read/write commits within one uninterrupted grant epoch.
     pub(crate) fn note_operation<T>(
@@ -753,6 +780,54 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_mp10_mp11_a07_owner_handoff_keeps_authenticated_actor_after_takeover() {
+        let mut model = KernelBrowserActors::default();
+        model.reconcile(&serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"doc-a"}]})).unwrap();
+        let actor = "terminal:owner-scoped-view";
+        model
+            .takeover(
+                EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
+                "host-tab-a",
+                1,
+            )
+            .unwrap();
+        let target = crate::session::HandoffTarget {
+            tab_id: "host-tab-a".into(),
+            generation: 1,
+            document_id: "doc-a".into(),
+            node_ref: "backend:5".into(),
+            origin: "https://www.hetzner.com".into(),
+            path: "/firewalls".into(),
+            label: "Save".into(),
+        };
+        let params = crate::runtime::state::KernelRuntimeState::handoff_input_params(
+            &target,
+            actor,
+            crate::session::HandoffKind::Click,
+            crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+            "https://www.hetzner.com/firewalls",
+        );
+        assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
+            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_a07_owner_handoff_preserves_inflight_terminal_lifetime_authority() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/owner-handoff-lifetime"));
+        let lifetime = crate::runtime::command::TerminalLifetime::default();
+        let admission = host
+            .admit_terminal("owner", lifetime.clone())
+            .with_authority(|| true);
+        assert!(!admission.cancellation.requested());
+        lifetime.cancel();
+        assert!(
+            admission.cancellation.requested(),
+            "physical dispatch must see terminal disconnect through the added hand-off fence"
+        );
+    }
+
     /// MP-08/MP-11 A05: absolute expiry is a live wake. With no further call,
     /// the grant disappears, its epoch cancels in-flight work and clients see it.
     #[tokio::test]

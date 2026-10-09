@@ -5,10 +5,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn mdaccess_protocol_462_grant_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 462);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 477);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let mut values = Vec::new();
     for command in [

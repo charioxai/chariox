@@ -40,11 +40,12 @@ pub(super) fn session_alias_slug(input: &str) -> Option<String> {
         if char.is_ascii_lowercase() || char.is_ascii_digit() {
             slug.push(char);
             previous_separator = false;
-        } else if matches!(char, '-' | '_' | ' ' | '\t' | '\n' | '\r') {
-            if !slug.is_empty() && !previous_separator {
-                slug.push('-');
-                previous_separator = true;
-            }
+        } else if matches!(char, '-' | '_' | ' ' | '\t' | '\n' | '\r')
+            && !slug.is_empty()
+            && !previous_separator
+        {
+            slug.push('-');
+            previous_separator = true;
         }
     }
     let slug = slug.trim_matches(['-', '_']).to_string();

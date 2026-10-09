@@ -84,7 +84,7 @@ pub(super) fn command(method: &str, params: Value) -> Result<Command> {
             let id = identity(take(&mut fields, "streamId")?)?;
             let encoded = string(
                 take(&mut fields, "bodyBase64")?,
-                ((CHUNK_BYTES + 2) / 3) * 4,
+                CHUNK_BYTES.div_ceil(3) * 4,
             )?;
             let bytes = STANDARD.decode(encoded).map_err(|_| HttpError::Invalid)?;
             let end = boolean(take(&mut fields, "end")?)?;
@@ -176,7 +176,10 @@ mod tests {
         .unwrap();
         // This SDK wire contract remains supported by later terminal protocols.
         assert_eq!(fixture["minimumKernelProtocol"], 294);
-        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 294);
+        assert!(
+            u64::from(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+                >= fixture["minimumKernelProtocol"].as_u64().unwrap()
+        );
         assert_eq!(
             fixture["sdkVersion"],
             chariox_app_package::SUPPORTED_SDK_VERSION

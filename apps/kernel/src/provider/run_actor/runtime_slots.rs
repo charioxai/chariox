@@ -387,6 +387,10 @@ pub(super) fn restore_opencode_runtime_if_live(
     }
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit runtime_should_restore state or return type at the existing boundary"
+)]
 pub(super) fn runtime_should_restore<T>(
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     runs: &Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<T>>>>>>,
@@ -479,6 +483,10 @@ mod tests {
     #[test]
     fn runtime_tombstone_rejects_stale_state_restore_after_cleanup() {
         let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        #[allow(
+            clippy::type_complexity,
+            reason = "Keep the explicit runs state or return type at the existing boundary"
+        )]
         let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
         let slot = Arc::new(Mutex::new(None));
@@ -507,6 +515,10 @@ mod tests {
     #[test]
     fn runtime_restore_drops_taken_state_after_cleanup_tombstone() {
         let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        #[allow(
+            clippy::type_complexity,
+            reason = "Keep the explicit runs state or return type at the existing boundary"
+        )]
         let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
         let slot = Arc::new(Mutex::new(Some(7)));
@@ -545,6 +557,10 @@ mod tests {
     #[test]
     fn runtime_restore_rejects_old_slot_after_same_run_replacement() {
         let cleared_runs = Arc::new(Mutex::new(BTreeSet::new()));
+        #[allow(
+            clippy::type_complexity,
+            reason = "Keep the explicit runs state or return type at the existing boundary"
+        )]
         let runs: Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<i32>>>>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
         let old_slot = Arc::new(Mutex::new(Some(7)));

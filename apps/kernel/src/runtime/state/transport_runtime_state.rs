@@ -56,6 +56,28 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        let now = crate::session::unix_epoch_ms();
+        let next = self
+            .owned
+            .next_agent_lifecycle_sweep_ms
+            .load(Ordering::Acquire);
+        if next > now.saturating_add(crate::durable_state::agent_lifecycle::SWEEP_MS) {
+            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(
+                next,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        if claim_periodic_sweep(
+            &self.owned.next_agent_lifecycle_sweep_ms,
+            now,
+            crate::durable_state::agent_lifecycle::SWEEP_MS,
+        ) {
+            if let Err(error) = self.sweep_agent_lifecycle().await {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
+            }
+        }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -501,6 +523,7 @@ impl KernelRuntimeState {
         app_result
     }
 
+    #[cfg(test)]
     pub(crate) fn session_snapshot_projection(
         &self,
         session_id: &str,
@@ -610,10 +633,10 @@ fn transport_runtime_pump_interval_for_state(
 }
 
 fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
-    idle_ttl_ms
-        .min(orphan_ttl_ms)
-        .min(MAX_PROVIDER_PROCESS_GC_INTERVAL_MS)
-        .max(MIN_PROVIDER_PROCESS_GC_INTERVAL_MS)
+    idle_ttl_ms.min(orphan_ttl_ms).clamp(
+        MIN_PROVIDER_PROCESS_GC_INTERVAL_MS,
+        MAX_PROVIDER_PROCESS_GC_INTERVAL_MS,
+    )
 }
 
 fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {

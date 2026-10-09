@@ -210,7 +210,7 @@ async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {
     )
     .with_agent_id(agent.id());
     let mut run = crate::provider::RuntimeProviderRun::new(
-        &format!("provider-run-{adapter_key}-cancellation"),
+        format!("provider-run-{adapter_key}-cancellation"),
         &request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::Managed,

@@ -168,6 +168,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RespondToInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RespondToHandoff(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -348,6 +351,18 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

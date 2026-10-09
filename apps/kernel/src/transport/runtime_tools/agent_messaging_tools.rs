@@ -8,6 +8,10 @@ pub struct SendAgentMessageArgs {
     pub message: String,
     pub origin_prompt_id: String,
     #[serde(default)]
+    pub urgent: bool,
+    #[serde(default)]
+    pub reply_requested: bool,
+    #[serde(default)]
     pub attachments: Vec<crate::session::PromptAttachment>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
@@ -46,7 +50,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The message starts a turn when the target is idle or steers its active turn when the provider is running. If the provider is not ready, retry after it starts; agent messages do not enter the user prompt queue. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. Default non-urgent messages queue behind busy turns; idle/waiting receivers wake. Set urgent to steer the exact running turn. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message", "origin_prompt_id"],
@@ -90,6 +94,8 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     },
+                    "urgent": { "type": "boolean", "default": false, "description": "Inject into the exact running turn when supported; uncertainty stays pinned." },
+                    "reply_requested": { "type": "boolean", "default": false, "description": "Request one correlated reply. Default messages require no courtesy response." },
                     "idempotency_key": {
                         "type": "string",
                         "description": "Optional stable key for safely retrying the same send without creating another prompt."

@@ -26,34 +26,53 @@ pub(crate) enum AppRegistryError {
 /// metadata and capability decisions must never be deserialized from an App.
 #[derive(Debug, Clone)]
 pub(crate) enum AppRegistryMutation {
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     CreateAndStage {
         installation_id: String,
         release: ReleaseMetadata,
         now_ms: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Stage {
         installation_id: String,
         expected_generation: u64,
         release: ReleaseMetadata,
         now_ms: u64,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Decide {
         token: StageToken,
         decision: CapabilityDecision,
         now_ms: u64,
     },
-    Quiesce {
-        token: StageToken,
-        now_ms: u64,
-    },
-    MarkPrepared {
-        token: StageToken,
-        now_ms: u64,
-    },
-    Commit {
-        token: StageToken,
-        now_ms: u64,
-    },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
+    Quiesce { token: StageToken, now_ms: u64 },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
+    MarkPrepared { token: StageToken, now_ms: u64 },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
+    Commit { token: StageToken, now_ms: u64 },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Abort {
         token: StageToken,
         reason: String,
@@ -97,6 +116,10 @@ impl AppRegistryMutation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing AppRegistryOutcome typed actor payload layout"
+)]
 pub(crate) enum AppRegistryOutcome {
     Update(UpdateRecord),
     Active(ActiveGeneration),

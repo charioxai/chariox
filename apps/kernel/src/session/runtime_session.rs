@@ -122,6 +122,8 @@ pub struct RuntimeSession {
     active_interactions: Vec<RuntimeInteraction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -162,6 +164,13 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn set_agent_tasks(
+        &mut self,
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    ) {
+        self.agent_tasks = tasks;
+    }
+
     pub(crate) fn durable_workflow_hot_state(&self) -> DurableWorkflowHotState {
         DurableWorkflowHotState {
             workflows: self.workflows.clone(),
@@ -245,12 +254,13 @@ impl RuntimeSession {
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
+            agent_tasks: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
-                format!("worktree-assignment-{}-1", id),
+                format!("worktree-assignment-{id}-1"),
                 worktree_id,
                 format!("session/{id}"),
                 WorktreeIsolationMode::SharedSession,
@@ -874,7 +884,7 @@ impl RuntimeSession {
             .retain(|existing| existing.subject() != interaction.subject());
         self.active_interactions.push(interaction);
         self.active_interactions
-            .sort_by(|left, right| left.requested_at_ms().cmp(&right.requested_at_ms()));
+            .sort_by_key(|left| left.requested_at_ms());
     }
 
     pub fn remove_active_interaction(

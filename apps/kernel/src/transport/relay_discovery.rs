@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
@@ -523,7 +523,26 @@ async fn query_relay_once_with_test_trace(
     query_relay_once_inner(config, query, Some(trace)).await
 }
 
-async fn query_relay_once_inner(
+// MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
+// inline future frame; the body keeps admission, receipts and timeouts deferred.
+type RelayMetadataFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<RelayEnvelope, DaemonError>> + Send + 'a>,
+>;
+
+#[inline(never)]
+fn query_relay_once_inner<'a>(
+    config: &'a DaemonConfig,
+    query: RelayMetadataQuery,
+    #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
+) -> RelayMetadataFuture<'a> {
+    #[cfg(test)]
+    let pending = query_relay_once_body(config, query, trace);
+    #[cfg(not(test))]
+    let pending = query_relay_once_body(config, query);
+    Box::pin(pending)
+}
+
+async fn query_relay_once_body(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
@@ -551,29 +570,32 @@ async fn query_relay_once_inner(
     let mut socket_trace = trace
         .as_deref()
         .map(|trace| TemporaryPeerTestTrace::socket(trace.identity));
-    let (mut socket, _) = timeout(request_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_timed_out", None);
-                trace.record("discovery_connect_future_cancelled", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: format!("timed out after {}ms", config.relay_request_timeout_ms),
-            }
-        })?
-        .map_err(|error| {
-            #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
-                trace.record("discovery_connect_failed", None);
-            }
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                message: error.to_string(),
-            }
-        })?;
+    let (mut socket, _) = timeout(
+        request_timeout,
+        super::relay_socket_connect::connect(&relay_url),
+    )
+    .await
+    .map_err(|_| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_timed_out", None);
+            trace.record("discovery_connect_future_cancelled", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: format!("timed out after {}ms", config.relay_request_timeout_ms),
+        }
+    })?
+    .map_err(|error| {
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record("discovery_connect_failed", None);
+        }
+        DaemonError::LocalTransport {
+            operation: "connect relay metadata socket",
+            message: error.to_string(),
+        }
+    })?;
     #[cfg(test)]
     {
         let local_addr = relay_discovery_test_local_addr(&socket);

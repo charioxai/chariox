@@ -183,8 +183,12 @@ workflow.endpoint(review,{{handle:"entry"}});"#,
         validation
             .payload
             .pointer("/WorkflowCodeValidated/result/validation/ok"),
-        Some(&serde_json::json!(true))
+        Some(&serde_json::json!(false))
     );
+    assert!(validation
+        .payload
+        .to_string()
+        .contains("unauthorized_existing_agent_binding"));
     assert_eq!(
         validation
             .payload
@@ -424,11 +428,8 @@ async fn room_boundaries() {
         .unwrap()
         .to_string()
     };
-    assert!(
-        room_command(&router, &auth_b, "agent spawn d --provider dev-stub")
-            .await
-            .ok
-    );
+    let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
+    assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
     for command in [
         "agent alias d stolen",
         "agent delete d",
@@ -480,8 +481,15 @@ async fn room_boundaries() {
             .await
             .ok
     );
+    // MP-11 F3: a peer binding can reset the peer's provider context at run start.
     assert!(
-        room_command(&router, &auth_a, "workflow node add own-flow peer")
+        !room_command(&router, &auth_a, "workflow node add own-flow peer")
+            .await
+            .ok,
+        "MP-11 F3: peers are not workflow execution resources"
+    );
+    assert!(
+        room_command(&router, &auth_a, "workflow node add own-flow b")
             .await
             .ok
     );
@@ -525,6 +533,55 @@ async fn room_boundaries() {
         "known queue rejection must close only its dispatch intent"
     );
     drop(app_guard);
+    // MP-11 F3: saved runs retain their actual execution bindings even when a
+    // newer definition is safe. Model a pre-admission snapshot at the store seam.
+    let legacy_run = {
+        let app = app.lock().await;
+        let mut sessions = app.sessions_mut();
+        let workflow = sessions
+            .create_workflow_controlled_by_metaagent(
+                session.id(),
+                Some("legacy-peer-binding".into()),
+                Some(a.id().into()),
+            )
+            .unwrap();
+        let node = sessions
+            .add_workflow_node(session.id(), workflow.id(), a.id())
+            .unwrap();
+        sessions
+            .add_workflow_node(session.id(), workflow.id(), peer.id())
+            .unwrap();
+        let endpoint = sessions
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+            .unwrap();
+        let run = sessions
+            .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), None)
+            .unwrap();
+        let mut restored = sessions.get_session(session.id()).unwrap();
+        let stored = restored.workflow_run_mut(run.id()).unwrap();
+        *stored = stored.clone().with_creator(Some(a.id().into()));
+        stored.set_status(crate::session::WorkflowRunStatus::Paused);
+        sessions.restore_session(restored);
+        run.id().to_string()
+    };
+    let (resumed, _) = router
+        .runtime_state
+        .execute_workflow_request(
+            LocalDaemonRequest::ResumeWorkflowRun(crate::local::ResumeWorkflowRunRequest {
+                session_id: session.id().into(),
+                workflow_run_ref: legacy_run,
+            }),
+            a.owner_user_id().into(),
+            Some(a.id().into()),
+        )
+        .await;
+    assert!(
+        resumed
+            .unwrap_err()
+            .to_string()
+            .contains("immutable direct child"),
+        "MP-11 F3: saved peer graph bindings cannot resume"
+    );
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
     // The raw/native typed request path sees the same mutation fence.
@@ -580,6 +637,7 @@ fn room_admission_writer_failure_prevents_agent_creation() {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let connection = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
     connection.execute_batch("CREATE TRIGGER fail_room_intent BEFORE INSERT ON durable_state_events WHEN NEW.kind = 'room.obligation.registered' BEGIN SELECT RAISE(FAIL, 'injected room registration failure'); END;").unwrap();
     // Base compatibility: old decoders ignore the authoritative creator field.
@@ -724,6 +782,7 @@ fn assert_post_creation_failure_identifies_resource(kind: &str) {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let db = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
     db.execute_batch(&format!("CREATE TRIGGER fail_receipt BEFORE INSERT ON durable_state_events WHEN NEW.kind='{kind}' BEGIN SELECT RAISE(FAIL, 'effect metadata failure'); END;")).unwrap();
     let failed = crate::app::KernelSessionService::new(&mut app)
@@ -764,6 +823,7 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let request = || {
         CreateAgentRequest::new(session.id(), "dev-stub")
             .with_alias("duplicate")
@@ -873,4 +933,380 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
         .unwrap()
         .workflows()
         .is_empty());
+}
+
+// MP-11 F7: a compiler wait must not lock unrelated runtime traffic.
+#[test]
+fn security_f7_compiler_wait_releases_global_app_mutex() {
+    run_large_stack_async_test("security-f7-compile-lock", compiler_does_not_lock_app);
+}
+
+async fn compiler_does_not_lock_app() {
+    let env = TestMetaRuntimeEnv::new("security-f7-compile-lock");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut daemon = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(daemon));
+    let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+    let marker = format!("// MP-11 F7 {}", workspace.display());
+    let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
+    let request =
+        LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
+            session_id: session.id().into(),
+            node_path: "node".into(),
+            source: marker + "\nworkflow.define({alias:'compile-lock'});",
+            language: None,
+            provider_rebindings: vec![],
+            agent_rebindings: vec![],
+        });
+    let pending = tokio::spawn(async move {
+        router
+            .runtime_state
+            .execute_workflow_request(request, "local-user".into(), None)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), started)
+        .await
+        .unwrap()
+        .unwrap();
+    let available = tokio::time::timeout(Duration::from_millis(200), app.lock())
+        .await
+        .is_ok();
+    drop(release);
+    let _ = pending.await.unwrap();
+    assert!(available, "MP-11 F7: compiler holds the global app lock");
+}
+
+// MP-11 F7 / review R1: exercise authenticated Room create/update, not just validation.
+#[test]
+fn security_f7_room_artifact_create_timeout_keeps_other_rooms_responsive() {
+    run_large_stack_async_test("security-f7-artifact-create", || artifact_timeout(false));
+}
+
+#[test]
+fn security_f7_room_artifact_update_timeout_keeps_other_rooms_responsive() {
+    run_large_stack_async_test("security-f7-artifact-update", || artifact_timeout(true));
+}
+
+async fn artifact_timeout(update: bool) {
+    let env = TestMetaRuntimeEnv::new("security-f7-artifact-timeout");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
+        script_timeout_ms: Some(2_000),
+        ..Default::default()
+    });
+    let mut daemon = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (room, actor) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let actor_run = launch_test_provider(
+        &mut daemon,
+        room.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let auth = actor_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let (_, other) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let other_run = launch_test_provider(
+        &mut daemon,
+        other.session_id(),
+        other.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let other_auth = other_run.runtime_mcp_auth_token().unwrap().to_owned();
+    let registry = crate::workflow_code::WorkflowCodeArtifactRegistry::new(vec![config
+        .workflow_code_artifact_root()
+        .join("rooms")
+        .join(room.id())]);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(daemon)), 4);
+    if update {
+        let created = router.dispatch_authenticated_runtime_tool_call(&auth, "chariox.workflow_code.create", serde_json::json!({"name":"timeout-check", "source":format!("workflow.define({{alias:'timeout-check'}});const node=workflow.node({{handle:'self',agent:workflow.existingAgent('{}'),canCompleteWorkflowRun:true}});workflow.endpoint(node,{{handle:'entry'}});",actor.id())})).await.unwrap();
+        assert!(created.ok, "{created:?}");
+    }
+    let before = registry.get("timeout-check").unwrap();
+    let marker = format!("// MP-11 F7 {}", workspace.display());
+    let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
+    let pending = tokio::spawn({
+        let router = router.clone();
+        async move {
+            router.dispatch_authenticated_runtime_tool_call(&auth, if update {"chariox.workflow_code.update"} else {"chariox.workflow_code.create"}, serde_json::json!({"name":"timeout-check", "source":format!("{marker}\nwhile (true) {{}}") })).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), started)
+        .await
+        .unwrap()
+        .unwrap();
+    // Release the test gate: the actual isolated script runs to its real timeout.
+    drop(release);
+    let responsive = tokio::time::timeout(
+        Duration::from_millis(500),
+        router.dispatch_authenticated_runtime_tool_call(
+            &other_auth,
+            "chariox.workflow_code.list",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    let compiler_result = pending.await.unwrap();
+    let failure = compiler_result.as_ref().err().map(ToString::to_string);
+    assert!(failure.as_deref().is_some_and(|message| message.contains("timeout") || message.contains("timed out")), "MP-11 F7: script must reach its execution timeout, not fail during compiler startup: {compiler_result:?}");
+    assert_eq!(
+        registry.get("timeout-check").unwrap().map(|a| a.metadata),
+        before.map(|a| a.metadata),
+        "timed-out compilation must not change stored source"
+    );
+    assert!(
+        responsive.is_ok_and(|result| result.is_ok_and(|result| result.ok)),
+        "MP-11 F7: Room artifact compilation blocks another room's command"
+    );
+}
+
+// MP-11 F5: a command admitted under a provider epoch must retain it in the lane.
+#[test]
+fn security_f5_workflow_lane_rechecks_queued_provider_epoch() {
+    run_large_stack_async_test("security-f5-workflow-epoch", queued_workflow_epoch);
+}
+
+async fn queued_workflow_epoch() {
+    let env = TestMetaRuntimeEnv::new("security-f5-workflow-epoch");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut daemon = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let run = launch_test_provider(
+        &mut daemon,
+        session.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    let app = Arc::new(Mutex::new(daemon));
+    let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+    let mut state = router.runtime_state.clone();
+    let probe = Arc::new(tokio::sync::Notify::new());
+    state.observe_app_lock_wait_for_test(probe.clone());
+    let lane = crate::runtime::workflow_actor::WorkflowRuntime::new(
+        state.clone(),
+        router.session_projection.clone(),
+        router.agent_runtime_projection.clone(),
+    );
+    let mut guard = app.lock().await;
+    let request =
+        LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
+            session_id: session.id().into(),
+            node_path: "node".into(),
+            source: "workflow.define({alias:'lane-blocker'});".into(),
+            language: None,
+            provider_rebindings: vec![],
+            agent_rebindings: vec![],
+        });
+    let first = tokio::spawn({
+        let lane = lane.clone();
+        async move {
+            let command = crate::runtime::command::KernelCommand::from_local_request(
+                "f5-blocker",
+                None,
+                None,
+                &request,
+            );
+            lane.dispatch_workflow_command(command, request).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), probe.notified())
+        .await
+        .unwrap();
+    state
+        .authorize_room_provider_epoch(Some(actor.id()), Some(run.id()))
+        .unwrap();
+    let request = LocalDaemonRequest::CreateWorkflow(crate::local::CreateWorkflowRequest {
+        session_id: session.id().into(),
+        alias: Some("stale-mutation".into()),
+    });
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "f5-stale", None, None, &request,
+    );
+    command.caller.metaagent_id = Some(actor.id().into());
+    command.provider_run_id = Some(run.id().into());
+    let second = tokio::spawn({
+        let lane = lane.clone();
+        async move { lane.dispatch_workflow_command(command, request).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while lane
+            .queue_snapshots()
+            .await
+            .iter()
+            .all(|queue| queue.queued_commands == 0)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    guard
+        .providers_mut()
+        .terminate_run_provider_only(session.id(), run.id())
+        .unwrap();
+    launch_test_provider(
+        &mut guard,
+        session.id(),
+        actor.id(),
+        "dev-stub",
+        "dev-stub",
+        "replacement",
+    );
+    drop(guard);
+    let _ = first.await.unwrap();
+    let response = second.await.unwrap();
+    assert!(
+        response.is_err(),
+        "MP-11 F5: stale queued workflow mutation succeeded: {response:?}"
+    );
+    assert!(app
+        .lock()
+        .await
+        .sessions()
+        .resolve_workflow_ref(session.id(), "stale-mutation")
+        .is_err());
+}
+
+// MP-11 R1: two authenticated Room callers must not publish the same name.
+#[test]
+fn room_admission_concurrent_registry_add_preserves_winner_identity() {
+    run_large_stack_async_test("room-registry-add-race", concurrent_registry_add);
+}
+
+async fn concurrent_registry_add() {
+    let env = TestMetaRuntimeEnv::new("room-registry-add-race");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    config.user_config.state.path = Some(env.root.join("state/state.db").display().to_string());
+    let mut daemon = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (room, actor) = crate::app::KernelSessionService::new(&mut daemon)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut daemon)
+        .spawn_agent(CreateAgentRequest::new(room.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
+    let mut auth = Vec::new();
+    for agent in [&actor, &peer] {
+        let run = launch_test_provider(
+            &mut daemon,
+            room.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "room-model",
+        );
+        auth.push(run.runtime_mcp_auth_token().unwrap().to_owned());
+    }
+    let registry_root = config
+        .workflow_registry_root()
+        .join("rooms")
+        .join(room.id());
+    let registry = crate::workflow_code::WorkflowRegistry::new(None, Some(registry_root.clone()));
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(daemon)), 4);
+    let marker = format!("// MP-11 R1 {}", workspace.display());
+    let source = format!("{marker}\nworkflow.define({{alias:'winner'}});const node=workflow.node({{handle:'self',agent:workflow.existingAgent('{}'),canCompleteWorkflowRun:true}});workflow.endpoint(node,{{handle:'entry'}});", actor.id());
+    let losing_source = source
+        .replace("winner", "loser")
+        .replace(actor.id(), peer.id());
+    let (started, release) = crate::workflow_code::compile_gate_for_test::install(&marker);
+    let first = tokio::spawn({
+        let router = router.clone();
+        let auth = auth[0].clone();
+        let source = source.clone();
+        async move {
+            router.dispatch_authenticated_runtime_tool_call(&auth, "chariox.workflow_registry.add", serde_json::json!({"name":"same-name", "source":{"kind":"single_file", "source":source}})).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(10), started)
+        .await
+        .unwrap()
+        .unwrap();
+    // The first job has written source and is compiling outside the app mutex.
+    let second = tokio::time::timeout(Duration::from_secs(10),
+        router.dispatch_authenticated_runtime_tool_call(&auth[1], "chariox.workflow_registry.add", serde_json::json!({"name":"same-name", "source":{"kind":"single_file", "source":losing_source}}))).await;
+    drop(release);
+    let first = first.await.unwrap();
+    let second = second.expect("same-name addition should reject without waiting on compilation");
+    assert!(
+        second
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().contains("conflict")),
+        "MP-11 R1: losing Room job needs a clear name conflict: {second:?}"
+    );
+    let first = first.expect("reserved first job must publish its own entry");
+    assert!(first.ok, "{first:?}");
+    let winner = registry
+        .resolve("same-name")
+        .expect("winner source and file hashes must resolve together");
+    assert_eq!(winner.source, source);
+    assert_eq!(
+        winner.metadata.created_by_agent_id.as_deref(),
+        Some(actor.id())
+    );
+    assert_eq!(
+        winner.metadata.source_sha256,
+        crate::workflow_code::sha256_hex(source.as_bytes())
+    );
+    let compile = crate::workflow_code::compile_workflow_code_javascript(
+        "node",
+        &source,
+        &config.workflow_code_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        winner.metadata.definition_sha256,
+        Some(crate::workflow_code::workflow_code_definition_sha256_hex(
+            &compile.definition
+        ))
+    );
+    assert_eq!(
+        serde_json::to_value(&winner.metadata).unwrap(),
+        first.payload["WorkflowRegistryEntryAdded"]["entry"]
+    );
+    assert!(
+        !std::fs::read_dir(&registry_root).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp-")),
+        "each job must remove only its own staging directory"
+    );
 }

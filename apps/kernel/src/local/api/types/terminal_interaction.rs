@@ -68,6 +68,128 @@ impl Drop for ApprovalPasskey {
     }
 }
 
+/// MP-08 / MP-10 / MP-11 A07 (protocol 477): the owner's answer to a
+/// protected hand-off. Only a Chariox terminal of the hand-off owner may send
+/// it. A value goes from here directly to the bound browser field, under
+/// observation protection; it never becomes an interaction reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespondToHandoffRequest {
+    pub session_id: String,
+    pub interaction_id: String,
+    pub action: HandoffResponseAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HandoffResponseAction {
+    /// Click the bound element now, as the owner.
+    Click,
+    /// Type the value into the bound field, as the owner.
+    EnterValue {
+        value: HandoffValue,
+        /// Secret hand-offs only: also store the value in the Vault under
+        /// this new key. Grants no model read authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        save_to_vault_key: Option<String>,
+    },
+    /// The owner completed the step in the live browser.
+    Done,
+    Cancel,
+}
+
+impl<'de> Deserialize<'de> for HandoffResponseAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // MP-11 A07: tagged unit variants otherwise discard extra fields,
+        // including a generic reply. Empty struct variants enforce the boundary.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Click {},
+            EnterValue {
+                value: HandoffValue,
+                #[serde(default)]
+                save_to_vault_key: Option<String>,
+            },
+            Done {},
+            Cancel {},
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Click {} => Self::Click,
+            Wire::EnterValue {
+                value,
+                save_to_vault_key,
+            } => Self::EnterValue {
+                value,
+                save_to_vault_key,
+            },
+            Wire::Done {} => Self::Done,
+            Wire::Cancel {} => Self::Cancel,
+        })
+    }
+}
+
+impl HandoffResponseAction {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::EnterValue { .. } => "enter_value",
+            Self::Done => "done",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HandoffValue(String);
+
+impl HandoffValue {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for HandoffValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HandoffValue([REDACTED])")
+    }
+}
+
+impl Drop for HandoffValue {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffStatus {
+    Completed,
+    Failed,
+    Cancelled,
+    Expired,
+    /// Input may have reached the page; it is never replayed.
+    Uncertain,
+}
+
+/// The only result an agent or another terminal ever learns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffOutcome {
+    pub handoff_id: String,
+    pub status: HandoffStatus,
+    /// `click`, `enter_value`, `done`, `cancel`, `timeout`, `withdrawn`.
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub saved_to_vault: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArmDeploymentCredentialEnrollmentRequest {
     pub session_id: String,

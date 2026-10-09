@@ -8,6 +8,7 @@ pub use super::prompt_queue::{
 pub(crate) use super::prompt_queue::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub use super::queued_metaagent_task::QueuedMetaagentTask;
 pub use super::runtime_interactions::{
+    HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
     RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin,

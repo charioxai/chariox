@@ -369,7 +369,7 @@ impl EnvironmentActionLedger {
                 code: EnvironmentActionFailureCode::ControllerFailure,
             },
             EnvironmentActionTerminal::Cancelled => EnvironmentActionOutcome::Cancelled {
-                reason: cancellation_reason.unwrap_or_else(|| {
+                reason: cancellation_reason.unwrap_or({
                     if action.cancellation_requested {
                         EnvironmentActionCancellationReason::Requested
                     } else {

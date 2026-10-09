@@ -268,6 +268,49 @@ pub(super) async fn query_remote_queued_steer_receipt(
     worker_provider_run_id: &str,
     execution_lease_id: &str,
 ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    query_remote_queued_steer_receipt_with_transport(
+        state,
+        agent_id,
+        queued_prompt_id,
+        worker_kernel_id,
+        worker_machine_id,
+        leased_agent_id,
+        target_home_prompt_id,
+        worker_provider_run_id,
+        execution_lease_id,
+        |config, target, request| async move {
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                &config,
+                target,
+                request,
+                REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
+            )
+            .await
+        },
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing query_remote_queued_steer_receipt_with_transport operation signature and explicit context arguments"
+)]
+pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
+    state: &KernelRuntimeState,
+    agent_id: &str,
+    queued_prompt_id: &str,
+    worker_kernel_id: &str,
+    worker_machine_id: &str,
+    leased_agent_id: &str,
+    target_home_prompt_id: &str,
+    worker_provider_run_id: &str,
+    execution_lease_id: &str,
+    send_request: F,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError>
+where
+    F: FnOnce(crate::config::DaemonConfig, ClientTarget, RelayPeerRequest) -> Fut + Send,
+    Fut: Future<Output = Result<RelayPeerResponse, DaemonError>> + Send,
+{
     let agent = state.owned.agent_store.get_agent(agent_id)?;
     let remote_execution = agent
         .remote_execution()
@@ -294,23 +337,21 @@ pub(super) async fn query_remote_queued_steer_receipt(
     let relay_config = state
         .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&remote_execution))
         .await;
-    let response =
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(worker_kernel_id.to_string()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
-                leased_agent_id: leased_agent_id.to_string(),
-                steer_id: queued_prompt_id.to_string(),
-                target_home_prompt_id: target_home_prompt_id.to_string(),
-                worker_provider_run_id: worker_provider_run_id.to_string(),
-                execution_lease_id: execution_lease_id.to_string(),
-            },
-            REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
-        )
-        .await?;
+    let response = send_request(
+        relay_config,
+        ClientTarget {
+            daemon_id: Some(worker_kernel_id.to_string()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: leased_agent_id.to_string(),
+            steer_id: queued_prompt_id.to_string(),
+            target_home_prompt_id: target_home_prompt_id.to_string(),
+            worker_provider_run_id: worker_provider_run_id.to_string(),
+            execution_lease_id: execution_lease_id.to_string(),
+        },
+    )
+    .await?;
     match response {
         RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
             if receipt

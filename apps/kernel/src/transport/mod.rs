@@ -9,6 +9,7 @@ pub(crate) mod relay_client;
 pub(crate) mod relay_crypto;
 pub(crate) mod relay_discovery;
 pub(crate) mod relay_peer;
+mod relay_socket_connect;
 pub(crate) mod request_decode_error;
 pub(crate) mod room_browser_controller;
 pub(crate) mod runtime_tools;

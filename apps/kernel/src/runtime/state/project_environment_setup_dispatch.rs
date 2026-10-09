@@ -148,6 +148,7 @@ pub(super) async fn start_remote_setup_with_deadline(
     .await
 }
 
+#[allow(dead_code)] // Preserve the existing remote setup status interface.
 pub(super) async fn get_remote_setup_status(
     state: &KernelRuntimeState,
     execution: &SetupExecution,

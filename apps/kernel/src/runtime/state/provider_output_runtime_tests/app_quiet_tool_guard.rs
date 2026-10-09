@@ -108,7 +108,7 @@ async fn quiet_settlement_during_runtime_mcp(path: SettlementPath) {
         let mut output_projected = false;
         let mut completion_deferred = true;
         if !matches!(path, SettlementPath::AppOutput) {
-            let released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
+            let _released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
                 .drain_leased_runtime_projection(&leased.id, &run_id, true)
                 .expect("leased projection drain")
                 .map(|(_, event)| {

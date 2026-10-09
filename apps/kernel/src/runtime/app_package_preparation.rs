@@ -1,6 +1,7 @@
 //! Verified upload-to-release preparation, below terminal adapters. This owns no
 //! second database, never grants capabilities, and never starts an App worker.
 
+#[cfg(test)]
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
@@ -52,6 +53,10 @@ type Result<T> = std::result::Result<T, PreparationError>;
 pub(crate) struct PreparedAppPackage {
     owner: String,
     candidate: VerifiedInstallCandidate,
+    #[allow(
+        dead_code,
+        reason = "Keep the owned release directory pinned with its verified candidate until installation"
+    )]
     release: StagedRelease,
 }
 
@@ -61,11 +66,13 @@ impl PreparedAppPackage {
         Ok(&self.candidate)
     }
 
+    #[cfg(test)]
     pub(crate) fn directory(&self, trusted_owner: &str) -> Result<&File> {
         self.require_owner(trusted_owner)?;
         Ok(&self.release.directory)
     }
 
+    #[cfg(test)]
     pub(crate) fn reused(&self) -> bool {
         self.release.reused
     }

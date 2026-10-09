@@ -34,6 +34,7 @@ mod source_export;
 mod tests;
 mod validation;
 mod workflow_registry;
+mod workflow_registry_publication;
 
 pub use common::workflow_code_definition_sha256_hex;
 pub use compiler::*;

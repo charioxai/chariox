@@ -5482,6 +5482,10 @@ fn spawn_external_worker_fixture(
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit spawn_external_worker_fixture_with_withheld_retry state or return type at the existing boundary"
+)]
 fn spawn_external_worker_fixture_with_withheld_retry(
     relay_url: String,
     registration: DaemonRegistration,

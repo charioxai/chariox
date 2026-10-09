@@ -217,7 +217,8 @@ pub(super) struct WorkflowApplyContext<'a> {
 pub(super) fn workflow_registry_apply_result(
     app: &mut crate::app::DaemonApp,
     name: &str,
-    parameters: &std::collections::BTreeMap<String, serde_json::Value>,
+    entry: crate::workflow_code::WorkflowRegistryResolvedEntry,
+    compile: crate::workflow_code::WorkflowCodeCompileResult,
     context: WorkflowApplyContext<'_>,
 ) -> Result<
     (
@@ -239,18 +240,14 @@ pub(super) fn workflow_registry_apply_result(
     } = context;
 
     authorize()?;
-    let entry = workflow_registry_for_session(app, session_id)?.resolve(name)?;
+    let current = workflow_registry_for_session(app, session_id)?.resolve(name)?;
+    if current.source != entry.source || current.metadata != entry.metadata {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "workflow registry entry changed during compilation; retry".into(),
+        });
+    }
     let limits = app.config().workflow_code_limits();
-    let node_path = crate::workflow_code::discover_workflow_code_node_path()?;
-    let compile =
-        crate::workflow_code::compile_workflow_code_source_with_parameters_and_schema_import_root(
-            &node_path,
-            &entry.source,
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            &limits,
-            parameters,
-            entry.schema_import_root.as_deref(),
-        )?;
     reject_invalid_workflow_code_run_compile(operation, &compile.validation)?;
     let metaagent_id = controlled_by_metaagent_id.as_deref();
     let (definition, validation) =
@@ -398,19 +395,6 @@ pub(super) fn workflow_code_artifact_apply_result(
         },
         apply,
     })
-}
-
-pub(super) fn workflow_code_schema_import_root_for_session(
-    app: &crate::app::DaemonApp,
-    session_id: &str,
-) -> Result<Option<std::path::PathBuf>, DaemonError> {
-    let session = app.sessions().get_session(session_id)?;
-    let workspace = std::path::PathBuf::from(session.workspace_id());
-    if workspace.is_absolute() {
-        Ok(Some(workspace))
-    } else {
-        Ok(None)
-    }
 }
 
 pub(super) fn workflow_code_artifact_actor(

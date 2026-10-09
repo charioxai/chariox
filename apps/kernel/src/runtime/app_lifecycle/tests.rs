@@ -251,7 +251,6 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
             .desired_running
     );
     drop(old);
-    drop(service);
     drop(control);
     drop(executor);
     drop(store);

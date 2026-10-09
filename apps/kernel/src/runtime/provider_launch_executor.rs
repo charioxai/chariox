@@ -552,6 +552,19 @@ impl ProviderLaunchPendingTracker {
     }
 }
 
+fn provider_launch_is_still_starting_from_projection(
+    session_id: &str,
+    session_projection: &SessionStateProjectionStore,
+    provider_run_projection: &ProviderRunProjectionStore,
+) -> Option<bool> {
+    let session = session_projection.get(session_id)?;
+    let Some(provider_run_id) = session.active_provider_run_id() else {
+        return Some(false);
+    };
+    let run = provider_run_projection.get(provider_run_id)?;
+    Some(run.state() == ProviderRunState::Starting)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,17 +705,4 @@ mod tests {
             native_tui: false,
         }
     }
-}
-
-fn provider_launch_is_still_starting_from_projection(
-    session_id: &str,
-    session_projection: &SessionStateProjectionStore,
-    provider_run_projection: &ProviderRunProjectionStore,
-) -> Option<bool> {
-    let session = session_projection.get(session_id)?;
-    let Some(provider_run_id) = session.active_provider_run_id() else {
-        return Some(false);
-    };
-    let run = provider_run_projection.get(provider_run_id)?;
-    Some(run.state() == ProviderRunState::Starting)
 }

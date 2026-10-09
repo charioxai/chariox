@@ -85,6 +85,10 @@ impl Drop for PortGate {
         self.0.wake.notify_waiters();
     }
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing Operation typed actor payload layout"
+)]
 enum Operation {
     Open(PendingStart, PortGate, Option<EffectReceipt>),
     Port(StreamPort, PortOperation, PortGate),
@@ -113,6 +117,14 @@ impl std::fmt::Debug for HttpRequest {
 impl HttpStreams {
     /// Called on bounded blocking admission, since opening reads host resolver
     /// configuration. No DNS query/socket starts before the writer fence.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing job operation signature and explicit context arguments"
+    )]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit job state or return type at the existing boundary"
+    )]
     pub(in crate::runtime::app_http) fn job(
         &self,
         policy: &AppHttpPolicy,

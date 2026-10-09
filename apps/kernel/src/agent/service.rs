@@ -251,6 +251,7 @@ impl AgentService {
         self.store.insert(agent)
     }
 
+    #[cfg(test)]
     pub(crate) fn materialize_workflow_runtime_agent(
         &mut self,
         agent: AgentInstance,
@@ -1113,6 +1114,14 @@ impl AgentService {
 
     fn is_alias_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
         let normalized = normalized_agent_alias_key(alias);
+        // Reserve current and legacy ID forms even before an identity exists.
+        if normalized.strip_prefix("agent-").is_some_and(|suffix| {
+            !suffix.is_empty()
+                && (suffix.bytes().all(|byte| byte.is_ascii_digit())
+                    || (suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        }) {
+            return true;
+        }
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized
@@ -1182,6 +1191,29 @@ mod workflow_copy_alias_tests {
         agent.grant_mcp("home_browser");
         agent.grant_skill("dataviz");
         service.store.insert(agent)
+    }
+
+    // MP-11 F6: reserve the whole ID namespace before the target exists.
+    #[test]
+    fn security_f6_alias_cannot_squat_on_future_agent_id() {
+        let mut service = AgentService::new();
+        let source = insert_source(&mut service, "room", "child");
+        assert!(service
+            .alias_agent(source.id(), Some("agent-999999".into()))
+            .is_err());
+        assert_eq!(
+            service.get_agent(source.id()).unwrap().alias(),
+            Some("child")
+        );
+        assert!(service
+            .alias_agent(
+                source.id(),
+                Some("agent-0123456789abcdef0123456789abcdef".into())
+            )
+            .is_err());
+        assert!(service
+            .alias_agent(source.id(), Some("agent-helper".into()))
+            .is_ok());
     }
 
     #[test]

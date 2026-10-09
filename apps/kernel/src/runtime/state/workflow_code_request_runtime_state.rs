@@ -3,27 +3,89 @@ use super::workflow_request_runtime_state::workflow_response_session;
 use super::*;
 
 impl KernelRuntimeState {
+    /// MP-11 F7: at most two compiler jobs per kernel process. No app guard is
+    /// held during discovery, sandbox setup, evaluation or schema replay.
+    pub(super) async fn run_workflow_compiler_operation<R: Send + 'static>(
+        &self,
+        operation: impl FnOnce() -> Result<R, DaemonError> + Send + 'static,
+    ) -> Result<R, DaemonError> {
+        static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+        self.authorize_current_external_command()?;
+        let permit = SLOTS
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "workflow_code.compile",
+                message: "workflow compiler capacity reached; retry later".into(),
+            })?;
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation()
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: format!("workflow compiler task failed: {error}"),
+        })??;
+        self.authorize_current_external_command()?;
+        Ok(result)
+    }
+
+    pub(super) async fn compile_workflow_request_source(
+        &self,
+        session_id: &str,
+        source: &str,
+        language: crate::workflow_code::WorkflowCodeLanguage,
+    ) -> Result<crate::workflow_code::WorkflowCodeCompileResult, DaemonError> {
+        let session_id = session_id.to_owned();
+        let (limits, root) = self
+            .with_authorized_app_side_effect(move |app| {
+                let session = app.sessions().get_session(&session_id)?;
+                let root = std::path::PathBuf::from(session.workspace_id());
+                Ok((
+                    app.config().workflow_code_limits(),
+                    root.is_absolute().then_some(root),
+                ))
+            })
+            .await?;
+        let source = source.to_owned();
+        self.run_workflow_compiler_operation(move || {
+            crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+                "node",
+                &source,
+                language,
+                &limits,
+                root.as_deref(),
+            )
+        })
+        .await
+    }
+
     pub(super) async fn execute_workflow_code_validate_request(
         &self,
         request: crate::local::ValidateWorkflowCodeRequest,
         caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let caller_metaagent_id = caller_metaagent_id.map(str::to_string);
-        self.with_authorized_app_side_effect(move |app| {
-            let limits = app.config().workflow_code_limits();
-            let result = crate::app::KernelSessionService::with_authorization(app, &|| {
-                self.authorize_current_external_command()
-            })
-            .compile_and_validate_workflow_code_source_with_rebindings(
+        let compile = self
+            .compile_workflow_request_source(
                 &request.session_id,
-                &request.node_path,
                 &request.source,
                 request
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+            )
+            .await?;
+        let caller_metaagent_id = caller_metaagent_id.map(str::to_string);
+        self.with_authorized_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            let result = validate_compiled_request(
+                app,
+                self,
+                &request.session_id,
+                compile,
                 &limits,
-                &request.provider_rebindings,
-                &request.agent_rebindings,
+                (&request.provider_rebindings, &request.agent_rebindings),
                 caller_metaagent_id.as_deref(),
             )?;
             Ok(LocalDaemonResponse::WorkflowCodeValidated { result })
@@ -40,6 +102,19 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        let compile = match self
+            .compile_workflow_request_source(
+                &request.session_id,
+                &request.source,
+                request
+                    .language
+                    .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+            )
+            .await
+        {
+            Ok(compile) => compile,
+            Err(error) => return (Err(error), None),
+        };
         let caller_user_id = caller_user_id.to_string();
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
@@ -49,20 +124,27 @@ impl KernelRuntimeState {
                 let language = request
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
-                let result = crate::app::KernelSessionService::with_authorization(app, &|| {
+                let compile = validate_compiled_request(
+                    app,
+                    self,
+                    &request.session_id,
+                    compile,
+                    &limits,
+                    (&request.provider_rebindings, &request.agent_rebindings),
+                    controlled_by_metaagent_id.as_deref(),
+                )?;
+                let apply = crate::app::KernelSessionService::with_authorization(app, &|| {
                     self.authorize_current_external_command()
                 })
-                .compile_and_apply_workflow_code_source_with_rebindings(
+                .apply_workflow_code_definition(
                     &request.session_id,
-                    &request.node_path,
-                    &request.source,
-                    language,
+                    &compile.definition,
                     &limits,
                     caller_user_id.clone(),
                     controlled_by_metaagent_id.clone(),
-                    &request.provider_rebindings,
-                    &request.agent_rebindings,
                 )?;
+                let result =
+                    crate::workflow_code::WorkflowCodeCompileAndApplyResult { compile, apply };
                 self.authorize_current_external_command()?;
                 let artifact_name = format!(
                     "workflow-source-{}-{}",
@@ -163,38 +245,41 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        let compile = match self
+            .compile_workflow_request_source(
+                &request.session_id,
+                &request.source,
+                request
+                    .language
+                    .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+            )
+            .await
+        {
+            Ok(compile) => compile,
+            Err(error) => return (Err(error), None),
+        };
         let caller_user_id = caller_user_id.to_string();
         let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
         let session_id = request.session_id.clone();
         let apply_result = match self
             .with_authorized_app_side_effect({
                 let session_id = session_id.clone();
-                let node_path = request.node_path.clone();
-                let source = request.source.clone();
                 let endpoint = request.endpoint.clone();
                 let queue_ref = request.queue_ref.clone();
-                let language = request
-                    .language
-                    .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
                 let provider_rebindings = request.provider_rebindings.clone();
                 let agent_rebindings = request.agent_rebindings.clone();
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     let limits = app.config().workflow_code_limits();
-                    let compile =
-                        crate::app::KernelSessionService::with_authorization(app, &|| {
-                            self.authorize_current_external_command()
-                        })
-                        .compile_and_validate_workflow_code_source_with_rebindings(
-                            &session_id,
-                            &node_path,
-                            &source,
-                            language,
-                            &limits,
-                            &provider_rebindings,
-                            &agent_rebindings,
-                            controlled_by_metaagent_id.as_deref(),
-                        )?;
+                    let compile = validate_compiled_request(
+                        app,
+                        self,
+                        &session_id,
+                        compile,
+                        &limits,
+                        (&provider_rebindings, &agent_rebindings),
+                        controlled_by_metaagent_id.as_deref(),
+                    )?;
                     reject_invalid_workflow_code_run_compile(
                         "workflow_code.run",
                         &compile.validation,
@@ -427,4 +512,37 @@ impl KernelRuntimeState {
             .or(session);
         (result, session)
     }
+}
+
+fn validate_compiled_request(
+    app: &mut crate::DaemonApp,
+    state: &KernelRuntimeState,
+    session_id: &str,
+    mut compile: crate::workflow_code::WorkflowCodeCompileResult,
+    limits: &crate::config::WorkflowCodeLimitsConfig,
+    bindings: (
+        &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        &[crate::workflow_code::WorkflowCodeAgentRebinding],
+    ),
+    actor: Option<&str>,
+) -> Result<crate::workflow_code::WorkflowCodeCompileResult, DaemonError> {
+    let (definition, mut validation) =
+        crate::app::KernelSessionService::with_authorization(app, &|| {
+            state.authorize_current_external_command()
+        })
+        .validate_workflow_code_definition_with_rebindings(
+            session_id,
+            &compile.definition,
+            limits,
+            bindings.0,
+            bindings.1,
+            actor,
+        )?;
+    crate::workflow_code::attach_workflow_code_diagnostic_spans(
+        &mut validation,
+        &compile.source_spans,
+    );
+    compile.definition = definition;
+    compile.validation = validation;
+    Ok(compile)
 }

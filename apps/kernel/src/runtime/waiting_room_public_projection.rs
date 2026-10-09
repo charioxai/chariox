@@ -326,6 +326,11 @@ fn cached_session_sources_match(
     visible_session_count == cached.entries.len()
 }
 
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -358,6 +363,11 @@ pub(crate) fn build_waiting_room_public_snapshot(
     )
 }
 
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     metaagent_events: &MetaagentEventStore,
@@ -393,6 +403,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_cached_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     session_revision: u64,
@@ -432,6 +446,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing waiting_room_snapshot_auxiliary_fingerprint operation signature and explicit context arguments"
+)]
 fn waiting_room_snapshot_auxiliary_fingerprint(
     runtime_projects: &[RuntimeProject],
     slices: &[SliceRecord],
@@ -459,6 +477,10 @@ fn waiting_room_snapshot_auxiliary_fingerprint(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_summaries operation signature and explicit context arguments"
+)]
 fn build_waiting_room_public_snapshot_from_summaries(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
     projects: Vec<WaitingRoomPublicProjectSummary>,
@@ -758,6 +780,7 @@ fn hash_waiting_room_version(
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
 }
 
+#[cfg(test)]
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -857,15 +880,15 @@ fn waiting_room_session_summaries_from_refs<'a>(
                     .filter(|member| member.user_id() != session.owner_user_id())
                     .count(),
                 pending_collaboration_invite_count: pending_session_invite_count(session),
-                activity: waiting_room_session_activity_summary(&session, caller_user_id),
+                activity: waiting_room_session_activity_summary(session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
-                    &session,
+                    session,
                     metaagent_events,
                     workspace_label.clone(),
                     &mut worktree_labels,
                     caller_user_id,
                 ),
-                workflows: waiting_room_public_workflow_summaries(&session),
+                workflows: waiting_room_public_workflow_summaries(session),
             }
         })
         .collect()

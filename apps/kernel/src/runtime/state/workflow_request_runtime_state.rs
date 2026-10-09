@@ -1,5 +1,12 @@
-use super::workflow_publication_owned_state::ExportAppPlan;
 use super::*;
+
+// MP-08 / MP-10 / MP-11: keep workflow construction off its caller's poll frame.
+type WorkflowRequestOutcome = (
+    Result<LocalDaemonResponse, DaemonError>,
+    Option<crate::session::RuntimeSession>,
+);
+type AdmittedWorkflowRequestFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = WorkflowRequestOutcome> + Send>>;
 
 impl KernelRuntimeState {
     pub(crate) async fn execute_workflow_request(
@@ -12,12 +19,26 @@ impl KernelRuntimeState {
         Option<crate::session::RuntimeSession>,
     ) {
         self.with_room_request_origin(caller_metaagent_id.as_deref(), &request)
-            .execute_admitted_workflow_request(request, caller_user_id, caller_metaagent_id)
+            .boxed_admitted_workflow_request(request, caller_user_id, caller_metaagent_id)
             .await
     }
 
+    #[inline(never)]
+    fn boxed_admitted_workflow_request(
+        self,
+        request: LocalDaemonRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> AdmittedWorkflowRequestFuture {
+        Box::pin(self.execute_admitted_workflow_request(
+            request,
+            caller_user_id,
+            caller_metaagent_id,
+        ))
+    }
+
     async fn execute_admitted_workflow_request(
-        &self,
+        self,
         request: LocalDaemonRequest,
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
@@ -42,6 +63,14 @@ impl KernelRuntimeState {
         }
 
         let outcome = match request {
+            request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_)) => (
+                self.execute_workflow_notification_command(request, &caller_user_id)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result =
                     owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());

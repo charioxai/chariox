@@ -245,9 +245,7 @@ impl ProviderResumeState {
         provider: &str,
         operation: &str,
     ) -> Option<Self> {
-        if self.provider_session_id(provider).is_none() {
-            return None;
-        }
+        self.provider_session_id(provider)?;
         match (
             provider.trim().to_ascii_lowercase().as_str(),
             operation.trim(),

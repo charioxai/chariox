@@ -482,3 +482,68 @@ fn registry_persists_validation_report_for_invalid_artifact() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+// MP-11 R1: a rejected/failed job must not remove another job's staging files.
+#[test]
+fn workflow_registry_publication_claim_cleanup_and_retry() {
+    use crate::workflow_code::workflow_registry_publication::WorkflowRegistryPublication;
+    let root = RegistryPublicationTestRoot::new();
+    let foreign = root.0.join(".same-name.tmp-foreign");
+    fs::create_dir(&foreign).unwrap();
+    fs::write(foreign.join("source.js"), "other job source").unwrap();
+    let first = WorkflowRegistryPublication::begin(&root.0, "same-name").unwrap();
+    let first_path = first.staging_dir().to_owned();
+    fs::write(first_path.join("source.js"), "first job source").unwrap();
+    assert!(
+        matches!(WorkflowRegistryPublication::begin(&root.0, "same-name"), Err(error) if error.to_string().contains("conflict"))
+    );
+    assert_eq!(
+        fs::read_to_string(first_path.join("source.js")).unwrap(),
+        "first job source"
+    );
+    drop(first);
+    assert!(!first_path.exists());
+    assert_eq!(
+        fs::read_to_string(foreign.join("source.js")).unwrap(),
+        "other job source"
+    );
+    let retry = WorkflowRegistryPublication::begin(&root.0, "same-name").unwrap();
+    assert_ne!(retry.staging_dir(), first_path);
+    retry.publish().unwrap();
+    assert!(root.0.join("same-name").is_dir());
+    assert!(!first_path.exists());
+    assert!(
+        matches!(WorkflowRegistryPublication::begin(&root.0, "same-name"), Err(error) if error.to_string().contains("conflict"))
+    );
+    assert!(foreign.is_dir());
+}
+
+#[test]
+fn workflow_registry_listing_hides_unpublished_staging() {
+    let root = RegistryPublicationTestRoot::new();
+    let staging = root.0.join(".same-name.tmp-private");
+    fs::create_dir(&staging).unwrap();
+    fs::write(staging.join("manifest.json"), "not published yet").unwrap();
+    let registry = WorkflowRegistry::new(None, Some(root.0.clone()));
+    let entries = registry
+        .list()
+        .expect("unpublished manifest must not affect discovery");
+    assert!(entries.iter().all(|entry| entry.name != "same-name"));
+}
+
+struct RegistryPublicationTestRoot(PathBuf);
+impl RegistryPublicationTestRoot {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-registry-publication-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&root).unwrap();
+        Self(root)
+    }
+}
+impl Drop for RegistryPublicationTestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}

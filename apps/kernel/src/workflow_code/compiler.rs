@@ -225,8 +225,14 @@ pub(crate) mod compile_gate_for_test {
 }
 
 pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
+    discover_node_path(env::var_os("NODE"))
+}
+
+fn discover_node_path(
+    configured: Option<std::ffi::OsString>,
+) -> Result<PathBuf, crate::DaemonError> {
     let mut candidates = Vec::new();
-    if let Some(path) = env::var_os("NODE") {
+    if let Some(path) = configured {
         candidates.push(PathBuf::from(path));
     }
     candidates.extend([
@@ -241,33 +247,46 @@ pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError>
     }
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.clone()));
-    candidates
-        .into_iter()
-        .find(|candidate| {
-            Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        })
-        .ok_or_else(|| crate::DaemonError::LocalTransport {
-            operation: "workflow_code.compile",
-            message:
-                "could not find Node.js for workflow-code compilation; set the kernel NODE environment variable"
-                    .to_string(),
-        })
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    for candidate in candidates {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(mut child) = Command::new(&candidate)
+            .env_clear()
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if child
+            .wait_timeout(remaining.min(Duration::from_millis(500)))
+            .is_ok_and(|status| status.is_some_and(|status| status.success()))
+        {
+            return Ok(candidate);
+        }
+        if child.id() > 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    Err(crate::DaemonError::LocalTransport {
+        operation: "workflow_code.compile",
+        message: "could not find responsive Node.js for workflow-code compilation; set the kernel NODE environment variable".into(),
+    })
 }
 
 #[cfg(unix)]
 #[test]
 fn node_discovery_preserves_the_explicit_runtime_override() {
     use std::os::unix::fs::PermissionsExt;
-    let _environment = crate::env_lock::lock();
+    // Never set the process-wide NODE: parallel compiler tests discover Node too.
     let worktree = crate::test_support::TestWorktree::new("node-discovery-override");
     let node = worktree.path().join("configured-node");
     std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::env::set_var("NODE", &node);
-    assert_eq!(discover_workflow_code_node_path().unwrap(), node);
+    assert_eq!(discover_node_path(Some(node.clone().into())).unwrap(), node);
 }

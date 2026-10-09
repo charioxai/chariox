@@ -273,6 +273,10 @@ impl SessionRuntime {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_session_command_lane operation signature and explicit context arguments"
+)]
 async fn run_session_command_lane(
     store: SessionRuntimeStore,
     focus_projection: FocusedAgentProjection,
@@ -410,44 +414,6 @@ fn command_session_actor_user_id(command: &KernelCommand) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::local::{
-        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
-        RequestRoomEnvironmentInputTakeoverRequest,
-    };
-    use crate::session::InputTarget;
-
-    #[test]
-    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
-        let cancel =
-            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
-                session_id: "session-1".to_string(),
-                action_id: "action-7".to_string(),
-            });
-        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
-            RequestRoomEnvironmentInputTakeoverRequest {
-                session_id: "session-1".to_string(),
-                target: InputTarget::Desktop,
-            },
-        );
-        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
-            session_id: "session-1".to_string(),
-        });
-
-        assert_eq!(
-            session_command_lane_id(&cancel, "session-1"),
-            "session-1::room-interrupt"
-        );
-        assert_eq!(
-            session_command_lane_id(&takeover, "session-1"),
-            "session-1::room-interrupt"
-        );
-        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
-    }
-}
-
 impl SessionRuntime {
     async fn verified_metaagent_caller_id(
         &self,
@@ -493,5 +459,43 @@ fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
         LocalDaemonResponse::TerminalResized { .. } => "TerminalResized",
         LocalDaemonResponse::RuntimeNotices { .. } => "RuntimeNotices",
         _ => "Other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
+        RequestRoomEnvironmentInputTakeoverRequest,
+    };
+    use crate::session::InputTarget;
+
+    #[test]
+    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
+        let cancel =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-7".to_string(),
+            });
+        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: InputTarget::Desktop,
+            },
+        );
+        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(
+            session_command_lane_id(&cancel, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(
+            session_command_lane_id(&takeover, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
     }
 }

@@ -30,7 +30,10 @@ pub(crate) use workers::AppWorkerPublisher;
 mod catalog;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod first_install;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))
+))]
 pub(crate) use first_install::FirstInstallControlError;
 
 /// See `AppControlService::admit_reply`.
@@ -53,6 +56,10 @@ async fn admit_within(
 }
 
 #[derive(Clone)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit AppControlService state or return type at the existing boundary"
+)]
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
     request_receipts: request_receipts::AppRequestReceipts,

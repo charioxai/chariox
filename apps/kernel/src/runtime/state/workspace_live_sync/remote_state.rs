@@ -3,7 +3,7 @@
 use super::*;
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state(
-    path: &PathBuf,
+    path: &Path,
     content_text: Option<String>,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
     crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
@@ -16,7 +16,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state(
 }
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content(
-    path: &PathBuf,
+    path: &Path,
     content: Option<crate::io::ArtifactContent>,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
     match content {
@@ -43,7 +43,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content(
 }
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content_with_domain(
-    path: &PathBuf,
+    path: &Path,
     content: Option<crate::io::ArtifactContent>,
     domain: crate::io::ArtifactDomainKind,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
@@ -61,7 +61,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content_w
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state_for_path<'a>(
     states: &'a [crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<&'a crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState> {
     let expected = path.to_string_lossy();
     states.iter().find(|state| state.path == expected)

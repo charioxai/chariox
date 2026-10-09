@@ -7,7 +7,7 @@
 use super::*;
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_tool(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     tool_name: &str,
     arguments: &serde_json::Value,
 ) -> Result<Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>, DaemonError> {
@@ -129,7 +129,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_artifact_states_for_
 }
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_states_for_patch_operations(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     operations: &[ManagedPatchOperation],
 ) -> Result<Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>, DaemonError> {
     let mut paths = BTreeSet::new();
@@ -138,13 +138,13 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_states_for_patch_ope
             ManagedPatchOperation::Add { path, .. }
             | ManagedPatchOperation::Update { path, .. }
             | ManagedPatchOperation::Delete { path } => {
-                paths.insert(path.clone());
+                paths.insert(path.to_path_buf());
             }
             ManagedPatchOperation::Move {
                 from_path, to_path, ..
             } => {
-                paths.insert(from_path.clone());
-                paths.insert(to_path.clone());
+                paths.insert(from_path.to_path_buf());
+                paths.insert(to_path.to_path_buf());
             }
         }
     }
@@ -158,7 +158,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_states_for_patch_ope
 }
 
 pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_final_states(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     initial_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
     final_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
 ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {

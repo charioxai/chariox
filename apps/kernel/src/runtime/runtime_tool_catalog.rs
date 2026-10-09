@@ -181,9 +181,7 @@ impl CatalogWatch {
     }
     pub(crate) async fn wait_until_observed(&mut self) -> Result<(), watch::error::RecvError> {
         loop {
-            if let Err(error) = self.receiver.has_changed() {
-                return Err(error);
-            }
+            self.receiver.has_changed()?;
             let revision = self.current();
             if revision.observed == revision.desired {
                 return Ok(());

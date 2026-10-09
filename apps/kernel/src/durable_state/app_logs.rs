@@ -96,6 +96,7 @@ fn prepare(
 }
 
 impl DurableKernelStateStore {
+    #[cfg(test)]
     pub(crate) fn append_app_log(
         &self,
         owner: &str,

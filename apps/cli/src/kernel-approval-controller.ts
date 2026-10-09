@@ -1,5 +1,10 @@
 import { isApprovalShortcut } from "./approval-shortcuts.js"
-import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
+import type { HandoffOutcome, HandoffResponseAction } from "@chariox/kernel-client/owner-handoff"
+import type { RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession } from "./cli-types.js"
+import {
+  createHandoffEntry, handoffChoices, handoffKeyText, handoffResultText, interactionHandoff,
+  HANDOFF_CLICK_CHOICE, HANDOFF_ENTER_CHOICE, type HandoffEntryView,
+} from "./kernel-handoff-entry.js"
 
 /** Protocol 403: the passkey is typed only into the passkey popup. */
 const PASSKEY_IN_POPUP = "Approve this in the Chariox passkey popup. Only the decision's owner gets it."
@@ -19,6 +24,8 @@ export type KernelApprovalKey = {
 }
 
 export type KernelApprovalPaste = {
+  text?: string
+  rawText?: string | null
   preventDefault(): void
   stopPropagation(): void
 }
@@ -29,6 +36,10 @@ export type KernelApprovalView = {
   criticalCount: number
   index: number
   interaction: RuntimeInteraction | null
+  /** The interaction's choices; a hand-off adds its protected owner action. */
+  choices: RuntimeInteractionChoice[]
+  /** MP-11 A07: protected value entry; only the length leaves the controller. */
+  handoffEntry: HandoffEntryView | null
   selected: number | null
   pending: boolean
   connected: boolean
@@ -56,6 +67,9 @@ export function createKernelApprovalController(deps: {
   onClose(): void
   scroll(direction: -1 | 1): void
   respond(sessionId: string, interactionId: string, choiceId: string): Promise<RuntimeSession>
+  /** MP-11 A07: the owner's protected hand-off answer. */
+  respondHandoff(sessionId: string, interactionId: string, action: HandoffResponseAction): Promise<HandoffOutcome>
+  notify(message: string): void
   applySession(session: RuntimeSession): void
   /** Shows this terminal's passkey popup for a critical approval; false when
    * it has none (another user's decision). */
@@ -72,11 +86,14 @@ export function createKernelApprovalController(deps: {
   let disposed = false
   let claimedInputTurn = false
   let lastDisplayedHost: { sessionId: string; operation: string; identity: string } | null = null
+  let entry: { interactionId: string; value: ReturnType<typeof createHandoffEntry> } | null = null
   const view = (): KernelApprovalView => {
     const items = kernelApprovals(deps.getSession())
     index = Math.min(index, Math.max(0, items.length - 1))
     const interaction = items[index] ?? null
+    if (entry && entry.interactionId !== interaction?.id) { entry.value.clear(); entry = null }
     return { open, count: items.length, criticalCount: items.filter(item => item.choices.some(choice => choice.requires_passkey)).length, index, interaction,
+      choices: interaction ? handoffChoices(interaction) : [], handoffEntry: entry?.value.view() ?? null,
       selected, pending: pending !== null, connected: deps.connected(), error }
   }
   const render = () => {
@@ -92,6 +109,8 @@ export function createKernelApprovalController(deps: {
     if (!open) return
     open = false
     selected = null
+    entry?.value.clear()
+    entry = null
     deps.onClose()
     render()
   }
@@ -106,6 +125,7 @@ export function createKernelApprovalController(deps: {
       error = null
       close()
     }
+    if (!deps.connected()) { entry?.value.clear(); entry = null }
     const nextIdentity = JSON.stringify(view().interaction)
     if (identity !== nextIdentity) {
       identity = nextIdentity
@@ -145,12 +165,45 @@ export function createKernelApprovalController(deps: {
       if (!disposed) sync()
     }
   }
+  const sendHandoff = async (interactionId: string, action: HandoffResponseAction) => {
+    const requestEpoch = epoch
+    const requestSession = sessionId
+    const token = {}
+    pending = token
+    error = null
+    render()
+    try {
+      const outcome = await deps.respondHandoff(requestSession, interactionId, action)
+      deps.notify(handoffResultText(outcome, null))
+    } catch (cause) {
+      if (!disposed && requestEpoch === epoch && deps.getSession().id === requestSession) error = handoffResultText(null, cause)
+    } finally {
+      if (pending === token) pending = null
+      if (!disposed) sync()
+    }
+  }
+  const submitEntry = () => {
+    const action = entry?.value.take()
+    const interactionId = entry?.interactionId
+    entry = null
+    selected = null
+    if (action && interactionId) void sendHandoff(interactionId, action)
+    else render()
+  }
   const choose = async (interactionId: string, choiceId: string) => {
     sync()
     const current = view()
-    const choice = current.interaction?.choices.find((item) => item.id === choiceId)
+    const choice = current.choices.find((item) => item.id === choiceId)
     if (!current.open || !current.connected || pending || !current.interaction
       || current.interaction.id !== interactionId || !choice) return
+    const handoff = interactionHandoff(current.interaction)
+    if (handoff && choiceId === HANDOFF_CLICK_CHOICE) return sendHandoff(interactionId, { kind: "click" })
+    if (handoff && choiceId === HANDOFF_ENTER_CHOICE) {
+      entry = { interactionId, value: createHandoffEntry(handoff) }
+      error = null
+      render()
+      return
+    }
     // A critical approval is approved only in the passkey popup.
     if (choice.requires_passkey) {
       error = deps.showPasskeyPrompt(sessionId, interactionId) ? null : PASSKEY_IN_POPUP
@@ -164,6 +217,13 @@ export function createKernelApprovalController(deps: {
     if (!open) return false
     event.preventDefault()
     event.stopPropagation()
+    // In protected hand-off entry the paste is the value, refused whole when it
+    // holds control characters; it never reaches the prompt.
+    if (entry && !pending) {
+      const text = (event.rawText ?? event.text ?? "").replace(/(?:\r\n|\r|\n)+$/, "")
+      error = entry.value.add(text) ? null : "Paste not added: one line without control characters."
+      render()
+    }
     return true
   }
   return {
@@ -177,7 +237,7 @@ export function createKernelApprovalController(deps: {
     },
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
-    dispose() { disposed = true; epoch += 1; close() },
+    dispose() { disposed = true; epoch += 1; entry?.value.clear(); entry = null; close() },
     handleKey(event: KernelApprovalKey): boolean {
       if (event.defaultPrevented) return true
       const shortcut = isApprovalShortcut(event)
@@ -188,19 +248,28 @@ export function createKernelApprovalController(deps: {
       claimedInputTurn = true
       queueMicrotask(() => { claimedInputTurn = false })
       if (event.eventType === "release" || event.eventType === "repeat") return true
-      if (shortcut || event.name === "escape") {
+      if (shortcut || (event.name === "escape" && !entry)) {
         if (open) close(); else show()
         return true
       }
+      if (entry && event.name === "escape") { entry.value.clear(); entry = null; render(); return true }
       if (event.ctrl || event.meta || event.alt) return true
       sync()
       const current = view()
       if (current.pending || !current.interaction) return true
+      if (entry) {
+        if (event.name === "return" || event.name === "enter") submitEntry()
+        else if (event.name === "backspace") { entry.value.backspace(); render() }
+        else if (event.name === "tab") { entry.value.toggleSave(); render() }
+        else if (!entry.value.add(handoffKeyText(event))) render()
+        else { error = null; render() }
+        return true
+      }
       if (event.name === "left" || event.name === "right") {
         index = (index + (event.name === "left" ? -1 : 1) + current.count) % current.count
         sync()
       } else if (event.name === "up" || event.name === "down" || event.name === "tab") {
-        const count = current.interaction.choices.length
+        const count = current.choices.length
         if (count) {
           const step = event.name === "up" || event.shift ? -1 : 1
           selected = selected === null ? (step === 1 ? 0 : count - 1)
@@ -210,7 +279,7 @@ export function createKernelApprovalController(deps: {
       } else if (event.name === "pageup" || event.name === "pagedown") {
         deps.scroll(event.name === "pageup" ? -1 : 1)
       } else if ((event.name === "return" || event.name === "enter") && selected !== null) {
-        const choice = current.interaction.choices[selected]
+        const choice = current.choices[selected]
         if (choice) void choose(current.interaction.id, choice.id)
       }
       return true

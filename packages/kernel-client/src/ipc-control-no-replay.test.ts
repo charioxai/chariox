@@ -133,3 +133,24 @@ test("LocalIpcClient still replays a stalled read", async (t) => {
   assert.deepEqual(await client.send({ GetAppWorker: { installation_id: "todo" } }), { ok: true })
   assert.equal(state.requests, 2)
 })
+
+test("MP-08/MP-10/MP-11 A07: a protected input write error never resends its value", async t => {
+  const { client, state } = await kernel(t, (socket, frame) => {
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { ok: true }, error: null }))
+  })
+  await client.send({ ListSessions: null })
+  const socket = Reflect.get(client, "controlWebsocket") as WebSocket
+  assert.ok(socket)
+  const send = socket.send
+  t.mock.method(socket, "send", (...args: Parameters<WebSocket["send"]>) => {
+    Reflect.apply(send, socket, args)
+    // The frame can reach the server even though the local write reports failure.
+    throw new Error("uncertain write fixture")
+  })
+  await assert.rejects(client.send({ RespondToHandoff: {
+    session_id: "room", interaction_id: "handoff-obligation",
+    action: { kind: "enter_value", value: "private-fixture" },
+  } }), (error: unknown) => error instanceof LocalIpcError && error.code === "outcome_unknown" && !error.retryable)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(state.requests, 2, "one initial observation and exactly one protected write")
+})

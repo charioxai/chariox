@@ -53,7 +53,7 @@ pub(crate) fn canonical_room_tool_name(tool: &str) -> Option<&'static str> {
 pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     meta_runtime_tool_specs().into_iter().filter_map(|mut spec| {
         spec.name = room_name(&spec.name)?;
-        spec.description = format!("{}: operate only in the current room. Read/message/run any peer; spawn regular agents and create workflows without an agent quota or a task plan. Mutations require self-created workflow objects or immutable direct-child creators; agent rename/delete require a direct child. Use chariox.commands.docs for command syntax. No sudo or capability authority is inherited.", spec.name);
+        spec.description = format!("{}: operate only in the current room. Read/message/prompt any peer; workflow execution bindings require self or immutable direct children. Spawn regular agents and create workflows without an agent quota or a task plan. Mutations require self-created workflow objects or immutable direct-child creators; agent rename/delete require a direct child. Use chariox.commands.docs for command syntax. No sudo or capability authority is inherited.", spec.name);
         Some(spec)
     }).collect()
 }

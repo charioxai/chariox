@@ -69,7 +69,7 @@ impl KernelRuntimeState {
     }
 
     // Caller holds the scope's capture/input barrier for every protected operation.
-    async fn kernel_browser_bound_operation(
+    pub(super) async fn kernel_browser_bound_operation(
         &self,
         user: &str,
         admission: Option<&KernelBrowserAdmission>,
@@ -77,6 +77,24 @@ impl KernelRuntimeState {
         params: Value,
         protect: bool,
     ) -> Result<Value, DaemonError> {
+        let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
+            && (method == "host.secret"
+                || (method == "host.browser"
+                    && matches!(
+                        params["op"].as_str(),
+                        Some(
+                            "stop"
+                                | "close"
+                                | "navigate"
+                                | "input"
+                                | "mirror_input"
+                                | "display_input"
+                        )
+                    )));
+        let tab = params["tab_id"].as_str().map(str::to_owned);
+        if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
+            return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
+        }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         let policy = if protect {
@@ -87,7 +105,17 @@ impl KernelRuntimeState {
             Value::Null
         };
         let host = self.owned.kernel_browser_host.clone();
-        let admission = admission.cloned();
+        let admission = admission.cloned().map(|admission| {
+            if model_mutation {
+                let state = self.clone();
+                let owner = user.to_owned();
+                admission.with_authority(move || {
+                    !state.handoff_model_write_blocked(&owner, tab.as_deref())
+                })
+            } else {
+                admission
+            }
+        });
         let (user, method) = (user.to_string(), method.to_string());
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");

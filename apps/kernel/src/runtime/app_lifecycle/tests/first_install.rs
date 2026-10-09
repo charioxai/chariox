@@ -356,7 +356,6 @@ fn one_saturated_stop_before_first_claim_cancels_both_recovery_paths() {
             == InstallPhase::Cancelled
     });
     service.shutdown_blocking().unwrap();
-    drop(service);
     drop(control);
     // The blocking recovery task may still be returning after shutdown.
     // Join the fixture runtime before trying to acquire its durable owner again.

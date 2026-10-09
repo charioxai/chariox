@@ -866,6 +866,10 @@ impl OperationalHistoryStore {
         Ok(event)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_prompt_settlement operation signature and explicit context arguments"
+    )]
     pub(crate) fn record_prompt_settlement(
         &self,
         archive_enabled: bool,

@@ -5,6 +5,10 @@ use crate::runtime::session_actor::FocusedAgentProjection;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalStreamStore;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing SessionProjectionAction typed actor payload layout"
+)]
 pub(super) enum SessionProjectionAction {
     Update(RuntimeSession),
     Remove { session_id: String },
@@ -60,67 +64,6 @@ pub(super) fn session_response_projection_action(
             session_id: session.id().to_string(),
         }),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
-
-    #[test]
-    fn prompt_responses_with_session_snapshots_project_updated_session() {
-        let session = RuntimeSession::new(
-            "session-prompt",
-            None,
-            "workspace",
-            "worktree",
-            "machine",
-            "kernel",
-        );
-        let prompt = PromptQueueItem::new(
-            "prompt-1",
-            "attachment-1",
-            "agent-1",
-            "hello",
-            PromptStatus::Running,
-        );
-
-        let submitted = LocalDaemonResponse::PromptSubmitted {
-            outcome: PromptSubmissionOutcome::Started {
-                prompt: prompt.clone(),
-            },
-            session: session.clone(),
-            agent_activity: Default::default(),
-            agent_activity_revision: 0,
-        };
-        let steered = LocalDaemonResponse::QueuedPromptSteered {
-            prompt: prompt.clone(),
-            session: session.clone(),
-            agent_activity: Default::default(),
-            agent_activity_revision: 0,
-        };
-        let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
-            prompt: prompt.clone(),
-            session: session.clone(),
-            agent_activity: Default::default(),
-            agent_activity_revision: 0,
-        };
-        let updated = LocalDaemonResponse::QueuedPromptUpdated {
-            prompt,
-            session: session.clone(),
-            agent_activity: Default::default(),
-            agent_activity_revision: 0,
-        };
-
-        for response in [submitted, steered, cancelled, updated] {
-            let Some(SessionProjectionAction::Update(projected)) =
-                session_response_projection_action(&response)
-            else {
-                panic!("prompt response should project updated session");
-            };
-            assert_eq!(projected, session);
-        }
     }
 }
 
@@ -335,5 +278,66 @@ pub(super) fn session_id_for_projection_refresh(
         }
         Ok(LocalDaemonResponse::SessionAliased { session }) => Some(session.id().to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+
+    #[test]
+    fn prompt_responses_with_session_snapshots_project_updated_session() {
+        let session = RuntimeSession::new(
+            "session-prompt",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        let prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "hello",
+            PromptStatus::Running,
+        );
+
+        let submitted = LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started {
+                prompt: prompt.clone(),
+            },
+            session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        };
+        let steered = LocalDaemonResponse::QueuedPromptSteered {
+            prompt: prompt.clone(),
+            session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        };
+        let cancelled = LocalDaemonResponse::QueuedPromptCancelled {
+            prompt: prompt.clone(),
+            session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        };
+        let updated = LocalDaemonResponse::QueuedPromptUpdated {
+            prompt,
+            session: session.clone(),
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        };
+
+        for response in [submitted, steered, cancelled, updated] {
+            let Some(SessionProjectionAction::Update(projected)) =
+                session_response_projection_action(&response)
+            else {
+                panic!("prompt response should project updated session");
+            };
+            assert_eq!(projected, session);
+        }
     }
 }

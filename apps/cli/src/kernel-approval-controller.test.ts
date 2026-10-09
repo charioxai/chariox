@@ -26,6 +26,7 @@ function harness(initial = session(), popupHas = true) {
   const popups: string[][] = []
   const focus: string[] = []
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => current, connected: () => connected, onView() {},
     onOpen: () => focus.push("blur"), onClose: () => focus.push("restore"), scroll() {},
     respond: (...args) => { requests.push(args); return new Promise((yes, no) => { resolve = yes; reject = no }) },

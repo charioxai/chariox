@@ -2,6 +2,10 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
+    AttachWorkflowNotification(AttachWorkflowNotificationRequest),
+    ListWorkflowNotifications(ListWorkflowNotificationsRequest),
+    DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
@@ -302,6 +306,7 @@ pub enum LocalDaemonRequest {
     SemanticSearchRecall(SemanticSearchRecallRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     RespondToInteraction(RespondToInteractionRequest),
+    RespondToHandoff(RespondToHandoffRequest),
     ArmDeploymentCredentialEnrollment(ArmDeploymentCredentialEnrollmentRequest),
     RequestCredentialEnrollmentInteraction(RequestCredentialEnrollmentInteractionRequest),
     RequestNativeProviderTurnInteraction(RequestNativeProviderTurnInteractionRequest),

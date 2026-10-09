@@ -42,6 +42,7 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
     let mut files = BTreeSet::new();
     let mut pending = vec![node.to_path_buf()];
     let mut inspected = BTreeSet::new();
+    let cpu_type = node_cpu_type(node)?;
     while let Some(path) = pending.pop() {
         files.insert(path.clone());
         if path.starts_with("/usr/lib") || path.starts_with("/System/Library") {
@@ -66,7 +67,7 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
                 "compiler runtime dependency limit exceeded",
             ));
         }
-        let (libraries, rpaths) = load_commands(&canonical)?;
+        let (libraries, rpaths) = load_commands(&canonical, cpu_type)?;
         for dependency in libraries {
             let dependency = if let Some(relative) = dependency.strip_prefix("@rpath/") {
                 rpaths.iter().filter_map(|rpath| resolve_library_path(rpath, &path, node).ok())
@@ -84,8 +85,19 @@ fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
     Ok(files)
 }
 
-/// Read only the kernel architecture's linked libraries and search paths.
-fn load_commands(path: &Path) -> Result<(Vec<String>, Vec<String>), crate::DaemonError> {
+fn node_cpu_type(node: &Path) -> Result<u32, crate::DaemonError> {
+    let mut header = [0; 8];
+    fs::File::open(node)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(io_error("workflow_code.compile"))?;
+    macho::runtime_cpu_type(&header, kernel_cpu_type()?).map_err(isolation_error)
+}
+
+/// Read only the Node architecture's linked libraries and search paths.
+fn load_commands(
+    path: &Path,
+    cpu_type: u32,
+) -> Result<(Vec<String>, Vec<String>), crate::DaemonError> {
     let invalid = || isolation_error("compiler runtime is not a supported Mach-O binary");
     let mut file = fs::File::open(path).map_err(io_error("workflow_code.compile"))?;
     let mut read = |offset: u64, length: usize| {
@@ -98,8 +110,7 @@ fn load_commands(path: &Path) -> Result<(Vec<String>, Vec<String>), crate::Daemo
     let header = read(0, 8)?;
     let table_size = macho::fat_table_size(&header).map_err(isolation_error)?;
     let table = read(8, table_size)?;
-    let slices =
-        macho::slice_offsets(&header, &table, kernel_cpu_type()?).map_err(isolation_error)?;
+    let slices = macho::slice_offsets(&header, &table, cpu_type).map_err(isolation_error)?;
     let (mut libraries, mut rpaths) = (Vec::new(), Vec::new());
     for offset in slices {
         let header = read(offset, 32)?;

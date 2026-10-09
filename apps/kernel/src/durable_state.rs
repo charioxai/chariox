@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod agent_lifecycle;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
@@ -57,7 +58,9 @@ pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
+pub(crate) mod notification_target;
 pub(crate) mod workflow_dispatch_intents;
+pub(crate) mod workflow_notifications;
 pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
 
@@ -171,11 +174,23 @@ struct DurableWriteRequest {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
+)]
 enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -190,6 +205,8 @@ enum DurableWriterRequest {
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AgentLifecycle(Box<agent_lifecycle::Request>),
+    WorkflowNotification(Box<workflow_notifications::NotificationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
     AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
     AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
@@ -239,6 +256,7 @@ enum DurableWriteOperation {
         timestamp_ms: u64,
         payload_json: String,
         owner_id: String,
+        source_owner_id: String,
         session_id: String,
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
@@ -381,6 +399,8 @@ impl DurableKernelStateStore {
         app_publisher_operations::initialize(&connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
+        workflow_notifications::initialize(&mut connection)?;
+        agent_lifecycle::initialize(&mut connection)?;
         app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
@@ -1557,6 +1577,22 @@ fn run_durable_writer(
                 app_bindings::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AgentLifecycle(request) => {
+                if agent_lifecycle::execute(&mut connection, *request) {
+                    health.fatal.store(true, Ordering::Release);
+                    health.stopped_uncertain.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::WorkflowNotification(request) => {
+                if workflow_notifications::execute(&mut connection, *request) {
+                    health.fatal.store(true, Ordering::Release);
+                    health.stopped_uncertain.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
             DurableWriterRequest::AppAutomation(request) => {
                 app_automations::execute(&mut connection, *request);
                 continue;
@@ -1661,6 +1697,8 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppConnectionGrant(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
+                    | DurableWriterRequest::AgentLifecycle(_)
+                    | DurableWriterRequest::WorkflowNotification(_)
                     | DurableWriterRequest::AppActivation(_)
                     | DurableWriterRequest::AppWorkerLifecycle(_)
                     | DurableWriterRequest::AppEventMaintenance(_)
@@ -1791,6 +1829,7 @@ fn commit_durable_write_batch(
                 timestamp_ms,
                 payload_json,
                 owner_id,
+                source_owner_id,
                 session_id,
                 hot_entities,
                 workflow_runs,
@@ -1804,6 +1843,7 @@ fn commit_durable_write_batch(
                     timestamp_ms: *timestamp_ms,
                     payload_json,
                     owner_id,
+                    source_owner_id,
                     session_id,
                     hot_entities,
                     workflow_runs,

@@ -96,13 +96,13 @@ export function listAppAutomationsRequest(installationId: string) {
 /** Expected revision zero creates the automation; replacements name the current revision. */
 export function configureAppAutomationRequest(options: {
   installationId: string; automationId: string; expectedRevision: number; eventName: string;
-  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean;
+  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean; deliveryMode?: "queue" | "inject";
 }) {
   return { ConfigureAppAutomation: {
     installation_id: options.installationId, automation_id: options.automationId,
     expected_revision: options.expectedRevision, event_name: options.eventName,
     session_id: options.sessionId, publication_ref: options.publicationRef,
-    queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false,
+    queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false, delivery_mode: options.deliveryMode ?? "queue",
   } }
 }
 

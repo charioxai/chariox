@@ -172,6 +172,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            // MP-11 A07: physical owner input carrying a value is never
+            // fingerprinted, cached or replayed.
+            | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -867,7 +870,7 @@ fn read_persistent_results_with_receipt_fence(
         if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
             continue;
         }
-        let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
+        let jsonl_bytes = line.len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
                 return Err(io::Error::other("oversized at-most-once receipt"));

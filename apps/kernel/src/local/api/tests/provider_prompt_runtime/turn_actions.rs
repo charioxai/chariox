@@ -308,7 +308,13 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                 .is_some_and(|active| {
                     active.prompt() == prompt.prompt()
                         && active.pending_prompt_id().is_none()
-                        && active.id() != prompt.id()
+                        // MP-08/MP-09/MP-10/MP-11: durable operations
+                        // retain their prompt identity through promotion.
+                        && if prompt.durable_operation_id().is_some() {
+                            active.id() == prompt.id()
+                        } else {
+                            active.id() != prompt.id()
+                        }
                         && active.durable_delivery_phase()
                             == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                 })

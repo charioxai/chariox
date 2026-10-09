@@ -3,11 +3,17 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
+    WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
+    WorkflowNotificationDetached { subscription_id: String },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
+    /// Protocol 477: the safe outcome of the owner's hand-off action.
+    HandoffResolved { outcome: HandoffOutcome },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
@@ -333,6 +339,7 @@ pub enum LocalDaemonResponse {
         answer: Option<String>,
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
+    KernelAccessDecisionResponded { interaction_id: String, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
     DeploymentCredentialEnrollmentArmed {
         enrollment_id: String,

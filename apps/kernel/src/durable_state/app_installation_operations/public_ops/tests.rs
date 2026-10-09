@@ -224,8 +224,8 @@ fn old_operation_table_migrates_without_losing_receipts() {
     let connection = Connection::open_in_memory().unwrap();
     connection.execute_batch("CREATE TABLE app_installation_operations(owner_id TEXT,request_id TEXT,installation_id TEXT,package_digest TEXT,phase TEXT CHECK(phase IN ('approval','starting','committed','cancelled','failed')),attempt TEXT,approval_json TEXT,failure TEXT,cleanup_pending INTEGER,created_ms INTEGER,updated_ms INTEGER,PRIMARY KEY(owner_id,request_id));
         INSERT INTO app_installation_operations VALUES('alice','old','old-install','sha256:old','cancelled',NULL,NULL,'declined',1,1,2);").unwrap();
-    initialize(&connection).unwrap();
-    initialize(&connection).unwrap();
+    crate::durable_state::app_installation_operations::store::initialize(&connection).unwrap();
+    crate::durable_state::app_installation_operations::store::initialize(&connection).unwrap();
     let receipt = load(&connection, "alice", "old").unwrap().unwrap();
     assert_eq!(receipt.phase, InstallPhase::Cancelled);
     assert!(receipt.input.is_none());
@@ -416,8 +416,8 @@ fn protocol_348_operation_table_migrates_to_generations() {
         PRIMARY KEY(owner_id,request_id));
         INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,created_ms,updated_ms,session_id,upload_handle,interaction_id)
         VALUES('alice','inflight','app_1','sha256:x','approval',1,2,'session','upload_x','nonce');").unwrap();
-    initialize(&connection).unwrap();
-    initialize(&connection).unwrap();
+    crate::durable_state::app_installation_operations::store::initialize(&connection).unwrap();
+    crate::durable_state::app_installation_operations::store::initialize(&connection).unwrap();
     let operation = load(&connection, "alice", "inflight").unwrap().unwrap();
     assert_eq!(operation.phase, InstallPhase::AwaitingApproval);
     assert_eq!(

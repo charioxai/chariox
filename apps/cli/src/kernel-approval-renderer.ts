@@ -2,6 +2,9 @@ import { BoxRenderable, ScrollBoxRenderable, TextRenderable, MouseButton, TextAt
 import type { KernelApprovalView } from "./kernel-approval-controller.js"
 import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { theme } from "./theme.js"
+import { handoffChangeLines, handoffReasonLabel } from "@chariox/kernel-client/owner-handoff"
+import { interactionHandoff } from "./kernel-handoff-entry.js"
+import { requesterLabels } from "./kernel-access-requester-label.js"
 
 export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   show(): void
@@ -95,11 +98,28 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       })
       panel.add(body)
       text(body, view.interaction.title || "Kernel approval")
-      text(body, view.interaction.message)
+      if (view.interaction.requester) {
+        for (const label of requesterLabels(view.interaction.requester)) text(body, label)
+      }
+      const handoff = interactionHandoff(view.interaction)
+      if (handoff) {
+        // MP-11 A07: safe target metadata and the intended change only.
+        text(body, `${handoffReasonLabel(handoff.reason)} · ${handoff.target.origin}${handoff.target.path}`, true)
+        text(body, handoff.explanation)
+        text(body, "To review the live page, use /cloud open on this kernel and open this hand-off.", true)
+        const lines = handoffChangeLines(handoff)
+        if (lines.length) {
+          text(body, "Intended change (verify before acting):", true)
+          for (const line of lines) text(body, line)
+        }
+        text(body, `Expires ${new Date(handoff.expires_at_ms).toLocaleTimeString()}. Only you can act; the agent sees only the outcome.`)
+      } else {
+        text(body, view.interaction.message)
+      }
       if (view.interaction.choices.some(choice => choice.requires_passkey)) {
         text(body, "Critical — passkey needed. Select an approval choice to enter your passkey.", true)
       }
-      view.interaction.choices.forEach((choice, index) => {
+      view.choices.forEach((choice, index) => {
         const row = new BoxRenderable(renderer, {
           flexShrink: 0, backgroundColor: view.selected === index ? theme.backgroundElement : theme.backgroundPanel,
         })
@@ -110,9 +130,15 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
         }
         body!.add(row)
       })
+      if (view.handoffEntry) {
+        const entry = view.handoffEntry
+        text(body, `${entry.kind === "code" ? "Code" : "Secret"}: ${"•".repeat(Math.min(entry.length, 64))}${entry.length ? "" : " (type or paste)"}`, true)
+        if (entry.saveOffered) text(body, `Save to Vault: ${entry.saveToVault ? "yes" : "no"} (Tab to change)`)
+        text(body, "Enter sends it straight to the page field · Esc clears")
+      }
       if (view.error) text(body, view.error)
       if (view.selected !== null && !view.pending) {
-        const choice = view.interaction.choices[view.selected]
+        const choice = view.choices[view.selected]
         if (choice) text(panel, `Selected: ${choice.label}`, true)
       }
       text(panel, view.pending ? "Waiting for kernel confirmation…"

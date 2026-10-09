@@ -144,6 +144,18 @@ impl KernelRuntimeState {
         completed_agent_id: &str,
         completion: &crate::session::PromptCompletion,
     ) -> Result<(), DaemonError> {
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            let tasks = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(session_id), Some(completed_agent_id))?;
+            if tasks.iter().any(|t| {
+                t.prompt_id == completion.completed.id()
+                    && t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
+            }) {
+                return Ok(());
+            }
+        }
         let completed_agent = self.owned.agent_store.get_agent(completed_agent_id)?;
         if completed_agent.is_metaagent() {
             return Ok(());
@@ -283,6 +295,10 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_metaagent_command_prompt_with_steering operation signature and explicit context arguments"
+    )]
     async fn submit_metaagent_command_prompt_with_steering(
         &self,
         session_id: &str,
@@ -306,6 +322,10 @@ impl KernelRuntimeState {
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_metaagent_prompt_with_steering_and_hidden_context operation signature and explicit context arguments"
+    )]
     async fn submit_metaagent_prompt_with_steering_and_hidden_context(
         &self,
         session_id: &str,
@@ -509,6 +529,10 @@ fn summarize_metaagent_command_agent_activity(
 }
 
 impl KernelRuntimeOwnedState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_owned_agent_event_prompt_dispatches operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_owned_agent_event_prompt_dispatches(
         &self,
         session_id: &str,
@@ -533,6 +557,10 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_owned_agent_event_prompt_dispatches_for_agent operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_owned_agent_event_prompt_dispatches_for_agent(
         &self,
         session_id: &str,
@@ -569,6 +597,10 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_workflow_event_prompt_dispatches operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_workflow_event_prompt_dispatches(
         &self,
         session_id: &str,
@@ -611,6 +643,10 @@ impl KernelRuntimeOwnedState {
         dispatches
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing metaagent_event_prompt_for_metaagent operation signature and explicit context arguments"
+    )]
     pub(super) fn metaagent_event_prompt_for_metaagent(
         &self,
         session_id: &str,

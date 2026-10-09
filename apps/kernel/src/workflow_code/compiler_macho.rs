@@ -34,6 +34,18 @@ pub(super) fn fat_table_size(header: &[u8]) -> Result<usize, &'static str> {
     }
 }
 
+/// The architecture Node runs as: a thin binary's own CPU type; a universal
+/// binary launches as the kernel's (including under Rosetta).
+pub(super) fn runtime_cpu_type(header: &[u8], kernel_cpu_type: u32) -> Result<u32, &'static str> {
+    if fat_table_size(header)? > 0 {
+        return Ok(kernel_cpu_type);
+    }
+    if word(header, 0, false) != Some(0xfeed_facf) {
+        return Err(INVALID);
+    }
+    word(header, 4, false).ok_or(INVALID)
+}
+
 pub(super) fn slice_offsets(
     header: &[u8],
     table: &[u8],
@@ -49,8 +61,8 @@ pub(super) fn slice_offsets(
         20
     };
     let table = table.get(..size).ok_or(INVALID)?;
-    // Select by the kernel's build architecture, including when it runs under
-    // Rosetta. Foreign slices must not contribute library or search-path reads.
+    // Select by Node's runtime architecture. Foreign slices must not
+    // contribute library or search-path reads.
     let slices = table
         .chunks_exact(entry_size)
         .filter(|entry| word(entry, 0, true) == Some(cpu_type))
@@ -61,7 +73,7 @@ pub(super) fn slice_offsets(
         })
         .collect::<Result<Vec<_>, _>>()?;
     if slices.is_empty() {
-        return Err("compiler runtime has no Mach-O slice for the kernel architecture");
+        return Err("compiler runtime has no Mach-O slice for the Node architecture");
     }
     Ok(slices)
 }
@@ -87,8 +99,8 @@ pub(super) fn load_commands(
     let (mut libraries, mut rpaths) = (Vec::new(), Vec::new());
     let mut at = 0;
     for _ in 0..count {
-        let command = word(&commands, at, false).ok_or_else(invalid)?;
-        let length = word(&commands, at + 4, false).ok_or_else(invalid)? as usize;
+        let command = word(commands, at, false).ok_or_else(invalid)?;
+        let length = word(commands, at + 4, false).ok_or_else(invalid)? as usize;
         let body = commands
             .get(at..at + length)
             .filter(|_| length >= 8)

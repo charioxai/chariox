@@ -108,7 +108,7 @@ pub(super) fn run(
                 .wait_timeout(remaining.min(Duration::from_millis(5)))
                 .map_err(io_error("workflow_code.compile"))?;
         })();
-        if result.is_err() {
+        if result.is_err() && child.id() > 1 {
             let _ = child.kill();
             let _ = child.wait();
         }

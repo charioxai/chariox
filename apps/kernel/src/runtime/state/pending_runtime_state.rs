@@ -60,6 +60,8 @@ impl PendingProviderReloadStore {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
+    /// Kernel-wide decisions live on the same interaction board without a session.
+    pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_id: String,
     /// Detached kernel decision; no Session projection exists for it.
     pub(super) user_domain_interaction: Option<crate::session::RuntimeInteraction>,
@@ -127,6 +129,10 @@ impl std::fmt::Debug for PendingInteractionResolution {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit PendingInteractionStore state or return type at the existing boundary"
+)]
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
     pub(super) mutation: Arc<StdMutex<()>>,

@@ -23,6 +23,10 @@ pub struct ExecutionLease {
 }
 
 impl ExecutionLease {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: String,
         home_kernel_id: String,
@@ -142,6 +146,10 @@ pub struct LeasedWorkflowTurnBinding {
 
 impl LeasedAgent {
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: String,
         lease_id: String,

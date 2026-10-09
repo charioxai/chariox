@@ -140,30 +140,21 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
             .map(serde_json::Map::len),
         Some(2)
     );
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/route_task")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final_output")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
+    assert!(applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert!(applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/schema_refs/route_task")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert!(applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final_output")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     assert_eq!(
         applied
             .payload
@@ -284,13 +275,11 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
             .and_then(serde_json::Value::as_str),
         Some("started")
     );
-    assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
+    assert!(run
+        .payload
+        .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     assert_eq!(
         run.payload
             .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
@@ -308,7 +297,7 @@ fn metaagent_workflow_code_applies_inline_typescript_source() {
 }
 
 async fn metaagent_workflow_code_applies_inline_typescript_source_inner() {
-    let node_path = match crate::workflow_code::discover_workflow_code_node_path() {
+    let _node_path = match crate::workflow_code::discover_workflow_code_node_path() {
         Ok(path) => path,
         Err(error) => {
             eprintln!(
@@ -377,14 +366,11 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" });
             .and_then(serde_json::Value::as_str),
         Some("meta_inline_typescript_flow")
     );
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
+    assert!(applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     assert!(
         applied
             .payload
@@ -523,14 +509,11 @@ async fn metaagent_workflow_code_applies_canonical_fan_out_pattern_inner() {
             .map(serde_json::Map::len),
         Some(3)
     );
-    assert_eq!(
-        applied
-            .payload
-            .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
+    assert!(applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     assert_eq!(
         applied
             .payload

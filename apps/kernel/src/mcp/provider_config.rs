@@ -555,7 +555,7 @@ fn optional_json_timeout_ms(
     if millis == 0 {
         return Err(format!("{field} must be positive"));
     }
-    Ok(Some((millis + 999) / 1000))
+    Ok(Some(millis.div_ceil(1000)))
 }
 
 fn optional_json_timeout_secs(

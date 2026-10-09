@@ -336,7 +336,7 @@ impl BrowserControllerProcessStore {
         request_id: &str,
     ) -> bool {
         let (signal, planned) = {
-            let mut state = self
+            let state = self
                 .executions
                 .state
                 .lock()
@@ -397,6 +397,10 @@ impl BrowserControllerProcessStore {
         true
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing perform_cancellable_browser_action operation signature and explicit context arguments"
+    )]
     pub(crate) fn perform_cancellable_browser_action(
         &self,
         session_id: &str,
@@ -490,6 +494,10 @@ impl BrowserControllerProcessStore {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing perform_cancellable_browser_import operation signature and explicit context arguments"
+    )]
     pub(crate) fn perform_cancellable_browser_import(
         &self,
         session_id: &str,
@@ -660,6 +668,10 @@ impl BrowserControllerProcessStore {
         active.finish(outcome)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing recover_cancellable_browser_action operation signature and explicit context arguments"
+    )]
     pub(crate) fn recover_cancellable_browser_action(
         &self,
         session_id: &str,

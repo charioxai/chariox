@@ -152,7 +152,7 @@ pub fn migration_steps(
         .filter(|step| step.from >= from)
         .map(|step| serde_json::json!({"from":step.from,"to":step.to,"entry":step.entry}))
         .collect();
-    (!steps.is_empty()).then(|| serde_json::Value::Array(steps))
+    (!steps.is_empty()).then_some(serde_json::Value::Array(steps))
 }
 
 /// To be implemented by the enrolled platform provisioner, not by callers of

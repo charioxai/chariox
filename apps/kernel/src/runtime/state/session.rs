@@ -81,6 +81,10 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
+        session.set_agent_tasks(
+            self.durable_state_store
+                .agent_tasks(Some(session_id), None)?,
+        );
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }
@@ -457,6 +461,7 @@ impl KernelRuntimeOwnedState {
         });
     }
 
+    #[cfg(test)]
     pub(super) fn delete_session_ref(
         &self,
         session_ref: &str,

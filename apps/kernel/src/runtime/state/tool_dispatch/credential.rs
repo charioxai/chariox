@@ -982,7 +982,7 @@ impl KernelRuntimeState {
                     "credential secret interaction dropped before resolution: {error}"
                 ),
             })?;
-        if resolution.status.to_string() == "timed_out" {
+        if resolution.status == "timed_out" {
             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({

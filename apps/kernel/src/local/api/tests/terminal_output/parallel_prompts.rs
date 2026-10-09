@@ -156,8 +156,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
 
     assert!(
         seen_agents.contains(default_agent.id()) && seen_agents.contains(spawned.id()),
-        "expected output from both active agent prompts, saw {:?}",
-        seen_agents
+        "expected output from both active agent prompts, saw {seen_agents:?}"
     );
 }
 

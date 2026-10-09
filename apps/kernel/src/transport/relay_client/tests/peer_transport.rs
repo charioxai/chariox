@@ -11,6 +11,10 @@ enum ControlledWorkspaceLiveSyncAction {
     Success,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_controlled_workspace_live_sync_target operation signature and explicit context arguments"
+)]
 async fn run_controlled_workspace_live_sync_target(
     relay_url: String,
     registration: chariox_relay::protocol::DaemonRegistration,
@@ -39,7 +43,6 @@ async fn run_controlled_workspace_live_sync_target(
             .await
             .expect("controlled target registration should send");
 
-        let mut reconnect = false;
         loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -119,7 +122,6 @@ async fn run_controlled_workspace_live_sync_target(
                                 .expect("controlled business rejection should send");
                         }
                         ControlledWorkspaceLiveSyncAction::Disconnect => {
-                            reconnect = true;
                             break;
                         }
                         ControlledWorkspaceLiveSyncAction::Success => {
@@ -158,9 +160,6 @@ async fn run_controlled_workspace_live_sync_target(
         }
 
         drop(socket);
-        if !reconnect {
-            return;
-        }
         loop {
             if *shutdown.borrow() {
                 return;
@@ -182,7 +181,7 @@ async fn run_controlled_workspace_live_sync_target(
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -229,7 +228,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -298,7 +297,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -760,19 +759,16 @@ impl ControlledWorkspaceLiveSyncWorker {
         &self,
         timeout: Duration,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, crate::error::DaemonError> {
-        tokio::time::timeout(
-            timeout,
-            self.router.dispatch_authenticated_runtime_tool_call(
-                &self.runtime_auth_token,
-                crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
-                serde_json::json!({
-                    "path": "artifact.txt",
-                    "domain": "text",
-                }),
-            ),
-        )
-        .await
-        .expect("worker read_artifact should remain bounded")
+        let dispatch = self.router.dispatch_authenticated_runtime_tool_call(
+            &self.runtime_auth_token,
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+            serde_json::json!({"path": "artifact.txt", "domain": "text"}),
+        );
+        // MP-08 / MP-10 / MP-11: ordinary artifact calls must not carry every owner/tool future.
+        assert!(std::mem::size_of_val(&dispatch) <= 1024);
+        tokio::time::timeout(timeout, dispatch)
+            .await
+            .expect("worker read_artifact should remain bounded")
     }
 
     async fn shutdown(self) {

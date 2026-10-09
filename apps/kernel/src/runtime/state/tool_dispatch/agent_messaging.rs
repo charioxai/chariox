@@ -18,6 +18,7 @@ impl KernelRuntimeState {
             payload: serde_json::json!({
                 "session_id": session.id(),
                 "focused_agent_id": session.focused_agent_id(),
+                "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
                 "agents": agents
                     .iter()
                     .map(|agent| session_agent_description(session, requester, agent))
@@ -69,6 +70,9 @@ impl KernelRuntimeState {
             operation: "runtime_tool.send_agent_message",
             message: format!("invalid send-agent-message arguments: {error}"),
         })?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            return self.send_durable_agent_message(session, sender, args).await;
+        }
         let message = args.message.trim();
         if message.is_empty() && args.attachments.is_empty() {
             return Ok(agent_message_failure(
@@ -396,7 +400,7 @@ impl KernelRuntimeState {
         Ok(result)
     }
 
-    fn prepare_local_active_agent_message_dispatch(
+    pub(in crate::runtime::state) fn prepare_local_active_agent_message_dispatch(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
@@ -474,7 +478,7 @@ impl KernelRuntimeState {
         }))
     }
 
-    fn ensure_agent_message_attachment(
+    pub(in crate::runtime::state) fn ensure_agent_message_attachment(
         &self,
         session_id: &str,
         sender: &crate::agent::AgentInstance,
@@ -534,26 +538,28 @@ fn resolve_session_agent<'a>(
     if reference.is_empty() {
         return Err("agent must be a unique alias, agent ref, or agent id".to_string());
     }
-    agents
-        .iter()
-        .find(|agent| {
-            agent.id() == reference
-                || agent.agent_ref() == reference
-                || agent
-                    .alias()
-                    .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
-        })
-        .ok_or_else(|| {
-            let mut available = agents
-                .iter()
-                .map(agent_message_target_label)
-                .collect::<Vec<_>>();
-            available.sort();
-            format!(
-                "agent `{reference}` does not exist in this session; available agents: {}",
-                available.join(", ")
-            )
-        })
+    let mut matches = agents.iter().filter(|agent| {
+        agent.id() == reference
+            || agent.agent_ref() == reference
+            || agent
+                .alias()
+                .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
+    });
+    let target = matches.next().ok_or_else(|| {
+        let mut available = agents
+            .iter()
+            .map(agent_message_target_label)
+            .collect::<Vec<_>>();
+        available.sort();
+        format!(
+            "agent `{reference}` does not exist in this session; available agents: {}",
+            available.join(", ")
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(format!("ambiguous room agent reference `{reference}`"));
+    }
+    Ok(target)
 }
 
 fn session_agent_description(
@@ -636,4 +642,38 @@ fn agent_message_target_label(agent: &crate::agent::AgentInstance) -> String {
         .filter(|alias| !alias.is_empty())
         .map(|alias| format!("@{alias}"))
         .unwrap_or_else(|| agent.agent_ref().to_string())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn security_f6_messages_reject_restored_reference_collisions() {
+        let agent = |id: &str, alias: &str| {
+            crate::agent::AgentInstance::new(
+                id,
+                format!("ref-{id}"),
+                "room",
+                Some(alias.into()),
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        // Legacy snapshots may already contain an alias that is another ID.
+        let mut agents = vec![agent("agent-1", "agent-2"), agent("agent-2", "peer")];
+        for _ in 0..2 {
+            assert!(resolve_session_agent(&agents, "agent-2")
+                .unwrap_err()
+                .contains("ambiguous"));
+            assert_eq!(
+                resolve_session_agent(&agents, "@PEER").unwrap().id(),
+                "agent-2"
+            );
+            agents.reverse();
+        }
+    }
 }

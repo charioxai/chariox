@@ -10,6 +10,7 @@ static NOTIFIED: Mutex<BTreeMap<(String, String), u64>> = Mutex::new(BTreeMap::n
 
 /// A refused preparation keeps the stable preparation code, unless disk
 /// space is what refused it.
+#[cfg(test)]
 pub(super) fn preparation_error(error: WorkerError) -> LifecycleError {
     match error {
         WorkerError::HostDiskSpace(space) => LifecycleError::DiskSpace(space),

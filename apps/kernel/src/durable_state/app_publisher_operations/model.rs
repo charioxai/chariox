@@ -95,7 +95,7 @@ impl PublisherApprovalChallenge {
 }
 pub(crate) enum PublisherReview {
     Prompt(PublisherApprovalChallenge),
-    Terminal(PublisherOperation),
+    Terminal(#[allow(dead_code)] PublisherOperation), // Preserve the terminal audit receipt.
 }
 pub(super) fn text(value: &str) -> Result<()> {
     if value.trim().is_empty() || value.len() > 128 || value.chars().any(char::is_control) {

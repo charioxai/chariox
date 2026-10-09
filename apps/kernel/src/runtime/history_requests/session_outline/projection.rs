@@ -46,12 +46,12 @@ fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
     if event_needs_outline_blob(event) {
         return true;
     }
-    match event.kind {
+    !matches!(
+        event.kind,
         HistoryEventKind::ProviderOutput
-        | HistoryEventKind::ProviderStatus
-        | HistoryEventKind::Notice => false,
-        _ => true,
-    }
+            | HistoryEventKind::ProviderStatus
+            | HistoryEventKind::Notice
+    )
 }
 
 fn is_steering_prompt_event(event: &HistoryEvent) -> bool {

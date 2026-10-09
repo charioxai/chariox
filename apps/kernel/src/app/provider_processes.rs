@@ -380,7 +380,7 @@ impl<'a> ProviderProcessTracker<'a> {
                     app.sessions
                         .get_session(session_id)
                         .ok()
-                        .map(|session| session.workflow_runs().iter().cloned().collect::<Vec<_>>())
+                        .map(|session| session.workflow_runs().to_vec())
                         .into_iter()
                         .flatten()
                         .filter(|run| {

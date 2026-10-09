@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./relay-authorization": "./dist/relay-authorization.js",
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
@@ -19,6 +20,7 @@
     "./external-provider-observation": "./dist/external-provider-observation.js",
     "./project-environment-review": "./dist/project-environment-review.js",
     "./interaction-choice": "./dist/interaction-choice.js",
+    "./owner-handoff": "./dist/owner-handoff.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./browser-relay-crypto": "./dist/browser-relay-crypto.js",
@@ -97,7 +99,8 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test dist/*.test.js"
+    "test": "pnpm run build && node --test dist/*.test.js",
+    "test:relay-renewal-kernel": "pnpm run build && node --test scripts/relay-renewal-kernel.integration.test.mjs"
   },
   "dependencies": {
     "@chariox/tool-display": "workspace:*",

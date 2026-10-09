@@ -889,7 +889,7 @@ mod tests {
             placement: None,
             minimized: true,
         };
-        assert_eq!(resolve_panel(none, minimized).minimized, false);
+        assert!(!resolve_panel(none, minimized).minimized);
         assert_eq!(resolve_panel(none, moved).placement, right);
         assert_eq!(PanelRequest::from_manifest(None), PanelRequest::default());
     }

@@ -165,3 +165,34 @@ fn macos_macho_fat_bounds_table_and_preserves_64_bit_offsets() {
         [offset]
     );
 }
+
+#[test]
+fn macos_macho_thin_node_selects_its_own_cpu_over_kernel_cpu() {
+    // Thin x86_64 Node on an arm64 kernel, and thin arm64 Node on an x86_64 kernel.
+    for (node, kernel) in [(X86_64, ARM64), (ARM64, X86_64)] {
+        let cpu = runtime_cpu_type(&thin(node, &[])[..8], kernel).unwrap();
+        assert_eq!(cpu, node, "node={node:#x}, kernel={kernel:#x}");
+        let library = fat(
+            false,
+            &[
+                (kernel, thin(kernel, &[command(0xc, "/kernel-only.dylib")])),
+                (node, thin(node, &[command(0xc, "/node-only.dylib")])),
+            ],
+        );
+        assert_eq!(parse(&library, cpu).unwrap().0, ["/node-only.dylib"]);
+    }
+}
+
+#[test]
+fn macos_macho_fat_node_selects_kernel_cpu() {
+    for wide in [false, true] {
+        for kernel in [ARM64, X86_64] {
+            let node = fat(
+                wide,
+                &[(ARM64, thin(ARM64, &[])), (X86_64, thin(X86_64, &[]))],
+            );
+            assert_eq!(runtime_cpu_type(&node[..8], kernel), Ok(kernel));
+        }
+    }
+    assert!(runtime_cpu_type(&[0; 8], ARM64).is_err());
+}

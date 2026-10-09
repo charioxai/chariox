@@ -42,6 +42,18 @@ pub(crate) fn direct_child(
     }
 }
 
+/// Workflow execution can reset provider context, so peers are not bindings.
+pub(crate) fn workflow_node(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+) -> Result<(), DaemonError> {
+    if target.id() == actor.id() && target.session_id() == actor.session_id() {
+        Ok(())
+    } else {
+        direct_child(actor, target)
+    }
+}
+
 pub(crate) fn owns_object(
     actor: &AgentInstance,
     creator: Option<&str>,

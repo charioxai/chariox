@@ -39,6 +39,23 @@ impl AutomationStatus {
         }
     }
 }
+/// Shared notification delivery policy; queue preserves existing behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationDeliveryMode {
+    #[default]
+    Queue,
+    Inject,
+}
+impl NotificationDeliveryMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Inject => "inject",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationConfiguration {
     pub automation_id: String,
@@ -48,6 +65,7 @@ pub struct AutomationConfiguration {
     pub schema_digest: String,
     pub target: AutomationTarget,
     pub scheduled: bool,
+    pub delivery_mode: NotificationDeliveryMode,
     pub status: AutomationStatus,
 }
 
@@ -55,6 +73,8 @@ impl AppOutbox {
     /// Explicit, already authorized kernel configuration. Expected revision zero
     /// means create; all replacements/reactivations increment the current revision.
     /// No cached receipt or old snapshot can silently reactivate this binding.
+    // MP-11: preserve the explicit authorized transaction and catalog boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_in(
         tx: &Transaction<'_>,
         catalog: &EventCatalog,
@@ -275,6 +295,7 @@ impl AppOutbox {
                 queue_id: b.queue_id,
             },
             scheduled: b.scheduled,
+            delivery_mode: b.delivery_mode,
             status: AutomationStatus::parse(&b.status)?,
         })
     }

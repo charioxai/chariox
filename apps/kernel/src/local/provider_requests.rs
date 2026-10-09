@@ -364,13 +364,11 @@ pub(crate) fn launch_provider_request_from_local(
         } else {
             launch_request.with_agent_id(agent_id)
         };
-    } else {
-        if let Some(session) = session.as_ref() {
-            let effective_config = crate::session::effective_agent_execution_config(session, None);
-            launch_request = launch_request
-                .with_execution_mode(effective_config.mode)
-                .with_permission_level(effective_config.permission_level);
-        }
+    } else if let Some(session) = session.as_ref() {
+        let effective_config = crate::session::effective_agent_execution_config(session, None);
+        launch_request = launch_request
+            .with_execution_mode(effective_config.mode)
+            .with_permission_level(effective_config.permission_level);
     }
     launch_request
 }
