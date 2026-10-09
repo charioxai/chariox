@@ -50,9 +50,11 @@ async function nodeBox(connection, sessionId, backendNodeId, dpr) {
 // Pure: protected layout rectangles of one DOMSnapshot document, in device
 // pixels of that document's viewport. Protection is inherited by descendants
 // (display:contents, overflow, shadow content); markers, password/OTP/payment
-// fields, policy target nodes and Vault value echoes are protected. While Vault
-// values are registered, opaque media are protected too: a page can draw a
-// value into them and delete every DOM echo. Frame and plugin owners are
+// fields, policy target nodes and Vault value echoes are protected. Echoes are
+// also sought in rendered layout text (CSS-generated content has no DOM
+// value), joined per element in visual order: ::marker, ::first-letter and
+// ::before, text children, ::after; unreadable text fails closed. While Vault values are registered, opaque media are protected too: a
+// page can draw a value into them and delete every DOM echo. Frame and plugin owners are
 // returned for mapping or withholding (owner decision 2026-10-08: inspectable
 // frames, and media without Vault values, are not masked whole).
 export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
@@ -60,7 +62,8 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
   const count = nodes.nodeName?.length ?? 0;
   const text = i => (typeof strings[i] === 'string' ? strings[i] : '');
-  const echoed = i => values.length > 0 && typeof strings[i] === 'string' && redactObservation(strings[i], values) !== strings[i];
+  const exposes = value => redactObservation(value, values) !== value;
+  const echoed = i => values.length > 0 && typeof strings[i] === 'string' && exposes(strings[i]);
   const sparse = field => new Map((field?.index ?? []).map((node, i) => [node, field.value[i]]));
   const inputValue = sparse(nodes.inputValue), textValue = sparse(nodes.textValue), contentDocument = sparse(nodes.contentDocumentIndex);
   const parent = nodes.parentIndex ?? [];
@@ -79,18 +82,30 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
   }
-  const regions = [], owners = [];
+  const regions = [], owners = [], rendered = new Map();
   const scroll = [document.scrollOffsetX ?? 0, document.scrollOffsetY ?? 0];
   if (!scroll.every(Number.isFinite)) throw new Error('MP-11: unknown document scroll');
   for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
     const i = layout.nodeIndex[k], bounds = layout.bounds?.[k];
     if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) throw new Error('MP-11: unknown layout region');
     const rect = [bounds[0] - scroll[0], bounds[1] - scroll[1], bounds[2], bounds[3]];
+    const piece = values.length ? layout.text?.[k] : -1;
+    if (piece !== -1) {
+      if (typeof strings[piece] !== 'string') throw new Error('MP-11: unreadable layout text');
+      const name = text(nodes.nodeName[i]);
+      const key = nodes.nodeType?.[i] === 3 || name.startsWith('::') ? parent[i] : i, group = rendered.get(key) ?? { head: '', tail: '', rects: [] };
+      group[name === '::after' ? 'tail' : 'head'] += strings[piece]; // Snapshots list ::after before text children.
+      if (!marked[i]) group.rects.push(rect);
+      rendered.set(key, group);
+    }
     if (marked[i]) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
     const name = text(nodes.nodeName[i]).toLowerCase();
     if (FRAME_OWNERS.has(name) || PLUGINS.has(name)) {
       owners.push({ backendNodeId: nodes.backendNodeId[i], rect, contentDocument: contentDocument.get(i), ...(PLUGINS.has(name) ? { plugin: true } : {}) });
     }
+  }
+  for (const { head, tail, rects } of rendered.values()) {
+    if (exposes(head + tail)) regions.push(...rects.filter(rect => rect[2] > 0 && rect[3] > 0));
   }
   return { regions, owners };
 }

@@ -14,6 +14,8 @@ const M = 'background:#ff00ff', C = 'background:#00ffff';
 const page = body => `<!doctype html><meta charset=utf-8><body style="margin:0;font:14px sans-serif">${body}</body>`;
 // Query flags: novault (no Vault echo text), nomarkers (secret fields only).
 // Mirrored/rotated frames paint their password field away from its layout x.
+// Vault value without a DOM echo: drawn into a canvas, and rendered as an
+// adopted-stylesheet ::before + text + ::after; both scripts remove themselves.
 export function fixtureHtml(url, cross) {
   const markers = !url.includes('nomarkers');
   switch (url.split('?')[0]) {
@@ -42,7 +44,11 @@ export function fixtureHtml(url, cross) {
       ${url.includes('novault') ? '' : `<iframe id=echoframe src="${cross}/echo" style="position:absolute;left:560px;top:350px;width:300px;height:60px;border:0"></iframe>`}
       ${url.includes('novault') ? '' : `<canvas id=drawn width=340 height=30 style="position:absolute;left:640px;top:80px"></canvas>
         <script>{ const c = document.getElementById('drawn').getContext('2d'); c.fillStyle = '#ff00ff'; c.font = 'bold 24px sans-serif';
-          c.fillText(${JSON.stringify(VAULT_VALUE)}, 0, 24); document.currentScript.remove(); }</script>`}
+          c.fillText(${JSON.stringify(VAULT_VALUE)}, 0, 24); document.currentScript.remove(); }</script>
+        <div id=generated style="position:absolute;left:640px;top:122px;color:#ff00ff;font:bold 18px sans-serif">${VAULT_VALUE.slice(16, 21)}</div>
+        <script>{ const sheet = new CSSStyleSheet();
+          sheet.replaceSync('#generated::before { content: ${JSON.stringify(VAULT_VALUE.slice(0, 16))} } #generated::after { content: ${JSON.stringify(VAULT_VALUE.slice(21))} }');
+          document.adoptedStyleSheets = [sheet]; document.currentScript.remove(); }</script>`}
       <div id=host style="position:absolute;left:560px;top:320px"></div>
       <input id=fixed type=password style="${M};position:fixed;right:10px;bottom:10px;width:90px;height:22px;border:0">
       <article style="${C};position:absolute;left:20px;top:420px;width:880px;height:1600px">Ordinary article text.</article>
