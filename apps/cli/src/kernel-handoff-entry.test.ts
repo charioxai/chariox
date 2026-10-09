@@ -2,7 +2,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { createKernelApprovalController, type KernelApprovalKey } from "./kernel-approval-controller.js"
-import { createHandoffEntry, HANDOFF_ENTER_CHOICE } from "./kernel-handoff-entry.js"
+import { createHandoffEntry, handoffKeyText, HANDOFF_ENTER_CHOICE } from "./kernel-handoff-entry.js"
 import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import type { RuntimeHandoff, HandoffResponseAction } from "@chariox/kernel-client/owner-handoff"
 const h: RuntimeHandoff = {kind:"secret",reason:"human_verification",agent_id:"agent",task_id:"task",obligation_id:"obligation",explanation:"Enter the missing value",target:{tab_id:"tab",generation:1,document_id:"doc",node_ref:"backend:1",origin:"https://github.com",path:"/login",label:"Password"},expires_at_ms:Date.now()+900_000,save_to_vault_offered:true}
@@ -25,6 +25,22 @@ test("MP-08/MP-11 A07 S04: Unicode entry exposes only length and clears after on
  entry.toggleSave()
  assert.deepEqual(entry.take(),{kind:"enter_value",value:"private-fixture-🔑",save_to_vault_key:"github-com-handoff"})
  assert.equal(entry.view().length,0);assert.equal(entry.take(),null)
+})
+test("MP-08/MP-10/MP-11 A07 S04: protected entry rejects every C0 and C1 control",()=>{
+ for(const code of [...Array.from({length:32},(_,i)=>i),...Array.from({length:33},(_,i)=>i+127)]){
+  const control=String.fromCodePoint(code)
+  const entry=createHandoffEntry(h)
+  assert.equal(entry.add(`before${control}after`),false,`control U+${code.toString(16)}`)
+  assert.equal(entry.view().length,0)
+  assert.equal(entry.take(),null)
+  assert.equal(handoffKeyText({name:control,sequence:control}),"")
+ }
+ const printable=" AZaz09~é界🔑"
+ const entry=createHandoffEntry(h)
+ assert.equal(entry.add(printable),true)
+ assert.deepEqual(entry.take(),{kind:"enter_value",value:printable})
+ assert.equal(handoffKeyText({name:"up",sequence:"\u001b[A"}),"")
+ assert.equal(handoffKeyText({name:"space"})," ")
 })
 test("MP-08/MP-11 A07 S01/S04: popup paste never reaches prompt or generic reply",async()=>{
  const f=fixture();await f.controller.choose(interaction.id,HANDOFF_ENTER_CHOICE)
