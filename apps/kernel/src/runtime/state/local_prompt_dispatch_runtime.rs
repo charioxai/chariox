@@ -3770,7 +3770,8 @@ impl KernelRuntimeState {
                 external_provider_turn_id: dispatch.external_provider_turn_id.clone(),
                 steering: dispatch.steering,
             };
-            let provider_run = provider_run.clone();
+            let mut provider_run = provider_run.clone();
+            let mut context_handoff = context_handoff;
             // Claude-headless confirms injection asynchronously via the
             // context-file marker; retry with the app lock released between
             // attempts so a slow provider cannot stall the whole daemon.
@@ -3789,6 +3790,23 @@ impl KernelRuntimeState {
                                 message: "prompt changed before native dispatch".into(),
                             });
                         }
+                        // SessionStart can reset the native session before its
+                        // first transcript row exists. Refresh its official hook
+                        // metadata before preparing hidden context or PTY input.
+                        let current = app
+                            .refresh_claude_native_session_for_runtime(&dispatch.provider_run_id)?;
+                        if super::context_handoff::native_session_id(&current)
+                            != super::context_handoff::native_session_id(&provider_run)
+                        {
+                            context_handoff = owned.context_handoff_for_dispatch(
+                                &dispatch.session_id,
+                                &dispatch.agent_id,
+                                &current,
+                                &dispatch.prompt_id,
+                                dispatch.steering,
+                            );
+                        }
+                        provider_run = current;
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
                             &dispatch.provider_run_id,

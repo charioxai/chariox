@@ -45,7 +45,7 @@ impl ConversationRun {
     }
 }
 
-fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
+pub(super) fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
     run.provider_session_id()
         .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
 }
