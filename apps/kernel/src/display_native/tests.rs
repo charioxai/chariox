@@ -760,6 +760,9 @@ fn mp11_protected_retina_rows_keep_the_mask_black_at_the_paced_rate() {
                 count >= 0,
                 "protected rows={row_count} frame={frame} dropped ({count})"
             );
+            let bytes: usize = rows[..count as usize].iter().map(|row| row.length).sum();
+            assert!(bytes <= 1024 * 1024 - 4096,
+                "MP-08/MP-10/MP-11 protected aggregate leaves room for packet headers: {bytes}");
         }
     }
 }

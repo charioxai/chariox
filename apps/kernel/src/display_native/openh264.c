@@ -45,7 +45,12 @@ void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp) 
     p.bPrefixNalAddingCtrl=false;p.bEnableSSEI=false;p.iEntropyCodingModeFlag=0;p.iPaddingFlag=0;
     p.bEnableFrameSkip=false;p.iMaxBitrate=UNSPECIFIED_BIT_RATE;p.bEnableSceneChangeDetect=false;p.bEnableLongTermReference=false;
     p.bEnableDenoise=false;p.iMultipleThreadIdc=(unsigned short)threads;
-    if (max_qp>0) p.iMaxQp=max_qp;
+    /* MP-08/MP-10/MP-11: a protected native row already caps QP at36
+     * for independently checked black fields. OpenH264's initial screen key
+     * starts below that cap and can exceed the1MiB packet bound before rate
+     * control has any history. Start at the same protected QP cap; all output
+     * checks, native geometry and exact repair remain unchanged. */
+    if (max_qp>0) p.iMinQp=p.iMaxQp=max_qp;
     SSpatialLayerConfig *layer=&p.sSpatialLayers[0];
     layer->iVideoWidth=width;layer->iVideoHeight=height;layer->fFrameRate=60;layer->iSpatialBitrate=bitrate;layer->iMaxSpatialBitrate=UNSPECIFIED_BIT_RATE;
     layer->uiProfileIdc=PRO_BASELINE;layer->uiLevelIdc=LEVEL_5_1;layer->bFullRange=false;
