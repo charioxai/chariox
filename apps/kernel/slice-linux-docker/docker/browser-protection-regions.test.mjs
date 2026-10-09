@@ -52,7 +52,7 @@ test('Vault echoes and opaque media are protected only with registered values; p
   ], { inputValue: { 3: 'vault-value' } });
   assert.deepEqual(documentProtection(doc, 0).regions, []);
   // A registered value can be drawn into media with no DOM echo left.
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4, 5, 6, 7, 8));
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'], viewport: [0, 0, 1100, 750] }).regions, at(2, 3, 4, 5, 6, 7, 8));
   // Plugins have no inspectable document: returned as owners to withhold.
   assert.deepEqual(documentProtection(doc, 0).owners.map(owner => [owner.backendNodeId, owner.plugin]), [[110, true], [111, true]]);
 });
@@ -64,11 +64,11 @@ test('rendered layout text is checked for Vault values, joined per element in vi
     ['P', 0], ['#text', 5, [], 'vault-'], ['#text', 5, [], 'value'], ['LI', 0], ['::marker', 8, [], 'vau'], ['::after', 8, [], 'value'], ['#text', 8, [], 'lt-']],
   { rendered: [[2, 'val'], [2, 'ue']] });
   assert.deepEqual(documentProtection(doc, 0).regions, []);
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, [...at(2, 5, 6, 7, 8, 9, 10, 11), [0, 20, 10, 10], [10, 20, 10, 10]]);
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'], viewport: [0, 0, 1100, 750] }).regions, [...at(2, 5, 6, 7, 8, 9, 10, 11), [0, 20, 10, 10], [10, 20, 10, 10]]);
   // Rendered text that cannot be read fails closed while values are registered.
   delete doc.documents[0].layout.text;
   assert.deepEqual(documentProtection(doc, 0).regions, []);
-  assert.throws(() => documentProtection(doc, 0, { values: ['vault-value'] }), /layout text/);
+  assert.throws(() => documentProtection(doc, 0, { values: ['vault-value'], viewport: [0, 0, 1100, 750] }), /layout text/);
 });
 
 test('rendered text is flattened across nested and sibling inline elements; matches map to every piece and their container', () => {
@@ -76,16 +76,16 @@ test('rendered text is flattened across nested and sibling inline elements; matc
   const doc = snapshot([['#document', -1], ['DIV', 0], ['::before', 1, [], 'va'], ['::after', 1, [], 'ue'], ['SPAN', 1], ['#text', 4, [], 'ult-'],
     ['B', 4], ['#text', 6, [], 'val'], ['P', 0], ['SPAN', 8], ['#text', 9, [], 'vault'], ['SPAN', 8], ['#text', 11, [], '-value']]);
   assert.deepEqual(documentProtection(doc, 0).regions, []);
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(1, 2, 3, 5, 7, 8, 10, 12));
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'], viewport: [0, 0, 1100, 750] }).regions, at(1, 2, 3, 5, 7, 8, 10, 12));
   // A match whose pieces share no laid-out container cannot be placed: fail closed.
   const roots = snapshot([['#text', -1, [], 'vault-'], ['#text', -1, [], 'value']]);
-  assert.throws(() => documentProtection(roots, 0, { values: ['vault-value'] }), /rendered text/);
+  assert.throws(() => documentProtection(roots, 0, { values: ['vault-value'], viewport: [0, 0, 1100, 750] }), /rendered text/);
 });
 
 // Coordinator rule 2026-10-09: while values are registered, a container whose
 // visual order can differ from DOM order is masked whole (never the page),
 // unless its rendered boxes prove DOM reading order.
-const vault = { values: ['vault-value'] };
+const vault = { values: ['vault-value'], viewport: [0, 0, 1100, 750] };
 const inline = { display: 'inline' };
 // DIV [0,0,200,20] > SPAN 'value', SPAN 'vault-': rendered 'vault-' first (reversed) or in DOM order.
 const reversed = { 1: [0, 0, 200, 20], 2: [50, 0, 40, 20], 3: [50, 0, 40, 20], 4: [0, 0, 50, 20], 5: [0, 0, 50, 20] };
