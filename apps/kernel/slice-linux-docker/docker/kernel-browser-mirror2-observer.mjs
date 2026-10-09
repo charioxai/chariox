@@ -98,18 +98,22 @@ export function installMirror2(sanitizeMirrorCss) {
       if (urlKeys.size >= RESOURCE_BUDGET) return null;
       const key = `r${urlKeys.size + 1}`; urlKeys.set(url.href, { key, kind }); newResources.push({ key, url: url.href, kind }); return key;
     };
-    const sheetText = (sheet, base, depth = 0) => {
-      let out = '';
+    // With `clean`, each sheet's own rules are sanitized against that sheet's base
+    // (an imported sheet's url() is relative to the imported sheet).
+    const sheetText = (sheet, base, depth = 0, clean = null) => {
+      let out = '', chunk = '';
+      const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
       for (const rule of sheet.cssRules) {
         if (rule.type === 3) { // @import: inline the imported sheet when readable.
-          if (depth < 8 && rule.styleSheet) { let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1); } catch { inner = ''; } const media = rule.media?.mediaText; out += media ? `@media ${media}{${inner}}\n` : `${inner}\n`; }
+          if (depth < 8 && rule.styleSheet) { let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean); } catch { inner = ''; } const media = rule.media?.mediaText; flush(); out += media ? `@media ${media}{${inner}}\n` : `${inner}\n`; }
           continue;
         }
-        out += rule.cssText + '\n';
+        chunk += rule.cssText + '\n';
       }
+      flush();
       return out;
     };
-    const css = (sheet, base) => sanitizeMirrorCss(sheetText(sheet, base), base, resource);
+    const css = (sheet, base) => sheetText(sheet, base, 0, (text, at) => sanitizeMirrorCss(text, at, resource));
     const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };

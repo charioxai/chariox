@@ -167,3 +167,18 @@ test("MP-10: a CSS image the page loads after its Resource Timing buffer is full
     "/early.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/late.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
   }));
+
+test("MP-10: review #941-3 an imported sheet's url() resolves against the imported sheet, not the importer", () => mirrored(
+  '<link rel="stylesheet" href="/css/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const delivered = [...(await next()).resources];
+    const image = () => delivered.some(r => Buffer.from(r.data_base64, "base64").toString().includes("#0d0e0f")), font = () => delivered.some(r => r.mime_type === "font/woff2");
+    for (let i = 0; i < 6 && !(image() && font()); i++) delivered.push(...(await next(1000)).resources);
+    assert(image(), `MP-10: the imported sheet's image arrived (${delivered.map(r => r.key)})`);
+    assert(font(), `MP-10: the imported sheet's font arrived (${delivered.map(r => r.mime_type)})`);
+  }, {
+    "/css/main.css": { type: "text/css", body: '@import url("/themes/dark/theme.css");' },
+    "/themes/dark/theme.css": { type: "text/css", body: '@font-face{font-family:T;src:url(t.woff2) format("woff2")}.x{background-image:url(icon.svg);font-family:T}' },
+    "/themes/dark/t.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) },
+    "/themes/dark/icon.svg": { type: "image/svg+xml", body: svg("#0d0e0f") },
+  }));
