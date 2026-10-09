@@ -14,6 +14,19 @@ function terminalCatalog() {
   }
 }
 
+test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
+  const pending = new Promise<never>(() => {})
+  const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: () => pending,
+    getProviderCatalog: () => pending,
+    getProviderCommandCatalogs: () => pending,
+    getTerminalCommandCatalog: () => pending,
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(result, "blocked")
+  if (result !== "blocked") assert.equal(result.binding, null)
+})
+
 test("bootstrapSession returns waiting-room bootstrap when no session should attach", async () => {
   const catalog = fallbackProviderCatalog()
   const bootstrap = await bootstrapSession(
@@ -47,8 +60,8 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
 
   assert.equal(bootstrap.binding, null)
   assert.deepEqual(bootstrap.sessions, [])
-  assert.equal(bootstrap.providerCatalog, catalog)
-  assert.deepEqual(bootstrap.providerCommandCatalogs, fallbackProviderCommandCatalogs())
+  assert.equal(await bootstrap.deferred?.providerCatalog, catalog)
+  assert.deepEqual(await bootstrap.deferred?.providerCommandCatalogs, fallbackProviderCommandCatalogs())
 })
 
 test("bootstrapSession seeds provider/model/effort from the kernel config.toml default when unset", async () => {
@@ -60,7 +73,7 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     effort: "",
   }
 
-  await bootstrapSession(
+  const bootstrap = await bootstrapSession(
     {} as never,
     options,
     "/workspace",
@@ -89,9 +102,10 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     },
   )
 
-  assert.equal(options.provider, "codex")
-  assert.equal(options.model, "gpt-5.1")
-  assert.equal(options.effort, "high")
+  assert.deepEqual(await bootstrap.deferred?.waitingRoomDefaults, { provider: "codex", model: "gpt-5.1", effort: "high" })
+  assert.equal(options.provider, undefined)
+  assert.equal(options.model, "default")
+  assert.equal(options.effort, "")
 })
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {

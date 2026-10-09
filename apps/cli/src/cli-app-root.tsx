@@ -752,6 +752,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
+    waitingRoomLaunchOwnershipRevision,
+    applyWaitingRoomBootstrapDefaults: reconcileWaitingRoom,
     client,
     bootstrap: props.bootstrap,
     renderer, appLogger, formatError,

@@ -108,8 +108,10 @@ test("waiting room start rows render loading placeholders before inventory arriv
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "model")?.value, "No models available")
-  assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
+  assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
