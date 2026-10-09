@@ -53,7 +53,8 @@ export class DesktopSource {
   async start() {
     try { if(this.native)await this.startNative();else await this.startHelper(); }
     catch(error) { await this.close(); throw error; }
-    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
+    // The first native frame waits for the oracle's start and two snapshots.
+    for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);
     if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
     void this.verify();
     return this;
