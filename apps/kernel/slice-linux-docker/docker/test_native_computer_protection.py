@@ -144,6 +144,36 @@ class WarmChannelTests(unittest.TestCase):
             self.assertTrue(event.called)
             self.assertEqual(held,set())
 
+    def test_mp11_warm_chord_restores_termination_between_events(self):
+        # The shared chord helper shields key-up restoration. That shield must
+        # not survive a request in the long-lived human input process.
+        original = {number: module.signal.getsignal(number) for number in
+                    (module.signal.SIGTERM, module.signal.SIGINT)}
+        def terminate(number, frame):
+            raise SystemExit(128 + number)
+        try:
+            for failed in (False, True):
+                with self.subTest(failed=failed):
+                    for number in original:
+                        module.signal.signal(number, terminate)
+                    def chord(*args, **kwargs):
+                        for number in original:
+                            module.signal.signal(number, module.signal.SIG_IGN)
+                        if failed:
+                            raise ValueError('chord failed after key-up shield')
+                    with patch.object(module.keyboard, 'hold_input', side_effect=chord):
+                        request = {'op': 'input', 'input': {'kind': 'key', 'key': 'Home'}}
+                        if failed:
+                            with self.assertRaises(ValueError):
+                                module.channel_request(request, set())
+                        else:
+                            module.channel_request(request, set())
+                    for number in original:
+                        self.assertIs(module.signal.getsignal(number), terminate)
+        finally:
+            for number, handler in original.items():
+                module.signal.signal(number, handler)
+
     def test_mp11_warm_channel_carries_only_human_input(self):
         events=[]
         with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None:events.append((action['kind'],processes))):

@@ -167,7 +167,13 @@ def channel_request(request, held, connection=None):
         raise ValueError('unsupported physical channel operation')
     action=request['input']
     if action['kind']=='keycode' and action['state']=='down':held.add(action['keycode'])
-    result=main(request,connection)
+    # Chord cleanup shields key-up against a second termination signal.
+    # Restore the channel's cancellation handlers after every human event,
+    # including a failed chord; this process serves the next event too.
+    handlers={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+    try: result=main(request,connection)
+    finally:
+        for number,handler in handlers.items():signal.signal(number,handler)
     if action['kind']=='keycode' and action['state']=='up':held.discard(action['keycode'])
     return result
 
