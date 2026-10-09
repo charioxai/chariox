@@ -1,6 +1,5 @@
-// MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
-// Unsupported/racing layout receives an opaque whole-frame mask. Page code
-// never participates in drawing/removing the masks. No desktop dependency.
+// MP-08/MP-11: exact Vault fill masks through the shared trusted collector.
+// Unavailable/racing geometry refuses capture for retry. No generic masks.
 import { deflateSync, inflateSync } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 

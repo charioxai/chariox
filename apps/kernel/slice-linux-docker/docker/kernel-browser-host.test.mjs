@@ -194,7 +194,7 @@ test("MD-2: failed child spawn has no PID to kill or await", async () => {
   assert.equal(chromium.child, null);
 });
 
-test("MD-5: protection flushes old frames and masks new/retired frames across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
+test("MP-08/MP-11: policy flushes old frames without masks for registration alone across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   const session = sent.find(call => call.method === "Page.startScreencast").session;
@@ -210,7 +210,7 @@ test("MD-5: protection flushes old frames and masks new/retired frames across re
   assert.equal(protectedFrame.mime_type, "image/png");
   assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
   const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(capture.data_base64, Buffer.from("test-frame").toString("base64")); // MP-11 registration alone leaves source pixels intact
+  assert.equal(decodePng(capture.data_base64).pixels[0],255); // MP-11 registration alone leaves source pixels intact
   const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
   chromium.child.exitCode = 1;
