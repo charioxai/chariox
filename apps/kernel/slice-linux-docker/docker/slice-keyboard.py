@@ -112,8 +112,14 @@ def type_text(text, expected_target=None):
     lifted = []
     active_keysym = None
     try:
+        fill_record = None
         if expected_target is not None:
             assert_secret_target(connection, expected_target)
+            import importlib.util
+            from pathlib import Path
+            spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+            fill_targets = importlib.util.module_from_spec(spec); spec.loader.exec_module(fill_targets)
+            fill_record = fill_targets.begin(expected_target['active_window'], text, connection)
         keysyms = []
         for character in text:
             # Some layouts carry Linefeed, which Chromium accepts but GTK
@@ -162,6 +168,8 @@ def type_text(text, expected_target=None):
             connection.sync()
             time.sleep(0.04)
     finally:
+        if expected_target is not None and fill_record is not None:
+            fill_targets.finish(fill_record)
         # A second termination signal must not interrupt modifier restoration.
         # The caller retains SIGKILL as its bounded last-resort cleanup.
         for signum in (signal.SIGTERM, signal.SIGINT):

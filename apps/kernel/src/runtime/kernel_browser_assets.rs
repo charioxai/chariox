@@ -167,6 +167,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-protection-regions.mjs"),
     ),
     (
+        "native-fill-targets.py",
+        include_bytes!("../../slice-linux-docker/docker/native-fill-targets.py"),
+    ),
+    (
         "browser-desktop-protection.py",
         include_bytes!("../../slice-linux-docker/docker/browser-desktop-protection.py"),
     ),

@@ -148,7 +148,7 @@ export class BrowserDisplayPresenter {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close({preserveFrame=false}={}) { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; if(!preserveFrame){this.canvas.width = 1; this.canvas.height = 1;} }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -215,7 +215,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   });
   try { await transport.subscribeDisplay?.(binding); }
   catch (error) {
-    off(); presenter.close();
+    off(); presenter.close({preserveFrame:true});
     await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }).catch(() => {});
     throw error;
   }
@@ -298,7 +298,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
-    async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }
 
@@ -311,12 +311,24 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapAt = null;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
+  // MP-08/MP-10: hidden pages retain one current ACK, never heartbeat
+  // promises/listeners. Slow visible RPCs likewise coalesce to one latest ACK.
+  const document=presenter.canvas.ownerDocument;
+  let ackInFlight=false, queuedAck=null;
   const ack = (sequence, lost = false) => {
     if (closed) return;
-    ackedAt = performance.now();
-    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, sequence, lost })
-      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail);
+    const candidate={sequence,lost:lost||queuedAck?.lost||false};
+    if (document?.hidden || ackInFlight) { queuedAck=candidate;return; }
+    queuedAck=null;ackInFlight=true;ackedAt=performance.now();
+    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, ...candidate })
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail)
+      .finally(()=>{
+        ackInFlight=false;
+        if(!closed&&!failure&&queuedAck&&!document?.hidden){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
+      });
   };
+  const visibilityChanged=()=>{if(!document.hidden)ack(presenter.sequence,queuedAck?.lost??false)};
+  document?.addEventListener('visibilitychange',visibilityChanged);
   // MP-08/MP-10 (1.5): a lost base, decode failure or receive gap keeps the
   // canvas, asks for an independent frame and drops dependent frames until
   // it arrives. Only a binding/geometry mismatch or a stopped pump is fatal.
@@ -385,6 +397,6 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
-    async close() { closed = true; running = false; clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

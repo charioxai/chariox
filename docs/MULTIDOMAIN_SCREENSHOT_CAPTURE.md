@@ -35,19 +35,16 @@ barrier, Vault mask policy, input fence and protected artifact chunk reads
 remain in force; a viewport change invalidates the crop. The home/worker relay
 path remains encrypted transport, with no relay screenshot inspection.
 
-User-domain browser/App host captures use the shared kernel Chromium controller
-frame seam. CDP obtains compositor pixels and protected field bounding boxes;
-no `Runtime.evaluate`, injected page script or App channel is used for this
-capture. Password/payment/one-time-code fields and explicit observation-protected
-nodes are masked. Embedded frames and shadow hosts without independent
-observation clearance are conservatively protected as opaque rectangles. Failed
-initial protection inspection fails capture closed; changed or unavailable
-post-capture field geometry masks the full frame. Capture uses kbrowser's shared
-typed display adapter, owner-derived terminal context, document binding and
-Vault observation barrier. Its registered credential/echo masks protect pixels
-before these additional generic field masks and cropping. Unknown Vault policy
-fences capture. No separate direct-backend capture bypass remains. Room Vault
-injection/protection is unchanged.
+MP-08/MP-11 user-domain captures use the shared kernel Chromium controller and
+Vault input/capture barrier. Miguel's 2026-10-09 fill-target model replaces the
+former generic field/frame/shadow and credential-echo masks: only the exact
+Vault-filled target is covered when it is currently a plain text field.
+Password fields show dots; show-password toggles are checked on every capture.
+Frame/backend-node/document/generation identity fences the target. Navigation,
+removal and user clearing/replacement retire it. DPR-aware field boxes receive
+small padding before cropping; racing measurements drop the capture for retry.
+Unknown policy refuses capture. No direct-backend bypass or extra generic mask
+layer remains.
 
 ## Flagged web prototype
 
@@ -63,10 +60,10 @@ Native panels use a client-side DOM render. Native Apps render the visible
 iframe viewport over a dedicated parent-bound MessagePort; the App channel API
 has no capture method, the signed UI never receives the selected region or
 capture port, and the parent/window/origin/view binding is checked. The host
-then crops/composes that frame. Password/Vault/passkey regions are blacked out
-using original visible geometry after rendering as well as during DOM cloning.
-Unregistered embedded documents/custom or shadow content are opaque protected
-blocks. The client does not crawl cross-origin documents or capture offscreen
+then crops/composes that frame. MP-08/MP-11: the earlier prototype
+password/passkey/opaque-block masking described here is superseded by Miguel’s
+2026-10-09 fill-target model. Kernel capture covers only recorded Vault-filled
+plain fields; password dots and other content remain visible. The client does not crawl cross-origin documents or capture offscreen
 content. Native DOM rendering is a prototype: canvas/image content is supported;
 unsupported/tainted resources fail rather than invoke a page screenshot service.
 DOM rasterization is not a browser compositor API, so fonts, pseudo-elements,

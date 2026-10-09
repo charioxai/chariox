@@ -354,10 +354,15 @@ export class DisplayStream {
     const urgent=source.input_triggered===true&&bytes<=32768&&this.tokens>=0;
     // MP-08/MP-10: rate-controlled video is bounded by its encoder and the
     // client ACK gate; native exact patches and lossless scroll frames by
-    // their own budgets (patch limit, shiftFits). Only bulk exact repairs
-    // (full PNG and verified repair batches) are link paced.
+    // their own budgets (patch limit, shiftFits). The ACK pump bounds bulk
+    // repairs too; only legacy credits pay this pre-delivery byte delay.
     const video=['video','stripes'].includes(payload.kind)||Boolean(source.native_tiles);
-    const deadline = this.now() + (urgent||video?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
+    const unpaced=video||source.push_delivery===true;
+    if(source.push_delivery===true&&!currentBinding()){
+      this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;
+      this.discardSource(source);return null;
+    }
+    const deadline = this.now() + (urgent||unpaced?0:Math.max(0,bytes-this.tokens)*8000/this.bitrate);
     if(deadline<=this.now()&&!video)await this.wait(0);
     while(this.now()<deadline){
       if(!currentBinding()){
@@ -368,10 +373,10 @@ export class DisplayStream {
       // Deterministic test clocks may not advance; real clocks always do.
       if(this.now()===before)break;
     }
-    this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-(video?0:bytes);
+    this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-(unpaced?0:bytes);
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    if (!await validate()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
+    if (!await validate() || !currentBinding()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
     if(bootstrap){
       this.producer?.retireUnsent();this.refiner?.invalidate();
       this.encoder.retire?.();

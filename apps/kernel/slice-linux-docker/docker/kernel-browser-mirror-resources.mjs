@@ -26,7 +26,6 @@ function resourceType(bytes) {
   return type&&w>0&&h>0&&w<=8192&&h<=8192&&w*h<=8*1024*1024?type:null;
 }
 export async function materializeMirrorResources(connection,sessionId,descriptors,protectedValues,cache=new Map()) {
-  if(protectedValues.length && descriptors.length) throw new Error('MP-11: protected resources refused');
   if(descriptors.length>128) throw new Error('MP-11: mirror resource count');
   cache.clear();
   if(!descriptors.length)return {mapped:new Map(),resources:new Map()};

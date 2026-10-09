@@ -269,7 +269,7 @@ impl RoomSecretObservations {
     ) -> Result<(), DaemonError> {
         if let Some(secret) = command_secret(command) {
             self.register(room, secret)?;
-            let target = match command {
+            let mut target = match command {
                 Command::Action {
                     target_id,
                     document_id,
@@ -297,6 +297,21 @@ impl RoomSecretObservations {
             let room = self.room_key(room);
             let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
             let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+            target["value_hash"] =
+                serde_json::json!(format!("{:x}", Sha256::digest(secret.as_bytes())));
+            target["fill_revision"] = serde_json::json!(protection.revision);
+            protection.targets.retain(|previous| {
+                if previous["kind"] != target["kind"] {
+                    return true;
+                }
+                if target["kind"] == "browser" {
+                    previous["target_id"] != target["target_id"]
+                        || (previous["document_id"] == target["document_id"]
+                            && previous["node_ref"] != target["node_ref"])
+                } else {
+                    previous["target"] != target["target"]
+                }
+            });
             if !protection.targets.contains(&target) {
                 if protection.targets.len() >= 256 {
                     return Err(protection_error());

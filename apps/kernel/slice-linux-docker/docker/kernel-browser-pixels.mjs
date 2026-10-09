@@ -1,8 +1,6 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
-// MD-5: bounded CDP PNG masking, using the Room's trusted region locator.
-// Unsupported/racing layout receives an opaque whole-frame mask. Page code
-// never participates in drawing/removing the masks. No desktop dependency.
-import { deflateSync, inflateSync, crc32 } from "node:zlib";
+// MP-08/MP-11: shared Vault fill-target masks; unavailable geometry retries.
+import { deflateSync, inflateSync, crc32 } from 'node:zlib';
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 // MP-11: preserve the complete viewport policy across protected crop merges.
@@ -203,15 +201,12 @@ export function cropProtectedPng(data,clip,scale=1){
   return {width,height,data_base64:encodePng(width,height,pixels)};
 }
 export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null) {
-  const pixelScale = scale * (clip?.scale ?? 1);
-  const width = Math.round((clip?.width ?? geometry.width) * pixelScale), height = Math.round((clip?.height ?? geometry.height) * pixelScale);
-  const fallback = () => !clip && scale === 1 ? wholeFrameMask() : opaqueFrame(width, height);
-  if (!values.length) return capture();
+  if (!targets.length && !browser.fillTargets?.size) return capture();
   try {
     const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
-    if (JSON.stringify(before) !== JSON.stringify(after)) return fallback();
-    return maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0))*pixelScale,(y-(clip?.y??0))*pixelScale,w*pixelScale,h*pixelScale]), scale);
-  } catch { return fallback(); }
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw Error("MP-11: fill target moved during capture");
+    return maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale);
+  } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
 }

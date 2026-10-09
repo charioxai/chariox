@@ -1,4 +1,4 @@
-"""MP-08 / MP-11: desktop placement of CDP protection regions fails closed."""
+"""MP-08 / MP-11: desktop placement of exact CDP Vault fill regions."""
 import importlib.util
 import pathlib
 import types
@@ -13,7 +13,7 @@ DOC = {'uri': 'https://example.test/a#top', 'rect': [44, 173, 892, 553]}
 
 
 def page(**changes):
-    value = {'url': 'https://example.test/a', 'window': CLIENT, 'viewport': [892, 553], 'scale': 1,
+    value = {'url': 'https://example.test/a', 'window': CLIENT, 'viewport': [892, 553], 'dpr': 1, 'zoom': 1,
              'regions': [[100, 50, 84, 32]], 'chrome': False}
     value.update(changes)
     return value
@@ -25,14 +25,20 @@ class WindowMasks(unittest.TestCase):
 
     def test_scale_two_pads_in_device_pixels_and_clips_to_the_document(self):
         doc = {'uri': DOC['uri'], 'rect': [8, 286, 1584, 706]}
-        masks = protection.window_masks({'pages': [page(window=[0, 0, 1600, 1000], viewport=[1584, 706], scale=2, regions=[[0, 0, 10, 10]])]}, [0, 0, 1600, 1000], [0, 0, 1600, 1000], [doc])
+        masks = protection.window_masks({'pages': [page(window=[0, 0, 800, 500], viewport=[1584, 706], dpr=2, regions=[[0, 0, 10, 10]])]}, [0, 0, 1600, 1000], [0, 0, 1600, 1000], [doc])
         self.assertEqual(masks, [[8, 286, 18, 18]])
 
-    def test_vault_policy_masks_native_chrome_and_status_bubble(self):
-        masks = protection.window_masks({'pages': [page(chrome=True, regions=[])]}, CLIENT, [40, 10, 900, 720], [DOC])
-        self.assertEqual(masks, [[40, 10, 900, 163], [44, 702, 892, 24]])
+    def test_page_zoom_binds_but_emulated_density_is_withheld(self):
+        self.assertEqual(protection.window_masks({'pages': [page(dpr=1.25, zoom=1.25)]}, CLIENT, FRAME, [DOC]), [[140, 219, 92, 40]])
+        # Host display mode emulates DSF 2 (and view scale) in a DSF 1 window: no provable mapping.
+        emulated = page(window=[0, 0, 1280, 800], viewport=[1280, 800], dpr=2, zoom=1)
+        self.assertEqual(protection.window_masks({'pages': [emulated]}, [0, 0, 1280, 800], [0, 0, 1280, 800], [{'uri': DOC['uri'], 'rect': [0, 0, 1280, 800]}]), [])
 
-    def test_withholds_without_a_one_to_one_binding(self):
+    def test_mp11_vault_policy_does_not_mask_native_chrome_or_status_bubble(self):
+        masks = protection.window_masks({'pages': [page(chrome=True, regions=[])]}, CLIENT, [40, 10, 900, 720], [DOC])
+        self.assertEqual(masks, [])
+
+    def test_mp11_no_mask_without_a_one_to_one_fill_binding(self):
         cases = [
             None, {'pages': []},
             {'pages': [page(url='https://other.test/')]},                  # navigated: wrong document
@@ -40,14 +46,15 @@ class WindowMasks(unittest.TestCase):
             {'pages': [page(window=[41, 30, 900, 700])]},                   # window moved/resized
             {'pages': [page(), page()]},                                    # ambiguous pages
             {'pages': [page(regions=[[1.5, 2, 3, 4]])]},                    # unrounded region
-            {'pages': [page(scale=0)]},
+            {'pages': [page(window=[40, 30, 900, 650])]},                   # same width, different height
+            {'pages': [page(zoom=None)]},
         ]
         for value in cases:
             with self.subTest(value=value):
-                self.assertIsNone(protection.window_masks(value, CLIENT, FRAME, [DOC]))
+                self.assertEqual(protection.window_masks(value, CLIENT, FRAME, [DOC]), [])
         devtools = {'uri': 'devtools://devtools/bundled/devtools_app.html', 'rect': [400, 173, 536, 553]}
-        self.assertIsNone(protection.window_masks({'pages': [page()]}, CLIENT, FRAME, [DOC, devtools]))
-        self.assertIsNone(protection.window_masks({'pages': [page()]}, CLIENT, FRAME, []))
+        self.assertEqual(protection.window_masks({'pages': [page()]}, CLIENT, FRAME, [DOC, devtools]), [])
+        self.assertEqual(protection.window_masks({'pages': [page()]}, CLIENT, FRAME, []), [])
 
 
 class Node:

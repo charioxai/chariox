@@ -142,6 +142,7 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
+    super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
     let mut capture = Capture(std::ptr::null_mut());
