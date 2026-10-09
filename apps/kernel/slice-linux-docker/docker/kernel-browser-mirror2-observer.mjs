@@ -183,8 +183,19 @@ export function installMirror2(sanitizeMirrorCss) {
     let sentForms = new WeakMap();
     const formRecord = node => { const form = formState(node); sentForms.set(node, JSON.stringify(form)); return form; };
     const formOp = (node, id, ops) => { const form = formState(node), json = JSON.stringify(form); if (sentForms.get(node) === json) return; sentForms.set(node, json); ops.push({ op: 'form', id, form }); };
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { sheets.push(css(sheet, root.baseURI ?? document.baseURI)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { try { return sheet.cssRules.length; } catch { return -1; } }).join(',');
+    // Adopted sheets have no mutation records: identity + rule count each drain,
+    // and their rule text on the periodic full check (replaceSync, rule edits).
+    const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base); adoptedTexts.set(sheet, text); sheets.push(sanitizeMirrorCss(text, base, resource)); } catch { sheets.push(''); } } return sheets; };
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); try { return `${id}:${sheet.cssRules.length}`; } catch { return `${id}:x`; } }).join(',');
+    const adoptedEdited = () => {
+      const edited = new Map(), out = new Set();
+      for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
+        if (!edited.has(sheet)) { let text = adoptedTexts.get(sheet); try { if (sheet.cssRules.length <= 4000) text = sheetText(sheet, root.baseURI ?? document.baseURI); } catch {} edited.set(sheet, text !== adoptedTexts.get(sheet)); }
+        if (edited.get(sheet)) out.add(id);
+      }
+      return out;
+    };
     const sheetSignature = sheet => { try { return `${sheet.cssRules.length}:${sheet.disabled}`; } catch { return 'x'; } };
     const styleRecord = (node, record) => {
       record.tag = 'style'; record.attrs = {};
@@ -407,9 +418,10 @@ export function installMirror2(sanitizeMirrorCss) {
           if (dirty.sheets.has(entry.node)) ops.push({ op: 'attr', id, name: 'media', value: media || null });
         }
       }
+      const edited = full ? adoptedEdited() : new Set();
       for (const [id, root] of roots) {
         const signature = adoptedSignature(root);
-        if (signature !== rootSignatures.get(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
+        if (signature !== rootSignatures.get(id) || edited.has(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
       }
       for (const key of Object.keys(dirty)) dirty[key].clear();
       let grew = false;

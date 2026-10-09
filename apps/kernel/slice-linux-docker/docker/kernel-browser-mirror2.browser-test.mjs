@@ -115,3 +115,14 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
+
+test("MP-10: adopted stylesheet edits with an unchanged rule count reach the viewer (document and shadow root)", () => mirrored(
+  '<p>doc</p><div id="h"></div><script>window.sheet=new CSSStyleSheet();sheet.replaceSync("p{color:rgb(255,0,0)}");document.adoptedStyleSheets=[sheet];const r=document.querySelector("#h").attachShadow({mode:"open"});r.innerHTML="<p>shadow</p>";window.inner=new CSSStyleSheet();inner.replaceSync("p{color:rgb(0,128,0)}");r.adoptedStyleSheets=[inner]</script>', async ({ next, evaluate }) => {
+    assert.equal((await next()).reset, true);
+    await evaluate("sheet.replaceSync('p{color:rgb(0,0,255)}');inner.cssRules[0].style.color='rgb(7,7,7)';true");
+    let ops = [];
+    for (let i = 0; i < 3 && ops.length < 2; i++) ops.push(...(await next(2000)).ops.filter(op => op.op === "adopted"));
+    const text = JSON.stringify(ops);
+    assert.match(text, /rgb\(0, 0, 255\)/, "MP-10: document sheet replaced");
+    assert.match(text, /rgb\(7, 7, 7\)/, "MP-10: shadow sheet rule edited");
+  }));
