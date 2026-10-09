@@ -267,6 +267,10 @@ const contextChunkIndex = Number.isInteger(parsedContextChunkIndex) && parsedCon
   : null
 const contextOnlyHook = contextChunkIndex !== null && contextChunkIndex > 0
 if (!contextOnlyHook && eventName === "SessionStart") {
+  const sessionId = typeof input.session_id === "string" ? input.session_id.trim() : ""
+  if (sessionId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT) {
+    writeFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT}.session-start-id`, sessionId)
+  }
   try { unlinkSync(join(dirname(process.argv[1]), "mcp-config.json")) } catch {}
 }
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
@@ -1268,6 +1272,42 @@ mod tests {
         let event: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(native.events_file).unwrap()).unwrap();
         assert_eq!(event["session_id"], "fresh-session-before-any-turn");
+    }
+
+    #[test]
+    fn native_session_start_writes_an_independent_identity_receipt() {
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "haiku");
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"SessionStart","source":"clear","session_id":"fresh-session-before-any-turn"}"#).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let event: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&native.events_file).unwrap()).unwrap();
+        assert_eq!(event["session_id"], "fresh-session-before-any-turn");
+        fs::write(&native.events_file, "").unwrap();
+        assert_eq!(
+            fs::read_to_string(format!(
+                "{}.session-start-id",
+                native.context_file.display()
+            ))
+            .unwrap(),
+            "fresh-session-before-any-turn"
+        );
     }
 
     #[test]
