@@ -165,6 +165,86 @@ test("agent account command loads its scoped catalog and applies a compatible pr
   assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
+test("a delayed account catalog preserves a later model selection", async () => {
+  let current = agent({ provider: "codex", model: "codex/old", account_profile: "first" })
+  let release!: () => void
+  let loaded!: () => void
+  const loading = new Promise<void>((resolve) => { loaded = resolve })
+  const catalogReady = new Promise<void>((resolve) => { release = resolve })
+  const handlerDeps: Parameters<typeof handleAgentProfileCommand>[0] = {
+    ...deps(current),
+    resolveSessionAgent: () => ({ agent: current, error: null }),
+    listProviderAccountProfiles: async () => [{
+      provider: "codex", profile_id: "second", label: "Second", is_default: false,
+    } as ProviderAccountProfile],
+    getProviderCatalogForAgent: async () => {
+      loaded()
+      await catalogReady
+      return {
+        all: [{ id: "codex", name: "Codex", models: {
+          old: { id: "old", name: "Old", status: "active", variants: { low: {} } },
+          newer: { id: "newer", name: "Newer", status: "active", variants: { low: {} } },
+        } }], default: { codex: "old" }, connected: ["codex"],
+      }
+    },
+    updateAgentProfile: async (_sessionId, _agentId, options) => {
+      current = agent({ ...current,
+        ...(typeof options.provider === "string" ? { provider: options.provider } : {}),
+        ...(options.accountProfile !== undefined ? { account_profile: options.accountProfile } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
+      })
+      return { agent: current, session: session({ agents: [current] }) }
+    },
+  }
+  const accountChange = handleAgentProfileCommand(handlerDeps, ["account", "agent-1", "Second"], "account")
+  await loading
+  await handleAgentProfileCommand(handlerDeps, ["model", "agent-1", "codex/newer"], "model")
+  release()
+  await accountChange
+  assert.equal(current.account_profile, "second")
+  assert.equal(current.model, "codex/newer", "the earlier account catalog must not overwrite the newer command")
+})
+
+test("a delayed account catalog cannot revert a later provider selection", async () => {
+  let current = agent({ provider: "codex", model: "codex/old", account_profile: "first" })
+  let release!: () => void
+  let loaded!: () => void
+  const loading = new Promise<void>((resolve) => { loaded = resolve })
+  const catalogReady = new Promise<void>((resolve) => { release = resolve })
+  const handlerDeps: Parameters<typeof handleAgentProfileCommand>[0] = {
+    ...deps(current),
+    resolveSessionAgent: () => ({ agent: current, error: null }),
+    listProviderAccountProfiles: async () => [{
+      provider: "codex", profile_id: "second", label: "Second", is_default: false,
+    } as ProviderAccountProfile],
+    getProviderCatalogForAgent: async () => {
+      loaded()
+      await catalogReady
+      return {
+        all: [{ id: "codex", name: "Codex", models: {
+          old: { id: "old", name: "Old", status: "active", variants: { low: {} } },
+          newer: { id: "newer", name: "Newer", status: "active", variants: { low: {} } },
+        } }], default: { codex: "old" }, connected: ["codex"],
+      }
+    },
+    updateAgentProfile: async (_sessionId, _agentId, options) => {
+      current = agent({ ...current,
+        ...(typeof options.provider === "string" ? { provider: options.provider } : {}),
+        ...(options.accountProfile !== undefined ? { account_profile: options.accountProfile } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
+      })
+      return { agent: current, session: session({ agents: [current] }) }
+    },
+  }
+  const accountChange = handleAgentProfileCommand(handlerDeps, ["account", "agent-1", "Second"], "account")
+  await loading
+  await handleAgentProfileCommand(handlerDeps, ["provider", "agent-1", "claude-p"], "provider")
+  release()
+  await accountChange
+  assert.equal(current.provider, "claude-p", "the earlier account catalog must not revert the newer provider")
+  assert.equal(current.account_profile, "first", "the superseded account command must not commit")
+})
+
 test("agent account display resolves the virtual default pointer to its public alias", async () => {
   const currentAgent = agent({ provider: "codex", account_profile: "default" })
   let flashedMessage = ""

@@ -217,15 +217,19 @@ async function updateAgentAccountProfile(
       return
     }
     const catalog = await deps.getProviderCatalogForAgent(agent, agent.provider, profile.profile_id)
-    const provider = normalizeBackendProviderId(agent.provider)
-    const model = selectConfiguredModel(catalog, agent.model, provider)
+    // Catalog discovery can finish after a later profile command. Preserve its
+    // model/effort; a newer provider or account selection supersedes this one.
+    const current = deps.resolveSessionAgent(agent.id).agent
+    if (!current || current.provider !== agent.provider || current.account_profile !== agent.account_profile) return
+    const provider = normalizeBackendProviderId(current.provider)
+    const model = selectConfiguredModel(catalog, current.model, provider)
     if (!model) {
       deps.flashFooter(`no models are available for ${providerAccountDisplayLabel(profile)}`, "error")
       return
     }
-    const effort = selectConfiguredVariant(model, agent.effort)
+    const effort = selectConfiguredVariant(model, current.effort)
     const payload = await deps.updateAgentProfile!(deps.sessionState().id, agent.id, {
-      provider: agent.provider,
+      provider: current.provider,
       accountProfile: profile.profile_id,
       model: model.id,
       ...(effort ? { effort } : { clearEffort: true }),
