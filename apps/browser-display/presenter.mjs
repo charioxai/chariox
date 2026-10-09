@@ -311,20 +311,20 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapAt = null;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
-  // MP-08/MP-10: hidden pages retain one current ACK, never heartbeat
-  // promises/listeners. Slow visible RPCs likewise coalesce to one latest ACK.
+  // MP-08/MP-10: heartbeat ownership is bounded even while hidden.
+  // Keep the relay lease alive, with one request and one latest queued ACK.
   const document=presenter.canvas.ownerDocument;
   let ackInFlight=false, queuedAck=null;
   const ack = (sequence, lost = false) => {
     if (closed) return;
     const candidate={sequence,lost:lost||queuedAck?.lost||false};
-    if (document?.hidden || ackInFlight) { queuedAck=candidate;return; }
+    if (ackInFlight) { queuedAck=candidate;return; }
     queuedAck=null;ackInFlight=true;ackedAt=performance.now();
     request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, ...candidate })
       .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail)
       .finally(()=>{
         ackInFlight=false;
-        if(!closed&&!failure&&queuedAck&&!document?.hidden){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
+        if(!closed&&!failure&&queuedAck){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
       });
   };
   const visibilityChanged=()=>{if(!document.hidden)ack(presenter.sequence,queuedAck?.lost??false)};
