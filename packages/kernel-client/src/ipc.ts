@@ -257,6 +257,7 @@ export class LocalIpcClient {
   private relayRenewal: RelayAuthorizationRenewal | null = null
   private relayRenewalNegotiated = false
   private relayAuthorizationFailure: LocalIpcError | null = null
+  private relayAuthorizationClosureEmitted = false
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
   private connectingControlWebsocket: WebSocket | null = null
@@ -541,12 +542,12 @@ export class LocalIpcClient {
       for (const socket of [this.controlWebsocket, this.eventWebsocket]) {
         if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(buildRelayConnectFrame(grant.token, this.relayTarget)))
       }
-    }, () => this.destroy(), release)
+    }, () => this.retireRelayAuthorization(), release)
   }
 
   invalidateRelayAuthorization(error: unknown): void {
     this.relayAuthRenewal?.invalidate(error)
-    this.destroy()
+    this.retireRelayAuthorization()
   }
 
   async close(): Promise<void> {
@@ -1090,6 +1091,12 @@ export class LocalIpcClient {
     if (this.relayAuthorizationFailure) return
     const message = upgradeMessage ?? "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."
     this.relayAuthorizationFailure = new LocalIpcError("renew relay authorization", message, "authorization_denied", false)
+    this.retireRelayAuthorization(message)
+  }
+
+  private retireRelayAuthorization(message = "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."): void {
+    if (this.relayAuthorizationClosureEmitted) return
+    this.relayAuthorizationClosureEmitted = true
     this.destroy()
     this.emitSyntheticEvent({event: "transport_closed", message})
   }
