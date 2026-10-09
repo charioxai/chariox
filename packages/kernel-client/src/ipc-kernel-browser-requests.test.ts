@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
@@ -22,4 +22,11 @@ test("MP-08/MP-11: grant requests and cross-kernel badge share protocol 443", ()
   const access = { kernel_id: "home", kernel_name: "home", focused_agent_kernel_id: "worker", reachable_by_focused_agent: false }
   assert.equal(userDomainWindowBadge(access), "Your focused agent can't control this window — focus an agent on kernel home")
   assert.equal(userDomainWindowBadge({ ...access, focused_agent_kernel_id: "home", reachable_by_focused_agent: true }), null)
+})
+
+// MP-08/MP-11: PR937 already published481. Keep this RED until the coordinator
+// assigns the added projection a fresh version and both clients pin it.
+test("MP-08 agent tab projection requires a fresh protocol after published PR937", () => {
+  assert(kernelBrowserAgentTabsMinimumProtocolVersion > 481, "Coordinator must allocate the new tab projection protocol before landing")
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelBrowserAgentTabsMinimumProtocolVersion)
 })
