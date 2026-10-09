@@ -805,7 +805,7 @@ mod tests {
         let params = crate::runtime::state::KernelRuntimeState::handoff_input_params(
             &target,
             actor,
-            crate::transport::room_browser_controller::BrowserLocatorAction::Click,
+            crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
         );
         assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
             "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");
