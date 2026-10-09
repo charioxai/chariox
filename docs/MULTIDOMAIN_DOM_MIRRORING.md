@@ -9,6 +9,59 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
+## Protocol 482: DOM mirror v2 (current)
+
+`mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
+remain for one protocol version (TUI/tests) and are superseded for web clients.
+v2 follows rrweb's model instead of a per-credit computed-style dump:
+
+- **Snapshot, then deltas.** One pre-order snapshot per document (`reset`),
+  then MutationObserver deltas as ops: `children` (reconcile a parent's child
+  list; new subtrees carried as records), `attr`, `text`, `css`, `adopted`,
+  `form`, `scroll`, `size`, `res`. Records travel as compact rows
+  `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
+  of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+- **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
+  text (imports inlined; cross-origin sheets read through CDP and normalized
+  by a constructed sheet); adoptedStyleSheets and open shadow roots are kept.
+  HTML attributes ship by denylist and only if rendered/exposed by the UA or
+  referenced by the page's CSS selectors/attr(); links carry `href="#"`.
+- **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
+  by the next page change; the client keeps four credits outstanding, packets
+  apply strictly in sequence (`base_sequence`), and a gap asks for a reset
+  (`after_sequence: 0`). A credit's deadline counts from its arrival. The kernel
+  gzips the scrubbed packet body after the Vault scrub; resource and region
+  bytes travel beside it (`resources`, `tiles`).
+- **Resources** are only bytes the page itself loaded (data: URLs, the resource
+  tree, or Chrome's cache without credentials for Resource Timing URLs), typed
+  by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
+  a `data:` image; the sandbox CSP is `img-src blob: data:; font-src blob:`.
+- **Frames.** Same-origin frames are part of the document. Cross-origin frames
+  are mirrored through their own CDP session/isolated world with the same
+  observer (ids and resource keys rebased per frame slot); nested or
+  unattachable frames, canvas/video/plugins are opaque regions painted from
+  masked lossless captures (at most 1 Hz until video regions land).
+- **Input** is node-addressed with the viewer's offset inside the node; the
+  kernel clamps to the live box, hit-tests at dispatch (through frames/shadow),
+  refuses protected ancestry and targets whose attributes changed after the
+  viewer's applied sequence. Epochs are snapshot sequences, not wall clocks.
+  CDP pointer coordinates follow the emulated view scale (DPR1 on a scale-2
+  window). Text/keys go to the live focus behind the shared text fence.
+- **Scroll** is viewer-owned: the sandbox scrolls natively; positions go to the
+  kernel as coalesced `scroll_to` and kernel echoes are ignored while the
+  viewer scrolls. Wheel over opaque regions still drives the kernel.
+- **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
+  packet; the web client shows protected video and retries the mirror after
+  30 s, doubling to 10 min.
+
+MP-11 rules for v2 (confirmed by Miguel 2026-10-09): Vault variants in text
+(including split across nodes), attributes, form values and CSS text; protected
+markers, password/OTP/payment fields and registered Vault target nodes are
+masks with their subtree withheld; fonts always ship; images ship unless the
+element is protected or its URL carries a variant; every url() spelling is a
+kernel resource key or `none`; the client validates every packet independently
+(unknown record keys, forbidden tags/attributes, any fetching CSS refused).
+
 ## Contract and authority
 
 Local protocol **433**, relay peer **79**. Set `CHARIOX_KERNEL_BROWSER_MIRROR=1`
