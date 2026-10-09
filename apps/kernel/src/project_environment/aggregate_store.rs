@@ -21,7 +21,7 @@ impl ProjectEnvironmentStore {
         &self,
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
-        let _lock = self.try_lock(project.id())?;
+        let _lock = self.lock_briefly(project.id())?;
         self.snapshot_locked(project)
     }
 

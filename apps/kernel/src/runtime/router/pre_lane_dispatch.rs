@@ -314,12 +314,14 @@ impl CommandRouter {
                 return self
                     .runtime_state
                     .preview_environment_diff(request.clone(), caller_user_id)
+                    .await
                     .map(Some);
             }
             LocalDaemonRequest::SaveProjectEnvironmentRevision(request) => {
                 return self
                     .runtime_state
                     .save_project_environment_revision(request.clone(), caller_user_id)
+                    .await
                     .map(Some);
             }
             request if request.unsupported_environment_capability().is_some() => {
@@ -334,6 +336,7 @@ impl CommandRouter {
                 return self
                     .runtime_state
                     .get_project_environment(request.clone(), caller_user_id)
+                    .await
                     .map(Some);
             }
             LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {

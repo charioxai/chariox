@@ -31,7 +31,10 @@ impl KernelRuntimeState {
             ));
         }
         let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-        let mut environment = store.snapshot(&project)?;
+        let mut environment = {
+            let _lock = store.lock_briefly_async(project.id()).await?;
+            store.snapshot_locked(&project)?
+        };
         if request
             .folder_ids
             .iter()

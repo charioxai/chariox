@@ -2,7 +2,7 @@
 use super::*;
 use crate::project_environment::*;
 impl KernelRuntimeState {
-    pub(crate) fn preview_environment_diff(
+    pub(crate) async fn preview_environment_diff(
         &self,
         request: crate::local::PreviewEnvironmentDiffRequest,
         user: &str,
@@ -20,12 +20,13 @@ impl KernelRuntimeState {
                 .snapshot()
                 .private_runtime_state_root(),
         );
-        let current = store.snapshot(&project)?;
+        let _lock = store.lock_briefly_async(project.id()).await?;
+        let current = store.snapshot_locked(&project)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentDiff {
             diff: environment_revision_diff(&current, &request.draft)?,
         })
     }
-    pub(crate) fn save_project_environment_revision(
+    pub(crate) async fn save_project_environment_revision(
         &self,
         request: crate::local::SaveProjectEnvironmentRevisionRequest,
         user: &str,
@@ -43,7 +44,7 @@ impl KernelRuntimeState {
                 .snapshot()
                 .private_runtime_state_root(),
         );
-        let _lock = store.try_lock(project.id())?;
+        let _lock = store.lock_briefly_async(project.id()).await?;
         let current = store.snapshot_locked(&project)?;
         let (environment, diff) = store.save_revision_locked(&current, &request, user)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff })
