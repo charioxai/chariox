@@ -313,9 +313,11 @@ MD-stack integration: the unreleased feature allocation is folded into local
 protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
 per-feature versions described during development above.
 
-## MP-08 / MP-10 / MP-11: agent tabs visible (PR 937 protocol 481)
+## MP-08 / MP-10 / MP-11: agent tabs visible (diagnostic PR 937 follow-up)
 
-The combined unmerged PR 937 uses its coordinator allocation 481 (OSS main 472).
+Published PR 937 already uses protocol 481 (OSS main 472). This diagnostic
+candidate still uses that base version. The new projection requires a fresh
+coordinator allocation, updated snapshot/hash and client minima before landing.
 Kernel browser state carries every admitted viewer's tab inventory, including
 agent-created tabs. Each tab has `opened_by` (actor ID, human/agent kind, display
 label; null for previously discovered tabs whose opener is unknown). Names come
@@ -337,5 +339,4 @@ The owner decision of 2026-10-09 15:20 UTC adds acceptance scenario
 form while hosted web viewers watch at DPR 1 and 2; screenshots show discovery
 and follow, follow-off shows notice, and watching preserves input ownership.
 Source checks are supplementary; hosted real-site, shaped-network and stability
-evidence is required before this row can pass. A separately published PR needs
-a fresh coordinator allocation rather than treating 481 as a new allocation.
+evidence is required before this row can pass. Protocol 481 must not be treated as a fresh allocation for these added fields.
