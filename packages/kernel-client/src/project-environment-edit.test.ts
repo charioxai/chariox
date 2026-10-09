@@ -25,3 +25,16 @@ test("a field changed by both editors remains an explicit choice; stale data doe
   assert.equal(base.project_requirements[0]?.title,"Node")
   assert.equal(theirs.project_requirements[0]?.title,"Editor A")
 })
+
+// MP-08 / MP-10 / MP-11: folder labels are editable specification fields.
+test("folder rename survives rebase and preserves another editor's requirement change", () => {
+  const folder = { folder_id: "api", portable_folder_key: "api", label: "api", optional_git: null, requirements: [{ ...requirement, scope: { kind: "folder" as const, folder_id: "api" } }] }
+  const base = { project_requirements: [], folders: [folder] }
+  const ours = { ...base, folders: [{ ...folder, label: "backend" }] }
+  const latest = { ...base, folders: [{ ...folder, requirements: [{ ...folder.requirements[0]!, required: false }] }] }
+  assert.equal(mergeEnvironmentDraft(base, ours, base).folders[0]?.label, "backend")
+  const result = mergeEnvironmentDraft(base, ours, latest)
+  assert.equal(result.folders[0]?.label, "backend")
+  assert.equal(result.folders[0]?.requirements[0]?.required, false)
+  assert.equal(mergeEnvironmentDraft(base, base, { ...latest, folders: [{ ...latest.folders[0]!, label: "server" }] }).folders[0]?.label, "server")
+})

@@ -24,7 +24,11 @@ export function mergeEnvironmentDraft(base: EnvironmentRevisionDraft, draft: Env
   }
   const merged = all(latest).flatMap(r => { const result = merge(r); return result ? [result] : [] })
   for (const r of all(draft)) if (!original.has(r.requirement_id) && !merged.some(current => current.requirement_id === r.requirement_id)) merged.push(r)
-  return { project_requirements: merged.filter(r => r.scope.kind === "project"), folders: latest.folders.map(f => ({ ...f, requirements: merged.filter(r => r.scope.kind === "folder" && r.scope.folder_id === f.folder_id) })) }
+  return { project_requirements: merged.filter(r => r.scope.kind === "project"), folders: latest.folders.map(f => {
+    const old = base.folders.find(folder => folder.folder_id === f.folder_id)
+    const ours = draft.folders.find(folder => folder.folder_id === f.folder_id)
+    return { ...f, label: old && ours && old.label !== ours.label ? ours.label : f.label, requirements: merged.filter(r => r.scope.kind === "folder" && r.scope.folder_id === f.folder_id) }
+  }) }
 }
 export function saveEnvironmentRevisionRequest(environment: ProjectEnvironment, draft: EnvironmentRevisionDraft, accepted: readonly string[] = [], excluded: readonly string[] = []) {
   return { SaveProjectEnvironmentRevision: { projectId: environment.local_project_id, expectedRevision: environment.revision, expectedContentDigest: environment.content_digest, draft, acceptedProposalIds: accepted, excludedProposalIds: excluded } } as const
