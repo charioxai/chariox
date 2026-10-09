@@ -147,7 +147,7 @@ for(const dpr of [1,2]) {
      const bundleRoot=await mkdtemp(path.join(tmpdir(),'protxform-mirror-client-'));
      try {
        const bundle=path.join(bundleRoot,'client.js');
-       const built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});
+       const built=spawnSync('bun',['build',process.env.CHARIOX_MIRROR_CLIENT_SOURCE??fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});
        assert.equal(built.status,0,built.stderr);
        const code=await readFile(bundle,'utf8');
        const clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
