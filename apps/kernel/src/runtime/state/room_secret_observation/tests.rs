@@ -97,6 +97,117 @@ async fn registered_native_target_refuses_agent_text_on_authenticated_worker_rou
     );
 }
 
+// MP-11 #904 review @61b0a4ac6 P1: a Vault value typed into an ordinary
+// native field has no password role, so clipboard-owner admission cannot see
+// it. Agent clicks (Paste menus/buttons) and AT-SPI actions are fenced by the
+// Room registry before any helper runs; human pointer input is unchanged.
+#[tokio::test]
+async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_worker_route() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{TestRoom, TestTools, install_screen_tool};
+    use crate::transport::room_browser_controller::{RoomComputerInputAction, RoomComputerPointerButton};
+    let room = TestRoom::new("registered-native-agent-click");
+    let tools = TestTools::new("registered-native-agent-click");
+    let receipt = tools.screen_tool.with_extension("calls");
+    std::fs::write(
+        &tools.screen_tool,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in *-stdin) cat >/dev/null;; esac\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            receipt.display()
+        ),
+    )
+    .unwrap();
+    let _environment = install_screen_tool(&tools.screen_tool);
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_environment_worker_binding = Some(crate::config::RoomEnvironmentWorkerBinding {
+        home_kernel_id: "proved-home".into(),
+        home_public_key: config.relay_public_key.clone(),
+        session_id: room.session_id.clone(),
+        slice_id: "proved-slice".into(),
+        provisioned_slice_id: None,
+    });
+    room.runtime.owned.config_projection.update(config.clone());
+    {
+        let mut rooms = room
+            .runtime
+            .owned
+            .room_secret_observations
+            .rooms
+            .lock()
+            .unwrap();
+        // Only a registered value: no native target or password role fences it.
+        rooms
+            .entry(room.session_id.clone())
+            .or_default()
+            .values
+            .push(Zeroizing::new("synthetic-vault-canary".into()));
+    }
+    let request = |actor: &str, id: &str, action: RoomComputerInputAction| Command::ComputerInput {
+        action_id: id.into(),
+        actor_id: actor.into(),
+        runtime_generation: 1,
+        viewport_revision: 1,
+        desktop_pixel_width: 1280,
+        desktop_pixel_height: 800,
+        action,
+    };
+    let click = |button| RoomComputerInputAction::PointerClick {
+        x: 200,
+        y: 120,
+        button,
+        click_count: 1,
+    };
+    for (id, action) in [
+        ("left", click(RoomComputerPointerButton::Left)),
+        ("right", click(RoomComputerPointerButton::Right)),
+        (
+            "paste-item",
+            RoomComputerInputAction::TargetAction {
+                tree_revision: 1,
+                target_id: "paste".into(),
+                action: "click".into(),
+            },
+        ),
+    ] {
+        let result = room
+            .runtime
+            .execute_bound_room_browser_controller(
+                "proved-home",
+                &config.relay_public_key,
+                &room.session_id,
+                "proved-slice",
+                request("agent:one", id, action),
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(DaemonError::UserDomainRefused {
+                    reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
+                })
+            ),
+            "{id}: {result:?}"
+        );
+    }
+    assert!(
+        !receipt.exists(),
+        "MP-11 refused agent pointer input never reaches the native helper"
+    );
+    room.runtime
+        .execute_bound_room_browser_controller(
+            "proved-home",
+            &config.relay_public_key,
+            &room.session_id,
+            "proved-slice",
+            request("human:one", "human", click(RoomComputerPointerButton::Left)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(receipt).unwrap().trim(),
+        "pointer-click"
+    );
+}
+
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
 // futures. Keep relay delivery out of their inline state on kernel stacks.
 #[tokio::test]
