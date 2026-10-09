@@ -259,7 +259,11 @@ pub use workspace::*;
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 452 adds durable agent events, enforced turn dispositions and
 /// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
-/// Version 460 replaces one-turn sudo with hour-scale windows bound to owner
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 484 replaces one-turn sudo with hour-scale windows bound to owner
 /// work, fresh-passkey extension, session status and no agent approvals
 /// (MP-08/MP-10/MP-11 A04).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 460;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 484;

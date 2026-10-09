@@ -1,4 +1,4 @@
-# Sudo windows (protocol 460)
+# Sudo windows (protocol 484)
 
 MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
 and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
@@ -84,14 +84,16 @@ authorized, started, timer_armed, warning, extension_requested, extended and the
 end reason (expired, work_ended, explicit_revoke, restart_dropped, …). Receipts
 contain no passkey.
 
-A sudo turn's `chariox_kernel_request` takes one serialized
+Provider discovery advertises `chariox_kernel_request` before the first turn so
+official harnesses can cache its interface; each call still needs live authority.
+Its `request` argument is one serialized
 `LocalDaemonRequest`, for example:
 
 ```json
 {"request":{"ListSessions":null}}
 ```
 
-External agents holding a process-bound session grant can request a window
+External agents holding a process-bound local-kernel grant can request a window
 over that kernel's Unix socket:
 
 ```sh
@@ -101,17 +103,27 @@ chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /abso
 The host's popup names the grant holder's OS executable and PID, the target
 agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it; the external client never sends or receives the
-passkey. TCP, relay, ungranted peers and targets outside the granted session
-are refused, and the window ends when the requester's grant ends. Shell CLI
+passkey. TCP, relay, ungranted peers are refused, and the window ends when the requester's grant ends. Shell CLI
 calls use the tracked provider's OS process tree. For a spawn launcher, the
 kernel also records the unique OS-verified endpoint server in that tree before
 prompt dispatch. Only descendants born after the current elevated turn binds
 are admitted below that server; other pre-turn children receive no exemption.
 A descendant retained from an
-earlier turn has no authority in a later turn. Unix terminal subscriptions are
-limited to the window session and owner attachments. Leased sudo execution
+earlier turn has no authority in a later turn. Sudo Unix terminal subscriptions are
+limited to the window session and owner attachments; ordinary external grants
+can subscribe across their local kernel. Leased sudo execution
 remains a separate leg.
 
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
 provider (see the lane evidence).
+
+MP-08 / MP-10 / MP-11: the shared router also filters every response to a
+local grant or sudo MCP caller. Credential read and mutation replies redact
+literal injection values. Raw MCP/connector configuration, native login
+output/codes, pairing/Cloud admission credentials and enrollment callbacks
+are withheld; inspect those through the host terminal. An operation can complete
+while its reply is withheld; check host-terminal state before retrying. Executor failures use
+a value-free error because parser/provider diagnostics can echo secrets. Exact
+constant refusal, expiry and revocation diagnostics remain available.
+This preserves normal workspace/history authority and is not a file sandbox.

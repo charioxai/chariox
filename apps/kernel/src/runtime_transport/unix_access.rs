@@ -85,6 +85,10 @@ pub(super) async fn admit_frame(
         ..
     } = frame
     {
+        if bound.is_some() || !runtime_state.access_grants_for(peer).is_empty() {
+            deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
+            return Err(());
+        }
         let runtime_state = runtime_state.clone();
         let request_id = request_id.clone();
         let request = request.clone();
@@ -163,25 +167,12 @@ pub(super) async fn admit_frame(
     let (grant, allowed) = {
         let mut binding = bound_grant.lock().expect("bound grant poisoned");
         let mut candidates = runtime_state.access_grants_for(peer);
-        let in_session = |session: &str| match frame {
-            KernelIncomingFrame::Request { request, .. } => {
-                runtime_state.external_request_in_session(session, request)
-            }
-            KernelIncomingFrame::Subscribe { session_id, .. } => session_id == session,
-            KernelIncomingFrame::Unsubscribe { .. } => true,
-        };
         candidates.retain(|grant| {
             binding
                 .as_ref()
                 .is_none_or(|id| id == &grant.summary.grant_id)
         });
-        let grant = candidates
-            .iter()
-            .find(|grant| in_session(&grant.summary.session_id))
-            // Keep a matching identity for policy refusal and its sampled audit,
-            // even when the request names no authorized session.
-            .or_else(|| candidates.first())
-            .cloned();
+        let grant = candidates.first().cloned();
         let allowed = grant.as_ref().is_some_and(|grant| match frame {
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_external_request(&grant.summary.grant_id, request)
@@ -192,10 +183,9 @@ pub(super) async fn admit_frame(
                 subscription_scope,
                 ..
             } => {
-                session_id == &grant.summary.session_id
-                    && kernel_subscription_scope(subscription_scope.as_deref())
-                        != KernelSubscriptionScope::WaitingRoomInventory
-                    && router
+                kernel_subscription_scope(subscription_scope.as_deref())
+                    == KernelSubscriptionScope::WaitingRoomInventory
+                    || router
                         .session_id_for_attachment_access(attachment_id)
                         .as_deref()
                         == Some(session_id.as_str())

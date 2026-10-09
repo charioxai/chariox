@@ -164,7 +164,12 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
-        if self.sudo_window_open_for_auth_token(auth_token) {
+        // Official provider harnesses cache MCP discovery before sudo begins.
+        // Advertising an interface conveys no authority: dispatch still checks
+        // the live exact sudo prompt on every invocation.
+        if matches!(provider_runs.as_slice(), [run]
+            if run.state() != crate::provider::ProviderRunState::Ended)
+        {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: sudo::SUDO_TOOL.into(),
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),

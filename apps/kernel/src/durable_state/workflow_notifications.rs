@@ -92,7 +92,10 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       PRIMARY KEY(source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_source_cache (
       owner_id TEXT NOT NULL,kernel_id TEXT NOT NULL,payload_json TEXT NOT NULL,
-      PRIMARY KEY(owner_id,kernel_id));",
+      PRIMARY KEY(owner_id,kernel_id));
+    CREATE TABLE IF NOT EXISTS workflow_notification_grants (
+      owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+      PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
     migration::migrate(db)?;
@@ -120,6 +123,15 @@ pub(crate) enum NotificationOperation {
     },
     RemoteAttach {
         subscription: WorkflowNotificationSubscription,
+    },
+    /// A local or remote attach made under an ephemeral external access grant.
+    Granted {
+        grant: String,
+        attach: Box<NotificationOperation>,
+    },
+    /// Disable subscriptions bound to this grant, or to any grant on restart.
+    RetireGrants {
+        grant: Option<String>,
     },
     Detach {
         subscription_id: String,
@@ -153,6 +165,7 @@ pub(crate) enum NotificationOutcome {
     Ack(WorkflowNotificationAck),
     Queued,
     Protected(Option<WorkflowNotificationEnvelope>),
+    Retired(Vec<WorkflowNotificationSubscription>),
     Swept,
 }
 pub(super) struct NotificationRequest {
@@ -263,6 +276,14 @@ impl DurableKernelStateStore {
             }
         }
         Ok(candidates)
+    }
+    pub(crate) fn notification_grant(
+        &self,
+        owner: &str,
+        subscription_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let db = self.lock_connection("workflow.notifications.grant")?;
+        db.query_row("SELECT grant_id FROM workflow_notification_grants WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id],|r|r.get(0)).optional().map_err(sql)
     }
     pub(crate) fn notification_cached_sources(
         &self,
@@ -396,6 +417,30 @@ fn apply(
             }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::Granted { grant, attach } => {
+            let outcome = apply(tx, *attach)?;
+            if let NotificationOutcome::Subscription(sub) = &outcome {
+                tx.execute(
+                    "INSERT INTO workflow_notification_grants VALUES (?1,?2,?3)",
+                    params![sub.owner_user_id, sub.subscription_id, grant],
+                )
+                .map_err(sql)?;
+            }
+            Ok(outcome)
+        }
+        NotificationOperation::RetireGrants { grant } => {
+            let retired = {
+                let mut q = tx.prepare("SELECT a.notification_json FROM app_automations a JOIN workflow_notification_grants g ON g.owner_id=a.owner_id AND g.subscription_id=a.automation_id WHERE a.source_kind='workflow_completion' AND a.status='active' AND (?1 IS NULL OR g.grant_id=?1)").map_err(sql)?;
+                let rows = q
+                    .query_map([&grant], |r| r.get::<_, String>(0))
+                    .map_err(sql)?;
+                rows.map(|r| decode(&r.map_err(sql)?))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            // The binding stays: a stale candidate of a retired grant never reads as owner-attached.
+            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND (?1 IS NULL OR g.grant_id=?1))",[&grant]).map_err(sql)?;
+            Ok(NotificationOutcome::Retired(retired))
         }
         NotificationOperation::Detach {
             subscription_id,
@@ -535,6 +580,12 @@ fn save_subscription(
     }
     tx.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES(?1,?2,?3,1,'workflow_completion',1,'kernel',?4,?5,?6,?7,'active','workflow_completion',?8) ON CONFLICT(owner_id,installation_id,automation_id) DO UPDATE SET notification_json=excluded.notification_json,status='active'",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id,encode(sub)?]).map_err(sql)?;
     tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.delivery_mode.name()]).map_err(sql)?;
+    // The latest attach owns the row: an owner attach unbinds, a granted one rebinds.
+    tx.execute(
+        "DELETE FROM workflow_notification_grants WHERE owner_id=?1 AND subscription_id=?2",
+        params![sub.owner_user_id, sub.subscription_id],
+    )
+    .map_err(sql)?;
     Ok(())
 }
 /// Source and target both evaluate the same AEGS equality/any-of semantics.
@@ -579,12 +630,13 @@ pub(super) fn insert_receipt_row(
     tx.execute("INSERT INTO app_outbox(owner_id,installation_id,receipt_id,automation_id,event_version,occurrence_id,occurred_at_ms,event_name,schema_digest,content_digest,automation_revision,accepted_generation,payload_json,accepted_at_ms,expires_at_ms,state,revision,attempts,next_attempt_at_ms,source_kind) VALUES (?1,?2,?3,?4,1,?5,?6,'workflow_completion','kernel',?7,1,0,?8,?6,?9,?10,1,0,0,'workflow_completion')",params![sub.owner_user_id,env.source_id,receipt_id,sub.subscription_id,env.occurrence_id,now as i64,digest,bytes,env.deadline_ms as i64,state]).map_err(sql)?;
     Ok(())
 }
-fn accept(
+/// Admission and queue commit both require the exact subscription to be active.
+pub(crate) fn require_attached(
     tx: &Transaction<'_>,
     sub: &WorkflowNotificationSubscription,
-    env: &WorkflowNotificationEnvelope,
-) -> Result<NotificationOutcome, DaemonError> {
-    let current:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND installation_id=?3 AND status='active'",params![sub.subscription_id,sub.owner_user_id,env.source_id],|r|r.get(0)).optional().map_err(sql)?;
+    source_id: &str,
+) -> Result<(), DaemonError> {
+    let current:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND installation_id=?3 AND status='active'",params![sub.subscription_id,sub.owner_user_id,source_id],|r|r.get(0)).optional().map_err(sql)?;
     let current: WorkflowNotificationSubscription = decode(
         current
             .as_deref()
@@ -593,6 +645,14 @@ fn accept(
     if current != *sub {
         return Err(error("notification subscription changed"));
     }
+    Ok(())
+}
+fn accept(
+    tx: &Transaction<'_>,
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+) -> Result<NotificationOutcome, DaemonError> {
+    require_attached(tx, sub, &env.source_id)?;
     let bytes = encode_notification_envelope(env)?;
     if env.subject.as_ref().is_some_and(|s| s.len() > 512)
         || !env.fields.is_object()
