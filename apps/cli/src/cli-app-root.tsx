@@ -214,6 +214,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     attachment_id: initialBinding?.attachment.id ?? null,
     client_id: options.clientId,
   })
+  onCleanup(client.onRelaySubscriptionDiagnostic(diagnostic => {
+    appLogger?.debug("relay subscription diagnostic", diagnostic)
+  }))
   const renderer = useRenderer()
   const secretInput = createCliSecretInput(renderer)
   onCleanup(secretInput.cancel)

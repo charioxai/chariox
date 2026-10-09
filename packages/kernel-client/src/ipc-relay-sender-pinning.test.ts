@@ -256,6 +256,9 @@ for (const persistent of [false, true]) {
       clientKeypair.privateKey.fill(0)
       await closeFixture(fixture.server, connectedClient)
     })
+    connectedClient.onRelaySubscriptionDiagnostic(() => { throw new Error("observer failed") })
+    const diagnostics: { event: string; subscriptionId: string }[] = []
+    connectedClient.onRelaySubscriptionDiagnostic(value => diagnostics.push(value))
     const nextConnectedEvent = createEventQueue(connectedClient)
 
     const firstEventPromise = withTimeout(nextConnectedEvent(), "first subscription event")
@@ -274,6 +277,9 @@ for (const persistent of [false, true]) {
     assert.equal(reconnectedEvent.notices[0]?.message, "daemon-b")
     assert.equal(subscribeCount, 2)
     assert.equal(new Set(subscriptionIds).size, 2, "MP-08/MP-11 each encrypted binding needs a distinct relay id")
+    assert.deepEqual(diagnostics.map(value => value.event), ["binding_sent", "event_decrypted", "binding_sent", "event_decrypt_failed", "event_decrypted"])
+    assert.deepEqual(Object.keys(diagnostics[0]!).sort(), ["event", "subscriptionId"])
+    assert.equal(diagnostics[2]?.subscriptionId, subscriptionIds[1])
     assert.equal(fixture.connectionCount(), 2)
   })
 }

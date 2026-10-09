@@ -1,3 +1,5 @@
+import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
+export type { RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
 import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
 import { isLocalRelayIssuerEndpoint, type RelayAuthorizationIssuer } from "./relay-authorization.js"
@@ -261,6 +263,7 @@ export class LocalIpcClient {
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private readonly requestLifetime = new KernelRequestLifetime()
+  private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
@@ -520,6 +523,10 @@ export class LocalIpcClient {
     this.scheduleReconnect(25)
   }
 
+  onRelaySubscriptionDiagnostic(handler: (diagnostic: RelaySubscriptionDiagnostic) => void) {
+    return this.relaySubscriptionDiagnostics.subscribe(handler)
+  }
+
   onKernelEvent(handler: (event: KernelEvent) => void) {
     this.eventHandlers.add(handler)
     return () => {
@@ -746,6 +753,7 @@ export class LocalIpcClient {
         subscriptionScope,
       })
       socket.send(JSON.stringify(frame))
+      this.relaySubscriptionDiagnostics.emit("binding_sent", subscriptionId)
     } catch (error) {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
     }
@@ -1134,13 +1142,17 @@ export class LocalIpcClient {
       if (!subscription?.relayDecryptEvent || subscription.relaySubscriptionId !== frame.subscription_id) {
         return
       }
+      let eventDecoded = false
       try {
         const decrypted = subscription.relayDecryptEvent(frame.encrypted_event)
         const event = kernelEventFromValue(JSON.parse(decrypted))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
+        eventDecoded = true
+        this.relaySubscriptionDiagnostics.emit("event_decrypted", frame.subscription_id)
         this.emitSyntheticEvent(event)
       } catch (error) {
+        if (!eventDecoded) this.relaySubscriptionDiagnostics.emit("event_decrypt_failed", frame.subscription_id)
         this.rejectPending(error instanceof Error ? error.message : String(error), lane)
       }
       return

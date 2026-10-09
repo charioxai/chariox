@@ -13,6 +13,14 @@ real hosted WSS relay. Use product enrollment and linked provider profiles;
 never modify a shared login. Shape both client paths to approximately 8 Mbit/s
 and at least 60 ms RTT. Retain screenshots, public transport diagnostics,
 visible frame observations, binary hashes/source commits and cleanup evidence.
+For the measured TUI, enable debug logging and retain only the public
+`relay subscription diagnostic` records (binding ID and outcome). Confirm that
+binding IDs are unique, events were decrypted, and failure count is zero; a
+missing diagnostic stream does not establish zero failures. Count loading
+frames after the actual client mounts. If automatic startup chooses another
+live machine while the cached kernel is paused, explicitly select the cached
+machine and kernel to exercise its reconciliation; stale cache must not claim
+automatic startup authority.
 
 1. Cold open while an enrolled kernel reports slowly: keep loading placeholders
    until a first authoritative report; do not show an empty inventory prematurely.
