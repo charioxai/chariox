@@ -42,8 +42,11 @@ export class PortableEncoder {
   }
     async nativeEncode(raw,bitrate,reset,stripes){
       this.nativeRetire=raw.nativeRetire;
-      // MP-08/MP-10: native-resolution motion; reduced only under measured contention.
-      const reduced=!stripes&&!raw[displayMaskRegions]?.length&&cpuContention.engaged();
+      // MP-08/MP-10: dense whole-frame motion at Retina geometry encodes at
+      // the reduced geometry (owner-approved adaptive scale; exact native
+      // repair still settles every pixel at DPR2), elsewhere only under
+      // measured contention. Sparse stripes and protected frames stay native.
+      const reduced=!stripes&&!raw[displayMaskRegions]?.length&&(raw.width===2560||cpuContention.engaged());
       const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[]});
       if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
       this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;

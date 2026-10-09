@@ -59,3 +59,12 @@ test('MP-11 batches are bounded, lone notifications flush, urgent wheel keeps or
  bridge.delivered('e',66);bridge.notify({wheel:[1,2,0,1]},true);assert.deepEqual(writes[2].trim().split('\n').map(s=>JSON.parse(s)),[{delivered:'e',revision:66},{wheel:[1,2,0,1]}]);
  bridge.delivered('e',67);bridge.close();await new Promise(r=>setImmediate(r));assert.equal(writes.length,3);assert.equal(bridge.notifications.length,0);
 });
+test('MP-08/MP-10: Retina whole-frame motion encodes at the reduced geometry; stripes and masks stay native',async()=>{
+ const encoder=new PortableEncoder(),requests=[];
+ const raw=(width,regions=[])=>({width,height:width===2560?1600:800,[displayMaskRegions]:regions,nativeEncode:async request=>{requests.push(request);return {backend:'native-x264',stripes:[],revision:1}}});
+ await encoder.nativeEncode(raw(2560),8000000,false,false);
+ await encoder.nativeEncode(raw(2560),8000000,false,true);
+ await encoder.nativeEncode(raw(2560,[{x:0,y:0,width:10,height:10}]),8000000,false,false);
+ await encoder.nativeEncode(raw(1280),8000000,false,false);
+ assert.deepEqual(requests.map(r=>r.reduced===true),[true,false,false,false]);
+});
