@@ -1854,3 +1854,47 @@ fn envp02b_saved_digest_matches_returned_folder_order() {
         "saved digest must represent returned canonical folder order"
     );
 }
+
+// MP-08 / MP-10 / MP-11: topology affects local bindings, never saved specification bytes.
+#[test]
+fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
+    for (initial, workspaces) in [
+        (vec!["/plain/folder"], vec!["/plain/folder", "/plain/other"]),
+        (vec!["/plain/folder", "/plain/other"], vec!["/plain/other"]),
+        (
+            vec!["/plain/folder", "/plain/other"],
+            vec!["/plain/other", "/plain/folder"],
+        ),
+    ] {
+        let harness = envp02b_harness();
+        harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":initial}})).unwrap()).unwrap();
+        let before = envp02b_read(&harness);
+        let LocalDaemonResponse::ProjectEnvironmentSaved {
+            environment: saved, ..
+        } = harness.dispatch(envp02b_save(&before, "Saved")).unwrap()
+        else {
+            panic!("Save expected")
+        };
+        harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":workspaces}})).unwrap()).unwrap();
+        let current = envp02b_read(&harness);
+        assert_eq!(
+            environment_draft_for_test(&current),
+            environment_draft_for_test(&saved),
+            "workspace mutation must not alter saved specification"
+        );
+        assert_eq!(current.revision, saved.revision);
+        assert_eq!(current.content_digest, saved.content_digest);
+        for (folder, original) in current.folders.iter().zip(&saved.folders) {
+            assert_eq!(
+                folder.local_workspace_binding.as_str(),
+                if workspaces.contains(&original.local_workspace_binding.as_str()) {
+                    original.local_workspace_binding.as_str()
+                } else {
+                    ""
+                }
+            );
+        }
+        let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":current.revision,"draft":environment_draft_for_test(&current)}})).unwrap()).unwrap() else { panic!("Preview expected") };
+        assert_eq!(diff.target_digest, current.content_digest);
+    }
+}

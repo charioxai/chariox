@@ -251,6 +251,7 @@ pub struct EnvironmentFolder {
     pub folder_id: String,
     pub portable_folder_key: String,
     pub label: String,
+    /// Empty when this saved folder is no longer attached to the local Project.
     pub local_workspace_binding: String,
     pub optional_git: Option<EnvironmentGitReference>,
     pub requirements: Vec<Requirement>,

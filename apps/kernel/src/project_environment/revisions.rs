@@ -364,15 +364,21 @@ impl ProjectEnvironmentStore {
             snapshot.reviewed_at_ms = saved.reviewed_at_ms;
             snapshot.reviewed_by = saved.reviewed_by.clone();
             snapshot.project_requirements = saved.project_requirements.clone();
+            // Revision contents remain immutable; attachment is a separate local projection.
+            let bindings: BTreeMap<_, _> = snapshot
+                .folders
+                .iter()
+                .map(|folder| {
+                    (
+                        folder.folder_id.clone(),
+                        folder.local_workspace_binding.clone(),
+                    )
+                })
+                .collect();
+            snapshot.folders = saved.folders.clone();
             for folder in &mut snapshot.folders {
-                if let Some(old) = saved
-                    .folders
-                    .iter()
-                    .find(|f| f.folder_id == folder.folder_id)
-                {
-                    folder.requirements = old.requirements.clone();
-                    folder.label = old.label.clone();
-                }
+                folder.local_workspace_binding =
+                    bindings.get(&folder.folder_id).cloned().unwrap_or_default();
             }
             snapshot.proposals.retain(|p| {
                 !history
