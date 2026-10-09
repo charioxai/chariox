@@ -62,6 +62,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             id.clone(),
             super::super::PendingInteraction {
+                kernel_wide_interaction: None,
                 session_id: String::new(),
                 session_store_identity: self.session_store.weak_identity(),
                 agent_lifetime: None,

@@ -285,9 +285,12 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
+    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
+    PasskeyPromptKind,
+};
+pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
 };
-pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
     NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
@@ -296,10 +299,9 @@ pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainW
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
-/// Grandparent of the CLI launcher, verified from the OS process tree.
+/// MP-08 / MP-10 / MP-11: native provider ancestor, or the unknown-program fallback.
 #[cfg(unix)]
 pub fn default_access_holder_pid() -> std::io::Result<u32> {
-    let (_, parent) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
-    let (_, grandparent) = crate::runtime::kernel_access::process::inspect(parent)?;
-    Ok(grandparent)
+    let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
+    crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }

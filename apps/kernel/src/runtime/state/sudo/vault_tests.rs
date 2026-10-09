@@ -313,10 +313,14 @@ struct Login {
 
 /// A retained (unfocused) grant on a tab the agent opened at the login page.
 async fn login_room() -> Login {
+    login_room_at(SITE).await
+}
+
+async fn login_room_at(site: &str) -> Login {
     let f = fixture();
     let root = crate::test_support::TestWorktree::new("a06-login-controller");
     let script = root.path().join("controller.sh");
-    std::fs::write(&script, LOGIN_CONTROLLER).unwrap();
+    std::fs::write(&script, LOGIN_CONTROLLER.replace(SITE, site)).unwrap();
     let host = &f.state.owned.kernel_browser_host;
     host.install_fixture_backend("local", &script, root.path());
     host.protected_request(
@@ -340,7 +344,7 @@ async fn login_room() -> Login {
     call(
         &f,
         "chariox.kernel_browser",
-        json!({"command":{"op":"open","url":format!("{SITE}/login")}}),
+        json!({"command":{"op":"open","url":format!("{site}/login")}}),
     )
     .await
     .unwrap();
@@ -511,4 +515,108 @@ async fn a06_login_rechecks_the_window_and_protection_after_the_vault_wait() {
     assert!(result.is_err());
     assert_eq!(inserted(&login), None);
     f.state.shutdown_cleanup().await.unwrap();
+}
+
+// MP-08/MP-10/MP-11 A06 review #937 P1: generated handles bind exact origins.
+#[tokio::test]
+async fn a06_generated_login_refuses_https_downgrade_and_port_rebinding() {
+    crate::test_support::isolated_env_test!();
+    for (origin, target) in [
+        ("https://127.0.0.1", "http://127.0.0.1"),
+        ("https://127.0.0.1", "https://127.0.0.1:8443"),
+        ("https://127.0.0.1:8443", "https://127.0.0.1"),
+    ] {
+        let login = login_room_at(target).await;
+        let f = &login.f;
+        elevated(f);
+        unlock(f);
+        let handle = generate(f, "origin-fence", origin).await.unwrap()["credential_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            call(f, PASTE, paste_args(&handle)).await.is_err(),
+            "generated credential for {origin} was inserted at {target}"
+        );
+        assert_eq!(inserted(&login), None);
+        f.state.shutdown_cleanup().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a06_generation_retry_refuses_scheme_and_port_rebinding() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let first = generate(&f, "exact-origin", "https://127.0.0.1")
+        .await
+        .unwrap();
+    assert!(generate(&f, "exact-origin", "http://127.0.0.1")
+        .await
+        .is_err());
+    assert!(generate(&f, "exact-origin", "https://127.0.0.1:8443")
+        .await
+        .is_err());
+    let same = generate(&f, "exact-origin", "https://127.0.0.1:443/login")
+        .await
+        .unwrap();
+    assert_eq!(same["credential_id"], first["credential_id"]);
+    assert_eq!(same["created"], false);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+// Poll the real generation future into its contended storage wait before ending sudo.
+async fn queued_generation_loses_authority(expire: bool) {
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let before = std::fs::read(vault_path(&f)).unwrap();
+    let guard = f.state.vault_observation_mutation_guard().await;
+    let pending = generate(&f, "queued-write", SITE);
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    if expire {
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .get_mut(&turn.entry_id)
+            .unwrap()
+            .deadline = Some(std::time::Instant::now());
+    } else {
+        f.state
+            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+            .unwrap();
+    }
+    drop(guard);
+    assert!(
+        pending.await.is_err(),
+        "generation committed after original sudo authority ended"
+    );
+    assert!(crate::credential::load_user_credentials()
+        .unwrap()
+        .is_empty());
+    assert!(
+        std::fs::read(vault_path(&f)).unwrap() == before,
+        "Vault storage changed after authority ended"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a06_generation_storage_wait_rechecks_revoked_window() {
+    crate::test_support::isolated_env_test!();
+    queued_generation_loses_authority(false).await;
+}
+
+#[tokio::test]
+async fn a06_generation_storage_wait_rechecks_expired_window() {
+    crate::test_support::isolated_env_test!();
+    queued_generation_loses_authority(true).await;
 }

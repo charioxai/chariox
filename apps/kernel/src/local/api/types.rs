@@ -276,4 +276,9 @@ pub use workspace::*;
 /// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
 /// Version 469 combines 460 and 462; A06 Vault generation and login add no
 /// wire shape (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 469;
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 481 combines the multidomain agent-model stack with main 472.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 481;

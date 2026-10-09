@@ -99,6 +99,7 @@ pub(super) fn passkey_prompt_for_scope(
     };
     let timeout_ms = interaction.timeout_sec().unwrap_or_default() * 1000;
     Ok(Some(Arc::new(PasskeyPrompt {
+        requester: interaction.requester().cloned(),
         kind: match interaction.kernel_operation_id().unwrap_or_default() {
             id if id.starts_with("access-grant:") => PasskeyPromptKind::AccessGrant,
             id if id.starts_with("access-extension:") => PasskeyPromptKind::AccessExtension,

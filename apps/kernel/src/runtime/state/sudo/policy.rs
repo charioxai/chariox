@@ -215,6 +215,11 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::DeleteKernel(_)
+            | LocalDaemonRequest::ListCredentials(_)
+            // Sudo must not serialize literal MCP env/header credentials either.
+            | LocalDaemonRequest::GetMcpServer(_)
+            | LocalDaemonRequest::ListMcpServers(_)
+            | LocalDaemonRequest::ImportMcpServers(_)
             // Pairing and Cloud identity can outlive the authorizing turn or
             // return relay credentials. They remain host-terminal operations.
             | LocalDaemonRequest::CreatePairingInvite(_)
@@ -300,10 +305,40 @@ pub(super) fn requester_grant_live(
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
         access.grants.get(&requester.grant_id).is_some_and(|grant| {
-            grant.summary.session_id == turn.session_id
-                && grant.summary.owner_user_id == turn.owner_user_id
+            grant.summary.owner_user_id == turn.owner_user_id
                 && std::time::Instant::now() < grant.deadline
                 && grant.holder.alive()
         })
     })
+}
+
+// MP-08/MP-10/MP-11: main uses the same complete sudo-window grammar.
+pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
+    is_sudo_prompt(prompt).then(|| sudo_arguments(prompt).expect("sudo prefix").trim())
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn sudo_refuses_raw_registry_credentials_and_provider_imports() {
+        for request in [
+            LocalDaemonRequest::ListCredentials(crate::local::ListCredentialsRequest),
+            LocalDaemonRequest::GetMcpServer(crate::local::GetMcpServerRequest {
+                workspace_id: None,
+                name: "literal-secret".into(),
+            }),
+            LocalDaemonRequest::ListMcpServers(crate::local::ListMcpServersRequest {
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::ImportMcpServers(crate::local::ImportMcpServersRequest {
+                workspace_id: None,
+                provider: "codex".into(),
+                name: None,
+            }),
+        ] {
+            assert!(sudo_request_forbidden(&request));
+        }
+    }
 }
