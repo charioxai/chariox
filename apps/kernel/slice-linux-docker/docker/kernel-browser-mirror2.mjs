@@ -366,7 +366,6 @@ export class Mirror2 {
     const out = []; let bytes = 0;
     for (const entry of due) {
       if (bytes >= budget) break;
-      if (entry.state === 'ok' && !this.fits(entry.resource.data_base64.length, bytes, budget, stream)) continue;
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);

@@ -136,3 +136,18 @@ test('MP-10: a resource packet stays within its byte budget; a larger resource t
   stream.inputAt = Date.now() - 2000;
   assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r3'], 'MP-10: alone once the viewer is quiet');
 });
+
+test('MP-10: a large near image fetched during input still gets its preview once the view moves', async () => {
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(400_000 - 8, 7)]);
+  const world = { connection: { send: async method => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: [{ url: 'https://x/big.png' }] } } : { base64Encoded: true, content: png.toString('base64') } }, sessionId: 's', ref: 'm' };
+  const mirror = new Mirror2({ host: {} });
+  mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [['r1', 250, 300]], all: ['r1'] } : expression.includes('loadedCount') ? 1 : expression.includes('preview(') ? '<svg xmlns="http://www.w3.org/2000/svg"/>' : ['r1'];
+  // Typing (recent input, view still): the oversized exact bytes wait, already fetched.
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: Date.now() };
+  mirror.register(stream, { resources: [{ key: 'r1', url: 'https://x/big.png', kind: 'image' }] });
+  assert.deepEqual(await mirror.materialize(world, stream, null), []);
+  stream.movedAt = Date.now();
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type]), [['r1', 'image/svg+xml']], 'MP-10: preview while moving');
+  stream.movedAt = stream.inputAt = Date.now() - 2000;
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type]), [['r1', 'image/png']], 'MP-10: exact bytes once quiet');
+});
