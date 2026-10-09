@@ -551,6 +551,7 @@ if [ "$1" = "start" ] \
   case "\${2:-}" in
     chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
       rm -f -- "$HARNESS_STATE/crash-after-supervisor-start"
+      case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
       kill -KILL "$PPID"
       exit 1
       ;;
@@ -579,13 +580,26 @@ printf '%s\n' "$*" >> "$HARNESS_STATE/mountpoint.log"
 `, 0o755)
   await put(join(bin, "node"), `#!/bin/sh
 set -eu
+# Every crash target is the direct updater parent started by this fixture.
+crash_updater() {
+  case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
+  kill -KILL "$PPID"
+}
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
+  && [ "\${2:-}" = "atomic-text" ] \\
+  && [ "\${3:-}" = stopped ] \\
+  && [ -f "$HARNESS_STATE/fail-after-stopped" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/fail-after-stopped"
+  exit 23
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ "\${2:-}" = "sync-directory" ] \\
   && [ "\${3:-}" = "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/releases" ] \\
   && [ -f "$HARNESS_STATE/crash-after-release-publication" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-release-publication"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
@@ -594,7 +608,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ -f "$HARNESS_STATE/crash-after-builder-pin" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-builder-pin"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -608,7 +622,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-home-root-rename" ]; then
   /bin/mv -- "\${5}" "\${6}"
   rm -f -- "$HARNESS_STATE/crash-after-home-root-rename"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
@@ -617,7 +631,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   "${process.execPath}" "$@"
   rm -f -- "\${3%/*}/home-migration-complete" \
     "$HARNESS_STATE/crash-before-home-completion-marker"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -627,7 +641,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   "${process.execPath}" "$@"
   if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
     rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
   exit 0
@@ -636,7 +650,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-before-symlink"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -645,7 +659,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-facade-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-after-facade-symlink"
   "${process.execPath}" "$@"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -653,7 +667,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-\${3:-}" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-\${3:-}"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -661,7 +675,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-prepared" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-prepared"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -671,7 +685,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   if [ -f "$marker" ]; then
     "${process.execPath}" "$@"
     rm -f "$marker"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
 fi

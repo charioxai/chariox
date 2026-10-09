@@ -89,6 +89,23 @@ cleanup() {
   rm -rf -- "$staging_root"
 }
 
+# MP-07/MP-10: a helper may exit under set -e, bypassing its caller's
+# explicit failure branch. Recover while staged trust inputs still exist.
+finish() {
+  finish_status=$?
+  trap - EXIT
+  if [ "$finish_status" -ne 0 ] && [ "$transaction_active" -eq 1 ] \
+    && [ "$rolling_back" -eq 0 ]; then
+    # Isolate helpers that use exit on an invalid authority. Preserve the
+    # durable journal on failed recovery; never turn a failure into success.
+    if ! (recover_transaction); then
+      echo "managed kernel exit recovery remains pending" >&2
+    fi
+  fi
+  cleanup
+  exit "$finish_status"
+}
+
 path_exists() {
   [ -e "$1" ] || [ -L "$1" ]
 }
@@ -841,11 +858,12 @@ terminate() {
     fi
   fi
   cleanup
+  case "$$" in ''|0|1|*[!0-9]*) exit 1 ;; esac
   kill -s "$signal" "$$"
   exit 1
 }
 
-trap cleanup EXIT
+trap finish EXIT
 trap 'terminate HUP' HUP
 trap 'terminate INT' INT
 trap 'terminate TERM' TERM

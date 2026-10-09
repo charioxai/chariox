@@ -81,6 +81,16 @@ async function assertSettled(harness, role, phase, before) {
     "environment-1", "machine-1", "kernel-1", phase, ""].join("\n"))
 }
 
+test("MP-07/MP-10 unexpected exit after stopping restores the previous release before cleanup", async context => {
+  const harness = await path1Harness(context)
+  const before = await snapshot(harness)
+  await put(join(harness.state, "fail-after-stopped"), "fail once\n")
+  const result = harness.run(harness.env)
+  assert.equal(result.status, 23, result.stderr)
+  await assertSettled(harness, "previous", "rolled_back", before)
+  assert.ok((await serviceMutations(harness)).includes("start chariox-path1-managed-bootstrap.service"))
+})
+
 for (const [boundary, selected, phase] of [
   ["phase-prepared", "previous", "rolled_back"],
   ["phase-stopped", "previous", "rolled_back"],
