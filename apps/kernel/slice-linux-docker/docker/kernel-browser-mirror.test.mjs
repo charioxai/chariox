@@ -39,14 +39,15 @@ test('MP-08/MP-11: registered and retired matching text uses visible tiles befor
  assert.equal(delta.hash,mirrorHash({root:delta.root,nodes:[records.get('n3'),records.get('n1'),records.get('n2')],fonts:delta.fonts,scroll:delta.scroll,focused:delta.focused,selection:delta.selection}));
  state.snapshot.nodes[1].attributes={title:'fixture'};state.snapshot.nodes[1].pseudo={'::before':{text:'FIXTURE',style:{color:'black'}}};
  const retired=await service.next(next(sub.subscription_id,delta.sequence),'a');
- assert.equal(retired.nodes[0].kind,'tile');assert.equal(retired.nodes[0].attributes,undefined);assert.equal(retired.nodes[0].pseudo,undefined);
+ assert(retired.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'),'MP-08 unmeasured generated text uses full compositor pixels');assert(retired.nodes.every(n=>n.attributes===undefined&&n.pseudo===undefined));
  clearInterval(service.expiry);service.clear();
 });
 test('MP-08/MP-11: matching styles fonts and overflowing text use protected full compositor fallback',async()=>{
- for(const seam of ['style','font','overflow']) {
+ for(const seam of ['style','font','overflow','pseudo']) {
   const {service,state,host}=fixture();host.protection.values=['fixture'];
   if(seam==='style')state.snapshot.nodes[0].style={'font-family':'fixture'};
   if(seam==='font')state.snapshot.fonts=[{family:'fixture',resource:'missing'}];
+  if(seam==='pseudo')state.snapshot.nodes[0].pseudo={'::after':{text:'fixture',style:{'white-space':'nowrap','overflow':'visible'}}};
   if(seam==='overflow')state.snapshot.nodes[1].box={x:70,y:0,width:80,height:40};
   const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
   assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(!JSON.stringify(packet.nodes).includes('fixture'));assert.equal(packet.tiles.length,1);
