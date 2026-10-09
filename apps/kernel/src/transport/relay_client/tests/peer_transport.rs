@@ -759,19 +759,16 @@ impl ControlledWorkspaceLiveSyncWorker {
         &self,
         timeout: Duration,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, crate::error::DaemonError> {
-        tokio::time::timeout(
-            timeout,
-            self.router.dispatch_authenticated_runtime_tool_call(
-                &self.runtime_auth_token,
-                crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
-                serde_json::json!({
-                    "path": "artifact.txt",
-                    "domain": "text",
-                }),
-            ),
-        )
-        .await
-        .expect("worker read_artifact should remain bounded")
+        let dispatch = self.router.dispatch_authenticated_runtime_tool_call(
+            &self.runtime_auth_token,
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+            serde_json::json!({"path": "artifact.txt", "domain": "text"}),
+        );
+        // MP-08 / MP-10 / MP-11: ordinary artifact calls must not carry every owner/tool future.
+        assert!(std::mem::size_of_val(&dispatch) <= 1024);
+        tokio::time::timeout(timeout, dispatch)
+            .await
+            .expect("worker read_artifact should remain bounded")
     }
 
     async fn shutdown(self) {

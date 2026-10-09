@@ -217,7 +217,7 @@ impl KernelRuntimeState {
                     let state = credential_state.clone();
                     let session_id = credential_session_id.clone();
                     let agent_id = credential_agent_id.clone();
-                    async move {
+                    Box::pin(async move {
                         state
                             .resolve_remote_provider_launch_credential(
                                 &session_id,
@@ -225,14 +225,14 @@ impl KernelRuntimeState {
                                 "launch remote native provider run",
                             )
                             .await
-                    }
+                    })
                 },
                 move |binding, credential| {
                     let state = send_state.clone();
                     let request = send_request.clone();
                     let grant_id = send_grant_id.clone();
                     let agent_id = send_agent_id.clone();
-                    async move {
+                    Box::pin(async move {
                         state
                             .send_remote_native_provider_launch_attempt(
                                 &request,
@@ -242,14 +242,14 @@ impl KernelRuntimeState {
                                 grant_id.as_deref(),
                             )
                             .await
-                    }
+                    })
                 },
                 move || {
                     let state = refresh_state.clone();
                     let agent_id = refresh_agent_id.clone();
                     let session_id = refresh_session_id.clone();
                     let caller_user_id = refresh_caller_user_id.clone();
-                    async move {
+                    Box::pin(async move {
                         let agent = state.refresh_remote_agent_binding_authorized(&agent_id).await?;
                         if agent.session_id() != session_id {
                             return Err(DaemonError::AgentNotInSession {
@@ -273,7 +273,7 @@ impl KernelRuntimeState {
                                 ),
                             }
                         })
-                    }
+                    })
                 },
             )
             .await?;
