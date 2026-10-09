@@ -10,22 +10,31 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         let Some(events) = run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS") else {
             return Ok(());
         };
+        // SessionStart can arrive between the early peek and event consumption.
+        // Its separate receipt survives that drain until the next native reset.
+        let receipt = run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+            .and_then(|context| fs::read_to_string(format!("{context}.session-start-id")).ok())
+            .map(|session| session.trim().to_string())
+            .filter(|session| !session.is_empty());
         let raw = fs::read_to_string(events).unwrap_or_default();
-        let session = raw
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|event| {
-                event.get("hook_event_name").and_then(Value::as_str) == Some("SessionStart")
-            })
-            .filter_map(|event| {
-                event
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-            })
-            .next_back();
+        let session = receipt.or_else(|| {
+            raw.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|event| {
+                    event.get("hook_event_name").and_then(Value::as_str) == Some("SessionStart")
+                })
+                .filter_map(|event| {
+                    event
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string)
+                })
+                .next_back()
+        });
         let Some(session) = session else {
             return Ok(());
         };
