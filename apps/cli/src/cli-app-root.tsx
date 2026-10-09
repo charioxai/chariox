@@ -853,7 +853,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptStopController.reset()
     },
     bumpHistoryLoadGeneration, reconcileWaitingRoom: reconcileWaitingRoomProjection,
-    refreshWaitingRoomData,
+    refreshWaitingRoomData, applyWaitingRoomTransportClosed,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },

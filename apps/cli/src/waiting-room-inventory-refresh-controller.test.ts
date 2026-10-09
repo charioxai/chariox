@@ -583,7 +583,7 @@ test("cached inventory restores machines and kernels before live reports", () =>
 
 test("a brief directory omission retains machine and kernel rows", async () => {
   const harness = createHarness({ snapshots: [inventory("live", {
-    remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }],
+    remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }],
     remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })],
   }), inventory("missing")] })
   await harness.controller.refreshNow()
@@ -593,7 +593,7 @@ test("a brief directory omission retains machine and kernel rows", async () => {
 })
 
 test("cached rows stay visible before the disconnected transport receives its first report", async () => {
-  const cached = inventory("cached", { remoteMachines: [{ machine_id: "cached-machine", display_name: "Cached", online: true, kernel_count: 1 }], remoteKernels: [kernel("cached-kernel")] })
+  const cached = inventory("cached", { remoteMachines: [{ machine_id: "cached-machine", display_name: "Cached", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("cached-kernel")] })
   const harness = createHarness({ connected: false, cachedInventories: [cached] })
   await harness.controller.refreshNow()
   assert.equal(harness.remoteMachines()[0]?.machine_id, "cached-machine")
@@ -603,7 +603,7 @@ test("cached rows stay visible before the disconnected transport receives its fi
 
 test("a failed live refresh retains rows as reconnecting until the next report", async () => {
   let calls = 0
-  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
   const harness = createHarness({ getInventory: async () => { if (calls++ > 0) throw new Error("kernel websocket closed (1005)"); return live } })
   await harness.controller.refreshNow()
   await harness.controller.refreshNow()
@@ -617,7 +617,7 @@ test("a failed live refresh retains rows as reconnecting until the next report",
 
 
 test("transport closure immediately marks retained inventory as reconnecting", async () => {
-  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
   const harness = createHarness({ snapshots: [live] })
   await harness.controller.refreshNow()
   harness.controller.applyTransportClosed()

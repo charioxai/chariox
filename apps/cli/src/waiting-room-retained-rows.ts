@@ -1,7 +1,7 @@
 export type WaitingRoomRowFreshness = "cached/refreshing" | "reconnecting"
 const reconnectGraceMs = 30_000
 
-export function createWaitingRoomRetainedRows<T>(key: (row: T) => string, nowMs: () => number) {
+export function createWaitingRoomRetainedRows<T extends object>(key: (row: T) => string, nowMs: () => number) {
   const rows = new Map<string, { row: T; missingSinceMs?: number; cached: boolean }>()
   return {
     clear() { rows.clear() },
@@ -22,7 +22,7 @@ export function createWaitingRoomRetainedRows<T>(key: (row: T) => string, nowMs:
       return [...rows.values()].map(item => item.cached
         ? { ...item.row, displayFreshness: "cached/refreshing" }
         : item.missingSinceMs === undefined
-        ? item.row : { ...item.row, displayFreshness: "reconnecting" })
+        ? item.row as T & { displayFreshness?: WaitingRoomRowFreshness } : { ...item.row, displayFreshness: "reconnecting" })
     },
   }
 }
