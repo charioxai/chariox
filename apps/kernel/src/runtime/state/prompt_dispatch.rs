@@ -568,19 +568,9 @@ impl KernelRuntimeState {
             &remote_execution.leased_agent_id,
             &provider_run_id,
         );
-        if expected_active_prompt.is_some() {
-            owned.append_steering_prompt_history(
-                session_id,
-                &provider_run_id,
-                &payload.target_home_prompt_id,
-                prompt.source_attachment_id(),
-                agent_id,
-                prompt.id(),
-                prompt.prompt(),
-                prompt.attachments(),
-            )?;
-            return Ok(Some(projected_provider_run_id));
-        }
+        // MP-08 / MP-10 / MP-11: Explicit user steering shares the same
+        // post-receipt home-turn/binding admission and echo as agent messages.
+        // A worker acknowledgement cannot revive a settled home prompt.
         self.with_app_side_effect(|_app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
             if !remote_steer_binding_identity_matches(
