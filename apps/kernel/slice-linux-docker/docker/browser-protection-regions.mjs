@@ -73,7 +73,9 @@ function contenteditableTextGeometry() {
   for(let element=this;element;element=element.parentElement??element.getRootNode().host) {
     const style=this.ownerDocument.defaultView.getComputedStyle(element);
     const clipX=style.overflowX!=='visible',clipY=style.overflowY!=='visible';
-    if(style.display==='none'||style.visibility==='hidden')return {rects:[],viewport};
+    // Visibility inherits, but descendants may restore visible text. Range
+    // bounds conservatively cover that text; only display:none hides a subtree.
+    if(style.display==='none')return {rects:[],viewport};
     if(clipX||clipY) {
       if(positioned)throw Error('uncertain positioned clip');
       const box=element.getBoundingClientRect();
