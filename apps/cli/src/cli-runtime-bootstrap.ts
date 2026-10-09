@@ -47,7 +47,7 @@ import {
   resolveMaxAgentsPerScreen,
   type CharioxPreferences,
 } from "./preferences.js"
-import { getUserConfig } from "./config-api.js"
+import { getCredentialVaultStatus, getUserConfig } from "./config-api.js"
 import {
   bootstrapSession,
 } from "./session-bootstrap.js"
@@ -345,6 +345,7 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
     resolveSession,
     attachToSession,
     getSessionState,
+    getCredentialVaultStatus,
     launchProviderRun,
     tryGetProviderRun,
     catchUpAttachedSession,

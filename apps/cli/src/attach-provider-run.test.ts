@@ -116,3 +116,20 @@ test("settleAttachProviderRun still surfaces unrelated provider launch failures"
     (error) => error === launchError,
   )
 })
+
+
+test("Claude attach reaches the TUI before a locked-Vault launch can wait for its UI", async () => {
+  const restored = { ...session, agents: [{ ...session.agents[0]!, provider: "claude", model: "claude-sonnet-5-5" }] }
+  let launched = false
+  const result = await settleAttachProviderRun(restored, { provider: "claude", model: "claude-sonnet-5-5", effort: "low" }, "product-linked", false, {
+    getCredentialVaultStatus: async () => ({ unlocked: false }),
+    launchProviderRun: async () => { launched = true; throw new Error("bootstrap must not wait for an unlock UI it has not rendered") },
+    getSessionState: async () => restored,
+    tryGetProviderRun: async () => null,
+  })
+  assert.equal(launched, false)
+  assert.equal(result.action, "skipped")
+  if (result.action !== "skipped") return
+  assert.equal(result.reason, "credential_vault_locked")
+  assert.equal(result.session, restored)
+})
