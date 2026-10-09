@@ -128,6 +128,9 @@ export async function displayCredit(host, stream, command, signal) {
   // MP-10: only a post-dispatch native capture can claim the input burst.
   const inputAt=host.inputChangedAt.get(tab.tab_id)??-Infinity;
   source.input_triggered=Number.isFinite(inputAt)&&epoch!==stream.deliveredInputEpoch&&Number.isFinite(source.captured_ms)&&source.captured_ms>=performance.timeOrigin+inputAt;
+  // MP-08/MP-10: the kernel ACK pump already bounds admitted delivery.
+  // Keep this scheduling hint private; legacy display_next retains pacing.
+  source.push_delivery=Boolean(command.push);
   // The commit-time document check in validate() is the ordering barrier
   // with CDP navigation events; a second pre-check adds a round trip only.
   assertNotCancelled(signal);
