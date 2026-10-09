@@ -147,6 +147,7 @@ pub(super) fn run() -> Result<(), String> {
         return Err("MP-11: native root owner".into());
     }
     let owner = if config.desktop { 0 } else { config.pid };
+    super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
     let mut capture = Capture(std::ptr::null_mut());
