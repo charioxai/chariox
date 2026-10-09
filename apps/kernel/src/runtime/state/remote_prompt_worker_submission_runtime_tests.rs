@@ -1112,3 +1112,119 @@ async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_withou
         assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
     }
 }
+
+#[tokio::test]
+async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("worker boot");
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "handoff-home",
+            "handoff-session",
+            "handoff-agent",
+            false,
+            "handoff-user",
+        )
+        .expect("lease");
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("sonnet".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent");
+    let entry = crate::history::SessionHistoryEntry::user_prompt(
+        &leased.backing_session_id,
+        &leased.backing_attachment_id,
+        &leased.backing_agent_id,
+        "Our earlier accepted constraint is PRESERVE_LEASED_CONVERSATION.",
+    );
+    let event = crate::history::HistoryEvent::transcript(
+        app.operational_history_store().reserve_sequence(),
+        &entry,
+        crate::history::HistoryEventTurnContext {
+            prompt_id: Some("earlier-worker-prompt".into()),
+            ..Default::default()
+        },
+    );
+    app.operational_history_store()
+        .append(&event)
+        .expect("earlier history");
+    // Exercise submission to a ready worker run, rather than the separate
+    // asynchronous launch path that admits this first prompt into its queue.
+    let prepared = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_prompt_submission(
+            &leased.id,
+            "Continue the investigation",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("prepare ready worker");
+    if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) = prepared.provider_run {
+        app.launch_leased_provider(request)
+            .expect("ready worker run");
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let (run, outcome) = runtime
+        .submit_relay_leased_prompt(
+            &leased.id,
+            crate::transport::relay_peer::RelayAgentExecutionProfile {
+                provider: leased.provider.clone(),
+                account_profile: leased.account_profile.clone(),
+                model: leased.model.clone(),
+                effort: leased.effort.clone(),
+            },
+            "Continue the investigation",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+        .await
+        .expect("worker submission");
+    assert!(
+        matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ),
+        "ready worker must dispatch immediately"
+    );
+    let records = runtime.owned.terminal_stream.input_records();
+    assert!(
+        records.iter().any(|r| r.provider_run_id == run
+            && String::from_utf8_lossy(&r.bytes).contains("PRESERVE_LEASED_CONVERSATION")),
+        "worker submission must carry its earlier conversation through the shared dispatcher"
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&leased.backing_session_id)
+        .expect("session");
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &leased.backing_agent_id)
+            .expect("active")
+            .prompt(),
+        "Continue the investigation"
+    );
+}
