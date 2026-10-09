@@ -126,7 +126,7 @@ impl KernelRuntimeState {
                 user,
                 Some(&admission),
                 "host.secret",
-                Self::handoff_input_params(target, actor, locator),
+                Self::handoff_input_params(target, actor, handoff.kind, locator),
                 true,
             )
             .await
@@ -145,11 +145,14 @@ impl KernelRuntimeState {
     pub(in crate::runtime) fn handoff_input_params(
         target: &crate::session::HandoffTarget,
         actor: &str,
+        kind: crate::session::HandoffKind,
         action: BrowserLocatorAction,
     ) -> serde_json::Value {
+        let mask_code_input = kind == crate::session::HandoffKind::Code
+            && matches!(&action, BrowserLocatorAction::Fill { .. });
         json!({"tab_id":target.tab_id,"generation":target.generation,
             "document_id":target.document_id,"node_ref":target.node_ref,
-            "action":action,"observed_by":actor})
+            "action":action,"observed_by":actor,"mask_code_input":mask_code_input})
     }
 
     /// MP-11: preserve task, expiry and source grant authority through physical dispatch.

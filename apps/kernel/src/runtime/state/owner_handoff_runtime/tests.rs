@@ -595,3 +595,29 @@ async fn mp08_mp10_mp11_a07_owner_reply_reaches_interactive_router_once() {
     replay.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     assert!(router.dispatch(replay, request).await.is_err());
 }
+
+#[test]
+fn mp08_mp10_mp11_a07_only_owner_code_fill_opts_into_native_masking() {
+    let h = handoff();
+    for (kind, expected) in [
+        (HandoffKind::Code, true),
+        (HandoffKind::Secret, false),
+        (HandoffKind::Click, false),
+    ] {
+        let params = KernelRuntimeState::handoff_input_params(
+            &h.target,
+            "terminal:owner",
+            kind,
+            BrowserLocatorAction::Fill {
+                text: "fixture-only-code".into(),
+                append: false,
+                submit: false,
+                expected_document_url: Some("https://console.hetzner.cloud/firewalls".into()),
+            },
+        );
+        assert_eq!(params["mask_code_input"], expected);
+        assert_eq!(params["observed_by"], "terminal:owner");
+        assert_eq!(params["node_ref"], h.target.node_ref);
+        assert_eq!(params["action"]["submit"], false);
+    }
+}

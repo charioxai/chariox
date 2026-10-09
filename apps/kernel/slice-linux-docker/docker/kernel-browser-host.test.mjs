@@ -648,3 +648,22 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
 }));
+
+// MP-08 / MP-10 / MP-11 A07: the code exception is an internal owner path.
+test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/verification" });
+  const tab = opened.tabs[0];
+  let captured;
+  host.browser.performAction = async action => { captured = action; return {}; };
+  const params = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:104", observed_by: "terminal:owner", mask_code_input: true,
+    action: { kind: "fill", text: "am7-fixture-code", expected_document_url: "https://example.test/verification" } };
+  const result = await host.handle({ id: "owner-code", method: "host.secret", params });
+  assert.equal(result.ok, true);
+  assert.equal(captured.action.mask_code_input, true);
+  assert.equal(captured.document_id, tab.document_id);
+  captured = null;
+  const denied = await host.handle({ id: "agent-code", method: "host.secret", params: { ...params, observed_by: "agent:unadmitted" } });
+  assert.equal(denied.ok, false);
+  assert.equal(captured, null, "a non-terminal code exception cannot reach physical input");
+}));

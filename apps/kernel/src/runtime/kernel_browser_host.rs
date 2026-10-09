@@ -805,6 +805,7 @@ mod tests {
         let params = crate::runtime::state::KernelRuntimeState::handoff_input_params(
             &target,
             actor,
+            crate::session::HandoffKind::Click,
             crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
         );
         assert!(model.begin(browser_actor(None, &params), &params).is_ok(),

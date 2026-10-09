@@ -344,16 +344,6 @@ test("secret fill rejects a password field that becomes unmasked while focusing"
       error.code === "browser_secret_target_not_masked",
   );
 
-  const secureFill = connection.calls.find(
-    (call) =>
-      call.method === "Runtime.callFunctionOn" &&
-      call.params.functionDeclaration.includes("expectedDocumentUrl"),
-  );
-  assert.equal(
-    secureFill.params.functionDeclaration.match(/reason: "target_not_masked"/g)?.length,
-    4,
-    "the operation must check masking before focus and after focus, input, and change handlers",
-  );
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
 });
 
@@ -602,4 +592,119 @@ class FakeActionConnection {
       },
     };
   }
+}
+
+// MP-08 / MP-10 / MP-11 A07: execute the actual isolated fill function against
+// native-shaped DOM objects. Synthetic values remain regression-only.
+function protectedCodeFixture(type, hook = () => {}) {
+  class Style {
+    constructor() { this.values = new Map(); }
+    setProperty(key, value) { this.values.set(key, value); }
+    getPropertyValue(key) { return this.values.get(key) ?? ""; }
+  }
+  class Element {
+    constructor() { this.attributes = new Map(); this.style = new Style(); this.events = []; }
+    getAttribute(key) { return this.attributes.get(key) ?? null; }
+    hasAttribute(key) { return this.attributes.has(key); }
+    focus() { this.ownerDocument.activeElement = this; hook("focus", this); }
+    getRootNode() { return this.ownerDocument; }
+    contains() { return false; }
+    matches(name) { return name === "textarea" && this instanceof TextArea; }
+    dispatchEvent(event) { this.events.push(event.type); hook(event.type, this); return true; }
+  }
+  class Input extends Element {
+    get type() { return this.getAttribute("type") ?? "text"; }
+    set type(value) { this.attributes.set("type", value); }
+    get value() { return this.storedValue ?? ""; }
+    set value(value) { this.storedValue = value; }
+  }
+  class TextArea extends Element {
+    get value() { return this.storedValue ?? ""; }
+    set value(value) { this.storedValue = value; }
+  }
+  const field = type === "textarea" ? new TextArea() : new Input();
+  if (type !== "textarea") field.type = type;
+  field.ownerDocument = { activeElement: null, defaultView: {
+    location: { href: "https://example.test/verification" },
+    Element, HTMLInputElement: Input, HTMLTextAreaElement: TextArea,
+    CSSStyleDeclaration: Style,
+    getComputedStyle: element => element.style,
+    Event: class { constructor(eventType) { this.type = eventType; } },
+  } };
+  class Connection extends FakeActionConnection {
+    constructor() {
+      super([{ state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true }]);
+    }
+    async send(method, params = {}, sessionId) {
+      if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("expectedDocumentUrl")) {
+        this.calls.push({ method, params, sessionId });
+        const fill = Function(`return (${params.functionDeclaration})`)();
+        return { result: { value: fill.apply(field, params.arguments.map(arg => arg.value)) } };
+      }
+      return super.send(method, params, sessionId);
+    }
+  }
+  const connection = new Connection();
+  const fill = (maskCode = true, expectedUrl = "https://example.test/verification") => performBrowserAction({
+    connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a", nodeRef: "backend:104",
+    action: { kind: "fill", text: "am7-code-canary", expected_document_url: expectedUrl, mask_code_input: maskCode },
+    timeoutMs: 500, sleep: async () => {},
+  });
+  return { field, connection, fill };
+}
+
+for (const type of ["text", "tel", "number", "search", "password", "textarea"]) {
+  test(`MP-08/MP-10/MP-11 protected owner code masks ${type} before input handlers`, async () => {
+    const observed = [];
+    const f = protectedCodeFixture(type, (event, field) => {
+      observed.push({ event, masked: type === "textarea"
+        ? field.style.getPropertyValue("-webkit-text-security") === "disc" : field.type === "password" });
+    });
+    const result = await f.fill();
+    assert.equal(result.action_kind, "fill");
+    assert.equal(f.field.value, "am7-code-canary");
+    assert(observed.every(event => event.masked));
+    assert.deepEqual(f.field.events, ["input", "change"]);
+    assert.equal(f.connection.calls.some(call => call.method.startsWith("Input.")), false);
+    assert.equal(JSON.stringify(result).includes("am7-code-canary"), false);
+  });
+}
+
+test("MP-08/MP-10/MP-11 code masking does not loosen the ordinary Vault password-only fill", async () => {
+  const f = protectedCodeFixture("text");
+  await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
+  assert.equal(f.field.value, "");
+  assert.equal(f.field.type, "text");
+});
+
+for (const condition of ["readonly", "disabled", "url-change", "checkbox"]) {
+  test(`MP-08/MP-10/MP-11 owner code refuses ${condition} before mutation`, async () => {
+    const f = protectedCodeFixture(condition === "checkbox" ? "checkbox" : "text");
+    if (["readonly", "disabled"].includes(condition)) f.field.attributes.set(condition, "");
+    await assert.rejects(f.fill(true, condition === "url-change" ? "https://example.test/other" : undefined));
+    assert.equal(f.field.value, "");
+    assert.deepEqual(f.field.events, []);
+    assert.equal(f.field.type, condition === "checkbox" ? "checkbox" : "text");
+  });
+}
+
+for (const event of ["focus", "input", "change"]) {
+  test(`MP-08/MP-10/MP-11 owner code fails closed when ${event} handlers unmask its field`, async () => {
+    const f = protectedCodeFixture("text", (kind, field) => { if (kind === event) field.type = "text"; });
+    await assert.rejects(f.fill(), { code: "browser_secret_target_not_masked" });
+    if (event === "focus") assert.equal(f.field.value, "");
+    else {
+      assert.equal(f.field.type, "password");
+      assert.deepEqual(f.field.events, event === "input" ? ["input"] : ["input", "change"]);
+    }
+  });
+}
+
+for (const event of ["focus", "input", "change"]) {
+  test(`MP-08/MP-10/MP-11 ordinary Vault fill still refuses ${event} unmasking`, async () => {
+    const f = protectedCodeFixture("password", (kind, field) => { if (kind === event) field.type = "text"; });
+    await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
+    if (event === "focus") assert.equal(f.field.value, "");
+    else assert.equal(f.field.type, "password");
+  });
 }
