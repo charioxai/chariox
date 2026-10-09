@@ -7,7 +7,7 @@ use crate::durable_state::{
     workflow_notifications::{self as store, NotificationOperation, NotificationOutcome},
 };
 use crate::local::*;
-const VERSION: u32 = 82;
+const VERSION: u32 = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 impl KernelRuntimeState {
@@ -422,7 +422,7 @@ impl KernelRuntimeState {
                         }
                     }
                     _ => Err(store::error(
-                        "workflow notification requires peer protocol 82",
+                        "workflow notification requires peer protocol 98",
                     )),
                 }
             })
@@ -633,7 +633,7 @@ mod tests {
         panic!("MP-08 / MP-10: fixture kernel did not register");
     }
     #[test]
-    fn local_relay_82_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
+    fn local_relay_98_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
