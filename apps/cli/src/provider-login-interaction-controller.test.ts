@@ -90,11 +90,57 @@ test("MP-08/MP-11 a code the provider rejects is shown while the login keeps wai
   assert.deepEqual(h.notices, [])
 })
 
-test("MP-08/MP-11 a lost login status ends with an explicit reason instead of silence", async () => {
-  const h = harness([new Error("provider login was not found")])
-  h.controller.track({ login_id: "login-1", provider: "claude", account_profile: "disposable-claude-ggpinwmx" })
+test("MP-08/MP-11 three failed status reads preserve the watcher and reconcile success after re-render", async () => {
+  const h = harness([
+    status("running"),
+    new Error("relay disconnected"), new Error("request timed out"), new Error("kernel unreachable"),
+    status("succeeded"),
+  ])
+  h.controller.stripState(interaction)
+  await h.tick()
+  h.controller.codeSent(interaction)
   await h.tick(); await h.tick(); await h.tick()
-  assert.match(h.notices[0]!, /sign-in failed — could not read the result from the kernel \(provider login was not found\); check \/provider status claude/)
+  assert.deepEqual(h.notices, [], "transport failure cannot determine the login outcome")
+  const state = h.controller.stripState({ ...interaction })!
+  assert.equal(state.checking, true)
+  assert.equal(state.deadlineMs, 50_000 + 600_000)
+  assert.equal(h.timers.length, 1, "the same projection keeps exactly one watcher")
+  await h.tick()
+  assert.deepEqual(h.notices, ["Signed in to Claude as miguel@example.org · saved to disposable-claude"])
+  h.controller.stripState({ ...interaction })
+  assert.equal(h.timers.length, 0, "a confirmed outcome stops tracking even after re-render")
+})
+
+test("MP-08/MP-11 kernel identity read failures retry until the kernel confirms cancellation", async () => {
+  let reads = 0
+  const h = harness([status("cancelled")], {
+    getKernelId: async () => {
+      if (++reads <= 3) throw new Error("relay disconnected")
+      return "fleet"
+    },
+  })
+  h.controller.stripState(interaction)
+  await h.tick(); await h.tick(); await h.tick()
+  assert.deepEqual(h.notices, [])
+  h.controller.stripState({ ...interaction })
+  assert.equal(h.timers.length, 1)
+  await h.tick()
+  assert.match(h.notices[0]!, /sign-in cancelled/)
+  assert.equal(h.timers.length, 0)
+})
+
+test("MP-08/MP-11 disposing during a failed status read does not restart polling", async () => {
+  let rejectRead!: (error: Error) => void
+  const h = harness([], {
+    getLoginStatus: () => new Promise((_resolve, reject) => { rejectRead = reject }),
+  })
+  h.controller.stripState(interaction)
+  await h.tick()
+  h.controller.dispose()
+  rejectRead(new Error("relay disconnected"))
+  await h.tick()
+  assert.deepEqual(h.notices, [])
+  assert.equal(h.timers.length, 0)
 })
 
 test("MP-08/MP-11 retry and Vault phases keep the kernel's message and still follow the final login result", async () => {

@@ -11,7 +11,6 @@ import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
 /** The kernel ends a provider login 10 minutes after it starts. */
 const PROVIDER_LOGIN_TIMEOUT_MS = 10 * 60_000
 const POLL_MS = 1_000
-const MAX_POLL_FAILURES = 3
 
 type FooterTone = "info" | "error"
 type NoticeTone = "muted" | "warning"
@@ -51,7 +50,6 @@ type TrackedLogin = {
   ref: ProviderLoginRef
   status: ProviderLoginStatus | null
   timer: unknown
-  failures: number
   /** Output and problem when the last code was sent; a new problem answers it. */
   sentOutput: string | null
   sentProblem: string | null
@@ -73,22 +71,21 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   const subject = (ref: ProviderLoginRef) =>
     `${providerLoginName(ref.provider)} · ${deps.accountLabel(ref.provider, ref.account_profile)}`
 
-  const finish = async (login: TrackedLogin, status: ProviderLoginStatus | null, error?: string) => {
+  const finish = async (login: TrackedLogin, status: ProviderLoginStatus) => {
     const { ref } = login
     tracked.delete(keyOf(ref))
     finished.add(keyOf(ref))
     clearTimer(login.timer)
     const label = deps.accountLabel(ref.provider, ref.account_profile)
-    if (status?.state === "succeeded") {
+    if (status.state === "succeeded") {
       const auth = await deps.getAuthStatus(ref.provider, ref.account_profile).catch(() => null)
       const message = `Signed in to ${providerLoginName(ref.provider)}${auth?.identity_summary ? ` as ${auth.identity_summary}` : ""} · saved to ${label}`
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
     } else {
-      const message = status?.state === "cancelled"
+      const message = status.state === "cancelled"
         ? `${subject(ref)}: sign-in cancelled`
-        : `${subject(ref)}: sign-in failed — ${error
-          ?? providerLoginProblem(status?.terminal_output_base64 ?? "", true)
+        : `${subject(ref)}: sign-in failed — ${providerLoginProblem(status.terminal_output_base64, true)
           ?? "the provider did not report a reason"}`
       deps.appendNotice(`${message}\nRetry: /provider login ${ref.provider} ${label}`, "warning")
       deps.flashFooter(message, "error")
@@ -106,13 +103,10 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
         return
       }
       status = await deps.getLoginStatus(login.ref.login_id)
-      login.failures = 0
-    } catch (error) {
-      login.failures += 1
-      if (login.failures >= MAX_POLL_FAILURES) {
-        await finish(login, null, `could not read the result from the kernel (${error instanceof Error ? error.message : String(error)}); check /provider status ${login.ref.provider}`)
-        return
-      }
+    } catch {
+      // A failed read leaves the outcome unknown: the kernel's login monitor
+      // continues while this client is disconnected. Reconcile after reconnect.
+      if (tracked.get(keyOf(login.ref)) !== login) return
       login.timer = setTimer(() => { void poll(login) }, POLL_MS)
       return
     }
@@ -148,7 +142,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       tracked.set(key, started)
       return
     }
-    const login: TrackedLogin = { ref, status: null, timer: null, failures: 0, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false }
+    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false }
     tracked.set(key, login)
     login.timer = setTimer(() => { void poll(login) }, 0)
   }

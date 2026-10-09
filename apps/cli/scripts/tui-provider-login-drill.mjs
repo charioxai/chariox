@@ -12,11 +12,16 @@
 //   --kernel-url <ws url> --chariox-home <its home> --account <claude profile label> --session-args '<TUI provider args>'
 // A standalone TUI uses --compiled yes --cli <chariox> --ipc-module <built ipc.js>.
 // --launcher <tonight-login.sh> drives the actual owner launcher in the PTY.
+// MP-08/MP-11: --transport-outage yes --connect-shim <owned LD_PRELOAD helper>
+// drops only this TUI's loopback transport, retaining its original endpoint
+// and normal product credential admission without reading/copying auth state,
+// then verifies result tracking after reconnect during the official login.
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { createServer, connect } from 'node:net'
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, item, i, args) => i % 2 ? pairs : [...pairs, [item.replace(/^--/, ''), args[i + 1]]], []))
 const cli = path.resolve(options.cli ?? 'apps/cli/dist/index.js')
@@ -25,6 +30,9 @@ const evidence = path.resolve(options.output)
 const profile = options.profile ?? 'xterm'
 const fixture = options['fixture-claude'] === 'yes'
 const attach = Boolean(options['kernel-url'])
+const transportOutage = options['transport-outage'] === 'yes'
+assert.ok(!transportOutage || attach, 'transport outage requires an existing-kernel dry run')
+assert.ok(!transportOutage || !options.launcher, 'transport outage drives the explicitly selected TUI binary')
 assert.ok(!options.launcher || attach, 'the owner launcher requires the existing-kernel dry-run mode')
 assert.ok(!attach || !fixture, 'an existing kernel must never use the fixture success flow')
 assert.ok(!attach || options.account === 'disposable-claude', 'existing-kernel login drills target only disposable-claude')
@@ -94,7 +102,10 @@ const label = attach ? options.account : `drill-${profile}-${process.pid}`
 const sessionAlias = options.launcher ? `miguel-claude-login-drill-${process.pid}` : attach ? `loginux-dry-${process.pid}` : label
 const steps = []
 const record = (name, ok, detail = {}) => { steps.push({ name, ok, ...detail }); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`) }
-let kernel, tui, browser, frontend, output = ''
+let kernel, tui, browser, frontend, rpc, output = ''
+let proxy, dropTransport = false, refusedConnections = 0
+let settledDuringOutage = false
+const proxySockets = new Set()
 const sockets = new Set()
 let result
 try {
@@ -111,7 +122,7 @@ try {
   }
   process.env.CHARIOX_HOME = env.CHARIOX_HOME
   const { LocalIpcClient } = await import(path.resolve(options['ipc-module'] ?? path.join(path.dirname(cli), 'ipc.js')))
-  const rpc = new LocalIpcClient(kernelUrl, {})
+  rpc = new LocalIpcClient(kernelUrl, {})
   await waitFor(async () => {
     if (kernel && kernel.exitCode !== null) throw Error(`kernel exited ${kernel.exitCode}`)
     try { return Object.keys(await rpc.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
@@ -152,6 +163,26 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
 
+  if (transportOutage) {
+    const target = new URL(kernelUrl)
+    assert.ok(target.protocol === 'ws:' && target.hostname === '127.0.0.1', 'fault proxy is loopback-only')
+    assert.ok(options['connect-shim'] && path.isAbsolute(options['connect-shim']), 'fault proxy requires an owned connect shim')
+    proxy = createServer(socket => {
+      if (dropTransport) { refusedConnections++; socket.destroy(); return }
+      const upstream = connect(Number(target.port), target.hostname)
+      for (const peer of [socket, upstream]) {
+        proxySockets.add(peer)
+        peer.on('error', () => { socket.destroy(); upstream.destroy() })
+        peer.on('close', () => { proxySockets.delete(peer); socket.destroy(); upstream.destroy() })
+      }
+      socket.pipe(upstream).pipe(socket)
+    })
+    await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+    // The helper redirects connect() only in the owned TUI process. The
+    // product still reads/authenticates its original kernel endpoint itself.
+    Object.assign(env, { LD_PRELOAD: options['connect-shim'],
+      LOGINUX_REDIRECT_FROM: target.port, LOGINUX_REDIRECT_TO: String(proxy.address().port) })
+  }
   const clientCommand = [...(compiled ? [cli] : ['bun', cli]), '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
     // The session's own agent needs no Claude login; the login targets the new profile.
     ...(options['session-args'] ?? '--provider opencode').split(' ')]
@@ -293,10 +324,42 @@ try {
     }
   }
   if (attach) {
-    await press('\x1b'); await sleep(300); await press('1')
-    await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
+    if (transportOutage) {
+      // The kernel/provider keep running; only this client's sockets are lost.
+      dropTransport = true
+      for (const socket of proxySockets) socket.destroy()
+      // Control reads retry transport for 60 seconds before rejecting. Hold
+      // beyond three full read budgets plus their one-second poll intervals.
+      for (let elapsed = 0; elapsed < 195_000; elapsed += 15_000) {
+        await sleep(15_000)
+        console.log(`MP-08/MP-11 owned TUI transport outage: ${elapsed + 15_000}ms`)
+      }
+      await capture('transport-outage')
+      record('transport outage does not invent a terminal login failure',
+        !output.includes('sign-in failed') && refusedConnections >= 3, { refusedConnections })
+      dropTransport = false
+      await waitFor(async () => !await shows('DISCONNECTED')
+        && (await shows('Code:') || await shows(`Claude · ${label}: sign-in cancelled`)),
+      30_000, 'same login projection or outcome after reconnect')
+      await sleep(3000)
+      await capture('reconnected')
+      const outcome = (await rpc.send({ GetProviderLoginStatus: {
+        login_id: loginInteraction.provider_login.login.login_id,
+      } })).ProviderLoginStatus.login.state
+      // The official provider/kernel may settle while this TUI is offline.
+      // Confirm that same login instead of requiring an obsolete code prompt.
+      // Reconnect notices can move the result out of the current viewport.
+      // Require its real rendered PTY text and matching kernel outcome.
+      const cancelled = outcome === 'cancelled' && output.includes(`Claude · ${label}: sign-in cancelled`)
+      settledDuringOutage = cancelled
+      record('same login resumes after reconnect without a false retry notice',
+        !output.includes('sign-in failed') && (await shows(`Sign in to Claude · ${label}`) || cancelled),
+        { kernelState: outcome })
+    }
+    if (!settledDuringOutage) { await press('\x1b'); await sleep(300); await press('1') }
+    await waitFor(() => output.includes('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
     await capture('cancelled')
-    record('cancel ends with a result and a retry action', await shows(`Claude · ${label}: sign-in cancelled`) && await shows(`Retry: /provider login claude ${label}`))
+    record('cancel ends with a result and a retry action', output.includes(`Claude · ${label}: sign-in cancelled`) && output.includes(`Retry: /provider login claude ${label}`))
   }
   {
     const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
@@ -308,15 +371,17 @@ try {
     await press('\x05')
     await waitFor(() => tui.exitCode !== null, 30_000, 'launcher exit and session cleanup')
     record('owner launcher exits cleanly', tui.exitCode === 0)
-  } else {
-    await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
   }
-  await rpc.close()
   await writeFile(path.join(evidence, 'pty-output.log'), output.replaceAll(loginUrl, '<authorization URL>'))
   result = { items: ['MP-08', 'MP-11'], profile, dpr: Number(options.dpr ?? 1), fixtureClaude: fixture, cli,
     ...(compiled ? { cliSha256: sha256(await readFile(cli)) } : { cliDistSha256: await hashTree(path.dirname(cli)) }),
     kernel: attach ? kernelUrl : { sha256: sha256(await readFile(path.resolve(options['kernel-binary']))) }, steps }
 } finally {
+  // Settle the owned login/session even when a fault assertion or capture fails.
+  if (rpc) {
+    await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
+    await rpc.close()
+  }
   const stop = async child => {
     if (!child || child.exitCode !== null) return
     assert.ok(Number.isInteger(child.pid) && child.pid > 1, 'reject unsafe PID')
@@ -326,6 +391,8 @@ try {
     await child.exited
   }
   await stop(tui)
+  for (const socket of proxySockets) socket.destroy()
+  if (proxy) await new Promise(resolve => proxy.close(resolve))
   await browser?.close()
   frontend?.stop(true)
   await stop(kernel)
