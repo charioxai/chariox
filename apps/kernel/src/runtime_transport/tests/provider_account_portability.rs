@@ -23,7 +23,9 @@ fn provider_account_portability_websocket_drill() {
         let addr = tcp.local_addr().unwrap();
         let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
-        config.local_socket_path = root.join("run/k.sock");
+        // The isolated child already owns TMPDIR; avoid nesting the socket path
+        // below the profile root, which exceeds Unix sun_path on long builders.
+        config.local_socket_path = std::env::temp_dir().join("kp.sock");
         config.user_config.state.path = Some(root.join("state.db").to_string_lossy().into());
         config.user_config_path = root.join("config.toml");
         config.cloud_relay = Some(PersistedCloudRelayProfile {

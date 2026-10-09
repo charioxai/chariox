@@ -72,11 +72,16 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::Mutex;
 
-    fn expired_cloud_profile(api_url: String) -> crate::config::PersistedCloudRelayProfile {
+    fn expired_cloud_profile(
+        api_url: String,
+        config: &crate::config::DaemonConfig,
+    ) -> crate::config::PersistedCloudRelayProfile {
         crate::config::PersistedCloudRelayProfile {
-            kernel_id: None,
-            kernel_credential: None,
-            kernel_public_key_thumbprint: None,
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("kernel-secret".to_string()),
+            kernel_public_key_thumbprint: Some(
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+            ),
             api_url,
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -89,7 +94,7 @@ mod tests {
             client_alias: None,
             machine_id: Some("machine-1".to_string()),
             machine_alias: None,
-            machine_credential: Some("machine-secret".to_string()),
+            machine_credential: None,
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: Some(1),
@@ -209,7 +214,7 @@ mod tests {
         let mut owner = crate::config::DaemonConfig::for_tests();
         owner.relay_url = Some("wss://relay.example.test".to_string());
         owner.relay_token = Some(fresh_owner_token(&owner));
-        let mut profile = expired_cloud_profile(format!("http://{address}"));
+        let mut profile = expired_cloud_profile(format!("http://{address}"), &owner);
         profile.token_expires_at_ms = Some(crate::session::unix_epoch_ms() + 300_000);
         owner.cloud_relay = Some(profile);
         let app = DaemonApp::bootstrap(owner).expect("test daemon should boot");
@@ -268,7 +273,7 @@ mod tests {
                 );
                 let request = read_http_request(&mut stream);
                 assert!(request.starts_with("POST /relay/token HTTP/1.1"));
-                assert!(request.contains(r#""machineCredential":"machine-secret""#));
+                assert!(request.contains(r#""kernelCredential":"kernel-secret""#));
                 if let Some(expected) = expected {
                     assert!(request.contains(expected));
                     assert!(request
@@ -287,7 +292,7 @@ mod tests {
         let mut expired = crate::config::DaemonConfig::for_tests();
         expired.relay_url = Some("wss://relay.example.test".to_string());
         expired.relay_token = Some("expired-owner-token".to_string());
-        expired.cloud_relay = Some(expired_cloud_profile(format!("http://{address}")));
+        expired.cloud_relay = Some(expired_cloud_profile(format!("http://{address}"), &expired));
         let app = DaemonApp::bootstrap(expired).expect("test daemon should boot");
         let projection = app.config_projection_store();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);

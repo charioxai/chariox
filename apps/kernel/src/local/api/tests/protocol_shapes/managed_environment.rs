@@ -819,7 +819,7 @@ fn managed_release_update_shapes_are_versioned() {
 }
 
 #[test]
-fn provider_account_portability_preflight_protocol_439_is_acknowledgement_only() {
+fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 478);
     let request_json = serde_json::json!({"PreflightProviderAccountPortability": {
         "providerAccounts": {"kind": "selected", "accounts": [{"provider": "codex", "accountProfile": "synthetic-profile"}]}
