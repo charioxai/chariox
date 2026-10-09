@@ -231,6 +231,94 @@ fn process_admission_scales_with_cpu_inside_bounded_limits() {
     );
 }
 
+#[test]
+fn saturated_connection_leaves_process_capacity_for_other_connections() {
+    // A host with four or fewer CPUs runs with the minimum process limit.
+    let admission = InboundRequestAdmission::new(MIN_PROCESS_INBOUND_REQUEST_LIMIT);
+    let saturated = Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
+    let held = std::iter::from_fn(|| {
+        admission
+            .try_acquire(&saturated, &KernelCommandPriority::Normal)
+            .ok()
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(
+        held.len(),
+        CONNECTION_INBOUND_REQUEST_LIMIT,
+        "only the connection limit should stop one client's non-interactive requests"
+    );
+
+    let other = Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
+    let normal = admission
+        .try_acquire(&other, &KernelCommandPriority::Normal)
+        .expect("another connection's health request should still be admitted");
+    let interactive = admission
+        .try_acquire(&other, &KernelCommandPriority::Interactive)
+        .expect("another connection's interactive request should still be admitted");
+    drop((held, normal, interactive));
+}
+
+#[tokio::test]
+async fn connection_closing_for_backpressure_admits_no_more_requests() {
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests())
+                .expect("daemon bootstrap should succeed"),
+        )),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    let (priority_tx, mut priority_rx) = mpsc::channel(8);
+    let (event_tx, _event_rx) = mpsc::channel(8);
+    let outgoing = KernelOutgoingSender::new(priority_tx, event_tx);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let payload = serde_json::to_vec(&KernelIncomingFrame::Request {
+        request_id: "pipelined-after-backpressure-close".to_string(),
+        command_id: None,
+        causation_id: None,
+        correlation_id: None,
+        request: LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+    })
+    .expect("transport request should encode");
+
+    handle_incoming_payload(
+        IncomingConnection {
+            runtime: &runtime,
+            router: &router,
+            connection_state: &Arc::new(Mutex::new(ConnectionState {
+                subscription: None,
+                watch_task: None,
+            })),
+            inbound_request_admission: &InboundRequestAdmission::new(
+                MIN_PROCESS_INBOUND_REQUEST_LIMIT,
+            ),
+            connection_inbound_request_permits: &Arc::new(Semaphore::new(
+                CONNECTION_INBOUND_REQUEST_LIMIT,
+            )),
+            outgoing_tx: &outgoing,
+            close_tx: &close_tx,
+            close_requested: &Arc::new(AtomicBool::new(true)),
+            connection_class: KernelConnectionClass::Unauthenticated,
+            peer: None,
+            bound_grant: &Arc::default(),
+        },
+        &payload,
+    )
+    .await;
+
+    let transport = runtime.transport_health.snapshot(1, 1, 1);
+    assert_eq!(
+        transport.incoming_requests, 0,
+        "a connection already closing for backpressure must not admit pipelined requests"
+    );
+    assert!(
+        timeout(Duration::from_millis(500), priority_rx.recv())
+            .await
+            .is_err(),
+        "a request from a closing connection must not be dispatched"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn kernel_local_auth_file_is_opened_without_following_symlinks() {
