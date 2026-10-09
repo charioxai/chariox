@@ -7,7 +7,7 @@ impl KernelRuntimeState {
         value: String,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.set_user_config_value(path, value)?;
                 Ok(app.config().clone())
             })
@@ -21,7 +21,7 @@ impl KernelRuntimeState {
         path: String,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.unset_user_config_value(path)?;
                 Ok(app.config().clone())
             })
@@ -37,7 +37,7 @@ impl KernelRuntimeState {
         invalidate_provider_catalog: bool,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.configure_relay(relay_url, relay_token)?;
                 if invalidate_provider_catalog {
                     app.invalidate_provider_catalog_cache();
@@ -57,7 +57,7 @@ impl KernelRuntimeState {
         owner_public_key: String,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.configure_managed_slice_relay(
                     relay_url,
                     relay_token,
@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         profile: Option<crate::config::PersistedCloudRelayProfile>,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.persist_cloud_relay_profile(profile)?;
                 Ok(app.config().clone())
             })
@@ -93,7 +93,7 @@ impl KernelRuntimeState {
         invalidate_provider_catalog: bool,
     ) -> Result<crate::config::DaemonConfig, DaemonError> {
         let config = self
-            .with_app_side_effect(move |app| {
+            .with_authorized_app_side_effect(move |app| {
                 app.configure_relay(relay_url, relay_token)?;
                 app.persist_cloud_relay_profile(profile)?;
                 if invalidate_provider_catalog {

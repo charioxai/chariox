@@ -21,14 +21,17 @@ impl KernelRuntimeState {
             return Ok(ProviderReloadOutcome::Deferred);
         };
         let expected_hash = run.remote_extension_manifest().manifest_hash();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // The tokio clock equals std time in production and lets paused tests
+        // drive the same deadline as every other readiness bound.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let std_deadline = deadline.into_std();
         let run_id = run.id().to_owned();
         let provider_store = self.owned.provider_store.clone();
         let expected_run = run.clone();
         // Both the cache reservation and operation lane stay in blocking
         // ownership until actual I/O finishes, even if this caller is cancelled.
         let work = tokio::task::spawn_blocking(move || {
-            if std::time::Instant::now() >= deadline || watch.is_closed() {
+            if std::time::Instant::now() >= std_deadline || watch.is_closed() {
                 return Err(refresh_error("native MCP refresh expired before execution"));
             }
             let current = provider_store.get_run(expected_run.id())?;
@@ -40,14 +43,14 @@ impl KernelRuntimeState {
                     "native provider changed before catalog refresh",
                 ));
             }
-            request_provider_refresh(&expected_run, deadline)?;
+            request_provider_refresh(&expected_run, std_deadline)?;
             Ok::<_, DaemonError>((watch, lane))
         });
-        let (mut watch, _lane) = tokio::time::timeout_at(deadline.into(), work)
+        let (mut watch, _lane) = tokio::time::timeout_at(deadline, work)
             .await
             .map_err(|_| refresh_error("native MCP refresh request timed out"))?
             .map_err(|_| refresh_error("native MCP refresh task stopped"))??;
-        tokio::time::timeout_at(deadline.into(), watch.wait_until_observed())
+        tokio::time::timeout_at(deadline, watch.wait_until_observed())
             .await.map_err(|_| refresh_error("provider did not fetch the changed runtime catalog; check the provider version and MCP connection"))?
             .map_err(|_| refresh_error("native provider ended before catalog refresh"))?;
         let Some(observed) = watch

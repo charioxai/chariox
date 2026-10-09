@@ -143,7 +143,6 @@ pub const META_UNSUBSCRIBE_TRACE_TOOL: &str = "chariox.meta.unsubscribe_trace";
 pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.subscribe_events";
 pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.unsubscribe_events";
 pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "chariox.meta.list_subscriptions";
-pub const META_RESOLVE_RUNTIME_INTERACTION_TOOL: &str = "chariox.meta.resolve_runtime_interaction";
 pub const META_READ_TASK_TOOL: &str = "chariox.meta.read_task";
 pub const META_UPDATE_TASK_TOOL: &str = "chariox.meta.update_task";
 pub const META_READ_PLAN_TOOL: &str = "chariox.meta.read_plan";

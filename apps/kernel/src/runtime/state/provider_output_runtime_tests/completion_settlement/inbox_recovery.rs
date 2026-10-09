@@ -285,6 +285,7 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
             .agent_lifecycle(Operation::Sweep {
                 now: now + 60_001,
                 busy_recipients: vec![],
+                held_work: Vec::new(),
             })
             .unwrap();
     } else {

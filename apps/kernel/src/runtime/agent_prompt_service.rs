@@ -70,10 +70,19 @@ impl AgentPromptCommandService {
         &self,
         grant_id: String,
         request: crate::local::LocalDaemonRequest,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut service = self.clone();
+        service.state = self
+            .state
+            .with_external_command_authority(Some((&grant_id, &request)))
+            .with_sudo_binding(sudo_binding);
         service.external_authority = Some((grant_id, request));
         service
+    }
+
+    pub(crate) fn authorize_command(&self) -> Result<(), DaemonError> {
+        self.state.authorize_current_external_command()
     }
 
     fn request_authority(&self) -> Option<(&str, &crate::local::LocalDaemonRequest)> {

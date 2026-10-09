@@ -120,7 +120,8 @@ impl CommandRouter {
                 })?)
                 .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request"))?;
             self.runtime_state
-                .authorize_sudo_request(&turn.entry_id, &request)?;
+                .confirm_sudo_scope(&turn, &request)
+                .await?;
             let mut command = crate::runtime::command::KernelCommand::from_local_request(
                 format!("{}:{}", turn.entry_id, rand::random::<u64>()),
                 turn.prompt_id.clone(),
@@ -131,11 +132,16 @@ impl CommandRouter {
                 &crate::runtime::command::KernelCommandSource::LocalIpc,
             )
             .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+            command.provider_run_id = turn.provider_run_id.clone();
             command.caller.caller_id = turn.entry_id;
             command.caller.user_id = Some(turn.owner_user_id);
-            // MP-08 / MP-11: the exact live sudo turn is the authority here.
-            // Ordinary room-agent restrictions must not narrow this host grant;
-            // dispatch still rechecks its forbidden operations and revocation.
+            // MP-08/MP-10/MP-11: preserve creator attribution for agent and
+            // workflow mutations even under a freshly authorized host scope.
+            if command.command_type.starts_with("agent.")
+                || crate::runtime::workflow_actor::is_workflow_command(&request)
+            {
+                command.caller.metaagent_id = Some(turn.agent_id.clone());
+            }
             let response = Box::pin(self.dispatch(command, request)).await?;
             return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
@@ -168,6 +174,13 @@ impl CommandRouter {
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         self.runtime_state
             .runtime_tool_specs_for_auth_token(auth_token)
+    }
+
+    pub(crate) fn runtime_catalog_signature(
+        &self,
+        auth_token: &str,
+    ) -> Vec<(String, String, serde_json::Value)> {
+        self.runtime_state.runtime_catalog_signature(auth_token)
     }
 
     pub(crate) async fn runtime_tool_specs_for_auth_token_async(

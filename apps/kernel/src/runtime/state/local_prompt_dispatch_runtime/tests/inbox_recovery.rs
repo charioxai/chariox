@@ -30,6 +30,7 @@ async fn a02_r8_structured_receipt_follows_actual_replacement_run() {
                 target: None,
                 run: Some(original.clone()),
                 now: crate::session::unix_epoch_ms(),
+                work: None,
             })
             .unwrap();
         store

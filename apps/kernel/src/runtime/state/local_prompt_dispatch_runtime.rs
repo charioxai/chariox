@@ -1532,6 +1532,7 @@ pub(in crate::runtime::state) mod tests {
                     process_id: "managed:claude:test-process".to_string(),
                     pid: None,
                     identity: None,
+                    endpoint_identity: None,
                     endpoint_mode: provider_run.endpoint_mode(),
                     process_label: provider_run.process_label().to_string(),
                     started_at_ms: provider_run.started_at_ms(),

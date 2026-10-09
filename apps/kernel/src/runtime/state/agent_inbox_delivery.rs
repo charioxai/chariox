@@ -16,15 +16,27 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
+        // A04 causal fence: during sudo-bound work only that task's correlated
+        // wakes are delivered (never by steering); other events stay pending
+        // visibly and run as regular turns once the window ends.
+        let work = self.owned.sudo_work_task(room, agent);
+        if let Some(work) = work.as_deref() {
+            if active.is_some() {
+                return Ok(());
+            }
+            self.defer_unrelated_sudo_event(room, agent, work)?;
+        }
         let event = loop {
             let front = if active.is_some() {
                 self.owned
                     .durable_state_store
                     .agent_urgent_delivery_front(room, agent)?
             } else {
-                self.owned
-                    .durable_state_store
-                    .agent_delivery_front(room, agent)?
+                self.owned.durable_state_store.agent_work_delivery_front(
+                    room,
+                    agent,
+                    work.as_deref(),
+                )?
             };
             let Some(event) = front else {
                 return Ok(());
@@ -142,6 +154,7 @@ impl KernelRuntimeState {
                     target: target_prompt,
                     run,
                     now: crate::session::unix_epoch_ms(),
+                    work,
                 })?
         else {
             unreachable!()
@@ -200,6 +213,44 @@ impl KernelRuntimeState {
                 }
             }
         }
+        Ok(())
+    }
+    /// Marks the oldest unrelated pending event deferred once and says so.
+    fn defer_unrelated_sudo_event(
+        &self,
+        room: &str,
+        agent: &str,
+        work: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(front) = self
+            .owned
+            .durable_state_store
+            .agent_delivery_front(room, agent)?
+        else {
+            return Ok(());
+        };
+        let correlated = ledger::work_correlated(&front, work);
+        if correlated || front.state != "pending" || front.attempted_at_ms.is_some() {
+            return Ok(());
+        }
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Defer {
+                room: room.into(),
+                agent: agent.into(),
+                sequence: front.sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        self.owned.record_notice_for_agent(
+            room,
+            None,
+            Some(agent),
+            self.owned.attachment_store.list_session_attachment_ids(room),
+            format!(
+                "Deferred inbox event {} from {}: agent {agent} is running sudo-bound work for its owner. It is delivered as a regular turn once that work ends, its window expires or it is revoked.",
+                front.sequence, front.source_id
+            ),
+        );
         Ok(())
     }
     fn record_agent_delivery_receipt(

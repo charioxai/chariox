@@ -6,7 +6,7 @@ impl KernelRuntimeState {
     pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
         self.owned.record_notice_for_agent(session_id, None, Some(agent_id),
             self.owned.attachment_store.list_session_attachment_ids(session_id),
-            "/sudo <prompt> replaces /meta. /meta remains delegation-only for one release and needs no passkey. /sudo requires your passkey in the kernel popup and grants authority for exactly one turn.");
+            "/sudo <prompt> replaces /meta. /meta remains delegation-only for one release and needs no passkey. /sudo requires a fresh passkey in the kernel popup and grants a finite window for the same owner-authorized work (one hour by default). Agents cannot answer owner approvals.");
     }
 }
 

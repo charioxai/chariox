@@ -536,6 +536,68 @@ fn session_metadata_only_changes_can_skip_session_snapshot() {
 }
 
 #[test]
+fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
+    let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
+    let window = crate::local::KernelSudoTurn {
+        entry_id: "sudo:window-a".into(),
+        session_id: "session-a".into(),
+        agent_id: "agent-a".into(),
+        owner_user_id: "local".into(),
+        terminal_id: "owner-a".into(),
+        requester: None,
+        prompt_id: Some("work-a".into()),
+        provider_run_id: Some("run-a".into()),
+        task_id: Some("work-a".into()),
+        duration_minutes: 60,
+        expires_at_ms: Some(3_600_000),
+        revision: 1,
+        warning_sent: false,
+        deadline: None,
+    };
+    previous.session.set_sudo_windows(vec![window.clone()]);
+    assert!(can_skip_session_snapshot(&previous, Some(&previous), true));
+    for change in ["warning", "extension", "expiry"] {
+        let mut current = previous.clone();
+        let mut changed = window.clone();
+        match change {
+            "warning" => changed.warning_sent = true,
+            "extension" => {
+                changed.revision = 2;
+                changed.expires_at_ms = Some(7_200_000);
+            }
+            "expiry" => {}
+            _ => unreachable!(),
+        }
+        current.session.set_sudo_windows(if change == "expiry" {
+            vec![]
+        } else {
+            vec![changed]
+        });
+        current
+            .session
+            .add_active_interaction(RuntimeInteraction::new(
+                "owner-decision",
+                "agent-a",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        assert!(runtime_interactions_changed_event(&current, Some(&previous)).is_some());
+        assert!(
+            !can_skip_session_snapshot(&current, Some(&previous), true),
+            "{change}: an interaction delta cannot replace the changed sudo window"
+        );
+    }
+}
+
+#[test]
 fn runtime_interactions_only_changes_can_skip_session_snapshot() {
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
     let mut current = previous.clone();

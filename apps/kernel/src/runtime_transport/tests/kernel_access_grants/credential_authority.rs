@@ -99,6 +99,8 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
             .is_null()
     );
     kernel.control("agent-question").await;
+    // MP-08/MP-11: ordinary external grants may answer routine questions;
+    // the Vault/passkey interactions above remain owner-only.
     assert!(holder.request(answer("routine-access-question", "continue", None))["error"].is_null());
 }
 

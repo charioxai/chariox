@@ -40,11 +40,12 @@ impl AgentRuntimeCommandExecutor {
         &self,
         grant_id: String,
         request: crate::local::LocalDaemonRequest,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut executor = self.clone();
-        executor.prompt_commands = self
-            .prompt_commands
-            .with_external_authority(grant_id, request);
+        executor.prompt_commands =
+            self.prompt_commands
+                .with_external_authority(grant_id, request, sudo_binding);
         executor
     }
 
@@ -52,6 +53,7 @@ impl AgentRuntimeCommandExecutor {
         &self,
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.prompt_commands.authorize_command()?;
         match command {
             AgentCommand::SubmitPrompt {
                 request,

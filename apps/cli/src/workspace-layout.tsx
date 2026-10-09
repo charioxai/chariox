@@ -58,6 +58,7 @@ export type WorkspaceLayoutProps = {
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
   onKernelApprovalBannerRef: RefHandler
+  onSudoBandRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
   onPasskeyPopupBoxRef: RefHandler
 }
@@ -300,6 +301,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       </box>
 
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
+      <box ref={props.onSudoBandRef} flexShrink={0} flexDirection="column" />
       <box
         flexShrink={0}
         overflow="visible"

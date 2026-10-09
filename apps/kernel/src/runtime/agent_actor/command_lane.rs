@@ -51,18 +51,50 @@ pub(super) struct AgentCommandEnvelope {
     pub(super) command_type: String,
     pub(super) telemetry: LaneCommandTrace,
     pub(super) external_grant_id: Option<String>,
+    /// MP-08/MP-11: keep the submitting turn, including a missing binding.
+    pub(super) sudo_binding: Option<(String, String)>,
     pub(super) command: AgentCommand,
     pub(super) result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
 impl AgentRuntime {
+    /// MP-08/MP-11: hold a real queue until the regression starts its consumer.
+    #[cfg(test)]
+    pub(crate) async fn paused_agent_lane_for_test(
+        &self,
+        agent_id: &str,
+    ) -> (impl Fn() -> usize, impl std::future::Future<Output = ()>) {
+        let (tx, rx) = mpsc::channel(AGENT_COMMAND_QUEUE_LIMIT);
+        self.lanes
+            .lock()
+            .await
+            .insert(agent_id.to_owned(), tx.clone());
+        let executor = AgentRuntimeCommandExecutor::new(
+            self.store
+                .prompt_command_service(self.provider_runtime_lanes.clone()),
+            self.session_projection.clone(),
+            self.agent_runtime_projection.clone(),
+            self.prompt_id_allocator.clone(),
+        );
+        (
+            move || tx.capacity(),
+            run_agent_command_lane(executor, self.store.state.clone(), agent_id.to_owned(), rx),
+        )
+    }
+
     pub(super) async fn dispatch_to_agent(
         &self,
         agent_id: String,
         command_trace: CommandTrace,
-        external_grant_id: Option<String>,
+        kernel_command: &crate::runtime::command::KernelCommand,
         command: AgentCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let external_grant_id = kernel_command.external_grant_id();
+        let sudo_binding = self
+            .store
+            .state
+            .with_kernel_command_authority(kernel_command, &command.local_request())
+            .sudo_binding();
         let lane_key = agent_id;
         let lane = self.agent_lane(&lane_key).await;
         let (result_tx, result_rx) = oneshot::channel();
@@ -74,6 +106,7 @@ impl AgentRuntime {
             command_type: telemetry.command_type().to_string(),
             telemetry: telemetry.clone(),
             external_grant_id,
+            sudo_binding,
             command,
             result_tx,
         }) {
@@ -201,9 +234,11 @@ pub(super) async fn run_agent_command_lane(
             Err(error) => Err(error),
             Ok(_) => {
                 let executor = match envelope.external_grant_id {
-                    Some(id) => {
-                        executor.with_external_authority(id, envelope.command.local_request())
-                    }
+                    Some(id) => executor.with_external_authority(
+                        id,
+                        envelope.command.local_request(),
+                        envelope.sudo_binding,
+                    ),
                     None => executor.clone(),
                 };
                 executor.execute(envelope.command).await

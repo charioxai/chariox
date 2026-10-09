@@ -237,6 +237,10 @@ impl KernelRuntimeOwnedState {
         let run = self
             .provider_store
             .finish_current_launch(&started.run, binding)?;
+        crate::app::ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &run,
+        );
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.session_snapshot(run.session_id())?;

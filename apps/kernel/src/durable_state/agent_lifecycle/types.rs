@@ -167,6 +167,8 @@ pub(crate) enum Operation {
         target: Option<String>,
         run: Option<String>,
         now: u64,
+        /// A04: an elevated task whose correlated wakes pass deferred events.
+        work: Option<String>,
     },
     Expire {
         room: String,
@@ -221,6 +223,9 @@ pub(crate) enum Operation {
     Sweep {
         now: u64,
         busy_recipients: Vec<(String, String)>,
+        /// A04: (room, agent, task) of sudo-held recipients; their unrelated
+        /// events wait for the window to end like busy refusals.
+        held_work: Vec<(String, String, String)>,
     },
     CancelTask {
         task: String,

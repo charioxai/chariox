@@ -2884,7 +2884,9 @@ Workflow trigger and deployment direction:
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
-  time and a verified answer starts a new term.
+  time and a verified answer starts a new term. These terms apply to
+  external-agent grants only (default 8 h, at most 24 h); an older config
+  outside that range is clamped at load with a warning, never refused.
 
   ```toml
   [kernel_access]
@@ -2951,6 +2953,25 @@ Workflow trigger and deployment direction:
   Rotation, revoke all and session end revoke these entries as well. `/meta`
   retains delegation-only behavior for one release and emits a notice pointing
   to `/sudo`. See `KERNEL_SUDO.md` and `scripts/kernel-access-sudo-drill.sh`.
+- protocol 484 (MP-08/MP-10/MP-11 A04) replaces the one-turn authorization with
+  a finite window. The `sudo` popup carries `lifetime_minutes = 60` and
+  `max_lifetime_minutes = 480`; the approve answer's `custom_reply` selects 60,
+  120, 240 or 480 minutes (absent means 60), anything else is refused. The
+  window starts at the fresh verification and is bound to one owner-authorized
+  task: with room agent tools it covers that task's kernel-correlated
+  continuations across waits and wakes; without them, its first turn only.
+  `KernelSudoTurn` gains `task_id`, `duration_minutes`, `expires_at_ms`
+  (display only; authority uses the kernel's monotonic deadline, never
+  serialized), `revision` and `warning_sent`. `RuntimeSession.sudo_windows`
+  projects live windows only to each window's owner; other members see none. `ExtendKernelSudo { session_id,
+  attachment_id, entry_id, revision }` (host terminal only) raises one
+  fresh-passkey popup (`kernel_operation_id` `<entry>:extend:<revision>`); on
+  approval the expiry becomes now plus the chosen duration and `revision`
+  increments; the response is `KernelSudoExtended { turn }`. Stale revisions,
+  expired, revoked or restarted windows are refused. Agents can no longer answer
+  any interaction: `chariox_kernel_request` and every `KernelAgent` caller are
+  refused `RespondToInteraction`, `chariox.meta.resolve_runtime_interaction`
+  and its aliases are removed, and `kernel_access.sudo_approval` is retired.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

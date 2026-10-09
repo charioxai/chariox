@@ -53,6 +53,8 @@ impl KernelRuntimeState {
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_notification_profile_owner(owner)?;
+        let shared_access = self.notification_grant().is_some();
+        let home = self.owned.config_projection.snapshot().daemon_id;
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -119,6 +121,9 @@ impl KernelRuntimeState {
                                     && source_available(&sessions, s)
                             })
                             .or_else(|| {
+                                if shared_access {
+                                    return None;
+                                }
                                 self.owned
                                     .durable_state_store
                                     .notification_cached_sources(owner)
@@ -138,6 +143,11 @@ impl KernelRuntimeState {
                                     })
                             })
                             .ok_or_else(|| store::error("source not available"))?;
+                        if shared_access && source.kernel_id != home {
+                            return Err(store::error(
+                                "shared access cannot attach remote workflow notifications",
+                            ));
+                        }
                         let session = sessions.get_session(&request.session_id)?;
                         if session.owner_user_id() != owner {
                             return Err(store::error("notification target not owner"));
@@ -205,17 +215,26 @@ impl KernelRuntimeState {
                                 "notification inventory requires the session owner",
                             ));
                         }
-                        let (mut sources, mut subscriptions, diagnostics) = self
+                        let (mut sources, mut subscriptions, mut diagnostics) = self
                             .owned
                             .durable_state_store
                             .notification_inventory(owner)?;
+                        if shared_access {
+                            sources.retain(|s| s.kernel_id == home);
+                            subscriptions.retain(|s| s.source_kernel_id == home);
+                            diagnostics
+                                .retain(|d| sources.iter().any(|s| s.source_id == d.source_id));
+                        }
                         for source in &mut sources {
                             source.available = source_available(&sessions, source);
                         }
-                        let cached = self
-                            .owned
-                            .durable_state_store
-                            .notification_cached_sources(owner)?;
+                        let cached = if shared_access {
+                            vec![]
+                        } else {
+                            self.owned
+                                .durable_state_store
+                                .notification_cached_sources(owner)?
+                        };
                         for sub in &mut subscriptions {
                             sub.source_available = sources
                                 .iter()

@@ -172,6 +172,7 @@ type CommandActionDeps =
   getDaemonHealth?: KernelCommandHandlerDeps["getDaemonHealth"]
   listKernelAccessGrants?: KernelCommandHandlerDeps["listKernelAccessGrants"]
   revokeKernelAccessGrant?: KernelCommandHandlerDeps["revokeKernelAccessGrant"]
+  sendExtendKernelSudo?: (request: import("@chariox/kernel-client/kernel-types").ExtendKernelSudoRequest) => Promise<import("@chariox/kernel-client/kernel-types").KernelSudoTurn>
   exportDebugBundle?: KernelCommandHandlerDeps["exportDebugBundle"]
   transitionToNoSession: (message: string) => void
   updateSessionConfig: (
@@ -319,7 +320,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleKernelCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
   ): Promise<void> => {
-    await handleKernelSlashCommand(deps, command)
+    await handleKernelSlashCommand({
+      ...deps,
+      sudoWindows: () => deps.sessionState().sudo_windows ?? [],
+      ...(deps.sendExtendKernelSudo ? {
+        extendKernelSudo: (entryId: string, revision: number) => {
+          const attachmentId = deps.attachmentState()?.id
+          if (!attachmentId) throw new Error("attach to the session to extend sudo")
+          return deps.sendExtendKernelSudo!({ session_id: deps.sessionState().id, attachment_id: attachmentId, entry_id: entryId, revision })
+        },
+      } : {}),
+    }, command)
   }
 
   const handleRoomCommand = async (

@@ -83,6 +83,10 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
+    // A04: window, run and requester details belong to the window's owner.
+    session
+        .sudo_windows
+        .retain(|window| window.owner_user_id == user_id);
     if !collaboration_level.can_view_agent_trace() {
         session.workflows = session
             .workflows

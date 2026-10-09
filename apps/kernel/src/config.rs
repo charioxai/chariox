@@ -734,6 +734,14 @@ fn load_user_config_from_path(path: &PathBuf) -> CharioxUserConfig {
         )
     });
     clamp_operational_history_config(&mut config);
+    if let Some(notice) = config.kernel_access.clamp_legacy() {
+        eprintln!("warning: {notice} ({})", path.display());
+        crate::logging::warn_with_fields(
+            "config.kernel_access",
+            notice,
+            serde_json::json!({ "user_config_path": path.display().to_string() }),
+        );
+    }
     reject_test_persistence_paths_in_default_user_config(path, &config);
     config
 }
