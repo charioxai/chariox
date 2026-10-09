@@ -209,3 +209,24 @@ test("MP-10: review #941-1 attributes referenced only by a CDP-read cross-origin
     "/cdn.css": { type: "text/css", body: '[data-state="open"]{outline:1px solid red}' },
     "/child": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/cdn.css"><div data-state="open">child</div>' },
   }));
+
+test("MP-10: review #941-2 a cross-origin frame's window scroll reaches every viewer (another viewer's scroll_to, page script)", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/long" style="width:300px;height:100px"></iframe>', async ({ next, subscribe }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const a = { next }, b = await subscribe();
+    const snapA = await a.next(), snapB = await b.next();
+    const documentOf = snapshot => { let id = 0; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 1 && id >= 1e9) return `n${id}`; } return null; };
+    const docA = documentOf(snapA), docB = documentOf(snapB);
+    assert(docA && docB, "MP-10: both viewers mirror the frame document");
+    // Viewer B scrolls the frame; viewer A must follow.
+    await b.input(snapB.sequence, { kind: "scroll_to", node_id: docB, x: 0, y: 300 });
+    const scrolls = []; for (let i = 0; i < 4 && !scrolls.length; i++) scrolls.push(...(await a.next(1000)).ops.filter(op => op.op === "scroll" && op.id === docA));
+    assert.deepEqual(scrolls.map(op => op.scroll), [[0, 300]], "MP-10: viewer A follows the frame's new position");
+    // The frame's own script scrolls it: both viewers follow.
+    for (const [viewer, doc] of [[a, docA], [b, docB]]) {
+      const seen = []; for (let i = 0; i < 8 && !seen.some(op => op.scroll[1] === 600); i++) seen.push(...(await viewer.next(1000)).ops.filter(op => op.op === "scroll" && op.id === doc));
+      assert(seen.some(op => op.scroll[1] === 600), `MP-10: page-script frame scroll reaches the viewer (${JSON.stringify(seen)})`);
+    }
+  }, {
+    "/long": { type: "text/html", body: '<!doctype html><div style="height:2000px">long</div><script>setTimeout(()=>scrollTo(0,600),3500)</script>' },
+  }));

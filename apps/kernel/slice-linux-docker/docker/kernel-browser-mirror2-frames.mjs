@@ -105,7 +105,7 @@ export class MirrorFrames {
         const child = await this.world(world, frame);
         const loaderId = await this.loaderId(child);
         const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-        const entry = { slot, owner: id, child, loaderId };
+        const entry = { slot, owner: id, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll) };
         stream.frames.set(id, entry); stream.frameSlots.set(slot, entry);
         const records = snap.nodes.map(r => rebaseRecord(r, slot));
         records[0] = { ...records[0], parent: id };
@@ -127,6 +127,8 @@ export class MirrorFrames {
         const delta = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (delta.resync) throw new Error('resync');
         out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)), ...await this.sheetOps(entry.child, entry.slot, delta.sheets));
+        // The child's window position is its header, not an op: forward its changes.
+        if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
       } catch {
         // New child document (or lost world): fresh snapshot replaces the owner's child.
@@ -136,10 +138,11 @@ export class MirrorFrames {
           const frame = owners.get(owner); if (!frame) continue;
           const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame), loaderId = await this.loaderId(child);
           const snap = await this.snapshot(child, loaderId, policy, tab, slot);
-          const next = { slot, owner, child, loaderId };
+          const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner };
           out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...snap.sheetOps);
+          if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
           out.resources.push(...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })));
         } catch {}
       }
