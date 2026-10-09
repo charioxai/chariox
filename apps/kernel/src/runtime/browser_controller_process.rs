@@ -322,6 +322,7 @@ impl BrowserControllerProcessStdioBackend {
                 "LIBVA_DRIVER_NAME",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
                 "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                "CHARIOX_BROWSER_DISPLAY_OPENH264",
                 "CHARIOX_BROWSER_DISPLAY_LIBYUV",
                 "CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS",
             ] {
@@ -3166,6 +3167,7 @@ done
                 .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
                 .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")
                 .env("CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER", "/fixture/openh264.so")
+                .env("CHARIOX_BROWSER_DISPLAY_OPENH264", "/fixture/libopenh264.so.8")
                 .env("CHARIOX_BROWSER_DISPLAY_LIBYUV", "/fixture/libyuv.so")
                 .env("CHARIOX_TEST_CONTROL_SECRET", "synthetic")
                 .status().unwrap();
@@ -3178,7 +3180,7 @@ while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
- *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"encoder":"%s","adapter":"%s","converter":"%s","control_secret_present":%s}}\n' "$id" "${CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER-}" "${CHARIOX_BROWSER_DISPLAY_LIBYUV-}" "${CHARIOX_TEST_CONTROL_SECRET+true}" | sed 's/:}/:false}/' ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"encoder":"%s","adapter":"%s","converter":"%s","native_encoder":"%s","control_secret_present":%s}}\n' "$id" "${CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER-}" "${CHARIOX_BROWSER_DISPLAY_LIBYUV-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264-}" "${CHARIOX_TEST_CONTROL_SECRET+true}" | sed 's/:}/:false}/' ;;
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
  esac
 done
@@ -3190,7 +3192,7 @@ done
         backend.stop().unwrap();
         assert_eq!(result.unwrap(), serde_json::json!({
             "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
-            "converter":"/fixture/libyuv.so", "control_secret_present":false
+            "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
         }));
     }
 }
