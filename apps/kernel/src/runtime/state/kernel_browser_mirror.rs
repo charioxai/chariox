@@ -16,6 +16,7 @@ impl KernelRuntimeState {
             return Err(host_error("MP-08: DOM mirroring disabled".into()));
         }
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        let next = matches!(command, KernelBrowserCommand::MirrorNext { .. });
         let mut params = match command {
             KernelBrowserCommand::MirrorInput {
                 tab_id,
@@ -55,11 +56,17 @@ impl KernelRuntimeState {
         let result = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;
-        if result.get("wire").and_then(Value::as_u64) == Some(2) {
-            return compress_mirror_packet(result);
-        }
-        Ok(result)
+        mirror_wire_result(next, result)
     }
+}
+
+/// Only v2 packets (`mirror_next` results) are compressed; subscribe/close
+/// replies keep their plain fields (`subscription_id`, `wire`).
+fn mirror_wire_result(next: bool, result: Value) -> Result<Value, DaemonError> {
+    if next && result.get("wire").and_then(Value::as_u64) == Some(2) {
+        return compress_mirror_packet(result);
+    }
+    Ok(result)
 }
 
 /// MP-08/MP-10: a protocol 482 packet travels gzip-compressed after the Vault
@@ -96,6 +103,18 @@ fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
 mod tests {
     use super::*;
     use std::io::Read as _;
+
+    #[test]
+    fn mirror_v2_subscribe_reply_stays_plain_and_only_packets_compress() {
+        // The first hosted run sent the subscribe reply gzipped: clients lost
+        // `subscription_id` and every later mirror request failed to decode.
+        let subscribed = json!({"subscription_id":"host-mirror-1","generation":1,"tab_id":"t","device_scale_factor":1,"wire":2});
+        assert_eq!(mirror_wire_result(false, subscribed.clone()).unwrap(), subscribed);
+        let packet = json!({"wire":2,"sequence":1,"ops":[],"resources":[],"tiles":[]});
+        assert_eq!(mirror_wire_result(true, packet).unwrap()["encoding"], "gzip");
+        let v1 = json!({"sequence":1,"nodes":[]});
+        assert_eq!(mirror_wire_result(true, v1.clone()).unwrap(), v1);
+    }
 
     #[test]
     fn mirror_v2_packet_compresses_body_and_keeps_media_outside() {
