@@ -34,7 +34,8 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   };
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
-  await assert.rejects(run({ ensureConnection: async () => { throw new Error('closed'); } }), /fill-target capture fence unavailable/);
+  assert.deepEqual(await run({ensureConnection:async()=>{throw Error('closed')}}),[{pages:[]}]);
+  await assert.rejects(run({ensureConnection:async()=>{throw Error('closed')}},{unknown:false,values:[],targets:[{kind:'browser',target_id:'t',value_hash:'public-hash'}]}),/fill-target capture fence unavailable/);
   // Owner 2026-10-09: Vault values never black out the desktop; browser windows
   // keep their per-field/value masks from the same measured protection.
   assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
