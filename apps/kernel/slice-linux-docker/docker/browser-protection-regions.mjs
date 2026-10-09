@@ -143,7 +143,7 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
       let box = null;
       try { box = await nodeBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
       // Plugin/PDF content has no inspectable document.
-      const reason = owner.plugin ? 'plugin' : !box?.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
+      const reason = owner.plugin ? 'plugin' : !box ? 'frame_failed' : !box.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
       if (reason) { if (place(owner.rect)) withheld.push(reason); continue; }
       const childOrigin = [origin[0] + box.content[0], origin[1] + box.content[1]];
       const childClip = intersect([childOrigin[0], childOrigin[1], box.content[2], box.content[3]], doc.clip);
@@ -166,22 +166,27 @@ async function search(connection, sessionId, query) {
 // Without Vault values or targets, one selector search (it pierces shadow
 // roots, closed ones included, and in-process frame documents) finds the
 // secret fields and frame owners, instead of a whole-page DOMSnapshot. A
-// marker protects its descendants, which this path cannot bound: false lets
-// the caller measure the session from a DOMSnapshot instead.
+// marker protects its descendants, and a failed box lookup does not prove
+// absent layout, which this path cannot bound: false lets the caller measure
+// the session from a DOMSnapshot instead.
 async function searchedRegions(connection, entry, dpr, regions, children, withheld) {
   const { sessionId, origin, clip } = entry;
   await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
   const describe = async nodeId => (await connection.send('DOM.describeNode', { nodeId }, sessionId)).node;
   const secrets = await Promise.all((await search(connection, sessionId, SECRET_FIELDS)).map(describe));
   if (secrets.some(node => node.localName !== 'input')) return false;
-  const owners = await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe));
+  // In-process frame documents were searched; other owners need their box.
+  const owners = (await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe)))
+    .filter(node => !(FRAME_OWNERS.has(node.localName) && node.contentDocument));
+  let secretBoxes, ownerBoxes;
+  try {
+    [secretBoxes, ownerBoxes] = await Promise.all([secrets, owners].map(nodes => Promise.all(nodes.map(node => nodeBox(connection, sessionId, node.backendNodeId, dpr)))));
+  } catch { return false; }
   const place = rect => { const placed = intersect([rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]], clip); if (placed) regions.push(placed); return placed; };
-  const box = async node => { try { return await nodeBox(connection, sessionId, node.backendNodeId, dpr); } catch { return null; } }; // No layout: no pixels.
   const isolated = new Map(children.map(child => [child.ownerBackendNodeId, child]));
-  for (const node of secrets) { const found = await box(node); if (found) place(found.border); }
-  for (const node of owners) {
-    const found = await box(node), child = isolated.get(node.backendNodeId);
-    if (!found || (FRAME_OWNERS.has(node.localName) && node.contentDocument)) continue; // In-process documents were searched.
+  secretBoxes.forEach(found => place(found.border));
+  for (const [i, node] of owners.entries()) {
+    const found = ownerBoxes[i], child = isolated.get(node.backendNodeId);
     if (!child || !found.plain) { // Plugin, uninspected or transformed frame.
       if (place(found.border)) withheld.push(PLUGINS.has(node.localName) ? 'plugin' : child ? 'transformed_frame' : 'uninspected_frame');
       continue;
