@@ -16,6 +16,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
 #[derive(Debug, Default)]
 pub(super) struct RelayReconnectGate {
     state: std::sync::Mutex<RelayReconnectGateState>,
+    input_order: super::browser_input_order::BrowserInputOrder,
 }
 
 #[derive(Debug, Default)]
@@ -124,17 +125,44 @@ pub(super) async fn handle_incoming_envelope(
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
             let display_subscriptions = Arc::clone(subscription_tasks);
+            // MP-08/MP-10/MP-11: decrypt once in socket order, then reserve
+            // input before spawned tasks can overtake one another. ACK/capture
+            // requests keep the existing independent concurrent path.
+            let display_sender = encrypted_request.sender_public_key.clone();
+            let mut prepared = prepare_daemon_request(&router, caller_identity, encrypted_request);
+            let mut turn = None;
+            if let Some(key) = prepared.as_ref().ok().and_then(|p| p.browser_input_key()) {
+                turn = reconnect_gate.input_order.reserve(key);
+                if turn.is_none() {
+                    prepared = Err(super::daemon_requests::RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::relay_error(
+                            "request_busy",
+                            "MP-08: browser input queue full",
+                            false,
+                        )),
+                    });
+                }
+            }
             tokio::spawn(async move {
-                let display_sender = encrypted_request.sender_public_key.clone();
-                let mut relay_response = handle_daemon_request(
-                    &router,
-                    &command_sequence,
-                    caller_identity,
-                    encrypted_request,
-                    &command_result_cache,
-                    &display_subscriptions,
-                )
-                .await;
+                if let Some(turn) = turn.as_mut() {
+                    turn.ready().await;
+                }
+                let mut relay_response = match prepared {
+                    Ok(prepared) => {
+                        handle_prepared_daemon_request(
+                            &router,
+                            &command_sequence,
+                            prepared,
+                            &command_result_cache,
+                            &display_subscriptions,
+                        )
+                        .await
+                    }
+                    Err(outcome) => outcome,
+                };
+                drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
                 {
                     let display_at = std::time::Instant::now();

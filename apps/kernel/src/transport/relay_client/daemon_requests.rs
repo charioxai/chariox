@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod app_tests;
+mod prepare;
+pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,6 +47,7 @@ pub(super) struct RelayRequestOutcome {
     pub(super) error: Option<RelayError>,
 }
 
+#[cfg(test)]
 pub(super) async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -53,68 +56,35 @@ pub(super) async fn handle_daemon_request(
     command_result_cache: &Arc<CommandResultCache>,
     display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
 ) -> RelayRequestOutcome {
-    if relay_crypto::validate_encrypted_payload_shape(
-        &encrypted_request,
-        MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
-    )
-    .is_err()
-    {
-        return RelayRequestOutcome {
-            display_event: None,
-            encrypted_response: None,
-            error: Some(relay_error(
-                "invalid_request",
-                "invalid relay request payload",
-                false,
-            )),
-        };
+    match prepare_daemon_request(router, caller_identity, encrypted_request) {
+        Ok(prepared) => {
+            handle_prepared_daemon_request(
+                router,
+                command_sequence,
+                prepared,
+                command_result_cache,
+                display_subscriptions,
+            )
+            .await
+        }
+        Err(outcome) => outcome,
     }
-    if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
-    {
-        return RelayRequestOutcome {
-            display_event: None,
-            encrypted_response: None,
-            error: Some(error),
-        };
-    }
-    let (message, client_public_key, daemon_private_key) = {
-        let daemon_private_key = router.relay_private_key();
-        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
-            &daemon_private_key,
-            &encrypted_request,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &format!("invalid relay request payload: {error}"),
-                        false,
-                    )),
-                };
-            }
-        };
-        let request = match parse_relay_client_request(&decrypted.plaintext) {
-            Ok(request) => request,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &crate::transport::request_decode_error::message(
-                            "invalid relay request payload",
-                            &error,
-                        ),
-                        false,
-                    )),
-                };
-            }
-        };
-        (request, decrypted.sender_public_key, daemon_private_key)
-    };
+}
+
+pub(super) async fn handle_prepared_daemon_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    prepared: PreparedDaemonRequest,
+    command_result_cache: &Arc<CommandResultCache>,
+    display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
+) -> RelayRequestOutcome {
+    let PreparedDaemonRequest {
+        message,
+        client_public_key,
+        daemon_private_key,
+        caller_identity,
+        encrypted_request,
+    } = prepared;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
             if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
