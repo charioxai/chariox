@@ -203,12 +203,28 @@ impl KernelBrowserHost {
         )?;
         let model = self.actor_model(user)?;
         {
-            let browser_state = backend
-                .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
+            // MP-08/MP-10/MP-11: authenticated human native input uses the
+            // fresh desktop state above. Browser tab reconciliation is unrelated
+            // to that press and otherwise queues every character behind CDP.
+            // Agent input and all other operations keep their full reconciliation;
+            // live policy, terminal lifetime, takeover and native binding checks remain.
+            let human_input =
+                params["op"] == "input" && admission.is_some_and(|a| a.agent.is_none());
+            let browser_state =
+                if human_input {
+                    None
+                } else {
+                    Some(backend.host_request_classified(
+                        "host.browser",
+                        serde_json::json!({"op":"state"}),
+                    )?)
+                };
             let mut model = model
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
-            model.reconcile(&browser_state)?;
+            if let Some(browser_state) = browser_state {
+                model.reconcile(&browser_state)?;
+            }
             model.reconcile_desktop(&state)?;
         }
         if params["op"] == "state" {

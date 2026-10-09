@@ -243,3 +243,98 @@ done
         true
     );
 }
+
+#[test]
+fn mp08_mp10_mp11_warm_human_input_keeps_live_desktop_without_browser_reconcile() {
+    let root = std::env::temp_dir().join(format!(
+        "culinux-warm-admission-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) result='{"state":"ready","process_id":'$$'}' ;;
+ *'"method":"host.protect"'*) printf 'protect\n' >> "$root/protection"; result='{}' ;;
+ *'"method":"host.browser"'*) printf 'browser\n' >> "$root/browser"; result='{"generation":1,"tabs":[]}' ;;
+ *'"op":"state"'*|*'"op":"start"'*)
+   printf 'desktop\n' >> "$root/desktop"
+   generation=g; if test -f "$root/stale"; then generation=g2; fi
+   result='{"surface_id":"s","generation":"'"$generation"'"}' ;;
+ *'"op":"input"'*) printf 'input\n' >> "$root/input"; result='{"applied":true}' ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id"; exit 0 ;;
+ *) result='{}' ;;
+ esac
+ printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let lifetime = crate::runtime::command::TerminalLifetime::default();
+    let human = host.admit_terminal("alice", lifetime.clone());
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let send = |admission: &KernelBrowserAdmission, request| {
+        host.protected_request_admitted(
+            "alice",
+            Some(admission),
+            "host.computer",
+            request,
+            policy.clone(),
+        )
+    };
+    send(&human, json!({"op":"start"})).unwrap();
+    std::fs::write(root.join("browser"), b"").unwrap();
+    let input = json!({"op":"input","surface_id":"s","generation":"g","input":{"kind":"text","text":"public"}});
+    assert_eq!(send(&human, input.clone()).unwrap()["applied"], true);
+    let human_browser = std::fs::read(root.join("browser")).unwrap();
+    assert!(!std::fs::read(root.join("desktop")).unwrap().is_empty());
+    send(
+        &human,
+        json!({"op":"release","surface_id":"s","generation":"g"}),
+    )
+    .unwrap();
+    host.set_focus("alice", Some("agent"));
+    host.load_for("alice", "agent", KernelBrowserCapability::Computer)
+        .unwrap();
+    let agent = host
+        .admit_for("alice", "agent", KernelBrowserCapability::Computer)
+        .unwrap();
+    send(&agent, json!({"op":"start"})).unwrap();
+    std::fs::write(root.join("browser"), b"").unwrap();
+    assert_eq!(send(&agent, input.clone()).unwrap()["applied"], true);
+    let agent_browser = std::fs::read(root.join("browser")).unwrap();
+    let dispatched = std::fs::read(root.join("input")).unwrap();
+    std::fs::write(root.join("stale"), b"changed generation").unwrap();
+    assert!(send(&human, input.clone()).is_err());
+    assert_eq!(
+        std::fs::read(root.join("input")).unwrap(),
+        dispatched,
+        "stale native generation emits no input"
+    );
+    lifetime.cancel();
+    assert!(send(&human, input).is_err());
+    assert_eq!(
+        std::fs::read(root.join("input")).unwrap(),
+        dispatched,
+        "retired terminal emits no input"
+    );
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        human_browser.is_empty(),
+        "warm human input waited for unrelated Browser reconciliation"
+    );
+    assert!(
+        !agent_browser.is_empty(),
+        "agent input must retain fresh Browser reconciliation"
+    );
+}
