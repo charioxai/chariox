@@ -61,9 +61,13 @@ impl KernelRuntimeState {
 }
 
 /// Only v2 packets (`mirror_next` results) are compressed; subscribe/close
-/// replies keep their plain fields (`subscription_id`, `wire`).
+/// replies keep their plain fields (`subscription_id`, `wire`). A small delta
+/// (an echo) travels plain: inflating it would only add a client task hop.
 fn mirror_wire_result(next: bool, result: Value) -> Result<Value, DaemonError> {
-    if next && result.get("wire").and_then(Value::as_u64) == Some(2) {
+    if next
+        && result.get("wire").and_then(Value::as_u64) == Some(2)
+        && serde_json::to_vec(&result).map_or(true, |body| body.len() >= 2048)
+    {
         return compress_mirror_packet(result);
     }
     Ok(result)
@@ -110,8 +114,10 @@ mod tests {
         // `subscription_id` and every later mirror request failed to decode.
         let subscribed = json!({"subscription_id":"host-mirror-1","generation":1,"tab_id":"t","device_scale_factor":1,"wire":2});
         assert_eq!(mirror_wire_result(false, subscribed.clone()).unwrap(), subscribed);
-        let packet = json!({"wire":2,"sequence":1,"ops":[],"resources":[],"tiles":[]});
+        let packet = json!({"wire":2,"sequence":1,"ops":[{"op":"text","id":"n2","text":"a".repeat(4096)}],"resources":[],"tiles":[]});
         assert_eq!(mirror_wire_result(true, packet).unwrap()["encoding"], "gzip");
+        let echo = json!({"wire":2,"sequence":2,"ops":[{"op":"form","id":"n9"}],"resources":[],"tiles":[]});
+        assert_eq!(mirror_wire_result(true, echo.clone()).unwrap(), echo);
         let v1 = json!({"sequence":1,"nodes":[]});
         assert_eq!(mirror_wire_result(true, v1.clone()).unwrap(), v1);
     }
