@@ -58,7 +58,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
     const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
       functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
         return {exists:this.isConnected,editable,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
-          value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
+          textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
   } finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
@@ -92,7 +92,11 @@ function contenteditableTextGeometry() {
   while(text.nextNode()) {
     // Visibility may be restored at any descendant. Only painted text adds
     // overflow coverage; hidden runs must not cover neighboring ordinary pixels.
-    if(this.ownerDocument.defaultView.getComputedStyle(text.currentNode.parentElement).visibility!=='visible')continue;
+    const style=this.ownerDocument.defaultView.getComputedStyle(text.currentNode.parentElement);
+    if(style.visibility!=='visible')continue;
+    // Shadows paint outside Range layout bounds. Do not claim coverage from
+    // offsets/blur heuristics, including inherited and descendant shadows.
+    if(style.textShadow!=='none')throw Error('unproved filled text shadow');
     range.selectNodeContents(text.currentNode);
     for(const box of range.getClientRects()) {
       const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
@@ -166,6 +170,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           return false;
         });
         if(!rendered)continue;
+        // Native text controls have the same layout/paint distinction. Password
+        // dots bypass this check; hidden controls retain tracking until reveal.
+        if(!state.contenteditable&&state.textShadow!=='none')throw Error('MP-11: fill text shadow coverage unavailable');
         await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
         const map=await toViewport(entry),fieldRegions=[];
