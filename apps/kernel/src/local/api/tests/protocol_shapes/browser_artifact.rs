@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: protocol 472 Browser artifact snapshot and hash.
+//! MP-08/MP-10/MP-11: protocol 488 Browser artifact snapshot and hash.
 use super::*;
 
 #[test]
@@ -85,7 +85,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_73_shape_hashes() {
 // MP-08/MP-10/MP-11: the integration contract contains Apps access, Browser
 // artifact, Computer hold and public provider-run shapes together; unreleased per-lane numbers fold.
 #[test]
-fn mp08_mp10_mp11_apps_browser_computer_union_472_73_is_hashed() {
+fn mp08_mp10_mp11_apps_browser_computer_union_488_73_is_hashed() {
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 488);
     assert_eq!(
@@ -106,6 +106,6 @@ fn mp08_mp10_mp11_apps_browser_computer_union_472_73_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "291b9c86d95f7dc50ff36acc44885a3592c4d57131b7f5e16fb7d5c8a028d199"
+        "9d9dd68a4d3a2d29be2c5468b40aef16480b0b89c3c81391799de47ec0300951"
     );
 }
