@@ -276,7 +276,9 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     /* MP-11: protected rows keep an INDEPENDENT decode of every packet; the
      * hardware and OpenH264 paths have no reconstruction. x264 rows certify
      * repairs from x264's own reconstruction instead of decoding twice. */
-    if (protected||row->hardware||row->openh264) {
+    /* Scaled unprotected motion certifies no native pixels, so it has no
+     * reconstruction to decode. Protected streams always stay native. */
+    if (protected||row->hardware||(row->openh264&&ew==c->width)) {
         row->decoder=avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_H264));
         row->decoded=av_frame_alloc(); row->rgb=protected?malloc((size_t)c->width*h*4):NULL;
         if (!row->decoder || !row->decoded || (protected&&!row->rgb)) return -1;
