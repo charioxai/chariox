@@ -14,10 +14,12 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
   let chrome;
   try {
     const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
-    for (const match of dockerfile.matchAll(/^COPY(?: --chown=\S+)? (\S+) \/opt\/chariox-slice\/(\S+)$/gm)) {
-      const destination = path.join(root, match[2]);
-      await mkdir(path.dirname(destination), { recursive: true });
-      await copyFile(path.join(repo, match[1]), destination);
+    for (const match of dockerfile.matchAll(/^COPY(?: --chown=\S+)? ((?!-).+) \/opt\/chariox-slice\/(\S*)$/gm)) {
+      for (const source of match[1].split(/\s+/)) {
+        const destination = path.join(root, match[2], match[2].endsWith('/') || !match[2] ? path.basename(source) : '');
+        await mkdir(path.dirname(destination), { recursive: true });
+        await copyFile(path.join(repo, source), destination);
+      }
     }
     const health = spawnSync(process.execPath, [path.join(root, 'browser-controller.mjs'), 'stdio'], {
       input: '{"id":1,"method":"health"}\n', encoding: 'utf8', timeout: 10000,
