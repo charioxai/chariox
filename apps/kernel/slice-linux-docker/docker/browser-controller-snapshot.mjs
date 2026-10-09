@@ -135,7 +135,7 @@ const BIDI_TEXT = /[\u0590-\u08ff\u200e\u200f\u202a-\u202e\u2066-\u2069\ufb1d-\u
 const CLEAR = /^transparent$|^rgba\(([^,]*,){3}\s*0(\.0\d*)?\)$|\/\s*(0(\.0\d*)?|\d(\.\d+)?%)\)$/; // Alpha below 0.1.
 const GRID_PLACEMENT = ["grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end"];
 const TABLE_RANK = { "table-header-group": 1, "table-row-group": 2, "table-row": 2, "table-footer-group": 3 };
-export function renderedTextEchoes(strings, document, protectedValues) {
+export function renderedTextEchoes(strings, document, protectedValues, overflow = { regions: [], unmeasured: new Set() }) {
   const echoes = new Set();
   if (!protectedValues.length) return echoes;
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
@@ -229,7 +229,42 @@ export function renderedTextEchoes(strings, document, protectedValues) {
     if (i < 0) throw new Error("MP-11: uncertain order without a container");
     return i;
   };
-  const mask = (i) => entries.get(i).forEach((k) => echoes.add(k));
+  // MP-08/MP-11 review af34d30f0: a container's own box does not contain
+  // overflow. Cover its descendants' layout AND per-line text boxes too.
+  // Missing geometry falls back to the nearest local clipping ancestor.
+  const masked = new Set(), extra = new Set(), geometryUnknown = new Set();
+  const mask = (i) => {
+    if (masked.has(i)) return;
+    masked.add(i);
+    const own = (entries.get(i) ?? []).map(k => layout.bounds?.[k]).filter(validBox), boxes = [], missing = [];
+    for (const stack = [i]; stack.length;) {
+      const node = stack.pop();
+      for (const k of entries.get(node) ?? []) {
+        for (const box of [layout.bounds?.[k], ...(lines.get(k) ?? [])]) validBox(box) ? boxes.push(box) : missing.push(k);
+      }
+      stack.push(...children[node]);
+    }
+    if (missing.length) {
+      let clipped = i, fallback;
+      while (clipped >= 0 && !fallback) {
+        const s = css.get(clipped), name_ = name(clipped).toLowerCase();
+        if (s && !['#document', 'html', 'body'].includes(name_) && s['overflow-x'] !== 'visible' && s['overflow-y'] !== 'visible') {
+          const bounds = (entries.get(clipped) ?? []).map(k => layout.bounds?.[k]);
+          if (bounds.length && bounds.every(box => validBox(box) && box[2] > 0 && box[3] > 0)) fallback = bounds;
+        }
+        clipped = parent[clipped];
+      }
+      if (!fallback) throw new Error('MP-11: unmeasurable container overflow without a local clip');
+      boxes.push(...fallback);missing.forEach(k => overflow.unmeasured.add(k));
+    }
+    (entries.get(i) ?? []).forEach(k => echoes.add(k));
+    for (const b of boxes) {
+      if (b[2] <= 0 || b[3] <= 0 || own.some(a => a[2] > 0 && a[3] > 0 && a[0] <= b[0] && a[1] <= b[1] && a[0] + a[2] >= b[0] + b[2] && a[1] + a[3] >= b[1] + b[3])) continue;
+      const key = b.join(',');if (!extra.has(key)) { extra.add(key);overflow.regions.push(b); }
+    }
+  };
+  const validBox = b => Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) && b[2] >= 0 && b[3] >= 0;
+  for (const [i, ks] of entries) if (ks.some(k => !validBox(layout.bounds?.[k]))) geometryUnknown.add(i);
   const corners = ([x, y, w, h] = []) => {
     if (![x, y, w, h].every(Number.isFinite)) throw new Error("MP-11: unknown text bounds");
     return [x, y, x + w, y + h];
@@ -251,7 +286,9 @@ export function renderedTextEchoes(strings, document, protectedValues) {
       if (s.out) clip[i] = null;
       const r = s.out && /^rect\(([^,]+),([^,]+),([^,]+),([^)]+)\)$/.exec(s.clip);
       if (s["overflow-x"] !== "visible" || s["overflow-y"] !== "visible" || r) {
-        const b = corners(layout.bounds?.[entries.get(i)[0]]), c = clip[i] ?? ALL;
+        const raw = layout.bounds?.[entries.get(i)[0]];
+        if (!validBox(raw)) { geometryUnknown.add(i);continue; }
+        const b = corners(raw), c = clip[i] ?? ALL;
         if (s["overflow-x"] !== "visible") clip[i] = [Math.max(c[0], b[0]), c[1], Math.min(c[2], b[2]), c[3]];
         if (s["overflow-y"] !== "visible") clip[i] = [(clip[i] ?? c)[0], Math.max(c[1], b[1]), (clip[i] ?? c)[2], Math.min(c[3], b[3])];
         // clip: rect(top, right, bottom, left) of an absolutely positioned box, from its border-box origin.
@@ -267,6 +304,7 @@ export function renderedTextEchoes(strings, document, protectedValues) {
       if (layout.text?.[k] === -1 || !/\S/.test(strings[layout.text?.[k]] ?? "")) continue;
       const c = clip[i] ?? ALL, seen = [];
       for (const line of lines.get(k) ?? [layout.bounds?.[k]]) {
+        if (!validBox(line)) { geometryUnknown.add(i);continue; }
         const b = corners(line), x0 = Math.max(b[0], c[0]), y0 = Math.max(b[1], c[1]), x1 = Math.min(b[2], c[2]), y1 = Math.min(b[3], c[3]);
         if (x1 - x0 >= 2 && y1 - y0 >= 2) seen.push([x0, y0, x1, y1]); // Narrower: no legible glyph.
       }
@@ -332,7 +370,8 @@ export function renderedTextEchoes(strings, document, protectedValues) {
   }
   // Negative margins move following content by their sum: below half an em they cannot reorder glyphs.
   for (const [at, pull] of pulled) if (pull >= px(css.get(at)["font-size"]) / 2) suspects.add(at);
-  for (const i of suspects) if (!ordered(flow(i), px(css.get(i)["font-size"]))) mask(i);
+  const hasUnknownGeometry = i => [...geometryUnknown].some(node => { while (node >= 0 && node !== i) node = parent[node];return node === i; });
+  for (const i of suspects) if (hasUnknownGeometry(i) || !ordered(flow(i), px(css.get(i)["font-size"]))) mask(i);
   // Displaced glyphs within 1em of glyphs outside their displaced subtree.
   const pre = [], size = new Array(count).fill(1), cells = new Map(), CELL = 128;
   for (const stack = [...roots].reverse(); stack.length;) { const i = stack.pop(); pre[i] = pre.length; for (let c = children[i].length - 1; c >= 0; c--) stack.push(children[i][c]); }
