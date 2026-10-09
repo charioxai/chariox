@@ -224,6 +224,9 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
                 user_code: Some(CANARY.into()),
             },
         },
+        serde_json::from_value(serde_json::json!({"EnvironmentProviderAuthorizationLink":{"link":{
+            "provider":"codex","linked_profile_ref":null,"authorization_url":CANARY,"expires_at_ms":1}}}))
+        .unwrap(),
     ]
 }
 
