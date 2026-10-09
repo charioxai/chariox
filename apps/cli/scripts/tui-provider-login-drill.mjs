@@ -238,7 +238,10 @@ try {
     // Official CLI, invalid code: the provider's own error is shown.
     await waitFor(async () => /OAuth error|error|invalid/i.test((await rows()).slice(0, 34).join('\n')) || await shows('sign-in failed'), 45_000, 'provider verdict').catch(() => {})
     await capture('code-rejected')
-    record('the provider rejection is visible', /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed'))
+    const rejected = /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed')
+    // The provider drops its link after a rejection: the strip says what to do next.
+    const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Open the link (click it):')
+    record('the provider rejection is visible with the next step', rejected && nextStep, { rejected, nextStep })
     // Esc leaves the field; 1 cancels through the kernel interaction.
     await press('\x1b'); await sleep(300); await press('1')
     await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
