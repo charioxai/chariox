@@ -33,9 +33,9 @@ async function videoPixels(png,dpr,label,required=false,masks=[]) {
 }
 const value = 'MP11-disposable-fill-value';
 const hash = v => createHash('sha256').update(v).digest('hex');
-async function waitForClientDocument(connection,sessionId) {
+async function waitForClientDocument(connection,sessionId,url) {
   for(let attempt=0;attempt<100;attempt++) {
-    try {const {result}=await connection.send('Runtime.evaluate',{expression:'document.readyState==="complete"&&!!document.body',returnByValue:true},sessionId);if(result.value)return;}catch(error){if(!error.message.includes('context was destroyed'))throw error;}
+    try {const {result}=await connection.send('Runtime.evaluate',{expression:`document.URL===${JSON.stringify(url)}&&document.readyState==="complete"&&!!document.body`,returnByValue:true},sessionId);if(result.value)return;}catch(error){if(!error.message.includes('context was destroyed'))throw error;}
     await new Promise(resolve=>setTimeout(resolve,30));
   }
   throw Error('MP-11 fixture client document did not load');
@@ -94,7 +94,7 @@ for(const dpr of [1,2]) {
      const code=await readFile(bundle,'utf8'),target=(await connection.send('Target.createTarget',{url})).targetId;
      try {
        const {sessionId:client}=await browser.resolvePageTarget(target);
-       await waitForClientDocument(connection,client);
+       await waitForClientDocument(connection,client,url);
        await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false},client);
        const initialized=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);globalThis.renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();return true})()`},client);assert.equal(initialized.exceptionDetails,undefined);
        for(let index=0;index<wire.length;index++) {
@@ -103,6 +103,7 @@ for(const dpr of [1,2]) {
          const png=(await connection.send('Page.captureScreenshot',{format:'png'},client)).data,frame=decodePng(png,dpr);let ink=0;
          for(let y=400*dpr;y<440*dpr;y++)for(let x=80*dpr;x<500*dpr;x++){const i=(y*frame.width+x)*4;if(frame.pixels[i]>120&&frame.pixels[i+1]<80&&frame.pixels[i+2]>120)ink++;}
          assert(ink>100,'MP-08 ordinary matching paragraph stays visibly rendered');
+         for(const [x,y] of [[100,540],[700,600]]){const i=((y*dpr)*frame.width+x*dpr)*4;assert.deepEqual([...frame.pixels.subarray(i,i+3)],[255,255,255],'MP-08 positioned tiles must not leave displaced black placeholders in ordinary content');}
          if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-wire-dpr${dpr}-${index}.png`),Buffer.from(png,'base64'));
        }
        await connection.send('Runtime.evaluate',{expression:'renderer.close()'},client);
@@ -248,7 +249,7 @@ for(const dpr of [1,2]) {
        const clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
        try {
          const {sessionId:clientSession}=await browser.resolvePageTarget(clientTarget);
-         await waitForClientDocument(connection,clientSession);
+         await waitForClientDocument(connection,clientSession,url);
          const render=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);const renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();await renderer.apply(${JSON.stringify(packet)});const result={overlays:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').length,masked:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').map(n=>n.style.background)};globalThis.__charioxMirrorFixtureRenderer=renderer;return result})()`},clientSession);
          assert.equal(render.exceptionDetails,undefined,'MP-11 real mirror client accepts the protected packet/hash');
          const passwordTile=packet.nodes.find(n=>n.tag==='input'&&n.box?.x===80&&n.box?.y===150);
