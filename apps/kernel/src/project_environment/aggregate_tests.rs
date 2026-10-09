@@ -239,6 +239,7 @@ fn envp01_identity_serialization_never_blocks_adjustment_admission() {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(store.path(project.id()).with_extension("identity.lock"))
         .unwrap();
     fs2::FileExt::lock_exclusive(&identity_file).unwrap();
