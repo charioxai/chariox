@@ -27,6 +27,10 @@ def load(name):
     return module
 
 
+class NativeProtectionChanged(ValueError):
+    pass
+
+
 keyboard = load('slice-keyboard')
 finder = load('slice-text-finder')
 
@@ -131,7 +135,7 @@ def main(request, connection=None):
     after=accessibility.capture_snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     if before!=after:
         image.close()
-        raise ValueError('native protection changed during capture')
+        raise NativeProtectionChanged('native protection changed during capture')
     request['mask']=mask
     try:
         if op == 'screenshot':

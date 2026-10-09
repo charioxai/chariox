@@ -56,7 +56,11 @@ export async function executeNative(request, environment, signal) {
     const code=await exit;
     if(signal?.aborted)throw Object.assign(new Error('MP-11: native input cancelled'),{code:'browser_action_cancelled'});
     if(code!==0 && diagnostic==='NativeInputDenied' && !overflow)throw new UserDomainRefusal('sensitive_requires_focus');
-    if(code!==0 || overflow) throw new Error('MP-08: native helper failed ('+diagnostic+')');
+    if(code!==0 || overflow) {
+      // MP-08/MP-11: fixed private timing classes only; public errors remain generic.
+      const codes={NativeProtectionChanged:'NATIVE_PROTECTION_CHANGED',ValueError:'NATIVE_VALUE_ERROR',TimeoutExpired:'NATIVE_HELPER_TIMEOUT',ModuleNotFoundError:'NATIVE_DEPENDENCY_MISSING',ImportError:'NATIVE_DEPENDENCY_MISSING',FileNotFoundError:'NATIVE_FILE_MISSING',OSError:'NATIVE_OS_ERROR'};
+      throw Object.assign(new Error('MP-08: native helper failed ('+diagnostic+')'),{code:overflow?'NATIVE_OUTPUT_LIMIT':codes[diagnostic]});
+    }
     return JSON.parse(output);
   } finally { clearTimeout(timer);signal?.removeEventListener('abort',cancel); }
 }
