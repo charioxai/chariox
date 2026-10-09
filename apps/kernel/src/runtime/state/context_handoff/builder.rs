@@ -231,7 +231,13 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
     let answers = turns
         .iter()
         .map(|turn| {
-            let answer = single_line(&truncate_bytes(&turn.answer(), MAX_PRIOR_ASSISTANT_BYTES));
+            // MP-08 / MP-10 / MP-11: a title and its explanation remain separate
+            // lines; flattening them can change an assistant-only fact.
+            let answer = truncate_bytes(&turn.answer(), MAX_PRIOR_ASSISTANT_BYTES)
+                .lines()
+                .map(single_line)
+                .collect::<Vec<_>>()
+                .join("\n    ");
             (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
         })
         .collect::<Vec<_>>();
@@ -396,6 +402,36 @@ mod tests {
     }
 
     #[test]
+    fn assistant_title_and_explanation_keep_their_line_boundary() {
+        let events = vec![
+            user_event(
+                1,
+                "session",
+                "agent",
+                "Propose a three-word audit title on its own line.",
+            ),
+            output_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                "proposal=Model Queue Continuity\nChecks native-session preservation.",
+            ),
+            user_event(3, "session", "agent", "Continue the audit."),
+            output_event(4, "session", "agent", "run-1", "Reviewed queue admission."),
+        ];
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        assert!(
+            handoff.contains(
+                "proposal=Model Queue Continuity\n    Checks native-session preservation."
+            ),
+            "{handoff}"
+        );
+        assert!(!handoff.contains("proposal=Model Queue Continuity Checks"));
+        assert!(handoff.len() <= MAX_HANDOFF_BYTES);
+    }
+
+    #[test]
     fn early_user_facts_survive_a_conversation_of_ordinary_turns() {
         let mut events = vec![
             user_event(
@@ -539,7 +575,7 @@ mod tests {
         let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
 
         assert!(
-            handoff.contains("Assistant: Let me check the file. The file contains a parser."),
+            handoff.contains("Assistant: Let me check the file.\n    The file contains a parser."),
             "{handoff}"
         );
         assert!(
