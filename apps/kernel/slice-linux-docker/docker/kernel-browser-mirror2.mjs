@@ -139,11 +139,14 @@ export class Mirror2 {
   async next(stream, command, scope, { signal } = {}) {
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
-    const run = stream.chain.then(() => this.packet(stream, command, scope, signal));
+    // A credit's long-poll deadline counts from its arrival: queued behind
+    // others it must not outlive the client's request timeout.
+    const deadline = Date.now() + (command.wait_ms ?? 0);
+    const run = stream.chain.then(() => this.packet(stream, command, scope, signal, deadline));
     stream.chain = run.catch(() => {});
     return run;
   }
-  async packet(stream, command, scope, signal) {
+  async packet(stream, command, scope, signal, deadline = Date.now()) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
     this.service.require(command.subscription_id, scope, command.generation);
@@ -158,7 +161,8 @@ export class Mirror2 {
     if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
-    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; }
+    // Frame slots restart with a snapshot, so rebased child keys are re-learned.
+    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
@@ -187,17 +191,16 @@ export class Mirror2 {
     try {
       source = await read();
       if (source.resync) { reset = true; source = await read(); }
-      this.register(stream, source, reset);
+      this.register(stream, source);
       // The first packet carries DOM, CSS and fonts; images follow it.
       resources = await this.materialize(world, stream, reset ? 'font' : null);
-      const deadline = Date.now() + (command.wait_ms ?? 0);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline) {
         await this.evaluate(world, `globalThis.__charioxMirror2.wait(${Math.max(1, Math.min(500, deadline - Date.now()))})`, true);
         assertNotCancelled(signal);
         const more = await read();
-        if (more.resync) { reset = true; source = await read(); this.register(stream, source, reset); break; }
-        this.register(stream, more, false); source = this.merge(source, more);
+        if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
+        this.register(stream, more); source = this.merge(source, more);
         resources = await this.materialize(world, stream, null);
       }
     } catch (error) {
@@ -243,9 +246,10 @@ export class Mirror2 {
   opaque(records, ids) {
     for (const record of records) if (record.foreign) { delete record.foreign; if (ids.includes(record.id)) { record.kind = 'tile'; record.reason = 'cross_origin_frame'; } }
   }
-  register(stream, source, reset) {
+  // Resource bytes are kept by the renderer for the document's lifetime: a
+  // same-document reset (lost base) does not send them again.
+  register(stream, source) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
-    if (reset) for (const entry of stream.resources.values()) entry.sent = false;
   }
   tilesDue(stream) { return stream.tileKeys !== '' && Date.now() - stream.tilesAt >= TILE_REFRESH_MS; }
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
