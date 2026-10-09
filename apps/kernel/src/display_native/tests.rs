@@ -770,7 +770,8 @@ fn mp08_native_codec_prefers_runtime_openh264_and_keeps_x264_optional() {
     // load at runtime. A configured OpenH264 binary must be the one in use.
     let codec = Codec(unsafe { ffi::cx_codec_open(64, 64, 1_000_000, 1, 0) });
     assert!(!codec.0.is_null(), "MP-10: a runtime codec must load");
-    let x264 = std::env::var("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER").as_deref() == Ok("libx264");
+    let x264 =
+        std::env::var("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER").as_deref() == Ok("libx264");
     if std::env::var_os("CHARIOX_BROWSER_DISPLAY_OPENH264").is_some() {
         assert_eq!(unsafe { ffi::cx_codec_openh264(codec.0) } == 1, !x264);
     }
