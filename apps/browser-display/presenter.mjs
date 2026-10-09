@@ -309,7 +309,7 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
   const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000} = options;
   const held = new Map(), unread = [], waiters = new Set();
   let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
-  let recovering = false, keyRequestedAt = -Infinity;
+  let recovering = false, keyRequestedAt = -Infinity, gapAt = null;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
   const ack = (sequence, lost = false) => {
     if (closed) return;
@@ -349,11 +349,25 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     // Relay lanes and concurrent decryption may reorder; decode in sequence.
     if (!Number.isSafeInteger(frame.sequence) || frame.sequence < nextSequence || held.has(frame.sequence)) return;
     held.set(frame.sequence, frame); heldBytes += size;
-    // A sequence that never arrives: skip the gap and recover from a key.
-    if (held.size > 8 || heldBytes > 8 * 1024 * 1024) { nextSequence = Math.min(...held.keys()); recovering = true; }
-    while (held.has(nextSequence)) { const ordered = held.get(nextSequence); held.delete(nextSequence++); heldBytes -= frameBytes(ordered); present(ordered); }
+    // A sequence that never arrives (pushed into a dropped relay socket):
+    // an independent frame needs no base, so never wait for frames before it.
+    if (independent(frame) && frame.sequence > nextSequence) {
+      for (const [sequence, earlier] of held) if (sequence < frame.sequence) { held.delete(sequence); heldBytes -= frameBytes(earlier); }
+      nextSequence = frame.sequence;
+    }
+    if (held.size > 8 || heldBytes > 8 * 1024 * 1024) skipGap();
+    drain();
   });
-  const heartbeat = setInterval(() => { if (performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
+  // Present in sequence; note when a gap starts so a quiet page skips it too.
+  function drain() {
+    while (held.has(nextSequence)) { const ordered = held.get(nextSequence); held.delete(nextSequence++); heldBytes -= frameBytes(ordered); present(ordered); }
+    gapAt = held.size ? gapAt ?? performance.now() : null;
+  }
+  function skipGap() { nextSequence = Math.min(...held.keys()); recovering = true; }
+  const heartbeat = setInterval(() => {
+    if (gapAt !== null && performance.now() - gapAt >= heartbeatMs) { skipGap(); drain(); }
+    if (performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence);
+  }, heartbeatMs);
   ack(presenter.sequence);
   const next = async () => {
     if (failure) throw failure;

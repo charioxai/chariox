@@ -4,6 +4,7 @@ fn main() {
     for file in [
         "src/display_native/capture.c",
         "src/display_native/codec.c",
+        "src/display_native/openh264.c",
         "src/display_native/lossless.c",
     ] {
         println!("cargo:rerun-if-changed={file}");
@@ -23,6 +24,7 @@ fn main() {
     build.files([
         "src/display_native/capture.c",
         "src/display_native/codec.c",
+        "src/display_native/openh264.c",
         "src/display_native/lossless.c",
     ]);
     if let Some(paths) = std::env::var_os("CHARIOX_NATIVE_DISPLAY_INCLUDE") {
@@ -36,16 +38,8 @@ fn main() {
         }
     }
     build.compile("chariox_display_native");
-    for library in [
-        "X11",
-        "Xext",
-        "Xdamage",
-        "Xcomposite",
-        "Xtst",
-        "x264",
-        "avcodec",
-        "avutil",
-    ] {
+    // OpenH264, x264 and libavcodec are loaded at runtime, never linked.
+    for library in ["X11", "Xext", "Xdamage", "Xcomposite", "Xtst", "dl"] {
         println!("cargo:rustc-link-lib={library}");
     }
     println!("cargo:rustc-link-lib=static=yuv");
