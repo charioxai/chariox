@@ -68,6 +68,23 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: visible page presents and fences the actual capture`,()=>setup(dpr,async({browser,policy,fill,capture})=>{
+   await fill('#plain');
+   const before=await regions.measurePresented(browser,policy);
+   assert(before?.pages.length>0,'MP-11 real visible page reaches the presentation fence');
+   assert(before.pages.some(page=>page.regions.length),'MP-11 fence measures the actual filled field');
+   let captured=0;
+   const frame=await regions.fenceBrowserCapture(browser,policy,async measurement=>{
+     captured++;assert.deepEqual(measurement,before);
+     return capture('presentation-fence');
+   });
+   assert.equal(captured,1,'MP-11 stable presented layout invokes and releases capture');
+   assert.equal(frame.width,1280*dpr);
+   const gate=new regions.ProtectionGate(()=>regions.measurePresented(browser,policy));
+   await gate.step();await gate.step();
+   assert(gate.protectionSerial>0,'MP-11 real presented measurements establish stream protection');
+   assert.equal((await gate.step()).verified,gate.protectionSerial);
+ }));
  for (const field of ['plain', 'password']) {
    test(`MP-08/MP-11 DPR${dpr}: canonical 1920x1080 image survives ${field} fill`, () => setup(dpr, async ({browser,connection,sessionId,targetId,documentId,fill}) => {
      connection.browserInstanceId='MP11-canonical-artifact-fixture';
