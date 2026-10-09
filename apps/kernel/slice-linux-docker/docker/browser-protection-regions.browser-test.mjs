@@ -26,6 +26,33 @@ async function withFixture(dpr, run, query = '') {
 }
 const policy = (values = []) => ({ values, targets: [], unknown: false });
 
+for (const dpr of [1, 2]) for (const kind of ['huge', 'overlap']) for (const collector of ['documentProtection', 'locateBrowserRegions']) {
+  test(`MP-08/MP-11 DPR ${dpr} ${collector}: ${kind} glyph grid has a deadline`, { timeout: 15000 }, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
+    await connection.send('Runtime.evaluate', { expression: `{
+      document.body.replaceChildren(); document.body.style.margin='0';
+      const control=document.createElement('div'); control.style.cssText='position:fixed;left:20px;top:20px;width:180px;height:80px;background:#00ffff'; document.body.append(control);
+      const box=document.createElement('div'); box.style.cssText='position:fixed;left:550px;top:100px;width:350px;height:100px;color:#ff00ff;font:16px sans-serif;transform:translateX(1px)'; document.body.append(box);
+      if (${JSON.stringify(kind)}==='huge') { const glyph=document.createElement('span'); glyph.style.cssText='display:inline-block;transform-origin:top left;transform:scale(100000)'; glyph.textContent='X';box.append(glyph); }
+      else { box.style.lineHeight='0'; box.innerHTML='<span>X</span><br>'.repeat(2000); }
+    }` }, sessionId);
+    const collectors = { documentProtection: async () => (await measureBrowserProtection(browser, policy(['unrelated-value']))).pages[0].regions,
+      locateBrowserRegions: () => locateBrowserRegions([], browser, ['unrelated-value'], { contentTarget: targetId, contentScale: dpr }) };
+    const pixels = await shot();
+    for (const [name, collect] of [[collector, collectors[collector]]]) {
+      const start = performance.now(), regions = await collect(), elapsed = performance.now() - start;
+      assert(elapsed < 2000, `MP-11 ${name} took ${elapsed} ms`);
+      if (kind === 'overlap') assert(regions.some(([x,y,w,h]) => x <= 552*dpr && y <= 100*dpr && x+w >= 900*dpr && y+h >= 200*dpr), `MP-11 ${name} covers just the uncertain container`);
+      assert(census(pixels, regions).cyan >= 180*80*dpr*dpr*.95, `MP-08 ${name} leaves unrelated content visible`);
+      if (process.env.CHARIOX_PROTECTION_TEST_EVIDENCE) {
+        const root = process.env.CHARIOX_PROTECTION_TEST_EVIDENCE, data = encodePng(pixels.width, pixels.height, pixels.pixels);
+        await writeFile(path.join(root,`grid-${kind}-dpr${dpr}-raw.png`),Buffer.from(data,'base64'));
+        await writeFile(path.join(root,`grid-${kind}-dpr${dpr}-${name}.png`),Buffer.from(maskPng(data,regions,dpr),'base64'));
+        await writeFile(path.join(root,`grid-${kind}-dpr${dpr}-${name}.json`),JSON.stringify({items:['MP-08','MP-11'],elapsed,regions}));
+      }
+    }
+  }));
+}
+
 for(const dpr of [1,2])test(`MP-08/MP-11 DPR ${dpr}: reversed flex overflow and zero-sized containers are covered by both collectors`,()=>withFixture(dpr,async({browser,connection,sessionId,targetId,shot})=>{
   const a=VAULT_VALUE.slice(0,17),b=VAULT_VALUE.slice(17);
   const {result}=await connection.send('Runtime.evaluate',{returnByValue:true,expression:`{const crops=[];for(const [top,w,h] of [[100,1,24],[Math.min(innerHeight-40,650),0,0]]){const box=document.createElement('div');box.style.cssText='position:fixed;left:550px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;flex-direction:row-reverse;color:#ff00ff;white-space:nowrap;font:bold 18px sans-serif;z-index:2147483647';for(const text of ${JSON.stringify([b,a])}){const span=document.createElement('span');span.style.cssText='flex-shrink:0;background:#fff';span.textContent=text;box.append(span);}document.body.append(box);const range=document.createRange();range.selectNodeContents(box);const r=range.getBoundingClientRect();crops.push([r.left,r.top,r.width,r.height]);}crops}`},sessionId);

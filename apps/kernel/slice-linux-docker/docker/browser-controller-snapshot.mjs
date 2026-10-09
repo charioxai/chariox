@@ -135,9 +135,11 @@ const BIDI_TEXT = /[\u0590-\u08ff\u200e\u200f\u202a-\u202e\u2066-\u2069\ufb1d-\u
 const CLEAR = /^transparent$|^rgba\(([^,]*,){3}\s*0(\.0\d*)?\)$|\/\s*(0(\.0\d*)?|\d(\.\d+)?%)\)$/; // Alpha below 0.1.
 const GRID_PLACEMENT = ["grid-row-start", "grid-row-end", "grid-column-start", "grid-column-end"];
 const TABLE_RANK = { "table-header-group": 1, "table-row-group": 2, "table-row": 2, "table-footer-group": 3 };
-export function renderedTextEchoes(strings, document, protectedValues, overflow = { regions: [], unmeasured: new Set() }) {
+const MAX_GRID_ENTRIES = 16_384, MAX_GEOMETRY_COMPARISONS = 65_536, GRID_MARGIN = 128;
+export function renderedTextEchoes(strings, document, protectedValues, overflow = { regions: [], unmeasured: new Set() }, viewport) {
   const echoes = new Set();
   if (!protectedValues.length) return echoes;
+  if (!Array.isArray(viewport) || viewport.length !== 4 || !viewport.every(Number.isFinite) || viewport[2] <= 0 || viewport[3] <= 0) throw new Error("MP-11: unknown protection viewport");
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
   const count = nodes.nodeName?.length ?? 0, parent = [], depth = [], children = [], roots = [], entries = new Map(), css = new Map();
   for (let i = 0; i < count; i++) {
@@ -332,9 +334,12 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
   // on the same line is the next one in DOM order, the nearest less than 1em
   // below comes later; boxes overlapping on a line are uncertain. Farther
   // boxes are separate words or columns, as in any layout.
+  let comparisons = 0;
   const ordered = (boxes, em) => boxes.length <= 2000 && boxes.every((a, j) => {
     let right = -1, below = -1;
     for (let m = 0; m < boxes.length; m++) {
+      if (comparisons >= MAX_GEOMETRY_COMPARISONS) return false;
+      comparisons++;
       const b = boxes[m];
       if (m === j) continue;
       if (Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > Math.min(a[3] - a[1], b[3] - b[1]) / 2) {
@@ -377,10 +382,48 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
   for (const stack = [...roots].reverse(); stack.length;) { const i = stack.pop(); pre[i] = pre.length; for (let c = children[i].length - 1; c >= 0; c--) stack.push(children[i][c]); }
   for (let i = count - 1; i >= 0; i--) if (parent[i] >= 0) size[parent[i]] += size[i];
   const near = []; // Line boxes grown by half an em: a gap below 1em joins them.
+  // MP-08/MP-11: transformed glyphs may cover millions of CSS pixels. Only
+  // index the capture viewport plus one cell of margin, in document pixels.
+  // Count memberships (including overlapping boxes), not just unique cells.
+  const view = [viewport[0] - GRID_MARGIN, viewport[1] - GRID_MARGIN,
+    viewport[0] + viewport[2] + GRID_MARGIN, viewport[1] + viewport[3] + GRID_MARGIN];
+  // When the shared proof budget is exhausted, cover each participating local
+  // container. Root text uses its own laid-out box, never html/body/the page.
+  const cover = i => {
+    let block = i;
+    while (block >= 0 && (!css.has(block) || name(block) === '#text' || css.get(block).inline)) block = parent[block];
+    mask(block < 0 || ['#document', 'html', 'body'].includes(name(block).toLowerCase()) ? i : block);
+  };
+  const coverGlyphs = () => {
+    let moved;
+    for (const [k, boxes] of glyphs) {
+      const i = layout.nodeIndex[k];
+      if (mover[i] < 0) continue;
+      cover(i);
+      const em = px(css.get(i)["font-size"]) / 2;
+      for (const b of boxes) {
+        const r = [Math.max(view[0], b[0] - em), Math.max(view[1], b[1] - em), Math.min(view[2], b[2] + em), Math.min(view[3], b[3] + em)];
+        if (r[0] >= r[2] || r[1] >= r[3]) continue;
+        moved = moved ? [Math.min(moved[0], r[0]), Math.min(moved[1], r[1]), Math.max(moved[2], r[2]), Math.max(moved[3], r[3])] : r;
+      }
+    }
+    if (!moved) return;
+    for (const [k, boxes] of glyphs) {
+      const i = layout.nodeIndex[k], em = px(css.get(i)["font-size"]) / 2;
+      if (mover[i] < 0 && boxes.some(b => b[0] - em <= moved[2] && b[2] + em >= moved[0] && b[1] - em <= moved[3] && b[3] + em >= moved[1])) cover(i);
+    }
+  };
+  let gridEntries = 0;
   for (const k of glyphs.keys()) {
     const i = layout.nodeIndex[k], em = px(css.get(i)["font-size"]) / 2;
     for (const b of glyphs.get(k)) {
-      const rect = [b[0] - em, b[1] - em, b[2] + em, b[3] + em, i];
+      const rect = [Math.max(b[0] - em, view[0]), Math.max(b[1] - em, view[1]),
+        Math.min(b[2] + em, view[2]), Math.min(b[3] + em, view[3]), i];
+      if (rect[0] >= rect[2] || rect[1] >= rect[3]) continue;
+      const needed = (Math.floor(rect[2] / CELL) - Math.floor(rect[0] / CELL) + 1) *
+        (Math.floor(rect[3] / CELL) - Math.floor(rect[1] / CELL) + 1);
+      if (needed > MAX_GRID_ENTRIES - gridEntries) { coverGlyphs(); return echoes; }
+      gridEntries += needed; // Checked before allocating rect/bucket entries.
       near.push(rect);
       for (let x = Math.floor(rect[0] / CELL); x <= Math.floor(rect[2] / CELL); x++) {
         for (let y = Math.floor(rect[1] / CELL); y <= Math.floor(rect[3] / CELL); y++) (cells.get(`${x},${y}`) ?? cells.set(`${x},${y}`, []).get(`${x},${y}`)).push(rect);
@@ -393,6 +436,8 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
     if (d < 0) continue;
     for (let x = Math.floor(a[0] / CELL); x <= Math.floor(a[2] / CELL); x++) for (let y = Math.floor(a[1] / CELL); y <= Math.floor(a[3] / CELL); y++) {
       for (const b of cells.get(`${x},${y}`) ?? []) {
+        if (comparisons >= MAX_GEOMETRY_COMPARISONS) { coverGlyphs(); return echoes; }
+        comparisons++;
         if (!within(b[4], d) && a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]) { mask(blockOf(a[4])); mask(blockOf(b[4])); }
       }
     }
