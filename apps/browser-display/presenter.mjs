@@ -172,8 +172,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // MP-08/MP-10: protocol 475 kernels push frames on a relay display
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
-  // The reply's generation wins: the kernel may restart its browser at the
-  // viewer's device scale (protocol 475), rotating the generation.
+  // The reply's generation wins (protocol 475 replies carry it).
   const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);

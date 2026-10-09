@@ -99,7 +99,7 @@ export class KernelBrowserHost {
   }
   async write() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, scale: this.chromium.scale ?? 1, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -131,7 +131,6 @@ export class KernelBrowserHost {
     }
     assertNotCancelled(signal);
     // MP-08/MP-10: relaunch at the device scale of the last display viewer.
-    if (geometry.width !== 1920 && [1, 2].includes(saved.scale)) this.chromium.scale = saved.scale;
     const connection = await this.chromium.start();
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
@@ -452,21 +451,6 @@ export class KernelBrowserHost {
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || (geometry.width===1920&&command.device_scale_factor!==1) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
-      // MP-08/MP-10 (1.4): the owned window must render at the viewer's scale
-      // (emulated view scaling fails native attestation on text). With no
-      // other live display/mirror viewer, restart Chromium at that scale;
-      // tabs restore from tabs.json under a new generation, which the reply
-      // carries. Otherwise the stream keeps the emulated scale.
-      if ((this.chromium.scale ?? 1) !== command.device_scale_factor && geometry.width !== 1920 && !this.restoring &&
-        ![...this.displays.values()].some(s => s.expires > Date.now()) && this.mirror.streams.size === 0) {
-        this.chromium.scale = command.device_scale_factor;
-        this.timing(`display_rescale ${command.device_scale_factor}`, timestamp());
-        await this.save();
-        await this.stop();
-        await this.start({ signal });
-        tab = this.tabs.get(command.tab_id);
-        if (!tab) throw new UserDomainRefusal("stale_reference");
-      }
       const scale = this.scales.get(tab.tab_id);
       if (scale && scale !== command.device_scale_factor) throw new Error("MD-DISPLAY: canonical tab geometry is already selected");
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);

@@ -132,7 +132,18 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
-    let capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+    // MP-08/MP-10: a viewer at the other density resizes the window just
+    // before this start; X applies it asynchronously. Wait up to one second.
+    let mut capture = Capture(std::ptr::null_mut());
+    for attempt in 0..20 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+        if !capture.0.is_null() {
+            break;
+        }
+    }
     if capture.0.is_null() {
         return Err("MP-10: native capture unavailable".into());
     }

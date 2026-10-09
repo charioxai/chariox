@@ -26,8 +26,9 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
-// MP-08/MP-10: the owned window renders at the viewer's device scale
-// natively (emulated view scaling renders text differently from CDP).
+// MP-08/MP-10: the owned window renders at a fixed native density (DSF 2
+// at 1280x800): emulated view upscaling would render text differently from
+// CDP, while DPR1 pages emulated at view scale 1/2 map 1:1 to its pixels.
 export function launchArguments(profile, headless, display = false, scale = 1) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
@@ -44,7 +45,11 @@ export class HostChromium {
     this.root = root;
     this.environment = environment;
     this.child = null;
-    this.scale = 1;
+    // MP-08/MP-10/MP-11: the owned window renders at the geometry's native
+    // density (DSF 2 at 1280x800). DPR2 viewers read it 1:1; DPR1 viewers
+    // are emulated at device scale 1 with view scale 1/2, also 1:1 device
+    // pixels. Observation never relaunches the browser for a viewer.
+    this.scale = geometry.dpr;
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {

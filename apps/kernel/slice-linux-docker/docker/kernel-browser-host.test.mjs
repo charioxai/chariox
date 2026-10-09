@@ -634,9 +634,10 @@ for (const change of ['stable','layout','metadata','unavailable']) {
 }
 
 for (const change of ["stable", "layout", "metadata"]) {
-  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
+  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection, chromium }) => {
     const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
     process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
+    chromium.scale = 2; // HostChromium's 1280x800 density
     fixture.protectedField = true;
     const send = connection.send;
     let captured = false;
@@ -659,9 +660,7 @@ for (const change of ["stable", "layout", "metadata"]) {
       const opened = await host.request({ op: "open", url: "about:blank" });
       const binding = { tab_id: opened.tab_id, generation: opened.generation };
       const subscribed = await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
-      // MP-08/MP-10 (1.4): a DPR2 viewer restarts the idle DSF1 browser at DSF2.
-      assert.equal(host.chromium.scale, 2); assert.equal(subscribed.generation, binding.generation + 1);
-      binding.generation = subscribed.generation;
+      assert.equal(subscribed.generation, binding.generation);
       const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
       assert.equal(frame.width,2560); assert.equal(frame.height,1600);
       assert.deepEqual(frame.protected_regions, change === "stable"
@@ -851,25 +850,17 @@ test('MP-08/MP-10/MP-11 viewer wheel on the CDP capture fallback uses awaited in
  assert.equal(sent.filter(call=>call.method==='Input.dispatchMouseEvent').length,1);
 }));
 
-// MP-08/MP-10/MP-11: native bounds and the compositor image share one DPR.
-// MP-08/MP-10 (1.4): an idle browser restarts at the viewer's device scale
-// (no emulated view scaling); a live viewer of the other scale keeps it.
-for(const dpr of [1,2])test(`MP-10 display renders natively at the viewer scale DPR${dpr}`,()=>using(async({host,sent})=>{
+// MP-08/MP-10/MP-11 (review #893 P1): display_subscribe is an observation.
+// It never stops or relaunches the browser (tab state, generation and agent
+// references survive); the DSF-2 window serves both densities 1:1.
+for(const dpr of [1,2])test(`MP-11 a DPR${dpr} viewer subscribe never relaunches the browser`,()=>using(async({host,sent,chromium})=>{
  const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
- try{const tab=await host.request({op:'open',url:'about:blank'});
+ try{chromium.scale=2;const tab=await host.request({op:'open',url:'about:blank'});
+ const launched=chromium.child,stops=chromium.stop;let stopped=0;chromium.stop=async()=>{stopped++;return stops()};
  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:dpr});
- assert.equal(host.chromium.scale??1,dpr);assert.equal(subscribed.generation,tab.generation+(dpr===2?1:0));
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:1,mobile:false});
- }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
-}));
-test('MP-10 a live viewer keeps the browser scale; another scale is emulated',()=>using(async({host,sent})=>{
- const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
- try{const a=await host.request({op:'open',url:'about:blank'});
- await host.request({op:'display_subscribe',tab_id:a.tab_id,generation:a.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
- const b=await host.request({op:'open',url:'about:blank'});
- const subscribed=await host.request({op:'display_subscribe',tab_id:b.tab_id,generation:b.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
- assert.equal(host.chromium.scale??1,1);assert.equal(subscribed.generation,b.generation,'no restart under a live viewer');
- assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:2,scale:2,mobile:false});
+ assert.equal(stopped,0,'no stop/relaunch from an observation');assert.equal(chromium.child,launched);
+ assert.equal(subscribed.generation,tab.generation);assert.equal(host.generation,tab.generation);assert.equal(chromium.scale,2);
+ assert.deepEqual(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').at(-1).params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr/2,mobile:false});
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 

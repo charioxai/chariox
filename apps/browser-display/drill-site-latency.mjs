@@ -11,7 +11,10 @@ async function command(page, op, extra = {}) {
 }
 async function controls(page, ids) {
   const reply = await command(page, 'snapshot');
-  const snapshot = reply.KernelBrowser.result.snapshot, dpr = await page.evaluate(() => mdStream.binding.device_scale_factor);
+  // DOMSnapshot bounds are host device pixels (the window's density, not
+  // necessarily the viewer's): derive the scale from the root element.
+  const snapshot = reply.KernelBrowser.result.snapshot, root = (snapshot.dom_nodes ?? []).find(n => n.node_name === 'HTML' && n.bounds?.width > 0);
+  const dpr = root ? Math.max(1, Math.round(root.bounds.width / 1280)) : await page.evaluate(() => mdStream.binding.device_scale_factor);
   return Object.fromEntries((snapshot.dom_nodes ?? []).filter(n => ids.includes(n.attributes?.id) && n.bounds?.width > 0)
     .map(n => [n.attributes.id, Object.fromEntries(Object.entries(n.bounds).map(([k, v]) => [k, v / dpr]))]));
 }
