@@ -281,7 +281,9 @@ pub(crate) fn is_sudo_prompt(prompt: &str) -> bool {
 }
 
 pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
-    sudo_arguments(prompt).filter(|_| !is_sudo_control(prompt)).map(str::trim)
+    sudo_arguments(prompt)
+        .filter(|_| !is_sudo_control(prompt))
+        .map(str::trim)
 }
 
 fn sudo_config_forbidden(path: &str) -> bool {
