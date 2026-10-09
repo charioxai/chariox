@@ -3542,6 +3542,7 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
     ) -> Result<bool, DaemonError> {
+        self.authorize_current_external_command()?;
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(false);
         }

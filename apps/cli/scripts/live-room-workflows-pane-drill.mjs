@@ -30,7 +30,7 @@ const unwrap = (response, key) => { if (response.Error) throw new Error(response
 await mkdir(args.output, { recursive: true, mode: 0o700 })
 await mkdir(args['state-parent'], { recursive: true, mode: 0o700 })
 const state = await mkdtemp(path.join(args['state-parent'], 'workflow-'))
-const workspace = await mkdtemp('/root/work/agent-wfpause-drill-')
+const workspace = await mkdtemp('/root/work/agent-integ2-workflow-drill-')
 for(const gitArgs of [['init','-q'],['-c','user.name=Chariox relost drill','-c','user.email=noreply@openai.com','commit','--allow-empty','-q','-m','MP-08 isolated TUI drill workspace [skip ci]\n\nCo-Authored-By: GPT-6.1-sol (Codex) <noreply@openai.com>']]) {
   const git=spawnOwned('git',gitArgs,{cwd:workspace,stdio:'ignore'})
   await new Promise((resolve,reject)=>git.once('exit',code=>code===0?resolve():reject(new Error('MP-08 Git fixture initialization failed'))))

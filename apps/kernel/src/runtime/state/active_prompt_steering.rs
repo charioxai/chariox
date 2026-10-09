@@ -186,3 +186,33 @@ impl KernelRuntimeState {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn active_prompt_steer_rejects_missing_grant_before_reading_session() {
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let request = crate::local::SteerActivePromptRequest {
+            session_id: "missing-session".into(),
+            attachment_id: "missing-attachment".into(),
+            target_agent_id: "missing-agent".into(),
+            expected_active_prompt_id: "old-prompt".into(),
+            prompt: "steer".into(),
+            attachments: vec![],
+        };
+        let local_request = crate::local::LocalDaemonRequest::SteerActivePrompt(request.clone());
+        let result = state
+            .with_external_command_authority(Some(("revoked-grant", &local_request)))
+            .steer_active_prompt(request)
+            .await;
+        assert!(
+            matches!(result, Err(DaemonError::LocalTransport { operation: "kernel access", message })
+            if message == "grant revoked or expired")
+        );
+    }
+}
