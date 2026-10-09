@@ -15,7 +15,7 @@ export type CliStdinParser = {
 
 export type CliStdinKeyControllerDeps = {
   handleNativeSelectionKey?: (event: CliStdinKeyEvent) => boolean
-  nativeSelectionActive?: () => boolean
+  handleNativeSelectionPaste?: () => boolean
   createStdinParser: (onTimeoutFlush: () => void) => CliStdinParser
   kernelApprovalOwnsInput?: () => boolean
   dialogOverlayOpen: () => boolean
@@ -62,7 +62,7 @@ export function createCliStdinKeyController(
     let handled = false
     parser.drain((event) => {
       // Mouse reports and terminal responses keep the selection.
-      if (event.type === "paste" && !deps.nativeSelectionActive?.()) deps.clearTextSelection?.()
+      if (event.type === "paste" && !deps.handleNativeSelectionPaste?.()) deps.clearTextSelection?.()
       else if (event.type === "key" && event.key) handled = handleKey(event.key) || handled
     })
     return handled

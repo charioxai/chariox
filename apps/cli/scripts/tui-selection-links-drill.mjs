@@ -252,6 +252,41 @@ try {
     return rowOf(needle)
   }
   const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
+  // MP-08 / MP-10: one PTY write per toggle/input pair, as SSH can buffer
+  // them. A populated focused prompt must survive entry and accept exit text.
+  const nativeBatchCases = async () => {
+    const cells = []
+    for (const [kind, sequence] of [
+      ['enter', '\r'], ['text', 'BLOCKEDTEXT'],
+      ['paste', '\x1b[200~BLOCKEDPASTE\x1b[201~'],
+    ]) {
+      await press('\x15')
+      const promptAt = await rowOf('Write your next prompt here')
+      if (promptAt) {
+        await mouse(`\x1b[<0;${promptAt.x+3};${promptAt.y+1}M`)
+        await mouse(`\x1b[<0;${promptAt.x+3};${promptAt.y+1}m`)
+      }
+      const draft = 'Reply only with BATCH_UNEXPECTED'
+      await typeText(draft)
+      await capture(`batch-${kind}-before`)
+      assert.ok(await promptShows(draft), 'coalesced-input precondition: populated focused prompt')
+      await press('\x1b[18~' + sequence)
+      const retained = await promptShows(draft)
+      const blocked = !await promptShows('BLOCKED')
+      const active = await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
+      await capture(`batch-${kind}-entered`)
+      await press('\x1b[18~EXITTEXT')
+      const exited = !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
+      const accepted = await promptShows(draft + 'EXITTEXT')
+      await capture(`batch-${kind}-exited`)
+      const cell = {kind, retained, blocked, active, exited, accepted}
+      cells.push(cell)
+      await writeFile(path.join(evidence, 'native-batch.json'), JSON.stringify(cells, null, 2))
+      assert.ok(retained && blocked && active && exited && accepted, 'coalesced F7 input ownership')
+    }
+    await press('\x15')
+    return cells
+  }
   // MP-08 / MP-10: the actual TUI must release terminal mouse ownership so
   // native drag + system Copy works without OSC 52, then restore app input.
   const nativeCopyCases = async needle => {
@@ -375,7 +410,12 @@ try {
     await sleep(4000)
     await capture('a02-response')
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
-    if (options['selection-review']) {
+    if (options['native-batch-review']) {
+      const nativeBatch = await nativeBatchCases()
+      result = {items: ['MP-08','MP-10'], mode: 'native-batch-review', source: options.source,
+        provider: options.provider, model: options.model, dpr: Number(options.dpr ?? 1), nativeBatch, nativeCopy,
+        acceptance: 'real provider and built TUI; physical Terminal.app/hosted and soak acceptance require separate observations'}
+    } else if (options['selection-review']) {
       // MP-08 / MP-10: real provider response, fast terminal drag, legacy copy
       // input, and typing after release. No fixture provider/login traffic.
       const at = await settledRowOf(marker)

@@ -9,33 +9,52 @@ test("MP-08 / MP-10 F7 disables real mouse ownership, Escape/F7 restores the pri
     let clears = 0
     const renderer = { useMouse: initial, clearSelection: () => { clears++ } }
     const controller = createNativeSelectionController({ renderer, setHint: hint => hints.push(hint) })
-    assert.equal(controller.ownsRendererKey({ name: "f7" }), true)
-    assert.equal(controller.handleKey({ name: "f7" }), true)
+    assert.equal(controller.handleRendererKey({ name: "f7" }), true)
     assert.equal(renderer.useMouse, false)
     assert.equal(controller.isActive(), true)
     assert.equal(clears, 1)
     assert.deepEqual(hints, [NATIVE_SELECTION_HINT])
-    assert.equal(controller.ownsRendererKey({ name: "escape" }), true)
-    assert.equal(controller.handleKey({ name: exit, eventType: "release" }), true)
+    assert.equal(controller.handleRendererKey({ name: exit, eventType: "release" }), true)
     assert.equal(controller.isActive(), true)
-    assert.equal(controller.handleKey({ name: exit }), true)
+    assert.equal(controller.handleRendererKey({ name: exit }), true)
     assert.equal(renderer.useMouse, initial)
     assert.equal(controller.isActive(), false)
     assert.deepEqual(hints, [NATIVE_SELECTION_HINT, null])
-    assert.equal(controller.ownsRendererKey({ name: "escape" }), false)
   }
 })
 
 test("MP-08 / MP-10 native selection consumes app keys; disposal restores mouse configuration", () => {
   const renderer = { useMouse: true, clearSelection: () => {} }
   const controller = createNativeSelectionController({ renderer, setHint: () => {} })
-  controller.handleKey({ name: "f7" })
+  controller.handleRendererKey({ name: "f7" })
   for (const key of [{ name: "enter" }, { name: "c", ctrl: true }, { name: "y" }]) {
-    assert.equal(controller.ownsRendererKey(key), true)
-    assert.equal(controller.handleKey(key), true)
+    assert.equal(controller.handleRendererKey(key), true)
   }
-  assert.equal(controller.handleKey({ name: "e", ctrl: true }), false)
+  assert.equal(controller.handleRendererKey({ name: "e", ctrl: true }), false)
   controller.dispose()
   assert.equal(renderer.useMouse, true)
-  assert.equal(controller.handleKey({ name: "enter" }), false)
+  assert.equal(controller.handleRendererKey({ name: "enter" }), false)
+})
+
+test("MP-08 / MP-10 raw replay never toggles twice and handoff discards skipped decisions", () => {
+  const renderer = { useMouse: true, clearSelection: () => {} }
+  const controller = createNativeSelectionController({ renderer, setHint: () => {} })
+  const toggle = { name: "f7", sequence: "\x1b[18~" }
+  assert.equal(controller.handleRendererKey(toggle), true)
+  assert.equal(controller.handleKey(toggle), true)
+  assert.equal(controller.isActive(), true)
+  assert.equal(controller.handleRendererKey(toggle), true)
+  assert.equal(controller.handleKey(toggle), true)
+  assert.equal(controller.isActive(), false)
+  controller.handleRendererKey({ name: "return", sequence: "\r" })
+  controller.discardInput()
+  controller.handleRendererKey(toggle)
+  assert.equal(controller.handleKey(toggle), true)
+  assert.equal(controller.isActive(), true)
+  // Raw terminal responses that the renderer consumes do not steal ownership.
+  assert.equal(controller.handleKey({ name: "", sequence: "\x1b[?997;1n" }), true)
+  controller.handleRendererKey(toggle)
+  assert.equal(controller.handleKey(toggle), true)
+  assert.equal(controller.isActive(), false)
+  controller.dispose()
 })

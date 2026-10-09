@@ -10,7 +10,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, parseKeypress, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createSignal, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
@@ -222,17 +222,18 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     renderer,
     setHint: (hint) => { setNativeSelectionHint(hint); updateSessionChrome() },
   })
-  const nativeSelectionInput = (sequence: string) => {
-    const key = parseKeypress(sequence, { useKittyKeyboard: true })
-    return key ? nativeSelection.ownsRendererKey(key) : false
+  const nativeSelectionInput = (event: KeyEvent) => {
+    if (nativeSelection.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
   }
-  renderer.prependInputHandler(nativeSelectionInput)
+  renderer.keyInput.prependListener("keypress", nativeSelectionInput)
+  renderer.keyInput.prependListener("keyrelease", nativeSelectionInput)
   const nativeSelectionPaste = (event: { preventDefault(): void; stopPropagation(): void }) => {
-    if (nativeSelection.isActive()) { event.preventDefault(); event.stopPropagation() }
+    if (nativeSelection.handleRendererPaste()) { event.preventDefault(); event.stopPropagation() }
   }
-  renderer.keyInput.on("paste", nativeSelectionPaste)
+  renderer.keyInput.prependListener("paste", nativeSelectionPaste)
   onCleanup(() => {
-    renderer.removeInputHandler(nativeSelectionInput)
+    renderer.keyInput.off("keypress", nativeSelectionInput)
+    renderer.keyInput.off("keyrelease", nativeSelectionInput)
     renderer.keyInput.off("paste", nativeSelectionPaste)
     if (!renderer.isDestroyed) nativeSelection.dispose()
   })
@@ -916,7 +917,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     handleNativeSelectionKey: nativeSelection.handleKey,
-    nativeSelectionActive: nativeSelection.isActive,
+    handleNativeSelectionPaste: nativeSelection.handlePaste,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
     showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
@@ -973,7 +974,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliAppProcessRuntimeComposition({
     client, options, appLogger, formatError,
     flashFooter, handleSigint,
-    handleStdinData: (chunk: Buffer | string) => { if (!providerLoginLink.isActive()) handleStdinData(chunk) },
+    // MP-08 / MP-10: resume() reattaches the renderer after this listener.
+    // Drain the application parser after renderer dispatch in either order.
+    handleStdinData: (chunk: Buffer | string) => {
+      if (!providerLoginLink.isActive()) queueMicrotask(() => {
+        if (!renderer.isDestroyed && !providerLoginLink.isActive()) handleStdinData(chunk)
+        else nativeSelection.discardInput()
+      })
+    },
     clearTerminalOutputRecordTimer,
     workspaceScreenMode,
     workflowScreenActive: workflowActions.workflowScreenActive,

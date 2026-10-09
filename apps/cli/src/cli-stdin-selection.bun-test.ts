@@ -1,4 +1,6 @@
-import { parseKeypress, StdinParser } from "@opentui/core"
+import { parseKeypress, StdinParser, TextareaRenderable } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+import { createNativeSelectionController } from "./native-selection-controller.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
@@ -99,7 +101,7 @@ test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearin
     const counts = { clears: 0, shortcuts: 0, nativeKeys: [] as string[] }
     const controller = createCliStdinKeyController({
       createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
-      nativeSelectionActive: () => active,
+      handleNativeSelectionPaste: () => active,
       handleNativeSelectionKey: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => {
         if (event.name === "f7" || active && event.name === "escape") {
           active = !active; counts.nativeKeys.push(event.name); return true
@@ -122,3 +124,69 @@ test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearin
   assert.equal(active, false)
   assert.deepEqual(counts, { clears: 0, shortcuts: 0, nativeKeys: ["f7", "escape"] })
 })
+
+// MP-08 / MP-10: the real renderer drains a whole chunk before the raw
+// application listener. Exercise both listeners in that production order.
+for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const [kind, input] of [
+  ["enter", "\r"], ["text", "xy"], ["paste", "\x1b[200~paste\x1b[201~"],
+] as const) {
+  test(`MP-08 / MP-10 renderer applies F7 before coalesced ${kind} (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"})`, async () => {
+    const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
+    const native = createNativeSelectionController({ renderer: harness.renderer, setHint: () => {} })
+    const rawKeys: string[] = []
+    let submits = 0, clears = 0
+    const raw = createCliStdinKeyController({
+      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+      handleNativeSelectionKey: native.handleKey,
+      handleNativeSelectionPaste: native.handlePaste,
+      clearTextSelection: () => { clears++ },
+      dialogOverlayOpen: () => false,
+      handleSessionBrowserKey: (event: { name: string }) => { rawKeys.push(event.name); return true },
+    } as unknown as CliStdinKeyControllerDeps)
+    const gate = (event: import("@opentui/core").KeyEvent) => {
+      if (native.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
+    }
+    harness.renderer.keyInput.prependListener("keypress", gate)
+    harness.renderer.keyInput.prependListener("keyrelease", gate)
+    harness.renderer.keyInput.prependListener("paste", event => {
+      if (native.handleRendererPaste()) { event.preventDefault(); event.stopPropagation() }
+    })
+    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
+    else harness.renderer.stdin.on("data", rawInput)
+    const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 1, initialValue: "draft", keyBindings: [{ name: "return", action: "submit" }], onSubmit: () => { submits++ } })
+    harness.renderer.root.add(prompt)
+    prompt.focus()
+    prompt.gotoBufferEnd()
+    const send = async (bytes: string) => {
+      harness.renderer.stdin.emit("data", buffer ? Buffer.from(bytes) : bytes)
+      await Promise.resolve()
+    }
+    try {
+      await send("\x1b[?997;1n\x1b[I\x1b[O")
+      rawKeys.length = 0; clears = 0
+      await send("\x1b[?997;1n\x1b[18~" + input)
+      assert.equal(submits, 0, "F7 + Enter must not submit a populated prompt")
+      assert.equal(prompt.plainText, "draft", "F7 + text/paste must not edit the prompt")
+      assert.equal(native.isActive(), true, "raw listener must not toggle F7 again")
+      assert.equal(harness.renderer.useMouse, false)
+      assert.deepEqual(rawKeys, [])
+      assert.equal(clears, 0, "raw listener must also suppress native-mode inputs")
+      await send("\x1b[18~xy")
+      assert.equal(native.isActive(), false)
+      assert.equal(prompt.plainText, "draftxy", "the first text after leaving native mode must reach the textarea")
+      assert.deepEqual(rawKeys, ["x", "y"])
+      // Both transitions within ONE chunk must preserve each event's ownership
+      // when the raw listener runs after the renderer has already left the mode.
+      await send("\x1b[18~" + input + "\x1b[18~z")
+      assert.equal(submits, 0)
+      assert.equal(prompt.plainText, "draftxyz")
+      assert.equal(native.isActive(), false)
+      assert.deepEqual(rawKeys, ["x", "y", "z"])
+      assert.equal(clears, 3)
+    } finally {
+      native.dispose()
+      harness.renderer.destroy()
+    }
+  })
+}
