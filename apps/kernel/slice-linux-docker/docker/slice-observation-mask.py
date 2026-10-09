@@ -104,8 +104,6 @@ def native_coverage():
 
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
             run=subprocess.run, scratch=None, native=None):
-    native_ids = {target['target']['focus_window'] for target in policy.get('targets', [])
-                  if target.get('kind') == 'native'}
     image = None
     try:
         image = capture_masked(policy, locate, capture, native or native_coverage)
@@ -125,13 +123,7 @@ def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixel
     finally:
         if image is not None:
             image.close()
-        remaining = {target['target']['focus_window'] for target in policy.get('targets', [])
-                     if target.get('kind') == 'native'}
-        pruned = sorted(native_ids - remaining)
-        if pruned:
-            # Private helper receipt contains only XIDs, never observation text.
-            print('CHARIOX_OBSERVATION_PRUNED_NATIVE:' + json.dumps(pruned, separators=(',', ':')),
-                  file=sys.stderr)
+
 
 
 if __name__ == '__main__':
