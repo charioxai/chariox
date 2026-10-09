@@ -123,6 +123,30 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(self.driver.input_target([{'pid':200,'started':'1'}])['path'],[0,0])
         self.assertTrue(tree['traversed'])
 
+    def test_mp11_review3_owned_focus_is_independent_of_stacking_order_and_unowned_apps(self):
+        # #904 review 3: an unattributed window earlier in stacking order, or an
+        # unowned AT-SPI app, made capture incomplete and hid the proved frame.
+        self.foreground()
+        root=self.connection.screen().root;writer=self.connection.create_resource_object('window',9)
+        dock=types.SimpleNamespace(id=10,get_attributes=lambda:types.SimpleNamespace(map_state=2),get_full_property=lambda atom,kind:None,
+            get_wm_name=lambda:'tint2',get_geometry=lambda:types.SimpleNamespace(x=0,y=770,width=1280,height=30,border_width=0),query_tree=lambda:types.SimpleNamespace(parent=root))
+        self.connection.create_resource_object=lambda kind,value:writer if value==9 else dock
+        class Focused(Node):
+            def getState(self):return types.SimpleNamespace(contains=lambda flag:True)
+        owned=Node('Office','application',[Node('Writer','frame',[Focused('Body','text')])])
+        for stacking,apps in [([10,9],[owned]),([9,10],[Node('Foreign','application',[Node('Other','frame')],pid=999),owned])]:
+            root.get_full_property=lambda atom,kind,stacking=stacking:types.SimpleNamespace(value=stacking if atom=='_NET_CLIENT_LIST_STACKING' else [9])
+            tree=self.snapshot(apps)
+            self.assertFalse(tree['complete'],stacking)
+            self.assertIn([0,770,1280,30],tree['uncovered'])
+            self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]},stacking)
+            self.desktop=Node('Desktop','desktop',apps)
+            self.assertEqual(self.driver.input_target([{'pid':200,'started':'1'}])['path'],[0,0])
+        # The actual unowned foreground (the dock) is still refused.
+        root.get_full_property=lambda atom,kind:types.SimpleNamespace(value=[9,10] if atom=='_NET_CLIENT_LIST_STACKING' else [10])
+        self.desktop=Node('Desktop','desktop',[owned])
+        with self.assertRaises(self.driver.NativeInputDenied):self.driver.input_target([{'pid':200,'started':'1'}])
+
     def test_mp11_ambiguous_foreground_does_not_select_a_frame(self):
         self.foreground()
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame'),Node('Writer','frame')])])

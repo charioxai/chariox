@@ -5,6 +5,7 @@ from pathlib import Path as _X11Path
 _x11_spec=_x11_import.spec_from_file_location('native_x11',_X11Path(__file__).with_name('native-x11.py'))
 _x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module(_x11_module)
 
+import hashlib
 import subprocess
 
 
@@ -35,6 +36,9 @@ def clipboard_source(connection, processes, tree, accessibility):
     # whose accessibility nodes are all public may supply an agent clipboard.
     identity=owner_identity(connection)
     if identity is None or identity[1] is None:return None
+    # MP-11 #904 review 1: retained public nodes of a truncated walk can hide
+    # a protected subtree of the owner; only a complete traversal proves it.
+    if not tree.get('available') or tree.get('traversed') is not True:return None
     pid=identity[1]
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]
@@ -69,26 +73,40 @@ def public_clipboard(processes, accessibility, mask=False, browser_processes=Non
         if connection is not None:connection.close()
 
 
+def selection_fingerprint():
+    """MP-11: fence clipboard replacement, also by the same owner window.
+
+    The ICCCM TIMESTAMP changes whenever an owner re-acquires the selection;
+    the text digest covers an owner that serves new bytes without doing so.
+    Bytes stay inside this helper; only a digest is compared.
+    """
+    stamp=subprocess.run(['xclip','-selection','clipboard','-t','TIMESTAMP','-o'],check=True,capture_output=True,timeout=2).stdout
+    text=subprocess.run(['xclip','-selection','clipboard','-o'],capture_output=True,timeout=2)
+    return hashlib.sha256(stamp+b'\0'+(text.stdout if text.returncode==0 else b'\1')).hexdigest()
+
+
 def input_admission(processes, accessibility, browser_processes=None):
     """MP-11: any agent key, text, click or action may reach a Paste control.
 
-    Admit an empty CLIPBOARD or one owned by a proved, public owned app. Other
-    windows' coverage does not change what a paste inserts, so it is not checked.
-    Returns a cheap per-press fence against a later owner change.
+    Admit an empty CLIPBOARD or one owned by a proved, completely traversed,
+    public owned app. Other windows' coverage does not change what a paste
+    inserts, so it is not checked. The returned fence runs before every press:
+    an empty selection stays empty (cheap); otherwise the source is proved
+    again and its selection must not have been replaced.
     """
-    def owner(prove=False):
+    def state():
         try:
             connection=_x11_module.open_display(display_module())
             try:
                 identity=owner_identity(connection)
-                if prove and identity is not None:
-                    source=clipboard_source(connection,processes,accessibility.snapshot(processes,browser_processes),accessibility)
-                    if source is None or source[:2]!=identity:raise accessibility.NativeInputDenied('native clipboard source protected or unknown')
-                return identity
+                if identity is None:return None
+                source=clipboard_source(connection,processes,accessibility.snapshot(processes,browser_processes),accessibility)
+                if source is None or source[:2]!=identity:raise accessibility.NativeInputDenied('native clipboard source protected or unknown')
+                return (identity,selection_fingerprint())
             finally:connection.close()
         except accessibility.NativeInputDenied:raise
         except Exception as error:raise accessibility.NativeInputDenied('native clipboard protection unavailable') from error
-    expected=owner(prove=True)
+    expected=state()
     def check():
-        if owner()!=expected:raise accessibility.NativeInputDenied('native clipboard changed before input')
+        if state()!=expected:raise accessibility.NativeInputDenied('native clipboard changed before input')
     return check

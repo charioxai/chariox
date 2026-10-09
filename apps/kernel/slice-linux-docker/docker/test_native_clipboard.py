@@ -10,7 +10,7 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ClipboardTests(unittest.TestCase):
     def setup(self):
         process={'pid':77,'started':'1'}
-        tree={'available':True,'complete':True,'protected':False,'nodes':[{'pid':77,'protected':False}]}
+        tree={'available':True,'complete':True,'traversed':True,'protected':False,'nodes':[{'pid':77,'protected':False}]}
         access=SimpleNamespace(snapshot=Mock(return_value=tree),alive=Mock(return_value=True),NativeInputDenied=ValueError)
         owner=SimpleNamespace(id=99,get_full_property=Mock(return_value=SimpleNamespace(format=32,value=[77])))
         connection=SimpleNamespace(get_selection_owner=Mock(return_value=owner),intern_atom=lambda name:name,close=Mock(),
@@ -57,19 +57,35 @@ class ClipboardTests(unittest.TestCase):
 
     def test_complete_public_owned_source_allows_the_same_read_and_paste_policy(self):
         p,t,a,o,c=self.setup()
-        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public')):
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)):
             self.assertEqual(m.public_clipboard([p],a),('public',(99,77,'1')))
             m.input_admission([p],a)()
 
-    def test_coverage_change_discards_bytes_before_delivery(self):
-        p,t,a,o,c=self.setup();a.snapshot.side_effect=[t,{**t,'protected':True}]
-        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'canary')):
-            with self.assertRaises(ValueError):m.public_clipboard([p],a)
+    def test_mp11_review1_truncated_owner_traversal_is_not_a_public_source(self):
+        # A public owner node is retained, its password subtree was omitted by the walk budget.
+        p,t,a,o,c=self.setup();a.snapshot.return_value={**t,'complete':False,'traversed':False}
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            with self.assertRaises(ValueError):m.input_admission([p],a)
+            self.assertIsNone(m.public_clipboard([p],a))
+        read.assert_not_called()
 
-    def test_selection_owner_change_discards_bytes_before_delivery(self):
-        p,t,a,o,c=self.setup();c.get_selection_owner.side_effect=[o,None]
-        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'canary')):
-            with self.assertRaises(ValueError):m.public_clipboard([p],a)
+    def test_mp11_review2_same_owner_becoming_protected_or_replacing_contents_refuses_next_press(self):
+        p,t,a,o,c=self.setup()
+        protected={**t,'nodes':[{'pid':77,'protected':False},{'pid':77,'protected':True}]}
+        # (snapshots, selection (TIMESTAMP, text) at admission then at the press); owner id/PID never change.
+        for snapshots,selections in [([t,protected],[(b'1',b'a'),(b'1',b'a')]),
+                                     ([t,t],[(b'1',b'a'),(b'2',b'a')]),
+                                     ([t,t],[(b'1',b'a'),(b'1',b'private')])]:
+            a.snapshot.side_effect=snapshots;current={}
+            run=lambda args,**kw:SimpleNamespace(stdout=current['value'][0] if 'TIMESTAMP' in args else current['value'][1],returncode=0)
+            with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',side_effect=run):
+                current['value']=selections[0];check=m.input_admission([p],a)
+                current['value']=selections[1]
+                with self.assertRaises(ValueError):check()
+        # Unchanged owner, protection and selection stay admitted press after press.
+        a.snapshot.side_effect=None;a.snapshot.return_value=t
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'same',returncode=0)):
+            check=m.input_admission([p],a);check();check()
 
     def test_mp11_empty_clipboard_admits_input_without_reading_or_traversing(self):
         p,t,a,o,c=self.setup();c.get_selection_owner.return_value=0
@@ -81,9 +97,8 @@ class ClipboardTests(unittest.TestCase):
     def test_mp11_public_owner_admits_input_while_other_windows_are_masked(self):
         p,t,a,o,c=self.setup()
         a.snapshot.return_value={**t,'complete':False,'protected':True,'uncovered':[[0,0,9,9]],'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True}]}
-        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)):
             m.input_admission([p],a)()
-        read.assert_not_called()
 
     def test_mp11_unproved_or_protected_owner_refuses_input(self):
         p,t,a,o,c=self.setup()
@@ -98,7 +113,7 @@ class ClipboardTests(unittest.TestCase):
         other=SimpleNamespace(id=55,get_full_property=Mock(return_value=None))
         for owners in [[0,o],[o,o,0],[o,o,other]]:
             c.get_selection_owner.side_effect=owners
-            with patch('Xlib.display.Display',return_value=c):
+            with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)):
                 check=m.input_admission([p],a)
                 with self.assertRaises(ValueError):check()
 

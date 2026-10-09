@@ -53,7 +53,7 @@ class ProtectionTests(unittest.TestCase):
 class AgentInputClipboardTests(unittest.TestCase):
     """MP-11 #904 review 1/3: every agent mutation is gated on CLIPBOARD owner provenance only."""
     def run_input(self,action,owner_pid=None,owners=None,tree=None):
-        tree=tree or {'available':True,'complete':False,'protected':False,'uncovered':[[0,0,4,4]],
+        tree=tree or {'available':True,'complete':False,'traversed':True,'protected':False,'uncovered':[[0,0,4,4]],
             'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True,'name':'[protected]'}]}
         accessibility=SimpleNamespace(snapshot=lambda *args:tree,alive=lambda process:True,input_guard=lambda processes:(lambda:None),NativeInputDenied=type('NativeInputDenied',(ValueError,),{}))
         owner=SimpleNamespace(id=99,get_full_property=lambda *args:None)
@@ -69,6 +69,7 @@ class AgentInputClipboardTests(unittest.TestCase):
             before_press();events.append(('text',text))
         loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11}
         with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),\
+             patch.object(clipboard.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)),\
              patch.object(module.xtest,'fake_input',side_effect=lambda c,kind,*args,**kw:events.append(kind)),\
              patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=type_text):
             try:module.input_action(action,[{'pid':77,'started':'1'}])
@@ -86,6 +87,12 @@ class AgentInputClipboardTests(unittest.TestCase):
                        {'kind':'key','key':'alt+e'},{'kind':'key','key':'shift+F10'},{'kind':'text','text':'p'}]:
             for pid in (90,123):
                 self.assertIsNone(self.run_input(action,owner_pid=pid),(action,pid))
+
+    def test_mp11_review1_truncated_owner_walk_refuses_pointer_paste_before_events(self):
+        tree={'available':True,'complete':False,'traversed':False,'protected':False,'uncovered':[],
+            'nodes':[{'pid':77,'protected':False}]}
+        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'ctrl+v'}]:
+            self.assertIsNone(self.run_input(action,owner_pid=77,tree=tree),action)
 
     def test_owner_taken_after_admission_refuses_the_press(self):
         owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
