@@ -1108,7 +1108,15 @@ fn launch_target_from_receipt(
                     "managed context import receipt project does not match",
                 ));
             }
-            development_launch_target(project_id, receipt)?
+            // MP-07 / MP-08: each owner copy publishes a fresh transfer
+            // directory, so it becomes its own target Project instead of
+            // conflicting with an earlier copy of the same source Project.
+            let target_project_id = if entry.plan.destination.is_some() {
+                format!("copy-{}", entry.plan.context_id)
+            } else {
+                project_id.clone()
+            };
+            development_launch_target(&target_project_id, receipt)?
         }
     };
     Ok(ManagedContextLaunchTarget {

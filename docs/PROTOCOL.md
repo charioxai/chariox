@@ -591,6 +591,8 @@ journal/collision checks. It does not replace runtime configuration or credentia
 MP-08 / MP-11 progress and completion use the existing start/status responses.
 Completed owner-managed launch resolution uses the durable context ID/digest receipt
 and owner/realm/key binding; its response has `destination` and omits `environmentId`.
+Each owner copy publishes a fresh workspace and registers it as target Project
+`copy-<contextId>`, so copying an updated Project again adds a Project beside the earlier copy.
 It never reports completion to the managed-environment endpoint. Clients must check
 `owner_managed_context_transfer_v1` on both kernels and local >=445 / relay peer >=88.
 Cloud presence publishes `owner_managed_context_transfer_protocol_version: 1` plus

@@ -2299,3 +2299,85 @@ fn schema_3_through_5_failed_publications_without_ownership_do_not_block_startup
         }
     }
 }
+
+#[test]
+fn repeated_owner_copies_of_one_project_register_distinct_target_projects() {
+    let root = test_root("owner-repeat-copy");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let destination = Some(
+        crate::managed_context::owner_managed::OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: "machine-target".to_string(),
+            kernel_id: "kernel-target".to_string(),
+        },
+    );
+    let mut caller = caller(&sha256_bytes(b"source-key"));
+    caller.target_destination = destination.clone();
+    caller.target_environment_id = None;
+    let harness = crate::local::test_support::LocalRouterTestHarness::new();
+    let runtime = harness.runtime_state();
+    let mut project_ids = Vec::new();
+    for context_id in ["context-1", "context-2"] {
+        let archive = format!("owner copy of project-1 via {context_id}");
+        let archive = archive.as_bytes();
+        let mut request = arm_request(archive, now + 10_000);
+        request.plan.context_id = context_id.to_string();
+        request.plan.destination = destination.clone();
+        request.target_environment_id = String::new();
+        request.destination_parent = root.join("destinations");
+        let armed = store.arm(request, now).expect("arm owner copy");
+        store
+            .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+            .expect("begin owner copy");
+        store
+            .upload_chunk(
+                &armed.transfer_id,
+                &armed.capability,
+                &caller,
+                ManagedContextTransferChunk {
+                    offset: 0,
+                    bytes: archive,
+                    sha256: &sha256_bytes(archive),
+                },
+                now + 2,
+            )
+            .expect("upload owner copy");
+        let ready = claimed(
+            store
+                .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+                .expect("claim owner copy"),
+        );
+        let mut receipt = serde_json::from_str::<
+            crate::managed_context::package::ManagedContextPackageImportReceipt,
+        >(&managed_package_receipt(
+            &armed.transfer_id,
+            archive,
+            &ready.destination_root,
+        ))
+        .expect("parse owner receipt");
+        receipt.destination = destination.clone();
+        let target = store
+            .launch_target_for_import_receipt(&armed.transfer_id, &receipt)
+            .expect("owner launch target");
+        // MP-07 / MP-08: finalization registers each fresh copy, published
+        // under its own transfer directory, before completing the import.
+        runtime
+            .ensure_managed_context_project(&target, "user-1")
+            .expect("a repeated owner copy registers its target Project");
+        store
+            .commit_import(
+                &armed.transfer_id,
+                &serde_json::to_string(&receipt).expect("serialize owner receipt"),
+                now + 4,
+            )
+            .expect("commit owner copy");
+        let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { project_id, .. } =
+            target.development
+        else {
+            panic!("expected an imported Project")
+        };
+        project_ids.push(project_id);
+    }
+    assert_ne!(project_ids[0], project_ids[1]);
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
