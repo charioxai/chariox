@@ -210,7 +210,7 @@ test("MP-08/MP-11: policy flushes old frames without masks for registration alon
   assert.equal(protectedFrame.mime_type, "image/png");
   assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
   const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(decodePng(capture.data_base64).pixels[0],255); // MP-11 registration alone leaves source pixels intact
+  assert.equal(capture.data_base64,Buffer.from("test-frame").toString("base64")); // MP-11 registration alone leaves source pixels intact
   const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
   assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
   chromium.child.exitCode = 1;
