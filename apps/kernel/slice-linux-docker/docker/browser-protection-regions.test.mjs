@@ -197,13 +197,25 @@ test('bidi overrides, direction changes and right-to-left or bidi-control text m
     assert.deepEqual(documentProtection(line(second, css), 0).regions, [], `${label}: ordinary without values`);
     assert.deepEqual(documentProtection(line(second, css), 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3,4), label);
   }
-  // A block that changes direction is its own container; a right-to-left root differs from the default.
-  const block = snapshot([['#document', -1], ['DIV', 0], ['SPAN', 1], ['#text', 2, [], 'value'], ['SPAN', 1], ['#text', 4, [], 'vault-'], ['P', 0], ['#text', 6, [], 'ordinary']],
-    { css: { 1: { direction: 'rtl' }, 2: { ...inline, direction: 'rtl' }, 4: { ...inline, direction: 'rtl' } } });
-  assert.deepEqual(documentProtection(block, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3,4,5));
-  const root = snapshot([['#document', -1], ['HTML', 0], ['BODY', 1], ['#text', 2, [], 'x']], { css: { 1: { direction: 'rtl' }, 2: { direction: 'rtl' } } });
-  assert.deepEqual(documentProtection(root, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3));
+  // A local block that changes direction is its own container.
+  const block = snapshot([['#document', -1], ['HTML', 0], ['BODY', 1], ['DIV', 2], ['SPAN', 3], ['#text', 4, [], 'value'], ['SPAN', 3], ['#text', 6, [], 'vault-'], ['P', 2], ['#text', 8, [], 'ordinary']],
+    { css: { 3: { direction: 'rtl' }, 4: { ...inline, direction: 'rtl' }, 6: { ...inline, direction: 'rtl' } } });
+  assert.deepEqual(documentProtection(block, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(3,4,5,6,7));
   assert.deepEqual(documentProtection(line('ordinary', {}), 0, vault).regions, []);
+});
+
+test('MP-08/MP-11 inherited RTL is the document baseline; fields, echoes and local bidi stay protected', () => {
+  const nodes = [['#document', -1], ['HTML', 0], ['BODY', 1], ['P', 2], ['#text', 3, [], 'vault-value'],
+    ['INPUT', 2, ['type', 'password']], ['P', 2], ['BDO', 6], ['#text', 7, [], 'eulav-tluav'],
+    ['BUTTON', 2], ['#text', 9, [], 'ordinary control']];
+  const css = Object.fromEntries(nodes.map((_, i) => [i, { direction: 'rtl' }]));
+  css[7] = { ...inline, direction: 'rtl', 'unicode-bidi': 'bidi-override' };
+  const doc = snapshot(nodes, { css });
+  assert.deepEqual(documentProtection(doc, 0).regions, at(5));
+  assert.deepEqual(documentProtection(doc, 0, { ...vault, values: ['unrelated-value'] }).regions.sort((a,b)=>a[0]-b[0]), at(5,6,7,8));
+  assert.deepEqual(documentProtection(doc, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(4,5,6,7,8));
+  const ordinary = snapshot([['#document', -1], ['HTML', 0], ['BODY', 1], ['BUTTON', 2], ['#text', 3, [], 'ordinary']], { css });
+  assert.deepEqual(documentProtection(ordinary, 0, vault).regions, []);
 });
 
 test('negative margins that can pull text across its siblings mask the block container', () => {

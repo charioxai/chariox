@@ -79,7 +79,10 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
         try {
           const { model } = await connection.send('DOM.getBoxModel', { backendNodeId: Number(nodeRef.slice(8)) }, entry.sessionId);
           const [x, y, width, height] = quadRegion(model.border);
-          regions.push([origin[0] + offset[0] + x, origin[1] + offset[1] + y, width, height]);
+          // MP-08/MP-11: CDP quads use CSS pixels even when snapshot boxes
+          // and the captured content bitmap use device pixels. Desktop remains 1x.
+          const scale = contentTarget ? contentScale : 1;
+          regions.push([(origin[0] + offset[0] + x) * scale, (origin[1] + offset[1] + y) * scale, width * scale, height * scale]);
         } catch (error) {
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate

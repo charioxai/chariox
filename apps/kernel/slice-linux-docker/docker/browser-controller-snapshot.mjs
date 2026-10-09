@@ -350,8 +350,9 @@ export function renderedTextEchoes(strings, document, protectedValues, overflow 
       (grid && /column|dense/.test(s["grid-auto-flow"])) || (box && s["-webkit-box-direction"] === "reverse") ||
       ((flex || grid || box) && kids.some((k) => k.order !== "0" || k["-webkit-box-ordinal-group"] !== "1" || (grid && GRID_PLACEMENT.some((p) => k[p] !== "auto")))) ||
       ranks.some((r, j) => j > 0 && r < ranks[j - 1])) suspects.add(i);
-    // Glyph order inside one text run is not observable: bidi reordering masks its block container.
-    if (/override|plaintext/.test(s["unicode-bidi"]) || s.direction !== (outer?.direction ?? "ltr")) mask(blockOf(i));
+    // MP-08/MP-11: the document root supplies the inherited reading direction,
+    // not a change from an imagined LTR parent. Local bidi still masks its block.
+    if (/override|plaintext/.test(s["unicode-bidi"]) || (outer && s.direction !== outer.direction)) mask(blockOf(i));
     const item = /^inline/.test(s.display) || Boolean(outer && (outer.flex || outer.grid || outer.box));
     const pull = s.out ? 0 : Math.max(0, -px(s["margin-top"])) + Math.max(0, -px(s["margin-bottom"])) +
       (item ? Math.max(0, -px(s["margin-left"])) + Math.max(0, -px(s["margin-right"])) : 0);
