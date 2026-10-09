@@ -10,6 +10,7 @@
 //   --output <evidence dir> --dpr 1|2 --profile xterm|terminal-app [--fixture-claude yes] [--expect-red yes]
 // Dry run on an existing kernel (never sends a code; cancels at the code prompt):
 //   --kernel-url <ws url> --chariox-home <its home> --account <claude profile label> --session-args '<TUI provider args>'
+// A standalone TUI uses --compiled yes --cli <chariox> --ipc-module <built ipc.js>.
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -18,6 +19,7 @@ import { createRequire } from 'node:module'
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, item, i, args) => i % 2 ? pairs : [...pairs, [item.replace(/^--/, ''), args[i + 1]]], []))
 const cli = path.resolve(options.cli ?? 'apps/cli/dist/index.js')
+const compiled = options.compiled === 'yes'
 const evidence = path.resolve(options.output)
 const profile = options.profile ?? 'xterm'
 const fixture = options['fixture-claude'] === 'yes'
@@ -106,7 +108,7 @@ try {
       stdout: 'ignore', stderr: 'ignore' })
   }
   process.env.CHARIOX_HOME = env.CHARIOX_HOME
-  const { LocalIpcClient } = await import(path.join(path.dirname(cli), 'ipc.js'))
+  const { LocalIpcClient } = await import(path.resolve(options['ipc-module'] ?? path.join(path.dirname(cli), 'ipc.js')))
   const rpc = new LocalIpcClient(kernelUrl, {})
   await waitFor(async () => {
     if (kernel && kernel.exitCode !== null) throw Error(`kernel exited ${kernel.exitCode}`)
@@ -147,7 +149,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
 
-  tui = Bun.spawn(['bun', cli, '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
+  tui = Bun.spawn([...(compiled ? [cli] : ['bun', cli]), '--kernel-url', kernelUrl, '--create-session', '--alias', sessionAlias, '--workspace', workspace, '--worktree', workspace,
     // The session's own agent needs no Claude login; the login targets the new profile.
     ...(options['session-args'] ?? '--provider opencode').split(' ')], {
     cwd: workspace,
@@ -291,7 +293,8 @@ try {
   await rpc.close()
   await writeFile(path.join(evidence, 'pty-output.log'), output.replaceAll(loginUrl, '<authorization URL>'))
   result = { items: ['MP-08', 'MP-11'], profile, dpr: Number(options.dpr ?? 1), fixtureClaude: fixture, cli,
-    cliDistSha256: await hashTree(path.dirname(cli)), kernel: attach ? kernelUrl : { sha256: sha256(await readFile(path.resolve(options['kernel-binary']))) }, steps }
+    ...(compiled ? { cliSha256: sha256(await readFile(cli)) } : { cliDistSha256: await hashTree(path.dirname(cli)) }),
+    kernel: attach ? kernelUrl : { sha256: sha256(await readFile(path.resolve(options['kernel-binary']))) }, steps }
 } finally {
   const stop = async child => {
     if (!child || child.exitCode !== null) return
