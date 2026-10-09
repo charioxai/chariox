@@ -181,7 +181,8 @@ export class BrowserMirror2Renderer {
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
       style.setProperty('overflow', 'hidden', 'important'); style.setProperty('background-color', 'black', 'important'); style.setProperty('color', 'transparent', 'important')
-      if (record.kind === 'mask') { if (!record.display || record.display === 'inline') style.setProperty('display', 'inline-block', 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
+      // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
+      if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
       if (record.kind === 'tile') { style.setProperty('display', record.display === 'none' ? 'none' : 'inline-block'); if (element.localName === 'iframe') element.setAttribute('sandbox', '') }
     }
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }

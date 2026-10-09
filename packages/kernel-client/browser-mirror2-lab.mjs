@@ -75,7 +75,7 @@ if (process.argv[2] !== 'child') {
   };
   const wire = Number(wireArg), evidence = path.join(root, 'evidence'), settle = Number(process.env.MIRROR_LAB_SETTLE_MS || 4000);
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
-  const results = []; const wireLog = []; const inputLog = []; let currentCell = '';
+  const results = []; const wireLog = []; const inputLog = []; const wireJson = []; let currentCell = '';
   const kernel = async request => {
     const command = request.KernelBrowser.command;
     let result;
@@ -87,6 +87,7 @@ if (process.argv[2] !== 'child') {
     } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, error: String(error?.message ?? error).slice(0, 200) }); throw error; }
     if (command.op === 'mirror_next') await validate(result).catch(() => {});
     const json = JSON.stringify({ KernelBrowser: { result } });
+    if (command.op === 'mirror_next') wireJson.push(json);
     if (command.op === 'mirror_next' && process.env.MIRROR_LAB_DUMP === '1' && !wireLog.some(entry => entry.raw)) await writeFile(path.join(evidence, `${currentCell}-first-packet.json.gz`), gzipSync(json));
     if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json, { level: 9 }).length, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
     return json;
@@ -108,6 +109,25 @@ if (process.argv[2] !== 'child') {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const viewerUrl = `http://127.0.0.1:${server.address().port}/`;
+  // MP-11 protection fixture (served locally; the frame origin differs -> out-of-process frame).
+  const SECRET = 'SECRET-VALUE-123';
+  const frameServer = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><body><p>frame ${SECRET}</p><input value="${SECRET}"><p>frame ordinary</p></body>`); });
+  await new Promise(resolve => frameServer.listen(0, '127.0.0.1', resolve));
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const fixtureServer = createServer((req, res) => {
+    if (req.url.startsWith('/img.png')) { res.setHeader('content-type', 'image/png'); res.end(png); return; }
+    res.setHeader('content-type', 'text/html');
+    res.end(`<!doctype html><html><head><style>.css-secret::after{content:"${SECRET}"} .bg{width:20px;height:20px;background:url("/img.png?${SECRET}")}</style></head><body>
+<p id="plain">before ${SECRET} after</p><p id="split">SECRET-<b>VALUE</b>-123</p><p class="css-secret">css</p>
+<div title="x ${SECRET} y" id="attr">attr</div><input id="form" value="${SECRET}"><input type="password" value="hunter2pass">
+<section data-chariox-secret>marked hidden text</section><img alt="${SECRET}" src="/img.png" width="10" height="10"><div class="bg"></div>
+<p id="b64">${Buffer.from(SECRET).toString('base64')}</p><p id="ordinary">ordinary visible text</p><p id="tainted-later">clean until tainted</p><x-host></x-host>
+<iframe src="http://localhost:${frameServer.address().port}/frame" style="width:400px;height:120px"></iframe><p id="late"></p>
+<script>document.querySelector('x-host').attachShadow({mode:'open'}).innerHTML='<span>shadow ${SECRET}</span>';setTimeout(()=>{document.querySelector('#late').textContent='late ${SECRET}';document.querySelector('#tainted-later').setAttribute('data-x','${SECRET}')},1500)</script></body></html>`);
+  });
+  await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
+  if (siteList.split(',').includes('protection-fixture')) labSites.push({ id: 'protection-fixture', url: `http://127.0.0.1:${fixtureServer.address().port}/` });
+  const { observationProtectedVariants } = await import(path.join(root, 'controller/browser-controller-snapshot.mjs'));
   const browser = await chromium.launch({ executablePath: CHROME, headless: true, ignoreDefaultArgs: ['--hide-scrollbars'], args: ['--disable-frame-rate-limit'] });
   const sites = labSites.filter(s => siteList.split(',').includes(s.id));
   const main = async (tab, expression) => { const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id); const reply = await connection.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId); if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description ?? 'evaluate failed'); return reply.result.value; };
@@ -139,6 +159,7 @@ if (process.argv[2] !== 'child') {
         if (!ok) (out.click_diag ??= []).push({ i, kernel: await main(tab, `(()=>{const e=document.querySelector(${JSON.stringify(target)});const r=e?.getBoundingClientRect();return {checked:e?.checked,disabled:e?.disabled,rect:r&&[r.x,r.y,r.width,r.height],scrollY,cls:document.documentElement.className.match(/skin-theme-clientpref-\\w+/)?.[0],hit:r&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.outerHTML.slice(0,120)}})()`).catch(e => String(e)), viewer: await page.evaluate(t => { const d = document.querySelector('iframe').contentDocument, e = d.querySelector(t), r = e?.getBoundingClientRect(); return { rect: r && [r.x, r.y, r.width, r.height], scrollY: d.defaultView.scrollY }; }, target) });
       }
       out.click_ms = samples;
+      out.apply_delta_ms = await page.evaluate(() => window.mirror.renderer.timings.filter(t => t.stage === 'apply_delta').map(t => Math.round(t.duration_ms * 10) / 10).slice(-40));
     }
     if (site.id === 'wikipedia-portal') {
       const field = await frame.$('#searchInput');
@@ -154,9 +175,10 @@ if (process.argv[2] !== 'child') {
   };
   try {
     for (const dpr of dprList.split(',').map(Number)) for (const site of sites) {
-      const row = { site: site.id, url: site.url, dpr, wire }; results.push(row); wireLog.length = 0; currentCell = `${site.id}-dpr${dpr}`;
+      const row = { site: site.id, url: site.url, dpr, wire }; results.push(row); wireLog.length = 0; wireJson.length = 0; currentCell = `${site.id}-dpr${dpr}`;
       let page, tabId, generation;
       try {
+        if (site.id === 'protection-fixture') await host.protect({ values: [SECRET], targets: [] });
         const opened = await host.request({ op: 'open', url: site.url, observed_by: 'lab' }); generation = opened.generation; tabId = opened.tab_id;
         const state0 = await host.request({ op: 'state', observed_by: 'lab' }); let tab = host.tabs.get(tabId);
         // Fixed device metrics before the page settles (as the product subscribe does).
@@ -216,6 +238,14 @@ if (process.argv[2] !== 'child') {
           row.delta_latency_ms = samples.sort((x, y) => x - y); row.delta_p50 = samples[4]; row.delta_p95 = samples[9];
         }
         if (wire === 2 && process.env.MIRROR_LAB_INPUT === '1') row.input = await inputChecks(page, tab, site);
+        if (site.id === 'protection-fixture') {
+          const variants = observationProtectedVariants([SECRET]), wire = wireJson.join('\n');
+          row.protection = { packets: wireJson.length, leaked_variants: variants.filter(v => wire.includes(v)).length, password_leak: wire.includes('hunter2pass'), marked_leak: wire.includes('marked hidden text'),
+            masks: await page.evaluate(() => document.querySelector('iframe').contentDocument.querySelectorAll('[aria-label="Protected content"]').length),
+            ordinary_present: await page.evaluate(() => document.querySelector('iframe').contentDocument.body.textContent.includes('ordinary visible text')),
+            frame_ordinary_present: await page.evaluate(() => [...document.querySelector('iframe').contentDocument.querySelectorAll('iframe')].some(f => f.contentDocument?.body?.textContent.includes('frame ordinary'))) };
+          await host.protect({ values: [], targets: [] });
+        }
         row.timings = host.timing?.summary?.() ?? null;
         const table = [...host.mirror.streams.values()].filter(s => s.wire === 2).flatMap(s => [...s.resources.values()].map(({ key, url, kind, state, tries, resource }) => ({ key, url: url.slice(0, 160), kind, state, tries, mime: resource?.mime_type ?? null, bytes: resource?.data_base64?.length ?? 0 })));
         row.resource_states = table.reduce((m, e) => (m[`${e.kind}:${e.state}`] = (m[`${e.kind}:${e.state}`] ?? 0) + 1, m), {});
@@ -229,8 +259,8 @@ if (process.argv[2] !== 'child') {
         await page?.context().close().catch(() => {});
         if (tabId) await host.request({ op: 'close', tab_id: tabId, generation: host.generation, observed_by: 'lab' }).catch(() => {});
         await writeFile(path.join(evidence, 'RESULTS.json'), JSON.stringify(results, null, 2));
-        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
+        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
       }
     }
-  } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); }
+  } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); fixtureServer.close(); frameServer.close(); }
 }
