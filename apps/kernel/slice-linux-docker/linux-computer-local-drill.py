@@ -18,7 +18,7 @@ parser.add_argument('--desktop-capture',action='store_true',help='MP-08/MP-11: s
 parser.add_argument('--native-prefix',help='MP-08: optional lane-owned public native dependencies')
 args=parser.parse_args()
 source=Path(__file__).resolve().parent
-files=['native-x11.py','kernel-browser-refusal.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','linux-desktop-session.py','native-computer.mjs','native-computer.py','native-clipboard.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
+files=['native-x11.py','browser-desktop-protection.py','browser-protection-regions.mjs','kernel-browser-refusal.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','linux-desktop-session.py','native-computer.mjs','native-computer.py','native-clipboard.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
 files += [name for name in ['native-accessibility.mjs','native-accessibility.py','room-native-protection.py'] if (source/'docker'/name).exists()]
 if args.desktop_capture:
     files=sorted(path.name for path in (source/'docker').iterdir() if path.suffix in ('.mjs','.py'))

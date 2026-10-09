@@ -21,6 +21,7 @@ class Node:
         rect=getattr(self,'rect',types.SimpleNamespace(x=100,y=80,width=300,height=200))
         return types.SimpleNamespace(getExtents=lambda coords:rect)
     def queryAction(self): raise NotImplementedError
+    def queryCollection(self): raise NotImplementedError
 
 
 class Cell(Node):
@@ -127,6 +128,25 @@ class TraversalTest(unittest.TestCase):
         self.foreground()
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame'),Node('Writer','frame')])])
         self.assertIsNone(tree['active_window'])
+
+    def test_mp08_mp11_kernel_browser_window_reveals_all_but_proven_protected_regions(self):
+        self.foreground(pid=200, name='Chromium')
+        class Document(Node):
+            def queryComponent(self):
+                return types.SimpleNamespace(getExtents=lambda coords: types.SimpleNamespace(x=100, y=120, width=300, height=160))
+            def queryDocument(self):
+                return types.SimpleNamespace(getAttributeValue=lambda key: 'https://example.test/' if key == 'URI' else '')
+        self.desktop = Node('Desktop', 'desktop', [Node('Chromium', 'application', [Node('Chromium', 'frame', [Document('Page', 'document web')])])])
+        page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'viewport': [300, 160], 'dpr': 1, 'zoom': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
+        snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
+        self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
+        self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
+        # Unmeasured, moved/resized or navigated windows stay withheld whole.
+        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'url': 'https://other.test/'}]}]:
+            self.assertEqual(snapshot(protection)['masks'], [[100, 80, 300, 200]])
+            self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
+        # Browser accessibility content remains withheld from the structured tree.
+        self.assertTrue(all(node['name'] == '[protected]' for node in snapshot({'pages': [page]})['nodes']))
 
     def test_mp08_other_window_before_deep_hidden_menu_budget(self):
         self.driver.MAX_NODES = 512

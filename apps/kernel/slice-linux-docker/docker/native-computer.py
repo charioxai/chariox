@@ -117,10 +117,11 @@ def main(request):
         value=load('native-clipboard').public_clipboard(request.get('processes',[]),accessibility,request['mask'],request.get('browser_processes'))
         return {'text':'[protected]' if value is None else value[0]}
     accessibility=load('native-accessibility')
-    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
+    browser_protection=request.get('browser_protection')
+    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
-    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'))
+    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
     if before!=after:
         image.close()
         raise ValueError('native protection changed during capture')
@@ -128,7 +129,7 @@ def main(request):
     try:
         if op == 'screenshot':
             encoded=io.BytesIO();image.save(encoded,format='PNG')
-            return {'mime_type':'image/png','data_base64':base64.b64encode(encoded.getvalue()).decode('ascii'),'width':image.width,'height':image.height,'protected':request['mask']}
+            return {'mime_type':'image/png','data_base64':base64.b64encode(encoded.getvalue()).decode('ascii'),'width':image.width,'height':image.height,'protected':request['mask'],'browser_withheld':before.get('browser_withheld',0)}
         if op == 'ocr':
             if request['mask']: return {'text':'[protected]','targets':[]}
             with tempfile.TemporaryDirectory(prefix='chariox-native-ocr-') as root:
@@ -137,7 +138,8 @@ def main(request):
                 from contextlib import redirect_stdout
                 with redirect_stdout(output): finder.recognize_image(name,request.get('query'))
                 value=output.getvalue().strip()
-                return {'targets':[json.loads(line) for line in value.splitlines() if line!='null']} if request.get('query') else {'text':value[:65536]}
+                result={'targets':[json.loads(line) for line in value.splitlines() if line!='null']} if request.get('query') else {'text':value[:65536]}
+                return {**result,'browser_withheld':before.get('browser_withheld',0)}
         raise ValueError('unsupported observation')
     finally: image.close()
 

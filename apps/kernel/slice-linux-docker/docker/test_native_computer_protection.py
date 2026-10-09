@@ -8,6 +8,8 @@ spec=importlib.util.spec_from_file_location('native_computer',Path(__file__).wit
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 clipboard=module.load('native-clipboard')
 x11=module.load('native-x11')
+# Real X11 opener (patched Display); every other helper is the given fake.
+helpers=lambda accessibility:(lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard)
 class ProtectionTests(unittest.TestCase):
     def test_mp11_opaque_browser_keeps_unknown_clipboard_contents_withheld(self):
         tree={'available':True,'complete':True,'protected':False,
@@ -33,7 +35,7 @@ class ProtectionTests(unittest.TestCase):
         accessibility=SimpleNamespace(snapshot=lambda *args:tree)
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
-        with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+        with patch.object(module,'load',side_effect=helpers(accessibility)),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
             result=module.main({'op':'screenshot','mask':False,'processes':[]})
             self.assertFalse(result['protected'])
             image=module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64'])))
@@ -45,10 +47,22 @@ class ProtectionTests(unittest.TestCase):
         tree={'available':True,'complete':True,'protected':False,'nodes':[],'uncovered':[[2,1,3,2]]}
         raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
         screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
-        with patch.object(module,'load',side_effect=lambda name:SimpleNamespace(snapshot=lambda *args:tree) if name=='native-accessibility' else x11 if name=='native-x11' else clipboard),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
             result=module.main({'op':'screenshot','mask':False,'processes':[]})
             image=module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64'])))
             self.assertEqual(image.getpixel((4,2)),(0,0,0))
+    def test_mp08_mp11_browser_protection_fences_both_snapshots_and_reports_withheld_windows(self):
+        calls=[]
+        def snapshot(*args):
+            calls.append(args)
+            return {'available':True,'complete':True,'protected':False,'nodes':[],'masks':[[0,0,2,2]],'browser_withheld':1}
+        raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
+        screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
+        protection={'pages':[]}
+        with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=snapshot))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+            result=module.main({'op':'screenshot','mask':False,'processes':[],'browser_protection':protection})
+        self.assertEqual([call[2] for call in calls],[protection,protection])
+        self.assertEqual(result['browser_withheld'],1)
 
 class AgentInputClipboardTests(unittest.TestCase):
     """MP-11 #904 review 1/3: every agent mutation is gated on CLIPBOARD owner provenance only."""

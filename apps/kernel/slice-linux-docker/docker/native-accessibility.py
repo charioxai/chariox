@@ -4,6 +4,9 @@ import importlib.util as _x11_import
 from pathlib import Path as _X11Path
 _x11_spec=_x11_import.spec_from_file_location('native_x11',_X11Path(__file__).with_name('native-x11.py'))
 _x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module(_x11_module)
+# MP-08/MP-11: proven CDP document-to-desktop placement for the kernel browser.
+_protection_spec=_x11_import.spec_from_file_location('browser_desktop_protection',_X11Path(__file__).with_name('browser-desktop-protection.py'))
+_protection=_x11_import.module_from_spec(_protection_spec);_protection_spec.loader.exec_module(_protection)
 
 import hashlib
 import json
@@ -110,9 +113,12 @@ def subtract(rect, cover):
     return parts
 
 
-def snapshot(processes, browser_processes=None):
+def snapshot(processes, browser_processes=None, browser_protection=None):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
+    # Only the kernel's own Chromium tree was measured through CDP.
+    measured=set(browsers) if browser_protection is not None else set()
+    documents={};withheld=0
     # MP-08 / MP-11: slice placement does not own Chromium's launch object.
     # Kernel host placement supplies the full tracked browser process tree.
     # OS executable metadata and document-web roles conservatively protect
@@ -180,6 +186,9 @@ def snapshot(processes, browser_processes=None):
                 nodes.append({'pid':pid,'started':allowed[pid],'path':[],
                               'role':'application','name':'[protected]','states':[],
                               'bounds':None,'actions':[],'protected':True})
+                if pid in measured:
+                    try:documents[pid]=_protection.document_rects(app,pyatspi)
+                    except Exception:pass  # Unproven document geometry: whole window.
                 continue
             pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=traversed=False
@@ -221,15 +230,21 @@ def snapshot(processes, browser_processes=None):
                 # a showing frame's title AND actual X11 screen geometry.
                 frames=[node for node in nodes if node['pid']==pid and node['role'] in ('frame','window','dialog') and
                         node['name']==name and 'showing' in node['states'] and node['bounds'] in (rect,client_rect)]
-                windows.append((int(window_id),pid,rect,frames))
-            for window_id,pid,rect,frames in windows:
+                windows.append((int(window_id),pid,rect,frames,client_rect))
+            for window_id,pid,rect,frames,client in windows:
                 frame=frames[0] if complete and len(frames)==1 else None
                 # A single accessible frame cannot authorize two X windows.
-                covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates in windows)==1
+                covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates,_ in windows)==1
                 if pid not in allowed:complete=False
                 if not covered or pid in browsers:
                     visible=visible_rect(rect,screen)
-                    if visible:uncovered.append(visible);masks.append(visible)
+                    # MP-08/MP-11: a proven kernel-browser window masks only its
+                    # protected regions; any unbound window stays withheld whole.
+                    precise=_protection.window_masks(browser_protection,client,rect,documents[pid]) if pid in documents else None
+                    withheld+=pid in measured and precise is None
+                    if visible:
+                        uncovered.append(visible)
+                        masks.extend([visible] if precise is None else [part for part in (visible_rect(mask,screen) for mask in precise) if part])
                 elif stacked and masks:
                     masks=[part for region in masks for part in subtract(region,rect)]
                 if covered and window_id==active_id:
@@ -244,15 +259,15 @@ def snapshot(processes, browser_processes=None):
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible);masks.append(visible)
         finally:connection.close()
-        # MP-11: without a proved CDP document-to-desktop transform, withhold
-        # the browser window and its entire structured app, including titles,
-        # OTP/payment/private ancestors, nested frames and shadow content.
+        # MP-11: browser pixels are placed by the CDP transform above; the
+        # structured browser app stays withheld (titles, OTP/payment/private
+        # ancestors, nested frames and shadow content are never AT-SPI data).
         # The before/after capture fence includes these masks and identities.
         for node in nodes:
             if node['pid'] in browsers:
                 node['native_protected']=node['protected']
                 node.update(name='[protected]',actions=[],protected=True)
-        return {'available':True,'complete':complete,'traversed':traversed,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
+        return {'available':True,'complete':complete,'traversed':traversed,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks,'browser_withheld':withheld}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}

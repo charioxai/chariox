@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
+import { fenceBrowserCapture } from './browser-protection-regions.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 export function nativeInput(input, binding) {
   if (!input || typeof input !== 'object') throw new Error('MP-08: invalid native input');
@@ -132,11 +133,24 @@ export class NativeComputer {
       } catch(error) {await this.reset();throw error;}
     }
     if(!['screenshot','ocr','clipboard_read'].includes(command.op)) throw new Error('MP-08: unsupported native observation');
-    // Browser target transforms/non-browser secret coverage are not yet proven:
-    // any registry protection masks the entire desktop, including OCR/clipboard.
+    // Non-browser Vault echo coverage is not yet proven: any registry
+    // protection masks the entire desktop, including OCR/clipboard.
     const mask=Boolean(policy?.values?.length || policy?.targets?.length);
     const browser_processes=await binding.browserProcesses?.();
-    const result=await this.execute({op:command.op,mask,query:command.query,processes:await binding.ownedProcesses?.()??[],...(browser_processes?{browser_processes}:{})},binding.environment,signal);
+    const processes=await binding.ownedProcesses?.()??[];
+    const observe=browser_protection=>this.execute({op:command.op,mask,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
+    // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
+    // only for an unchanged, presented CDP measurement; otherwise whole windows.
+    const browser=command.op==='clipboard_read'?null:binding.browser?.();
+    // AT-SPI may expose a just-navigated document a moment after CDP does:
+    // retry a capture whose kernel-browser window stayed unbound (withheld).
+    let result;
+    for(let attempt=0;attempt<3;attempt++){
+      result=browser&&!mask?await fenceBrowserCapture(browser,policy,observe):await observe(null);
+      if(!browser||mask||!result.browser_withheld||signal?.aborted)break;
+      await delay(250);
+    }
+    delete result.browser_withheld;
     if(signal?.aborted || this.binding()!==binding) throw new Error('MP-11: stale native observation');
     return {...result,surface_id:binding.surface_id,generation:binding.generation};
   }

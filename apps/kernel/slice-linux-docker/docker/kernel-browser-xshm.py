@@ -107,17 +107,21 @@ try:
             data=os.read(sys.stdin.fileno(),4096)
             if not data:break
             control+=data
-            if len(control)>8192:raise ValueError('pool control bound')
+            if len(control)>(1<<20 if desktop else 8192):raise ValueError('pool control bound')
             while b'\n' in control:
                 line,control=control.split(b'\n',1)
                 release=json.loads(line)
                 if release == {'wake':True}:
                     urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
-                if desktop and set(release)=={'refresh','processes','browser_processes'} and release['refresh'] is True:
+                if desktop and set(release)=={'refresh','processes','browser_processes','browser_protection','protection_serial'} and release['refresh'] is True:
                     for field in ('processes','browser_processes'):
                         if not isinstance(release[field],list) or len(release[field])>256:raise ValueError('desktop process scope')
                         config[field]=release[field]
+                    # MP-08/MP-11: CDP regions the kernel measured stable and
+                    # presented; null withholds every kernel-browser window.
+                    if release['browser_protection'] is not None and not isinstance(release['browser_protection'],dict) or type(release['protection_serial']) is not int:raise ValueError('desktop protection')
+                    config['browser_protection']=release['browser_protection'];config['protection_serial']=release['protection_serial']
                     release={'refresh':True}
                 if release == {'refresh':True}:
                     # MP-11: trusted protection changes can be paint-free.
@@ -144,7 +148,8 @@ try:
         input_wake_ms=wake_ms if time.monotonic()<urgent_until else None
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
         if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
-        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]))
+        protection_serial=config.get('protection_serial',0)
+        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
@@ -153,7 +158,7 @@ try:
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
         protected_regions=[]
         if desktop:
-            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]))
+            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
             if config.get('mask') or before!=after or not before.get('available') or not before.get('complete') or before.get('protected'):
                 protected_regions=[[0,0,width,height]]
             else:protected_regions=before.get('masks',before.get('uncovered',[]))
@@ -177,7 +182,7 @@ try:
         if pool:
             slot=min(free_slots);free_slots.remove(slot);leased[slot]=serial
             pool[slot][:]=raw;payload=b"\0";patch=None
-        header=json.dumps(dict(protected_regions=protected_regions,input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
+        header=json.dumps(dict(protected_regions=protected_regions,protection_serial=protection_serial,input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
         sys.stdout.buffer.write(struct.pack('!I',len(header))+header+payload);sys.stdout.buffer.flush()
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)
