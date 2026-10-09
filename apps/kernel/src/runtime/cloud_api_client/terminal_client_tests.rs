@@ -306,3 +306,63 @@ async fn kernel_terminal_pivot_is_exact_target_key_bound_and_uses_no_human_or_ma
     .await
     .is_err());
 }
+
+// MP-08 / MP-10 / MP-11: default SDK renewal submits the previous subject.
+#[tokio::test]
+async fn enrolled_kernel_client_renewal_retains_returned_subject() {
+    let (url, fixture) = server(&["/relay/token", "/relay/token"]);
+    let mut profile = profile(url);
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    let options = || CloudTerminalClientOptions {
+        public_key_thumbprint: Some("a".repeat(64)),
+        ..Default::default()
+    };
+    let (subject, _) =
+        issue_cloud_terminal_client_token(&profile, "terminal-profile", "kernel-other", options())
+            .await
+            .unwrap();
+    let (renewed, _) =
+        issue_cloud_terminal_client_token(&profile, &subject, "kernel-other", options())
+            .await
+            .unwrap();
+    let requests = fixture.join().unwrap();
+    assert_eq!(
+        renewed, subject,
+        "default SDK renewal must preserve the admitted subject"
+    );
+    assert_eq!(requests[0].body["subject"], requests[1].body["subject"]);
+    assert_eq!(requests[0].body["clientId"], requests[1].body["clientId"]);
+}
+
+#[tokio::test]
+async fn enrolled_kernel_rejects_foreign_and_malformed_subjects_without_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut profile = profile(format!("http://{}", listener.local_addr().unwrap()));
+    profile.kernel_id = Some("kernel-home".into());
+    profile.kernel_credential = Some("synthetic-kernel-grant".into());
+    let own = kernel_client_subject("kernel-home", "terminal").unwrap();
+    for subject in [
+        kernel_client_subject("kernel-other", "terminal").unwrap(),
+        "kernel-client:malformed".into(),
+        format!("{}{}", &own[..own.len() - 64], "A".repeat(64)),
+    ] {
+        assert!(issue_cloud_terminal_client_token(
+            &profile,
+            &subject,
+            "kernel-target",
+            CloudTerminalClientOptions {
+                public_key_thumbprint: Some("a".repeat(64)),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err());
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(profile.client_id, None);
+}

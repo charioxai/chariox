@@ -41,11 +41,7 @@ pub(crate) async fn issue_cloud_terminal_client_token(
                 "terminal and exact target identities are required",
             ));
         }
-        let client_id = format!(
-            "kernel-client:{:x}:{:x}",
-            Sha256::digest(kernel_id.as_bytes()),
-            Sha256::digest(requested_client_id.as_bytes())
-        );
+        let client_id = kernel_client_subject(kernel_id, requested_client_id)?;
         let issued = issue_cloud_runtime_token(
             profile,
             &client_id,
@@ -126,6 +122,30 @@ pub(crate) async fn issue_cloud_terminal_client_token(
         issue_cloud_runtime_token(profile, &client_id, "client", token_options).await?
     };
     Ok((client_id, issued))
+}
+
+fn kernel_client_subject(kernel_id: &str, original_client_id: &str) -> Result<String, DaemonError> {
+    let prefix = format!("kernel-client:{:x}:", Sha256::digest(kernel_id.as_bytes()));
+    if original_client_id.starts_with("kernel-client:") {
+        let valid = original_client_id
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| {
+                suffix.len() == 64
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            });
+        if valid {
+            return Ok(original_client_id.to_string());
+        }
+        return Err(client_scope_error(
+            "Terminal client identity is not owned by this kernel",
+        ));
+    }
+    Ok(format!(
+        "{prefix}{:x}",
+        Sha256::digest(original_client_id.as_bytes())
+    ))
 }
 
 pub(crate) fn machine_client_subject(
