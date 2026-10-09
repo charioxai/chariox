@@ -372,10 +372,15 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
-    assert!(f.router.dispatch_authenticated_runtime_tool_call(
-        "sudo-fixture-bearer", "chariox_kernel_request",
-        serde_json::json!({"request":{"ListSessions":null}})
-    ).await.is_err());
+    assert!(f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"ListSessions":null}})
+        )
+        .await
+        .is_err());
 }
 
 #[tokio::test]

@@ -250,7 +250,7 @@ async fn sudo_window_never_changes_the_catalog_change_signature() {
         ]
     );
     for (name, _, _, signature) in &seen {
-        assert_eq!(signature, &seen[0].2, "{name}: catalog signature changed");
+        assert_eq!(signature, &seen[0].3, "{name}: catalog signature changed");
     }
 }
 
