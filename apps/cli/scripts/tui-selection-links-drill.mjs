@@ -286,7 +286,7 @@ try {
   // MP-08 / MP-10: keyboard edits in the real focused prompt, after a real turn.
   const promptKeyboardSelectionCases = async () => {
     const cells = []
-    for (const batched of [false, true]) for (const [kind, keys, selected, replacement] of [
+    for (const batched of [false, true]) for (const edit of ["later", "typing", "paste", "extend"]) for (const [kind, keys, selected, originalReplacement] of [
       ['left', ['\x1b[1;2D', '\x1b[1;2D'], 'ft', 'draZ'],
       ['home', ['\x1b[1;2H'], 'draft', 'Z'],
     ]) {
@@ -297,16 +297,19 @@ try {
       await sleep(250)
       assert.ok(await promptShows('draft'), 'keyboard selection precondition: focused draft')
       const count = (await copiedTexts()).length
-      await capture(`prompt-${kind}-${batched}-before`)
-      if (batched) await press(keys.join('') + copySequence)
-      else { for (const key of keys) await press(key); await press(copySequence) }
-      await capture(`prompt-${kind}-${batched}-selected`)
+      await capture(`prompt-${kind}-${batched}-${edit}-before`)
+      const suffix = edit === 'typing' ? 'Z' : edit === 'paste' ? '\x1b[200~Z\x1b[201~'
+        : edit === 'extend' ? (kind === 'left' ? '\x1b[1;2D' : '\x1b[1;2C') : ''
+      const replacement = edit === 'extend' ? (kind === 'left' ? 'drZ' : 'dZ') : originalReplacement
+      if (batched) await press(keys.join('') + copySequence + suffix)
+      else { for (const key of keys) await press(key); await press(copySequence + suffix) }
+      await capture(`prompt-${kind}-${batched}-${edit}-selected`)
       const copied = (await copiedTexts()).slice(count).includes(selected)
-      await typeText('Z')
+      if (edit === 'later' || edit === 'extend') await typeText('Z')
       await sleep(250)
       const replaced = await promptShows(replacement) && !await promptShows('draft') && !await promptShows(replacement + 'ft')
-      await capture(`prompt-${kind}-${batched}-replaced`)
-      cells.push({ kind, batched, selected, replacement, copied, replaced })
+      await capture(`prompt-${kind}-${batched}-${edit}-replaced`)
+      cells.push({ kind, batched, edit, selected, replacement, copied, replaced })
       await writeFile(path.join(evidence, 'prompt-selections.json'), JSON.stringify(cells, null, 2))
     }
     await press('\x15')

@@ -208,6 +208,7 @@ export type CliInputRoutingCompositionDeps = {
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
+  replayCopyKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["replayCopyKey"]
   copyPromptSelection: AnyFn
   clearTextSelection?: () => void
   hasPromptSelection?: () => boolean
@@ -702,6 +703,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     cycleAgentFocus: () => {
       void deps.handleCycleAgentFocus()
     },
+    ...(deps.replayCopyKey ? { replayCopyKey: deps.replayCopyKey } : {}),
     copyPromptSelection: deps.copyPromptSelection,
     ...(deps.hasPromptSelection ? { hasPromptSelection: deps.hasPromptSelection } : {}),
     ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),

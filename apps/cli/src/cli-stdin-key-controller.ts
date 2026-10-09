@@ -1,3 +1,4 @@
+import { isSelectionCopyKey } from "./selection-copy-key.js"
 import { isApprovalShortcut } from "./approval-shortcuts.js"
 import { shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import type { ParsedShortcut } from "./keybind.js"
@@ -36,6 +37,7 @@ export type CliStdinKeyControllerDeps = {
   cycleWorkflowCanvasNode: () => void
   handleWorkflowDetailPaneKey: (event: CliStdinKeyEvent) => boolean
   cycleAgentFocus: () => void
+  replayCopyKey?: (event: CliStdinKeyEvent) => void
   copyPromptSelection: () => boolean
   clearTextSelection?: () => void
   hasPromptSelection?: () => boolean
@@ -76,12 +78,13 @@ export function createCliStdinKeyController(
   }
   const handleKey = (event: CliStdinKeyEvent): boolean => {
     if (deps.handleNativeSelectionKey?.(event)) return true
+    deps.replayCopyKey?.(event)
     // MP-08 / MP-10: OpenTUI also emits terminal theme notifications as
     // empty-name keys. Replay native ownership above, then ignore non-keys.
     if (!event.name) return false
     // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
     // without extended keyboard support (where it is indistinguishable from Ctrl+C).
-    const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))
+    const copyKey = isSelectionCopyKey(event)
     if (event.eventType !== "release" && !copyKey) clearRetainedSelection()
     // OpenTUI's global key handler owns this dialog. Do not also dispatch
     // its terminal bytes into focused-agent or workflow shortcuts.

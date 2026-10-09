@@ -224,6 +224,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const nativeSelectionInput = (event: KeyEvent) => {
     if (nativeSelection.handleRendererKey(event)) { event.preventDefault(); event.stopPropagation() }
+    else captureCopyKey(event)
   }
   renderer.keyInput.prependListener("keypress", nativeSelectionInput)
   renderer.keyInput.prependListener("keyrelease", nativeSelectionInput)
@@ -549,7 +550,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   })
   const {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
-    closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
+    closeTerminalPairingDialog, captureCopyKey, replayCopyKey, discardCopyInput, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
@@ -965,7 +966,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
-    copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
+    replayCopyKey, copyPromptSelection, removePromptAttachmentsForEdit, removeLastPendingPromptAttachment,
   })
 
   const {
@@ -980,7 +981,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleStdinData: (chunk: Buffer | string) => {
       if (!providerLoginLink.isActive()) queueMicrotask(() => {
         if (!renderer.isDestroyed && !providerLoginLink.isActive()) handleStdinData(chunk)
-        else nativeSelection.discardInput()
+        else { nativeSelection.discardInput(); discardCopyInput() }
       })
     },
     clearTerminalOutputRecordTimer,

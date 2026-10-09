@@ -230,11 +230,11 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
 }
 
 // MP-08 / MP-10: raw routing runs after the real textarea handles each chunk.
-for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const batched of [false, true]) for (const paste of [false, true]) for (const [kind, movement, selected] of [
+for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const batched of [false, true]) for (const sameChunkEdit of [false, true]) for (const paste of [false, true]) for (const [kind, movement, selected] of [
   ["Shift+Left twice", "\x1b[1;2D\x1b[1;2D", "ft"],
   ["Shift+Home", "\x1b[1;2H", "draft"],
 ] as const) {
-  test(`MP-08 / MP-10 prompt ${kind} survives raw routing and F6/replacement (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"})`, async () => {
+  test(`MP-08 / MP-10 prompt ${kind} survives raw routing and F6/replacement (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"}; edit ${sameChunkEdit ? "coalesced" : "later"})`, async () => {
     const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2, initialValue: "draft" })
     harness.renderer.root.add(prompt)
@@ -261,8 +261,10 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       promptFocused: () => true,
       focusedInteractionActive: () => false,
       handleFocusedInteractionKey: () => false,
-      copyPromptSelection: clipboard.copyPromptSelection,
+      replayCopyKey: clipboard.replayCopyKey,
+      copyPromptSelection: clipboard.copyCapturedSelection ?? clipboard.copyPromptSelection,
     } as unknown as CliStdinKeyControllerDeps)
+    harness.renderer.keyInput.prependListener("keypress", event => clipboard.captureCopyKey?.(event))
     const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
     if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
     else harness.renderer.stdin.on("data", rawInput)
@@ -271,20 +273,61 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       await Promise.resolve()
     }
     try {
-      if (batched) await send(movement + "\x1b[17~")
+      const edit = paste ? "\x1b[200~Z\x1b[201~" : "Z"
+      if (batched) await send(movement + "\x1b[17~" + (sameChunkEdit ? edit : ""))
       else {
         // Repeated selection commands must extend the same anchor.
         for (const key of movement.match(/\x1b\[[^A-Z]*[A-Z]/g)!) await send(key)
         assert.equal(prompt.getSelectedText(), selected)
-        await send("\x1b[17~")
+        await send("\x1b[17~" + (sameChunkEdit ? edit : ""))
       }
-      assert.equal(prompt.getSelectedText(), selected, "keyboard selection remains highlighted")
+      if (!sameChunkEdit) assert.equal(prompt.getSelectedText(), selected, "keyboard selection remains highlighted")
       assert.deepEqual(copies, [selected], "F6 copies the textarea's selected range")
-      assert.equal(rebuilds, 0, "selection keeps the waiting-room rebuild deferred")
-      await send(paste ? "\x1b[200~Z\x1b[201~" : "Z")
+      if (!sameChunkEdit) {
+        assert.equal(rebuilds, 0, "selection keeps the waiting-room rebuild deferred")
+        await send(edit)
+      }
       assert.equal(prompt.plainText, kind === "Shift+Home" ? "Z" : "draZ", "typing replaces the selected range")
       assert.equal(prompt.hasSelection(), false)
       assert.equal(rebuilds, 1, "editing releases selection and flushes the deferred rebuild")
+    } finally { harness.renderer.destroy() }
+  })
+}
+
+// MP-08 / MP-10: repeated copies in one chunk retain each event's range,
+// including an empty selection before the first selection movement.
+for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
+  test(`MP-08 / MP-10 copy snapshots precede later selection extension (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"})`, async () => {
+    const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
+    const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2, initialValue: "draft" })
+    harness.renderer.root.add(prompt)
+    prompt.focus()
+    await harness.renderOnce()
+    prompt.gotoBufferEnd()
+    const copies: string[] = []
+    const clipboard = createClipboardController({ renderer: harness.renderer, promptInput: () => prompt,
+      flashFooter: () => {}, copyText: async text => { copies.push(text); return "copied" } })
+    const raw = createCliStdinKeyController({
+      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+      replayCopyKey: clipboard.replayCopyKey,
+      copyPromptSelection: clipboard.copyCapturedSelection ?? clipboard.copyPromptSelection,
+      hasPromptSelection: () => prompt.hasSelection(),
+      clearTextSelection: () => harness.renderer.clearSelection(),
+      dialogOverlayOpen: () => false, handleSessionBrowserKey: (event: CliStdinKeyEvent) => event.name !== "f6",
+      commandCenterOpen: () => false, commandCenterQuery: () => "", isAttached: () => false,
+      promptFocused: () => true, focusedInteractionActive: () => false,
+      handleFocusedInteractionKey: () => false, handleQueuedPromptKey: () => false,
+    } as unknown as CliStdinKeyControllerDeps)
+    harness.renderer.keyInput.prependListener("keypress", event => clipboard.captureCopyKey?.(event))
+    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
+    else harness.renderer.stdin.on("data", rawInput)
+    try {
+      const bytes = "\x1b[17~\x1b[1;2D\x1b[17~\x1b[1;2D\x1b[17~\x1b[1;2D"
+      harness.renderer.stdin.emit("data", buffer ? Buffer.from(bytes) : bytes)
+      await Promise.resolve()
+      assert.deepEqual(copies, ["t", "ft"], "empty F6 must stay empty; each later F6 copies its event-time range")
+      assert.equal(prompt.getSelectedText(), "aft")
     } finally { harness.renderer.destroy() }
   })
 }
