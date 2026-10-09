@@ -61,7 +61,7 @@ let KernelClient
 const upstreamClients = new Set()
 let result
 const sessionAlias = `tuifix-drill-${process.pid}`
-let sessionDeleted = !options.attached
+let sessionDeleted = true
 const deleteSession = async () => {
   const client = new KernelClient(options['fleet-kernel-url'], {})
   try { await client.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }); sessionDeleted = true }
@@ -117,7 +117,7 @@ try {
       const linked = await probe.send({ LinkProviderAccountProfile: {
         provider: options.provider ?? 'codex', label: 'tuifix-native-copy', path: path.resolve(options['profile-path']),
       } })
-      const profileId = linked.ProviderAccountProfile?.profile?.id
+      const profileId = linked.ProviderAccountProfile?.profile?.profile_id
       assert.ok(profileId, 'product account linking must succeed')
       options['account-profile'] = profileId
       options['fleet-home'] = path.join(scratch, 'state')
@@ -197,6 +197,7 @@ try {
     ? ['--kernel-url', options['fleet-kernel-url'], '--create-session', '--alias', sessionAlias, '--workspace', process.cwd(), '--worktree', process.cwd(),
       '--provider', options.provider ?? 'codex', '--account-profile', options['account-profile'], '--model', options.model]
     : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
+  if (options.attached) sessionDeleted = false
   tui = Bun.spawn(['bun', cli, ...tuiArgs], {
     cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
       ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
@@ -636,5 +637,5 @@ try {
   await stop(kernel)
   await rm(scratch, { recursive: true, force: true })
   if (!options.interactive) await writeFile(path.join(evidence, 'terminal.pty'), output)
-  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, ...result, requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
+  await writeFile(path.join(evidence, 'result.json'), JSON.stringify({ source: options.source, cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, ...result, requests, upstreamResponses, cleanup: 'owned TUI/kernel/browser/proxy stopped; disposable state removed' }, null, 2))
 }
