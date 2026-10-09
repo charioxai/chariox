@@ -394,7 +394,7 @@ export async function inflateMirror2Packet(wire: { encoding?: string; packet_bas
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A gap or failed credit asks for a fresh snapshot.
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 2, waitMs = 1500 } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000 } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 482')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string

@@ -198,3 +198,13 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
   assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:2,cdp:2},'non-ASCII text stays on CDP');
   assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:2,cdp:2},'MP-11: refused native key falls back to CDP');
 });
+test("MP-08/MP-10: CDP pointer input follows the emulated view scale (DPR1 page on a scale-2 host)",async()=>{
+  // Hosted mirror h3: a DPR1 page on a scale-2 window is emulated at view
+  // scale 1/2; unscaled CDP coordinates landed at twice the CSS position.
+  const {browser,sent}=fixture(false);
+  await inputHostTab(browser,tab,{kind:'click',x:1051,y:541},{viewScale:0.5});
+  await inputHostTab(browser,tab,{kind:'scroll',x:100,y:200,delta_x:0,delta_y:120},{viewScale:0.5});
+  assert.deepEqual(sent.filter(c=>c.method==='Input.dispatchMouseEvent').map(c=>[c.params.type,c.params.x,c.params.y]),[['mousePressed',525.5,270.5],['mouseReleased',525.5,270.5],['mouseWheel',50,100]]);
+  const plain=fixture(false);await inputHostTab(plain.browser,tab,{kind:'click',x:1051,y:541});
+  assert.deepEqual(plain.sent.filter(c=>c.method==='Input.dispatchMouseEvent').map(c=>[c.params.x,c.params.y]),[[1051,541],[1051,541]]);
+});

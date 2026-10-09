@@ -23,7 +23,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1 } = {}) {
     assertNotCancelled(signal);
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
@@ -131,8 +131,11 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
             await check(); await mirrorGuard?.();
             if (await nativeOnce(() => nativeClick(input.x, input.y))) { onDispatch?.(); return; }
           }
-          await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
-          await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
+          // MP-08/MP-10: CDP pointer coordinates are in the emulated view's
+          // space: a DPR1 page on a scale-2 window has view scale 1/2.
+          const x = input.x * viewScale, y = input.y * viewScale;
+          await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+          await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
         } else if (input.kind === "scroll" && Number.isInteger(input.delta_x) && Number.isInteger(input.delta_y) && Math.abs(input.delta_x) <= 10000 && Math.abs(input.delta_y) <= 10000) {
           const nx = notches(input.delta_x), ny = notches(input.delta_y);
           if (nativeWheel && nx !== null && ny !== null && Math.abs(nx) <= 10 && Math.abs(ny) <= 10 && (nx || ny)) {
@@ -141,7 +144,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
             // fenced CDP input without claiming an uncertain native action.
             if (await nativeOnce(() => nativeWheel(input.x, input.y, nx, ny))) { onDispatch?.(); return; }
           }
-          const params = { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y };
+          const params = { type: "mouseWheel", x: input.x * viewScale, y: input.y * viewScale, deltaX: input.delta_x, deltaY: input.delta_y };
           if (!asyncScroll || (typeof asyncScroll === 'function' && !asyncScroll())) { await sendInput("Input.dispatchMouseEvent", params); return; }
           // MP-08/MP-10: the document fence and dispatch stay serialized; the
           // caller does not hold the input lane for the renderer's
