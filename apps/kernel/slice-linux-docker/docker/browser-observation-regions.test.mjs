@@ -4,7 +4,9 @@ import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { handleBrowserControllerRequest } from './browser-controller.mjs';
 
 const target = { kind: 'browser', target_id: 'target', document_id: 'document', node_ref: 'backend:42' };
-function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false, windowHeight = 800 } = {}) {
+// generated: a DIV renders the value as ::before + text + ::after (listed
+// before the text child, as Chromium does); no DOM value holds it.
+function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false, windowHeight = 800, generated = false } = {}) {
   const methods = [];
   return { methods, async resolvePageTarget() { return { sessionId: 'session', connection: { async send(method) {
     methods.push(method);
@@ -17,7 +19,10 @@ function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 
     if (method === 'DOM.getBoxModel' && replaced) throw new Error('detached field');
     if (method === 'DOM.getBoxModel') return { model: { border: [10, 20, 110, 20, 110, 50, 10, 50] } };
     if (method === 'DOMSnapshot.captureSnapshot' && noEcho) return { strings: [], documents: [{ nodes: {}, layout: {} }] };
-    if (method === 'DOMSnapshot.captureSnapshot') return { strings: ['#text', 'synthetic-only', 'CANVAS'], documents: [{ nodes: { nodeName: [0, 2], nodeValue: [1], inputValue: { index: [0], value: [1] } }, layout: { nodeIndex: [0, 1], bounds: [[200, 10, 200, 20], [0, 300, 300, 100]] } }] };
+    if (method === 'DOMSnapshot.captureSnapshot' && generated) return { strings: ['DIV', '::before', '::after', '#text', 'synthetic', 'only', '-'], documents: [{
+      nodes: { nodeName: [0, 1, 2, 3], nodeType: [1, 1, 1, 3], parentIndex: [-1, 0, 0, 0], nodeValue: [-1, -1, -1, 6] },
+      layout: { nodeIndex: [0, 1, 2, 3], bounds: [[400, 10, 200, 20], [400, 10, 80, 20], [500, 10, 40, 20], [480, 10, 20, 20]], text: [-1, 4, 5, 6] } }] };
+    if (method === 'DOMSnapshot.captureSnapshot') return { strings: ['#text', 'synthetic-only', 'CANVAS'], documents: [{ nodes: { nodeName: [0, 2], nodeValue: [1], inputValue: { index: [0], value: [1] } }, layout: { nodeIndex: [0, 1], bounds: [[200, 10, 200, 20], [0, 300, 300, 100]], text: [1, -1] } }] };
     throw new Error(method);
   } } }; } };
 }
@@ -35,6 +40,15 @@ test('MP-08/MP-10/MP-11 navigation prunes the old document and scans current ech
 });
 test('MP-08/MP-10/MP-11 horizontal scrollbar does not shift field masks', async () => {
   assert.deepEqual((await locateBrowserRegions([target], fixture({ scrollbar: 15 })))[0], [10, 120, 100, 30]);
+});
+test('MP-08/MP-10/MP-11 CSS-generated rendered text is masked; unreadable layout text fails closed', async () => {
+  const regions = await locateBrowserRegions([target], fixture({ stale: true, generated: true }), ['synthetic-only']);
+  assert.deepEqual(regions, [[400, 110, 80, 20], [500, 110, 40, 20], [480, 110, 20, 20], [0, 0, 800, 100], [0, 776, 800, 24]]);
+  const unreadable = fixture({ stale: true, generated: true }), resolve = unreadable.resolvePageTarget;
+  unreadable.resolvePageTarget = async () => { const page = await resolve(), send = page.connection.send;
+    page.connection.send = async method => { const result = await send(method); if (method === 'DOMSnapshot.captureSnapshot') delete result.documents[0].layout.text; return result; };
+    return page; };
+  await assert.rejects(locateBrowserRegions([target], unreadable, ['synthetic-only']), /layout text/);
 });
 test('MP-08/MP-10/MP-11 taskbar never renders document titles', async () => {
   const { readFile } = await import('node:fs/promises');
@@ -96,9 +110,9 @@ function framed({ transformed = false, hiddenOwner = false, unlinked = false } =
     // an isolated owner node 2 (backend 12), a stray iframe 3 (backend 13), an image.
     session: { strings: ['#text', 'synthetic-only', 'IFRAME', 'IMG', 'plain'], documents: [
       { scrollOffsetX: 0, scrollOffsetY: 50, nodes: { nodeName: [0, 2, 2, 2, 3], nodeValue: [4], backendNodeId: [10, 11, 12, 13, 14], contentDocumentIndex: { index: [1], value: [1] } },
-        layout: { nodeIndex: [1, 2, 3, 4], bounds: [[100, 100, 310, 210], [500, 100, 306, 206], [900, 100, 50, 50], [0, 400, 300, 100]] } },
-      { scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeValue: [1], backendNodeId: [20] }, layout: { nodeIndex: [0], bounds: [[10, 20, 58, 16]] } }] },
-    child: { strings: ['#text', 'synthetic-only'], documents: [{ scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeValue: [1], backendNodeId: [30] }, layout: { nodeIndex: [0], bounds: [[5, 100, 120, 18]] } }] },
+        layout: { nodeIndex: [1, 2, 3, 4], bounds: [[100, 100, 310, 210], [500, 100, 306, 206], [900, 100, 50, 50], [0, 400, 300, 100]], text: [-1, -1, -1, -1] } },
+      { scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeType: [3], nodeValue: [1], backendNodeId: [20] }, layout: { nodeIndex: [0], bounds: [[10, 20, 58, 16]], text: [1] } }] },
+    child: { strings: ['#text', 'synthetic-only'], documents: [{ scrollOffsetX: 0, scrollOffsetY: 0, nodes: { nodeName: [0], nodeType: [3], nodeValue: [1], backendNodeId: [30] }, layout: { nodeIndex: [0], bounds: [[5, 100, 120, 18]], text: [1] } }] },
   };
   const box = ([x, y, w, h], inset = 0, scale = 1) => ({ width: w, height: h, border: [x, y, x + w * scale, y, x + w * scale, y + h * scale, x, y + h * scale],
     content: [x + inset, y + inset, x + (w - inset) * scale, y + inset, x + (w - inset) * scale, y + (h - inset) * scale, x + inset, y + (h - inset) * scale] });

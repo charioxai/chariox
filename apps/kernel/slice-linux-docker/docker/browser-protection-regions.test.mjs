@@ -5,19 +5,26 @@ import assert from 'node:assert/strict';
 import { ProtectionGate, documentProtection, translatedQuad } from './browser-protection-regions.mjs';
 
 // nodes: [name, parent, attributes, extra]; every node gets a 10x10 box at (i*10, 0).
-function snapshot(nodes, { scroll = [0, 0], inputValue = {} } = {}) {
+// extra is a text node value or pseudo-element layout text; rendered: further
+// layout entries [node, text] (generated content split by counters).
+function snapshot(nodes, { scroll = [0, 0], inputValue = {}, rendered = [] } = {}) {
   const strings = [];
   const id = value => { const at = strings.indexOf(value); return at >= 0 ? at : strings.push(value) - 1; };
   const document = {
     scrollOffsetX: scroll[0], scrollOffsetY: scroll[1],
     nodes: {
       nodeName: nodes.map(([name]) => id(name)), parentIndex: nodes.map(([, parent]) => parent),
-      backendNodeId: nodes.map((_, i) => 100 + i), nodeValue: nodes.map(([, , , text]) => (text ? id(text) : -1)),
+      backendNodeId: nodes.map((_, i) => 100 + i), nodeValue: nodes.map(([name, , , text]) => (name === '#text' && text ? id(text) : -1)),
+      nodeType: nodes.map(([name]) => (name === '#text' ? 3 : 1)),
       attributes: nodes.map(([, , attributes = []]) => attributes.map(id)),
       inputValue: { index: Object.keys(inputValue).map(Number), value: Object.values(inputValue).map(id) },
       contentDocumentIndex: { index: nodes.flatMap(([name], i) => (name === 'IFRAME-INPROCESS' ? [i] : [])), value: [1] },
     },
-    layout: { nodeIndex: nodes.map((_, i) => i), bounds: nodes.map((_, i) => [i * 10, 0, 10, 10]) },
+    layout: {
+      nodeIndex: [...nodes.map((_, i) => i), ...rendered.map(([node]) => node)],
+      bounds: [...nodes.map((_, i) => [i * 10, 0, 10, 10]), ...rendered.map((_, k) => [k * 10, 20, 10, 10])],
+      text: [...nodes.map(([name, , , text]) => ((name === '#text' || name.startsWith('::')) && text ? id(text) : -1)), ...rendered.map(([, text]) => id(text))],
+    },
   };
   for (let i = 0; i < nodes.length; i++) if (nodes[i][0] === 'IFRAME-INPROCESS') document.nodes.nodeName[i] = id('IFRAME');
   return { strings, documents: [document] };
@@ -43,6 +50,20 @@ test('Vault echoes and opaque media are protected only with registered values; p
   assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4, 5, 6, 7, 8));
   // Plugins have no inspectable document: returned as owners to withhold.
   assert.deepEqual(documentProtection(doc, 0).owners.map(owner => [owner.backendNodeId, owner.plugin]), [[110, true], [111, true]]);
+});
+
+test('rendered layout text is checked for Vault values, joined per element in visual order', () => {
+  // Generated content has no DOM value: a ::before split by a counter (node 2),
+  // two text nodes (6, 7), and ::marker + text + ::after (snapshot order 9, 10, 11).
+  const doc = snapshot([['#document', -1], ['DIV', 0], ['::before', 1, [], 'vault-'], ['P', 0], ['#text', 3, [], 'ordinary'],
+    ['P', 0], ['#text', 5, [], 'vault-'], ['#text', 5, [], 'value'], ['LI', 0], ['::marker', 8, [], 'vau'], ['::after', 8, [], 'value'], ['#text', 8, [], 'lt-']],
+  { rendered: [[2, 'val'], [2, 'ue']] });
+  assert.deepEqual(documentProtection(doc, 0).regions, []);
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, [...at(2, 6, 7, 9, 10, 11), [0, 20, 10, 10], [10, 20, 10, 10]]);
+  // Rendered text that cannot be read fails closed while values are registered.
+  delete doc.documents[0].layout.text;
+  assert.deepEqual(documentProtection(doc, 0).regions, []);
+  assert.throws(() => documentProtection(doc, 0, { values: ['vault-value'] }), /layout text/);
 });
 
 test('frame owners are returned for mapping unless protected; scroll is removed', () => {

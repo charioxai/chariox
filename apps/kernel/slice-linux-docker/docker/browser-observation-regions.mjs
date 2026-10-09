@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: trusted CDP layout, re-located before/after every frame.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { withBrowserFrames } from './browser-controller-frames.mjs';
-import { redactObservation } from './browser-controller-snapshot.mjs';
+import { redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 import { fileURLToPath } from 'node:url';
 
 function quadRegion(quad) {
@@ -97,10 +97,10 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           }
         }
       }
-      // Raw page strings are checked before any truncation. MP-11 (owner
-      // 2026-10-08): every frame is scanned in its own session and only the
-      // echoing text, attributes and input values are masked; media is not
-      // masked whole. A frame that cannot be mapped or inspected is (fail closed).
+      // Raw page strings and rendered layout text are checked before any
+      // truncation. MP-11 (owner 2026-10-08): every frame is scanned in its own
+      // session and only the echoing text, attributes and input values are masked;
+      // media is not masked whole. A frame that cannot be mapped or inspected is (fail closed).
       if (values.length) {
         const owned = new Set(), placed = new Map();
         const place = frame => {
@@ -137,12 +137,13 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
             const nodes = document.nodes ?? {}, layout = document.layout ?? {};
             const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
             const frameOwners = new Set((nodes.contentDocumentIndex?.index ?? []));
+            const rendered = renderedTextEchoes(strings, document, values);
             for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
               const index = layout.nodeIndex[i];
               const name = strings[nodes.nodeName?.[index]]?.toLowerCase();
               const attributes = nodes.attributes?.[index] ?? [];
               const uninspected = ['iframe', 'frame'].includes(name) && !frameOwners.has(index) && !owned.has(frame.sessionId + ' ' + nodes.backendNodeId?.[index]);
-              if (uninspected || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
+              if (uninspected || rendered.has(i) || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
                 const region = layout.bounds?.[i];
                 if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error('unknown echo region');
                 if (region[2] > 0 && region[3] > 0) regions.push(desktop(origin, [at.origin[0] + region[0] - (document.scrollOffsetX ?? 0), at.origin[1] + region[1] - (document.scrollOffsetY ?? 0), region[2], region[3]]));
