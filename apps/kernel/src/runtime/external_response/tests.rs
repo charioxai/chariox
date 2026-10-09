@@ -282,6 +282,49 @@ fn external_response_terminal_retains_owner_replies() {
 }
 
 #[test]
+fn external_response_preserves_notification_metadata_and_sudo_extension() {
+    let source = serde_json::json!({
+        "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
+        "session_id":"room", "workflow_id":"workflow", "enabled":true,
+        "available":true, "name":"review", "output_fields":["finding"]
+    });
+    let subscription = serde_json::json!({
+        "subscription_id":"subscription", "source_id":"source", "owner_user_id":"owner",
+        "target_kernel_id":"worker", "target_kind":"workflow_endpoint", "session_id":"room",
+        "workflow_id":"workflow", "publication_id":"publication", "endpoint_id":"endpoint",
+        "queue_id":"queue", "ttl_days":7, "source_available":true,
+        "source_kernel_id":"home", "events":"success", "filters":{}, "delivery_mode":"queue"
+    });
+    let turn = serde_json::json!({
+        "entry_id":"sudo:window", "session_id":"room", "agent_id":"agent",
+        "owner_user_id":"owner", "terminal_id":"terminal", "prompt_id":"prompt",
+        "provider_run_id":"run", "task_id":"task", "duration_minutes":60,
+        "expires_at_ms":3600000, "revision":2, "warning_sent":false
+    });
+    let replies = [
+        serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
+        serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
+        serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
+        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"diagnostics":[]}}),
+        serde_json::json!({"KernelSudoExtended":{"turn":turn}}),
+    ];
+    for reply in replies {
+        let response: LocalDaemonResponse = serde_json::from_value(reply).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        for class in [
+            KernelConnectionClass::ExternalAgent,
+            KernelConnectionClass::KernelAgent,
+        ] {
+            let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+            assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+        }
+        let mut raw = expected.clone();
+        project_response_value(&mut raw).unwrap();
+        assert_eq!(raw, expected);
+    }
+}
+
+#[test]
 fn external_response_retains_only_exact_public_authority_errors() {
     let caller = command(KernelConnectionClass::ExternalAgent);
     for message in [

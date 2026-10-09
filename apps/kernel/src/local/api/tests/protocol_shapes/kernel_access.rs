@@ -367,7 +367,6 @@ fn leased_sudo_fence_is_bound_to_relay_peer_protocol_83() {
     assert_eq!(
         serde_json::to_value(RelayPeerResponse::LeasedSudoUpdated).unwrap(),
         serde_json::json!({"kind":"leased_sudo_updated"})
-
     );
 }
 

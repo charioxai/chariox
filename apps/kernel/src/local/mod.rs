@@ -279,10 +279,6 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
-    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
-};
-pub use api::{
     KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
     PasskeyPromptKind,
 };
