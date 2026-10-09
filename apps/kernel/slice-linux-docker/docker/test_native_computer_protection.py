@@ -1,4 +1,4 @@
-"""MP-11: clipboard reads must fence native protection changes during the read."""
+"""MP-08/MP-11: native field masks and clipboard capture fences."""
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +11,25 @@ x11=module.load('native-x11')
 # Real X11 opener (patched Display); every other helper is the given fake.
 helpers=lambda accessibility:(lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard)
 class ProtectionTests(unittest.TestCase):
+    def test_mp08_mp11_password_dots_leave_desktop_visible_and_only_plaintext_value_is_masked(self):
+        # Password roles still protect structured text/input; their dots are safe
+        # pixels. A registered value shown in an ordinary entry is a local mask.
+        raw=SimpleNamespace(depth=24,data=bytes([200,200,200,0])*8*4)
+        screen=SimpleNamespace(width_in_pixels=8,height_in_pixels=4,root=SimpleNamespace(get_image=lambda *args:raw))
+        for masks in ([],[[2,1,2,2]]):
+            with self.subTest(masks=masks):
+                tree={'available':True,'complete':True,'protected':True,
+                      'nodes':[{'role':'password text','protected':True,'name':'[protected]'}],
+                      'masks':masks,'uncovered':[]}
+                with patch.object(module,'load',side_effect=helpers(SimpleNamespace(snapshot=lambda *args:tree))),patch.object(module.display,'Display',return_value=SimpleNamespace(screen=lambda:screen,close=lambda:None)):
+                    result=module.main({'op':'screenshot','mask':False,'processes':[],'values':['synthetic-only']})
+                self.assertFalse(result['protected'])
+                with module.Image.open(module.io.BytesIO(module.base64.b64decode(result['data_base64']))) as image:
+                    for y in range(4):
+                        for x in range(8):
+                            covered=bool(masks) and 2<=x<4 and 1<=y<3
+                            self.assertEqual(image.getpixel((x,y)),(0,0,0) if covered else (200,200,200))
+
     def test_mp11_opaque_browser_keeps_unknown_clipboard_contents_withheld(self):
         tree={'available':True,'complete':True,'protected':False,
               'nodes':[{'protected':True,'name':'[protected]'}],'uncovered':[]}
@@ -112,6 +131,22 @@ class AgentInputClipboardTests(unittest.TestCase):
         owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
         self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
         self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
+class WarmChannelTests(unittest.TestCase):
+    def test_mp11_warm_channel_carries_only_human_input(self):
+        events=[]
+        with patch.object(module,'input_action',side_effect=lambda action,processes:events.append((action['kind'],processes))):
+            held=set()
+            for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
+                            {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},
+                            {'op':'input','input':{'kind':'text','text':'x'}},
+                            {'op':'input','input':{'kind':'clipboard_write','text':'x'}},
+                            {'op':'accessibility','processes':[]}):
+                with self.assertRaises(ValueError):module.channel_request(request,held)
+            self.assertEqual(events,[])
+            for kind,extra in (('click',{'x':1,'y':1}),('scroll',{'x':1,'y':1,'steps':1}),('key',{'key':'Next'}),('keycode',{'keycode':38,'state':'down'})):
+                module.channel_request({'op':'input','input':{'kind':kind,**extra}},held)
+            self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None)])
+            self.assertEqual(held,{38})
 class VaultValueBoxTests(unittest.TestCase):
     """MP-08 / MP-11 (owner 2026-10-09): best-effort Vault boxes from accessible text."""
     def test_mp11_registered_value_masks_only_its_text_range(self):

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { isOwnedAlive } from './docker/linux-owned-process.mjs';
+import { isOwnedAlive, signalOwned } from './docker/linux-owned-process.mjs';
 import { LinuxOwnedDesktop } from './docker/linux-owned-desktop.mjs';
 import { NativeComputer } from './docker/native-computer.mjs';
 import { NativeAccessibility } from './docker/native-accessibility.mjs';
@@ -23,11 +23,11 @@ if(prefix) {
   const services=path.join(root,'.local/share/dbus-1/services');await mkdir(services,{recursive:true});
   await writeFile(path.join(services,'org.a11y.Bus.service'),'[D-BUS Service]\nName=org.a11y.Bus\nExec='+prefix+'/bin/at-spi-bus-launcher\n');
 }
-let native;let keyboardProcess;
+let native;let keyboardProcess;let desktopSource;
 const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:(prefix?prefix+'/bin:':'')+'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
 if(prefix){const launch=desktop.launch.bind(desktop);desktop.launch=(name,args,env,stdio=['ignore','ignore','ignore'])=>launch(name,args,env,[stdio[0],'inherit','inherit',...stdio.slice(3)]);}
 let cleaning;
-const cleanup=()=>cleaning??=(async()=>{console.error('MP-11 cleanup native begin');try{await native?.close();console.error('MP-11 cleanup native settled');if(keyboardProcess){assert(keyboardProcess.exitCode!==null || keyboardProcess.signalCode!==null,'warm keyboard must be reaped');}}finally{const processes=await desktop.ownedProcesses();await desktop.stop();for(const item of processes)assert.equal(await isOwnedAlive(item),false,'owned desktop process must be settled');console.error('MP-11 cleanup desktop settled');await rm(root,{recursive:true,force:true});console.error('MP-11 cleanup scratch removed');}})();
+const cleanup=()=>cleaning??=(async()=>{console.error('MP-11 cleanup native begin');try{await desktopSource?.close();await native?.close();console.error('MP-11 cleanup native settled');if(keyboardProcess){assert(keyboardProcess.exitCode!==null || keyboardProcess.signalCode!==null,'warm keyboard must be reaped');}}finally{const processes=await desktop.ownedProcesses();await desktop.stop();for(const item of processes)assert.equal(await isOwnedAlive(item),false,'owned desktop process must be settled');console.error('MP-11 cleanup desktop settled');await rm(root,{recursive:true,force:true});console.error('MP-11 cleanup scratch removed');}})();
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{void cleanup().finally(()=>process.exit(143));});
 try {
   const binding=await desktop.start();
@@ -60,6 +60,33 @@ try {
   const screenshot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   assert.equal(screenshot.mime_type,'image/png');assert.equal(screenshot.width,1280);
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-public-editor.png'),Buffer.from(screenshot.data_base64,'base64'));
+  if(process.env.CULINUX_DESKTOP_CAPTURE==='1') {
+    const {DesktopSource}=await import('./docker/kernel-desktop-source.mjs');
+    const {encodePng}=await import('./docker/kernel-browser-pixels.mjs');
+    desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:false}).start();
+    const raster=desktopSource.sample().raw,pixels=Buffer.from(raster.pixels);
+    assert(pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 protected desktop must show proved public editor');
+    if(process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER){
+      // MP-08/MP-10 (#933 review 4): the kernel's own XShm/x264 worker serves the desktop.
+      assert.equal(typeof raster.nativeEncode,'function','MP-08 desktop source must use the kernel native worker');
+      const {PortableEncoder}=await import('./docker/kernel-browser-display.mjs');
+      const encoder=new PortableEncoder();
+      try{
+        const encoded=await encoder.encode(raster,4000000,true,'avc1.420033');
+        assert.equal(encoded.key,true,'MP-08 first native desktop frame is a key');
+        assert.match(encoded.packet?.name??'',/^[a-f0-9]{32}\.json$/,'MP-08 native packet bypasses Node');
+        assert.equal(encoder.backend,'x264');
+        console.log('MP-08 MP-10 native desktop x264 key frame '+encoded.packet.length+' bytes');
+      }finally{await encoder.close();}
+    }
+    for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
+    await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'desktop-public-editor.png'),Buffer.from(encodePng(raster.width,raster.height,pixels),'base64'));
+    await desktopSource.close();
+    desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:true}).start();
+    assert(desktopSource.sample().raw.pixels.every((v,i)=>i%4===3||v===0),'MP-11 unknown registry must export no pixels');
+    await desktopSource.close();desktopSource=null;
+    console.log('MP-08 MP-11 shared desktop source public capture and unknown-policy mask PASS');
+  }
   const ocr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{});
   assert(ocr.targets.length>0);
   // Owner 2026-10-09: a registered Vault value never blacks out the desktop; the
@@ -137,6 +164,50 @@ try {
   assert(!observed.text.includes('private-source-canary'),'MP-11 refused Paste canary must not enter OCR');
   const proof=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},{});
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-paste-refused.png'),Buffer.from(proof.data_base64,'base64'));
+  if(process.env.CULINUX_DESKTOP_CAPTURE==='1') {
+    const {DesktopSource}=await import('./docker/kernel-desktop-source.mjs');
+    const {encodePng,displayMaskRegions}=await import('./docker/kernel-browser-pixels.mjs');
+    const capture=async(name,policy={values:[],targets:[],unknown:false})=>{
+      desktopSource=await new DesktopSource(binding,policy).start();
+      // Native rasters are leases retired on close: keep the exported bytes.
+      const source=desktopSource.sample().raw,raw={pixels:Buffer.from(source.pixels),[displayMaskRegions]:source[displayMaskRegions],width:source.width,height:source.height},pixels=Buffer.from(raw.pixels);
+      for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
+      const file=path.join(process.env.CULINUX_CAPTURE_ROOT,name+'.png');
+      await writeFile(file,Buffer.from(encodePng(raw.width,raw.height,pixels),'base64'));
+      await desktopSource.close();desktopSource=null;return {raw,file};
+    };
+    const clipboardCapture=await capture('desktop-paste-refused');
+    const text=spawnSync('tesseract',[clipboardCapture.file,'stdout'],{env:binding.environment,encoding:'utf8'});
+    assert.equal(text.status,0);assert(!text.stdout.includes('private-source-canary'),'MP-11 no refused clipboard canary in desktop source OCR');
+    const passwordApp=await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
+    await delay(500);
+    const password=await capture('desktop-password-dots');
+    assert(password.raw.pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 password dots must not hide the whole desktop');
+    const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
+    await signalOwned(passwordOwner,'SIGTERM');if(passwordApp.exitCode===null&&passwordApp.signalCode===null)await new Promise(resolve=>passwordApp.once('exit',resolve));
+    assert.equal(await isOwnedAlive(passwordOwner),false,'MP-11 password app closed before opaque browser oracle');
+    const browser=await desktop.launch('/usr/bin/google-chrome',['--no-sandbox','--no-first-run','--no-default-browser-check','--disable-dev-shm-usage','--user-data-dir='+path.join(root,'browser'),'--ozone-platform=x11','--class=CharioxOpaqueBrowser','--new-window','https://en.wikipedia.org/wiki/Linux'],binding.environment);
+    await desktop.recordOwned(browser,true);await delay(2000);
+    let browserWindow;
+    for(let n=0;n<100&&!browserWindow;n++){
+      browserWindow=spawnSync('xdotool',['search','--onlyvisible','--class','CharioxOpaqueBrowser'],{env:binding.environment,encoding:'utf8'}).stdout.trim().split('\n')[0];
+      if(!browserWindow)await delay(100);
+    }
+    assert(browserWindow,'MP-11 real opaque Chromium window required');
+    assert.equal(spawnSync('xdotool',['windowactivate','--sync',browserWindow],{env:binding.environment}).status,0);
+    const geometry=spawnSync('xdotool',['getwindowgeometry','--shell',browserWindow],{env:binding.environment,encoding:'utf8'});
+    assert.equal(geometry.status,0);
+    const bounds=Object.fromEntries(geometry.stdout.trim().split('\n').map(line=>{const [key,value]=line.split('=');return [key,Number(value)];}));
+    const left=Math.max(0,bounds.X),top=Math.max(0,bounds.Y),right=Math.min(binding.width,bounds.X+bounds.WIDTH),bottom=Math.min(binding.height,bounds.Y+bounds.HEIGHT);
+    assert(right-left>100&&bottom-top>100,'MP-11 visible browser bounds required');
+    await delay(300);
+    const opaque=await capture('desktop-opaque-browser-protected');
+    const regions=opaque.raw[displayMaskRegions];
+    assert(regions.some(r=>r.x<=left&&r.y<=top&&r.x+r.width>=right&&r.y+r.height>=bottom),'MP-11 masking receipt must cover the real opaque browser');
+    for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every((v,i)=>i%4===3||v===0),'MP-11 opaque browser region must export no pixels');
+    console.log(JSON.stringify({items:['MP-11'],oracle:'opaque browser with password app closed',browser_bounds:{left,top,right,bottom},protected_regions:regions,black_browser_pixels:true}));
+    console.log('MP-08 MP-11 desktop source clipboard OCR, visible password dots and opaque Chromium masking PASS (supplementary)');
+  }
   const cancellation=new AbortController();
   const hold=native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'hold',key:'Right',duration_ms:10000}}, {}, {signal:cancellation.signal});
   await delay(300);cancellation.abort();await assert.rejects(hold,/cancelled/);

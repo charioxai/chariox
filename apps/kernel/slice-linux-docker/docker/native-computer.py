@@ -120,7 +120,9 @@ def main(request):
     browser_protection=request.get('browser_protection')
     values=request.get('values') or []
     before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
-    mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
+    # MP-08/MP-11 (Miguel 2026-10-09): native password controls draw dots.
+    # Only saved values exposed as plain text contribute local AT-SPI masks.
+    mask=request['mask'] or not before['available'] or not before['complete']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
     after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     if before!=after:
@@ -145,6 +147,23 @@ def main(request):
     finally: image.close()
 
 
+WARM_INPUTS=('keycode','click','move','scroll','key','drag')
+
+
+def channel_request(request, held):
+    # MP-08 / MP-11: the warm channel carries human input only. Admission-bearing
+    # agent input keeps the one-shot helper (fresh AT-SPI state per press).
+    if request['op']=='release':
+        result=main(request);held.difference_update(request['codes']);return result
+    if request['op']!='input' or 'agent_input' in request or 'processes' in request or request['input']['kind'] not in WARM_INPUTS:
+        raise ValueError('unsupported physical channel operation')
+    action=request['input']
+    if action['kind']=='keycode' and action['state']=='down':held.add(action['keycode'])
+    result=main(request)
+    if action['kind']=='keycode' and action['state']=='up':held.discard(action['keycode'])
+    return result
+
+
 def keyboard_channel():
     held=set()
     print(json.dumps({'ready':True}),flush=True)
@@ -152,15 +171,7 @@ def keyboard_channel():
         for line in sys.stdin:
             if len(line)>2048:raise ValueError('oversized physical event')
             request=json.loads(line)
-            if request['op']=='input' and request['input']['kind']=='keycode':
-                action=request['input'];code=action['keycode']
-                if action['state']=='down':held.add(code)
-                result=main(request)
-                if action['state']=='up':held.discard(code)
-            elif request['op']=='release':
-                result=main(request);held.difference_update(request['codes'])
-            else:raise ValueError('unsupported physical channel operation')
-            print(json.dumps({'id':request['id'],'ok':True,'result':result}),flush=True)
+            print(json.dumps({'id':request['id'],'ok':True,'result':channel_request(request,held)}),flush=True)
     finally:
         if held:
             try:main({'op':'release','codes':list(held)})
