@@ -1553,6 +1553,52 @@ fn envp02b_save_and_reopen_revision_preserves_first_edit_and_rejects_stale_write
         .unwrap()
         .any(|e| e.unwrap().path().extension().is_some_and(|s| s == "json")));
 }
+// MP-08 / MP-10 / MP-11: concurrent editors, the TUI and Detect share one Project lock.
+// A short read in progress must delay, not reject, another reader or a Save.
+fn envp02b_hold_lock(
+    harness: &LocalRouterTestHarness,
+    held: std::time::Duration,
+) -> std::thread::JoinHandle<()> {
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let lock = crate::project_environment::ProjectEnvironmentStore::new(&root)
+        .try_lock("edit-project")
+        .unwrap();
+    std::thread::spawn(move || {
+        std::thread::sleep(held);
+        drop(lock);
+    })
+}
+#[test]
+fn envp02b_short_concurrent_read_delays_instead_of_rejecting_save_and_read() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let reader = envp02b_hold_lock(&harness, std::time::Duration::from_millis(300));
+    let saved = harness.dispatch(envp02b_save(&before, "Editor A"));
+    reader.join().unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } =
+        saved.expect("Save waits for a short concurrent read")
+    else {
+        panic!("save expected")
+    };
+    assert_eq!(environment.revision, 1);
+    let reader = envp02b_hold_lock(&harness, std::time::Duration::from_millis(300));
+    let read = envp02b_read(&harness);
+    reader.join().unwrap();
+    assert_eq!(read.revision, 1);
+}
+#[test]
+fn envp02b_long_lock_holder_fails_save_as_busy_without_mutation() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let detect = envp02b_hold_lock(&harness, std::time::Duration::from_secs(5));
+    let error = harness
+        .dispatch(envp02b_save(&before, "Editor A"))
+        .unwrap_err()
+        .to_string();
+    detect.join().unwrap();
+    assert!(error.contains("busy"), "{error}");
+    assert_eq!(envp02b_read(&harness).revision, 0);
+}
 #[test]
 fn envp02b_edits_authorize_owner_before_any_revision_mutation() {
     let harness = envp02b_harness();
