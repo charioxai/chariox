@@ -1,4 +1,4 @@
-import { recordBrowserFill } from './browser-protection-regions.mjs';
+import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
@@ -705,13 +705,12 @@ export class BrowserCdpClient {
         signal,
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, async options => {
-        let target;
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+          try { return await performBrowserAction(options); } finally { finishBrowserFill(connection, target); }
         }
-        try { return await performBrowserAction(options); }
-        finally { if(target)target.pending=false; }
+        return performBrowserAction(options);
       });
       return {
         browser_generation: this.browserGeneration,
