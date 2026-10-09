@@ -4,6 +4,8 @@
 use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
+// MP-11: the admission floor moves with relay peer bumps; test around it.
+const FLOOR: u32 = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
 
 #[test]
 fn mp08_mp10_mp11_browser_artifact_peer_73_encrypted_lease_admission() {
@@ -72,7 +74,7 @@ async fn check() {
     home_config.relay_url = Some(format!("ws://{addr}"));
     home_config.relay_token = Some("peer-version-fixture".into());
     home_config.relay_request_timeout_ms = 2_000;
-    let version = Arc::new(AtomicU32::new(70));
+    let version = Arc::new(AtomicU32::new(FLOOR - 1));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (stop_worker, mut stopped) = watch::channel(false);
     let target = {
@@ -153,7 +155,7 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [70, 73] {
+        for advertised in [FLOOR - 1, FLOOR] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +178,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 73 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(73));
+                    if advertised == FLOOR {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(FLOOR));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -185,15 +187,17 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 70 {
+            if advertised < FLOOR {
                 let error =
                     result.expect_err("v70 must be rejected before spawn or artifact dispatch");
                 assert!(
-                    error.to_string().contains("protocol 70"),
+                    error
+                        .to_string()
+                        .contains(&format!("protocol {}", FLOOR - 1)),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 73"));
+                assert!(error.to_string().contains(&format!("requires {FLOOR}")));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
