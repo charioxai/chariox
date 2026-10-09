@@ -92,3 +92,20 @@ test("MP-08 MP-10 native compaction bounds missing identity and stalled kernel r
     async () => new Promise(() => {}),
   ]) await assert.rejects(mapCodexNativeCompaction(message, options(send), 20), /timed out.*managed Codex conversation/)
 })
+
+
+test("MP-08 MP-10 native output without a prompt id keeps the admitted home turn", () => {
+  const messages: any[] = []
+  const mapped: string[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent", broadcast: message => messages.push(message), debug: () => {}, onTurnMapped: (_thread, turn) => mapped.push(turn) })
+  projection.setThreadId("display-thread")
+  projection.startPrompt("home-prompt")
+  const progress = { agent_id: "agent", prompt_origin: "chariox" as const, kind: "provider_output" as const, bytes: [...Buffer.from("real provider progress")], timestamp_ms: 1000 }
+  projection.project([progress])
+  assert.deepEqual(messages.filter(m => m.method === "turn/started").map(m => m.params.turn.id), ["chariox-native-home-prompt"])
+  assert.deepEqual(mapped, ["chariox-native-home-prompt"])
+  assert(messages.some(m => m.method === "item/agentMessage/delta" && m.params.turnId === "chariox-native-home-prompt"))
+  projection.projectAgentActivity({ last_completed_turn: { agent_id: "agent", prompt_id: "home-prompt", settlement_status: "completed", completed_at_ms: 2000 } } as any)
+  projection.project([progress])
+  assert.equal(messages.filter(m => m.method === "turn/started").length, 1, "late unbound output cannot reopen a settled display turn")
+})

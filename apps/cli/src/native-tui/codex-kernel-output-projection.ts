@@ -21,7 +21,6 @@ export function createCodexKernelOutputProjection(options: {
 }) {
   const nowMs = options.nowMs ?? Date.now
   let projectedThreadId: string | null = null
-  let nextProjectedTurnId = 1
   let nextProjectedItemId = 1
   const projectedItems = new Map<string, ProjectedItem>()
   const projectedTurns = new Map<string, { id: string, startedAtMs: number, completed: boolean }>()
@@ -43,13 +42,16 @@ export function createCodexKernelOutputProjection(options: {
 
   const startProjectedTurn = (timestampMs: number, promptId?: string | null) => {
     if (!projectedThreadId) return null
-    const key = promptId ?? ""
+    // MP-08 / MP-10 / MP-11: Native provider output can omit prompt_id.
+    // It belongs to the admitted active home prompt, never an anonymous turn.
+    const key = promptId ?? activePromptId
+    if (!key) return null
     const existing = projectedTurns.get(key)
     if (existing) return existing.completed ? null : existing.id
-    const turnId = promptId ? `chariox-native-${promptId}` : `chariox-projected-turn-${nextProjectedTurnId++}`
+    const turnId = `chariox-native-${key}`
     projectedTurns.set(key, { id: turnId, startedAtMs: timestampMs, completed: false })
     activePromptId = key
-    if (promptId) options.onTurnMapped?.(projectedThreadId, turnId, promptId)
+    options.onTurnMapped?.(projectedThreadId, turnId, key)
     options.broadcast({
       jsonrpc: "2.0",
       method: "thread/status/changed",
@@ -190,7 +192,7 @@ export function createCodexKernelOutputProjection(options: {
         })
         continue
       }
-      const itemKey = `${record.prompt_id ?? ""}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
+      const itemKey = `${record.prompt_id ?? activePromptId ?? ""}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
         const turnId = startProjectedTurn(timestampMs, record.prompt_id)

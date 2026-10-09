@@ -258,6 +258,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
     }
     const notificationThreadId = message.params?.threadId
+      ?? message.params?.conversationId
       ?? (message.params?.thread as { id?: unknown } | undefined)?.id
     if (typeof notificationThreadId === "string" && projectionThreadTracker.isEphemeralThread(notificationThreadId)) {
       // The kernel provider client consumes a run's output stream. Utility

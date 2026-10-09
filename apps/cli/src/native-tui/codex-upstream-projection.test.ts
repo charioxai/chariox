@@ -39,10 +39,14 @@ test("MP-08/MP-10/MP-11 native display lifecycle excludes managed execution noti
     for (const method of ["thread/status/changed", "turn/started", "item/agentMessage/delta", "turn/completed"]) {
       providerSocket!.send(JSON.stringify({ method, params: { threadId: "managed-thread", turnId: "managed-turn", turn: { id: "managed-turn" }, delta: "execution output" } }))
     }
+    for (const type of ["task_started", "agent_message", "task_complete"]) {
+      providerSocket!.send(JSON.stringify({ method: `codex/event/${type}`, params: { conversationId: "managed-thread", id: "managed-turn", msg: { type } } }))
+    }
     providerSocket!.send(JSON.stringify({ id: 77, method: "item/commandExecution/requestApproval", params: { threadId: "managed-thread", turnId: "managed-turn" } }))
     providerSocket!.send(JSON.stringify({ method: "account/rateLimits/updated", params: {} }))
     await waitFor(() => messages.some(message => message.method === "account/rateLimits/updated"))
     assert.equal(messages.filter(message => message.id === undefined && message.params?.threadId === "managed-thread").length, 0, "managed lifecycle must reach the display through the home prompt projection")
+    assert.equal(messages.filter(message => message.method?.startsWith("codex/event/")).length, 0, "legacy managed lifecycle cannot replace the home prompt identity")
     assert(messages.some(message => message.id === 77), "native server requests remain available for approval")
     proxy.projectKernelOutputToTui([{ agent_id: "agent", prompt_id: "home-prompt", kind: "provider_output", bytes: [...Buffer.from("visible progress")], timestamp_ms: 1 }])
     await waitFor(() => messages.some(message => message.method === "turn/started"))

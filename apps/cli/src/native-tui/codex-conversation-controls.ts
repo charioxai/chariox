@@ -27,7 +27,10 @@ export async function handleCodexNativeTurnSteer(
   try {
     const turnId = message.params?.expectedTurnId
     const bound = typeof turnId === "string" ? options.bindState.displayTurns?.get(turnId) : undefined
-    if (!bound || bound.threadId !== message.params?.threadId) throw new Error("Codex display turn is not bound to a Chariox prompt")
+    if (!bound || bound.threadId !== message.params?.threadId) {
+      const reason = typeof turnId !== "string" ? "expectedTurnId missing" : !bound ? (turnId.startsWith("chariox-projected-") ? "unbound anonymous projection" : turnId.startsWith("chariox-native-") ? "unbound home prompt projection" : "unbound provider turn") : "thread mismatch"
+      throw new Error(`Codex display turn is not bound to a Chariox prompt (${reason})`)
+    }
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
