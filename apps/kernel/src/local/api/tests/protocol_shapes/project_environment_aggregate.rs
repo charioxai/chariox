@@ -25,7 +25,7 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(
         format!("{:x}", Sha256::digest(requests.as_bytes())),
-        "18e33110c828d98a32453d93bc11bc8a79fdeb51cc45e233f67c092b9f8d8dbe"
+        "7d24c7bf248c4f03a5226512377a334493940886ccd7823b459f00b72d7fbb06"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(contract.as_bytes())),
