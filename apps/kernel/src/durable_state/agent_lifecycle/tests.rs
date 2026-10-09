@@ -2763,3 +2763,129 @@ fn a02_security_g11_workflow_run_receipt_reconciles_fast_and_late_completion() {
         assert!(f.task().obligations.iter().all(|o| o.status == "satisfied"));
     }
 }
+
+// MP-08/MP-10/MP-11 R947-1: transport attempt IDs must not strand a reply.
+#[test]
+fn a02_requested_reply_survives_deferred_and_rejected_idle_delivery() {
+    for rejected in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        let mut request = occurrence(
+            "room",
+            "child",
+            "parent",
+            "request",
+            "message",
+            serde_json::json!({"message": "return the verified result"}),
+        );
+        request.reply_requested = true;
+        let Outcome::Event(event) = f.apply(Operation::Send {
+            task: "p".into(),
+            prompt: "p".into(),
+            event: request,
+        }) else {
+            panic!()
+        };
+        let logical = format!("agent-event-child-{}", event.sequence);
+        if rejected {
+            f.apply(Operation::Attempt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: event.sequence,
+                prompt: logical.clone(),
+                target: None,
+                run: None,
+                now: 2,
+                work: None,
+            });
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: event.sequence,
+                state: "rejected".into(),
+                now: 3,
+            });
+        } else {
+            // Sudo defers an unrelated requested reply before its first admission.
+            f.apply(Operation::Defer {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: event.sequence,
+                now: 2,
+            });
+        }
+        let attempt = format!("{logical}-2");
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: event.sequence,
+            prompt: attempt.clone(),
+            target: None,
+            run: None,
+            now: 4,
+            work: None,
+        });
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: attempt.clone(),
+            run: Some("child-run".into()),
+            now: 5,
+        });
+        f.apply(Operation::Settle {
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: attempt.clone(),
+            run: "child-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 6,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: attempt.clone(),
+            occurrence: format!("task-terminal-{attempt}"),
+            success: true,
+            public_answer: Some(serde_json::json!({"excerpt": "verified retry result"})),
+            now: 7,
+        });
+        // Even an exact terminal outcome must wait for provider acceptance.
+        assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+        f.apply(Operation::Receipt {
+            room: "room".into(),
+            agent: "child".into(),
+            sequence: event.sequence,
+            state: "accepted".into(),
+            now: 8,
+        });
+        let replies = f.store.agent_inbox("room", "parent", 0).unwrap();
+        assert_eq!(
+            replies.len(),
+            1,
+            "requested reply lost after rejected={rejected}"
+        );
+        assert_eq!(replies[0].source_id, logical);
+        assert_eq!(
+            replies[0].payload["public_answer"]["excerpt"],
+            "verified retry result"
+        );
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: replies[0].sequence,
+            handled: true,
+            now: 9,
+        });
+        assert_eq!(f.task().obligations[0].status, "satisfied");
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: attempt.clone(),
+            occurrence: format!("task-terminal-{attempt}"),
+            success: true,
+            public_answer: None,
+            now: 10,
+        });
+        assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
+    }
+}

@@ -90,7 +90,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error("task continuation must settle before inbox delivery"));
             }
-            replies::bind(tx, &e, target.as_deref())?;
+            replies::bind(tx, &e, target.as_deref(), &prompt)?;
             e.state = "submitting".into();
             e.prompt_id = Some(prompt.clone());
             e.target_prompt_id = target;
