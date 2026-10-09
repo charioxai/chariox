@@ -44,7 +44,7 @@ CX_AV_FUNCTIONS(CX_POINTER)
 static __typeof__(&x264_encoder_open) cx_x264_encoder_open;
 /* openh264.c */
 int cx_openh264_available(void);
-void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp);
+void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,int min_qp);
 int cx_openh264_rate(void *encoder,int bitrate);
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key);
 void cx_openh264_close(void *encoder);
@@ -231,7 +231,7 @@ static void row_rate_control(x264_param_t *p,int rate) {
     p->rc.i_rc_method=X264_RC_ABR;p->rc.i_bitrate=rate;p->rc.i_vbv_max_bitrate=rate;
     p->rc.i_vbv_buffer_size=row_vbv(rate);p->rc.b_filler=0;
 }
-static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
+static int row_open(struct Codec *c,struct Row *row,int h,int protected,int constrained) {
     int rate=row_rate(c,h);
     /* A failed h264_vaapi init is software from this first key onward. */
     if(c->device&&!c->fallback){diagnosing=c;int status=hardware_open(c,row,h,rate);diagnosing=NULL;if(status<0){diagnostic_status(c,"h264_vaapi encoder init",status);c->fallback=2;avcodec_free_context(&row->hardware);av_frame_free(&row->staging);motion_geometry(c,protected);}}
@@ -243,7 +243,7 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
         long cores=sysconf(_SC_NPROCESSORS_ONLN);
         int threads=c->row_count==1?(int)(cores-1<1?1:cores-1>4?4:cores-1):1;
         /* x264 rates are kbit/s; OpenH264's API takes bit/s. */
-        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate*1000,threads,protected?36:0))) return -1;
+        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate*1000,threads,protected?36:0,constrained?36:0))) return -1;
         /* Own I420 planes, laid out as an x264 picture for the shared converters. */
         size_t luma=(size_t)ew*eh,chroma=(size_t)((ew+1)/2)*((eh+1)/2);
         if (!(row->planes=malloc(luma+2*chroma))) return -1;
@@ -421,7 +421,7 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         if (same)continue;
         int protected=0;
         for (size_t n=0;n<count;n++) if (regions[n].top<bottom && regions[n].bottom>y)protected=1;
-        if ((resets&(1u<<r)) || (!row->codec&&!row->hardware&&!row->openh264) || row->width!=c->enc_width || row->height!=(c->row_count==1?c->enc_height:h)) { row_close(row);if(row_open(c,row,h,protected))return -1; }
+        if ((resets&(1u<<r)) || (!row->codec&&!row->hardware&&!row->openh264) || row->width!=c->enc_width || row->height!=(c->row_count==1?c->enc_height:h)) { row_close(row);if(row_open(c,row,h,protected,count>0))return -1; }
         at=cpu_ms();
         uint8_t **plane=row->picture.img.plane;int *stride=row->picture.img.i_stride;
         if (c->row_count==1&&c->enc_width!=c->width) {
