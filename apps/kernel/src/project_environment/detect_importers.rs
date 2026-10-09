@@ -40,6 +40,18 @@ impl Importer {
             evidence_digest: String::new(),
         };
         if let Some(proposal) = self.proposals.get_mut(&id) {
+            // Manifest classification may insert an unspecified runtime first.
+            // A later declaration enriches that same proposal, without replacing
+            // an already explicit constraint or dropping its original provenance.
+            if let (
+                RequirementSpec::Software { version_constraint: current, .. },
+                RequirementSpec::Software { version_constraint: declared, .. },
+            ) = (&mut proposal.requirement.spec, &spec)
+            {
+                if current.is_none() {
+                    current.clone_from(declared);
+                }
+            }
             if !proposal.requirement.origins.contains(&origin) {
                 proposal.requirement.origins.push(origin)
             }
