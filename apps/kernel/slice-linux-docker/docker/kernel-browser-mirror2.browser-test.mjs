@@ -12,9 +12,9 @@ assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-11: explicit disposable dril
 async function mirrored(html, run, routes = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
-    const route = routes[request.url];
-    if (route) { response.setHeader("Content-Type", route.type); response.end(route.body); return; }
-    response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html}`);
+    const port = String(server.address().port), route = routes[request.url];
+    if (route) { response.setHeader("Content-Type", route.type); response.end(route.body.replaceAll("PORT", port)); return; }
+    response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const host = new KernelBrowserHost(root);
@@ -100,3 +100,17 @@ test("MP-10/MP-11: two viewers of one tab keep independent snapshots and deltas 
   assert.deepEqual(textOps(await a.next(600)), [[idsA.get("two"), "dos"]]);
   assert.deepEqual(textOps(await b.next(600)), [[idsB2.get("two"), "dos"]]);
 }));
+
+// A cross-origin child frame (localhost vs 127.0.0.1: an isolated frame) whose own
+// stylesheet is cross-origin to it: its CSSOM cannot read the rules.
+test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the viewer", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/frame" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const packet = await next();
+    assert.equal(packet.reset, true);
+    const css = JSON.stringify([...packet.ops, ...packet.nodes]);
+    assert.match(css, /rgb\(1, 2, 3\)/, "MP-10: the frame's sheet text is in the snapshot packet");
+  }, {
+    "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
+    "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
+  }));

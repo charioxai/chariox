@@ -286,7 +286,7 @@ export class Mirror2 {
       sequence, base_sequence: reset ? null : stream.issued, reset, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1,
       scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, resources, tiles };
     if (fallback) packet.fallback = fallback;
-    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = sheets; }
+    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
     else packet.ops = [...source.ops, ...sheets];
     // Morphed nodes (a new page node under a viewer id) count as changed targets.
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);

@@ -80,6 +80,16 @@ export class MirrorFrames {
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
     return this.mirror.evaluate(child, `${child.ref}.snapshot()`);
   }
+  // Stylesheets the child's CSSOM cannot read: CDP reads them in the child's own
+  // session; the CSS op is rebased into the frame slot like its records.
+  async sheetOps(child, slot, sheets = []) {
+    const ops = [];
+    for (const { id, url } of sheets) {
+      const text = await this.mirror.crossOriginSheet(child, url).catch(error => { this.failed('sheet', error); return null; });
+      if (text !== null) ops.push(rebaseOp({ op: 'css', id, css: text }, slot));
+    }
+    return ops;
+  }
   async attach(world, stream, foreignIds, policy, tab) {
     const out = { records: [], ops: [], opaque: [] };
     if (!foreignIds.length) return out;
@@ -99,6 +109,7 @@ export class MirrorFrames {
         out.records.push(...records);
         out.resources = [...(out.resources ?? []), ...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot }))];
         if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
+        out.ops.push(...await this.sheetOps(child, slot, snap.sheets));
       } catch (error) { this.failed('attach', error); out.opaque.push(id); }
     }
     return out;
@@ -112,7 +123,7 @@ export class MirrorFrames {
         if (loaderId !== entry.loaderId) throw new Error('navigated');
         const delta = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (delta.resync) throw new Error('resync');
-        out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)));
+        out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)), ...await this.sheetOps(entry.child, entry.slot, delta.sheets));
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
       } catch {
         // New child document (or lost world): fresh snapshot replaces the owner's child.
@@ -125,7 +136,7 @@ export class MirrorFrames {
           const next = { slot, owner, child, loaderId };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner };
-          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records });
+          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...await this.sheetOps(child, slot, snap.sheets));
           out.resources.push(...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })));
         } catch {}
       }
