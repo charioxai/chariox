@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { KernelBrowserHost } from './kernel-browser-host.mjs';
 import { PortableEncoder } from './kernel-browser-display.mjs';
 import { launchChromium } from './browser-protection-fixture.mjs';
 import * as regions from './browser-protection-regions.mjs';
@@ -25,11 +26,14 @@ async function videoPixels(png,dpr,label,required=false) {
     const packet=await encoder.encode(png,8000000,true,'avc1.420033');
     const data=typeof packet==='string'?packet:packet.data_base64,codec=typeof packet==='string'?'vp9':'h264';
     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.${codec}`),Buffer.from(data,'base64'));
-    return await new Promise((resolve,reject)=>{
-      const child=execFile(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON??'python3',['-c',"import av,sys; frame=av.CodecContext.create(sys.argv[1],'r').decode(av.Packet(sys.stdin.buffer.read()))[0];sys.stdout.buffer.write(frame.to_ndarray(format='rgba').tobytes())",codec],{encoding:'buffer',maxBuffer:2560*1600*4+4096,timeout:10000},(error,stdout)=>error?reject(Error('MP-11 video decode failed')):resolve(stdout));
-      child.stdin.end(Buffer.from(data,'base64'));
-    });
+    return await decodeVideo(data,codec);
   }finally{await encoder.close();}
+}
+async function decodeVideo(data,codec) {
+  return await new Promise((resolve,reject)=>{
+    const child=execFile(process.env.CHARIOX_BROWSER_DISPLAY_PYTHON??'python3',['-c',"import av,sys; frame=av.CodecContext.create(sys.argv[1],'r').decode(av.Packet(sys.stdin.buffer.read()))[0];sys.stdout.buffer.write(frame.to_ndarray(format='rgba').tobytes())",codec],{encoding:'buffer',maxBuffer:2560*1600*4+4096,timeout:10000},(error,stdout)=>error?reject(Error('MP-11 video decode failed')):resolve(stdout));
+    child.stdin.end(Buffer.from(data,'base64'));
+  });
 }
 const value = 'MP11-disposable-fill-value';
 const hash = v => createHash('sha256').update(v).digest('hex');
@@ -234,6 +238,78 @@ for(const dpr of [1,2]) {
      connection.send=(method,...args)=>method==='DOM.getBoxModel'?Promise.reject(Error('fixture box failure')):send(method,...args);
      try {await assert.rejects(capture('unknown-box'),/unavailable/);await assert.rejects(mirror(),/fixture box failure/);}finally{connection.send=send;}
    }finally{clearInterval(service.expiry);service.clear();}
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: filled editor shadows refuse production artifacts and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,policy})=>{
+   await evaluate("document.querySelector('iframe').remove();Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'transparent',textShadow:'500px 0 0 magenta',background:'white'})");
+   await fill('#editor');
+   const raw=(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data;
+   const ink=pixels=>{let count=0;for(let y=300*dpr;y<330*dpr;y++)for(let x=575*dpr;x<900*dpr;x++){const i=(y*1280*dpr+x)*4;if(pixels[i]>120&&pixels[i+1]<80&&pixels[i+2]>120)count++;}return count;};
+   assert(ink(decodePng(raw,dpr).pixels)>100,'MP-11 actual filled-editor shadow paints beyond Range geometry');
+   assert(ink(await videoPixels(raw,dpr,'shadow-baseline',true))>100,'MP-11 the readable shadow survives the actual video encoder');
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`shadow-raw-dpr${dpr}.png`),Buffer.from(raw,'base64'));
+   connection.browserInstanceId='MP11-shadow-artifact-fixture';
+   const viewport={css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null};
+   await browser.reconcile(viewport,{browserBarVisible:false});
+   const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport};
+   const root=await mkdtemp(path.join(tmpdir(),'protxform-shadow-host-'));
+   const host=new KernelBrowserHost(root,{chromium:{child:{exitCode:null,signalCode:null},connection}});
+   const previousFlag=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+   host.browser=browser;host.generation=1;host.protection=policy;
+   host.tabs.set('shadow-tab',{tab_id:'shadow-tab',target_id:targetId,document_id:documentId});
+   let stream;
+   try {
+     const subscription=await host.request({op:'display_subscribe',tab_id:'shadow-tab',generation:1,device_scale_factor:dpr,bitrate:8000000,codecs:['png','vp09.00.10.08']});
+     stream=host.displays.get(subscription.subscription_id);
+     let encoded=0;const encode=stream.encoder.encode.bind(stream.encoder);
+     stream.encoder.encode=(...args)=>{encoded++;return encode(...args)};
+     const next=()=>host.request({op:'screenshot',generation:1,display_subscription_id:subscription.subscription_id,after_sequence:stream.sequence});
+     const artifact=async()=>{await browser.reconcile(viewport,{browserBarVisible:false});return browser.captureArtifact(request)};
+     const released=[];
+     for(const [surface,run] of [['video',next],['artifact',artifact]]) {
+       try {await run();released.push(surface);}catch(error){assert.match(error.message,/unavailable/);}
+     }
+     assert.deepEqual(released,[],'MP-11 neither production surface may release unproved shadow coverage');
+     assert.equal(stream.sequence,0);assert.equal(encoded,0,'MP-11 refusal occurs before encoding');
+     const gate=new regions.ProtectionGate(()=>regions.measurePresented(browser,policy));
+     await gate.step();await gate.step();assert.equal(gate.protectionSerial,0,'MP-11 stream fence cannot adopt ambiguous paint geometry');
+     // This is temporary capture refusal, not target retirement. Removing the
+     // shadow restores the existing exact-field mask and real encoded stream.
+     await evaluate("Object.assign(document.querySelector('#editor').style,{textShadow:'none',color:'magenta'})");
+     const image=await artifact();assert.equal(image.redaction,'fill_targets');
+     const packet=(await next()).display_frame;
+     assert.equal(packet.kind,'video');assert.equal(packet.codec,'vp09.00.10.08');
+     const decoded=await decodeVideo(packet.data_base64,'vp9');
+     assert.equal(ink(decoded),0,'MP-11 resumed video has no displaced credential text');
+     const index=(310*dpr*1280*dpr+150*dpr)*4;
+     assert([...decoded.subarray(index,index+3)].every(channel=>channel<5),'MP-11 resumed video covers actual field overflow');
+     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`shadow-resumed-dpr${dpr}.png`),Buffer.from(image.data_base64,'base64'));
+   }finally{
+     clearInterval(host.mirror.expiry);host.mirror.clear();await stream?.close();
+     if(previousFlag===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previousFlag;
+     await rm(root,{recursive:true,force:true});
+   }
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: descendant and inherited filled-editor shadows refuse capture`,()=>setup(dpr,async({fill,evaluate,capture})=>{
+   await fill('#editor');
+   await evaluate(`document.querySelector('#editor').innerHTML='<span style="text-shadow:-400px 0 8px magenta,500px 0 0 cyan">${value}</span>'`);
+   await assert.rejects(capture('descendant-shadow'),/unavailable/);
+   await evaluate("document.querySelector('#editor').firstChild.style.textShadow='none';document.body.style.textShadow='500px 0 0 magenta'");
+   await capture('shadow-override'); // The filled text explicitly removes the inherited shadow.
+   await evaluate("document.querySelector('#editor').firstChild.style.textShadow='inherit'");
+   await assert.rejects(capture('inherited-shadow'),/unavailable/);
+   await evaluate("document.body.style.textShadow='none'");
+   await capture('shadow-cleared');
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: native text control shadows refuse capture while password dots remain visible`,()=>setup(dpr,async({fill,evaluate,capture})=>{
+   await fill('#password');await evaluate("document.querySelector('#password').style.textShadow='500px 0 0 magenta'");
+   await capture('password-shadow');
+   for(const selector of ['#plain','#area']) {
+     await fill(selector);await evaluate(`document.querySelector('${selector}').style.textShadow='500px 0 0 magenta'`);
+     await assert.rejects(capture('control-shadow'),/unavailable/);
+     await evaluate(`document.querySelector('${selector}').style.textShadow='none'`);
+     await capture('control-shadow-cleared');
+   }
  }));
  test(`MP-08/MP-11 DPR${dpr}: overflowing filled contenteditable text is covered in image and video`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate,url})=>{
    await evaluate("Object.assign(document.querySelector('#editor').style,{width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'magenta',background:'white'})");
