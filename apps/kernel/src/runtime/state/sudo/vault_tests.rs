@@ -563,6 +563,17 @@ async fn a06_generation_retry_refuses_scheme_and_port_rebinding() {
         .unwrap();
     assert_eq!(same["credential_id"], first["credential_id"]);
     assert_eq!(same["created"], false);
+    let credential = crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .get(first["credential_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(credential.allowed_hosts, ["https://127.0.0.1"]);
+    // Default-port normalization preserves the saved origin through login.
+    let service = f.state.home_runtime_secret_service().unwrap();
+    assert!(service
+        .validate_browser_secret_input_for_target_url(&credential.id, "https://127.0.0.1:443/login")
+        .is_ok());
     f.state.shutdown_cleanup().await.unwrap();
 }
 

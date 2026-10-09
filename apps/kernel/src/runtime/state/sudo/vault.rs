@@ -62,7 +62,7 @@ impl KernelRuntimeState {
         if !(16..=128).contains(&args.length) {
             return Err(error("generated password length must be 16-128"));
         }
-        let (origin, host) = generation_origin(&args.origin)?;
+        let origin = generation_origin(&args.origin)?;
         // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
         if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
             != crate::session::DEFAULT_LOCAL_USER_ID
@@ -80,7 +80,7 @@ impl KernelRuntimeState {
         let handle = generated_handle(&turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, &turn, &host, &origin);
+            return committed(&existing, &turn, &origin);
         }
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_generate")
@@ -100,7 +100,7 @@ impl KernelRuntimeState {
             source: crate::config::UserCredentialSourceConfig::Vault {
                 key: handle.clone(),
             },
-            allowed_hosts: vec![host.clone()],
+            allowed_hosts: vec![origin.clone()],
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
             injection: crate::config::UserCredentialInjectionConfig::Browser,
             metadata: Some(UserCredentialMetadataConfig {
@@ -131,7 +131,7 @@ impl KernelRuntimeState {
             }),
             // A concurrent retry committed first: return that handle, never a new value.
             Err(stored) => match registry.get(&handle)? {
-                Some(existing) => committed(&existing, &turn, &host, &origin),
+                Some(existing) => committed(&existing, &turn, &origin),
                 None => Err(stored),
             },
         }
@@ -142,14 +142,13 @@ impl KernelRuntimeState {
 fn committed(
     existing: &UserCredentialConfig,
     turn: &KernelSudoTurn,
-    host: &str,
     origin: &str,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
     if metadata.and_then(|m| m.created_by_kind.as_deref()) != Some(GENERATED_KIND)
         || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(turn.agent_id.as_str())
         || metadata.and_then(|m| m.session_id.as_deref()) != Some(turn.session_id.as_str())
-        || existing.allowed_hosts != [host]
+        || existing.allowed_hosts != [origin]
     {
         return Err(error(
             "request_id already names a different credential; use a new request_id",
@@ -175,8 +174,8 @@ fn generated_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
     format!("gen-{}", &format!("{digest:x}")[..24])
 }
 
-/// HTTPS origins, or HTTP on loopback only; the credential binds host[:port].
-fn generation_origin(raw: &str) -> Result<(String, String), DaemonError> {
+/// HTTPS origins, or HTTP on loopback only; login binds the canonical origin.
+fn generation_origin(raw: &str) -> Result<String, DaemonError> {
     let url = url::Url::parse(raw.trim()).map_err(|_| error("origin must be a URL"))?;
     let host = url.host_str().unwrap_or_default().to_string();
     let loopback = host == "localhost"
@@ -191,11 +190,7 @@ fn generation_origin(raw: &str) -> Result<(String, String), DaemonError> {
     {
         return Err(error("origin must be https (or http on loopback)"));
     }
-    let bound = match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    };
-    Ok((url.origin().ascii_serialization(), bound))
+    Ok(url.origin().ascii_serialization())
 }
 
 fn generate_password(length: usize, symbols: bool) -> String {
@@ -251,11 +246,11 @@ mod tests {
     fn generation_binds_secure_origins_and_meets_every_class() {
         assert_eq!(
             generation_origin("https://example.com/signup").unwrap(),
-            ("https://example.com".into(), "example.com".into())
+            "https://example.com"
         );
         assert_eq!(
-            generation_origin("http://127.0.0.1:8123").unwrap().1,
-            "127.0.0.1:8123"
+            generation_origin("http://127.0.0.1:8123").unwrap(),
+            "http://127.0.0.1:8123"
         );
         for refused in [
             "http://example.com",
