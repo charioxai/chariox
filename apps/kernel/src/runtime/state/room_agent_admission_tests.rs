@@ -54,6 +54,7 @@ fn room_admission_saved_artifact_run_preserves_peer_metadata() {
                     let peer = KernelSessionService::new(&mut app)
                         .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub"))
                         .unwrap();
+                    crate::test_support::admit_room_test_turn(&mut app, room.id(), actor.id());
                     let child = KernelSessionService::new(&mut app)
                         .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub")
                             .with_spawned_by_agent_id(actor.id()))

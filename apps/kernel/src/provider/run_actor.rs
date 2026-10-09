@@ -42,6 +42,7 @@ use super::{
 
 #[derive(Clone)]
 pub(crate) struct ProviderRunActorMailbox {
+    pub(crate) submit_epoch: u64,
     operation_lanes: ProviderRunOperationLanes,
     native_interaction_bridge: ProviderNativeInteractionBridgeStore,
     workers: Arc<Mutex<BTreeMap<String, tokio_mpsc::Sender<ProviderRunActorCommand>>>>,
@@ -61,6 +62,7 @@ pub(crate) struct ProviderRunActorMailbox {
 impl Default for ProviderRunActorMailbox {
     fn default() -> Self {
         Self {
+            submit_epoch: rand::random(),
             operation_lanes: ProviderRunOperationLanes::default(),
             native_interaction_bridge: ProviderNativeInteractionBridgeStore::default(),
             workers: Arc::new(Mutex::new(BTreeMap::new())),

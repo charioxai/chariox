@@ -100,9 +100,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// Version73 adds bounded Browser artifacts, opaque upload bytes and bounded Computer holds (MP-08/MP-10/MP-11).
-/// A v70 worker cannot decode these controller variants; reject it before dispatch.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 73;
+/// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 82;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -581,6 +580,23 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
+    ListWorkflowNotificationSources {
+        protocol_version: u32,
+    },
+    SubscribeWorkflowNotifications {
+        protocol_version: u32,
+        source_workflow_ref: String,
+        target_ref: crate::local::WorkflowNotificationSubscription,
+    },
+    UnsubscribeWorkflowNotifications {
+        protocol_version: u32,
+        subscription_id: String,
+    },
+    DeliverWorkflowNotification {
+        protocol_version: u32,
+        subscription_id: String,
+        envelope: crate::local::WorkflowNotificationEnvelope,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -985,6 +1001,17 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    WorkflowNotificationSources {
+        protocol_version: u32,
+        sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
+    },
+    WorkflowNotificationSubscribed {
+        subscription: crate::local::WorkflowNotificationSubscription,
+    },
+    WorkflowNotificationUnsubscribed,
+    WorkflowNotificationAccepted {
+        ack: crate::local::WorkflowNotificationAck,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1274,7 +1301,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1311,7 +1338,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1333,7 +1360,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1399,7 +1426,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1443,7 +1470,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1618,7 +1645,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1923,7 +1950,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 450);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1950,7 +1977,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -1988,7 +2015,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 73);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2037,6 +2064,89 @@ mod project_environment_export_shapes {
         assert_eq!(
             serde_json::to_value(response).unwrap(),
             serde_json::json!({"kind":"leased_project_environment_used","exists":true})
+        );
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_82_shapes {
+    use super::*;
+    use crate::local::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp10_completion_peer_82_snapshot() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        let sub = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
+            subscription_id: "sub".into(),
+            source_id: "source".into(),
+            owner_user_id: "owner".into(),
+            source_kernel_id: "source-kernel".into(),
+            target_kernel_id: "target-kernel".into(),
+            target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
+            session_id: "session".into(),
+            workflow_id: "workflow".into(),
+            publication_id: "publication".into(),
+            endpoint_id: "endpoint".into(),
+            queue_id: "queue".into(),
+            ttl_days: 7,
+            source_available: true,
+            events: WorkflowNotificationEvents::Both,
+            filters: serde_json::json!({"repo":"fixture/repo","pr":[873]}),
+        };
+        let env = WorkflowNotificationEnvelope {
+            source_id: "source".into(),
+            occurrence_id: "run".into(),
+            output: None,
+            status: WorkflowNotificationStatus::Failure,
+            subject: Some("github:fixture/repo/pull/873".into()),
+            fields: serde_json::json!({"status":"failure","repo":"fixture/repo","pr":873}),
+            ancestry: vec!["source-workflow".into()],
+            deadline_ms: 604800000,
+        };
+        let requests = vec![
+            RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: 82,
+            },
+            RelayPeerRequest::SubscribeWorkflowNotifications {
+                protocol_version: 82,
+                source_workflow_ref: "source".into(),
+                target_ref: sub.clone(),
+            },
+            RelayPeerRequest::DeliverWorkflowNotification {
+                protocol_version: 82,
+                subscription_id: "sub".into(),
+                envelope: env,
+            },
+            RelayPeerRequest::UnsubscribeWorkflowNotifications {
+                protocol_version: 82,
+                subscription_id: "sub".into(),
+            },
+        ];
+        let responses = vec![
+            RelayPeerResponse::WorkflowNotificationSources {
+                protocol_version: 82,
+                sources: vec![WorkflowNotificationSourceSummary {
+                    source_id: "source".into(),
+                    kernel_id: "kernel".into(),
+                    session_id: "session".into(),
+                    workflow_id: "workflow".into(),
+                    name: "Reviewer".into(),
+                    events: WorkflowNotificationEvents::Both,
+                    fields: vec!["repo".into(), "pr".into()],
+                    available: true,
+                }],
+            },
+            RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },
+            RelayPeerResponse::WorkflowNotificationAccepted {
+                ack: WorkflowNotificationAck::Accepted,
+            },
+            RelayPeerResponse::WorkflowNotificationUnsubscribed,
+        ];
+        let wire = serde_json::json!({"requests":requests,"responses":responses});
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+            "9851f534c590df1a98d61e1cd5090eab2f167e08da41ad42f37f14efd09a54ec"
         );
     }
 }

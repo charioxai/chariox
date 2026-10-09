@@ -85,6 +85,7 @@ export type AppAutomationSummary = {
   endpoint_id: string
   queue_id: string
   scheduled: boolean
+  delivery_mode: "queue" | "inject"
   status: "active" | "paused" | "broken" | "disabled"
 }
 

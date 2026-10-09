@@ -17,6 +17,7 @@ impl KernelRuntimeState {
                     "workflows": if args.include_workflows.unwrap_or(true) { session.workflows().to_vec() } else { Vec::new() },
                     "workflow_runs": if args.include_workflows.unwrap_or(true) { session.workflow_runs().to_vec() } else { Vec::new() },
                     "activity": self.agent_activity_for_session(&session),
+                    "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()), None)?,
                 "pending_interactions": session.active_interactions().iter().map(|interaction| serde_json::json!({ "id": interaction.id(), "agent_id": interaction.agent_id(), "kind": interaction.kind() })).collect::<Vec<_>>(),
                 }),
             });

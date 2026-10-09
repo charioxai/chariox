@@ -1,6 +1,8 @@
 //! Atomic App occurrence -> existing workflow queue handoff. Runtime callers hold
 //! the workflow transition mutex and SessionService write guard until completion.
 mod preparation;
+pub(super) mod workflow_completion;
+pub(crate) use workflow_completion::PreparedNotification;
 
 use super::workflow_runtime::{write_workflow_runtime_transition, WorkflowRuntimeTransitionWrite};
 use super::{DurableKernelStateStore, DurableWorkflowSessionWrite, DurableWriterRequest};
@@ -73,6 +75,22 @@ impl std::fmt::Debug for AppEventQueueRequest {
     }
 }
 impl DurableKernelStateStore {
+    /// Corroborate the source-neutral durable admission before steering. Client
+    /// publication envelopes alone never authorize notification injection.
+    pub(crate) fn notification_queue_is_owned(
+        &self,
+        session: &crate::session::RuntimeSession,
+        queued: &crate::session::WorkflowQueuedPrompt,
+    ) -> std::result::Result<bool, DaemonError> {
+        let Some(inv) = queued.publication_invocation() else {
+            return Ok(false);
+        };
+        let connection = self.lock_connection("notification.delivery.authority")?;
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM app_outbox WHERE receipt_id=?1 AND owner_id=?2 AND queued_session_id=?3 AND queued_prompt_id=?4 AND state='queued' AND source_kind IN ('app_event','workflow_completion'))",
+            rusqlite::params![inv.invocation_id,inv.caller.get("owner_id").and_then(serde_json::Value::as_str).unwrap_or(""),session.id(),queued.id()], |r| r.get(0))
+            .map_err(|e| super::workflow_notifications::error(e.to_string()))
+    }
+
     /// Scoped, provisional discovery on the existing query connection. Queueing
     /// repeats every receipt, automation, target and signer check on the writer.
     pub(crate) fn app_event_candidate(
@@ -190,28 +208,53 @@ fn apply(
     }
 }
 fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> Result<()> {
-    let now = crate::session::unix_epoch_ms();
-    let event_id = format!("state_evt_{now}_{}", super::rand_suffix());
-    let metadata=serde_json::json!({"owner_id":prepared.after.host_daemon_id(),"session_id":prepared.after.id(),
-        "reason":if recovery {"app_event_queue_reconciled"} else {"app_event_queued"},
-        "receipt_id":prepared.candidate.receipt.receipt_id}).to_string();
-    write_workflow_runtime_transition(
+    write_queue_state_in(
         tx,
-        WorkflowRuntimeTransitionWrite {
-            event_id: &event_id,
-            event_kind: "workflow.runtime.updated",
-            timestamp_ms: now,
-            payload_json: &metadata,
-            owner_id: prepared.after.host_daemon_id(),
-            session_id: prepared.after.id(),
-            hot_entities: &prepared.encoded.hot_entities,
-            workflow_runs: &prepared.encoded.workflow_runs,
-            delivery_receipts: &prepared.encoded.delivery_receipts,
-            prompt_state_jsons: &[],
+        &prepared.after,
+        &prepared.encoded,
+        if recovery {
+            "app_event_queue_reconciled"
+        } else {
+            "app_event_queued"
         },
+        &prepared.candidate.receipt.receipt_id,
     )?;
     Ok(())
 }
+/// One ordinary queue persistence path. Source adapters retain their receipt,
+/// ownership and CAS checks and call this inside the same writer transaction.
+pub(crate) fn write_queue_state_in(
+    tx: &Transaction<'_>,
+    after: &crate::session::RuntimeSession,
+    encoded: &DurableWorkflowSessionWrite,
+    reason: &str,
+    receipt_id: &str,
+) -> std::result::Result<(), DaemonError> {
+    let now = crate::session::unix_epoch_ms();
+    let metadata=serde_json::json!({"owner_id":after.host_daemon_id(),"session_id":after.id(),"reason":reason,"receipt_id":receipt_id}).to_string();
+    write_workflow_runtime_transition(
+        tx,
+        WorkflowRuntimeTransitionWrite {
+            event_id: &format!("state_evt_{now}_{}", super::rand_suffix()),
+            event_kind: "workflow.runtime.updated",
+            timestamp_ms: now,
+            payload_json: &metadata,
+            owner_id: after.host_daemon_id(),
+            source_owner_id: after.owner_user_id(),
+            session_id: after.id(),
+            hot_entities: &encoded.hot_entities,
+            workflow_runs: &encoded.workflow_runs,
+            delivery_receipts: &encoded.delivery_receipts,
+            prompt_state_jsons: &[],
+        },
+    )
+    .map(|_| ())
+    .map_err(|e| DaemonError::LocalTransport {
+        operation: "notification queue commit",
+        message: e.to_string(),
+    })
+}
+
 fn reconcile_commit(
     connection: &mut Connection,
     prepared: &PreparedAppEvent,

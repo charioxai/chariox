@@ -428,11 +428,8 @@ async fn room_boundaries() {
         .unwrap()
         .to_string()
     };
-    assert!(
-        room_command(&router, &auth_b, "agent spawn d --provider dev-stub")
-            .await
-            .ok
-    );
+    let grandchild = room_command(&router, &auth_b, "agent spawn d --provider dev-stub").await;
+    assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
     for command in [
         "agent alias d stolen",
         "agent delete d",
@@ -640,6 +637,7 @@ fn room_admission_writer_failure_prevents_agent_creation() {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let connection = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
     connection.execute_batch("CREATE TRIGGER fail_room_intent BEFORE INSERT ON durable_state_events WHEN NEW.kind = 'room.obligation.registered' BEGIN SELECT RAISE(FAIL, 'injected room registration failure'); END;").unwrap();
     // Base compatibility: old decoders ignore the authoritative creator field.
@@ -784,6 +782,7 @@ fn assert_post_creation_failure_identifies_resource(kind: &str) {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let db = rusqlite::Connection::open(app.durable_state_store().path()).unwrap();
     db.execute_batch(&format!("CREATE TRIGGER fail_receipt BEFORE INSERT ON durable_state_events WHEN NEW.kind='{kind}' BEGIN SELECT RAISE(FAIL, 'effect metadata failure'); END;")).unwrap();
     let failed = crate::app::KernelSessionService::new(&mut app)
@@ -824,6 +823,7 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
             workspace.to_string_lossy(),
         ))
         .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), actor.id());
     let request = || {
         CreateAgentRequest::new(session.id(), "dev-stub")
             .with_alias("duplicate")

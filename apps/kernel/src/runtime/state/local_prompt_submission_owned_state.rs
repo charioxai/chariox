@@ -118,7 +118,7 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue {
+        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())

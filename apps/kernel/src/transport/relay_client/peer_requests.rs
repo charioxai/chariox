@@ -236,6 +236,81 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
+    let notification_request = matches!(
+        &request,
+        RelayPeerRequest::ListWorkflowNotificationSources { .. }
+            | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
+            | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
+            | RelayPeerRequest::DeliverWorkflowNotification { .. }
+    );
+    if notification_request {
+        // The existing relay projects home-kernel claims to a bound Machine
+        // identity for peer requests (the same seam used by execution leases).
+        let identity = match require_bound_managed_context_sender(
+            caller_identity.as_ref(),
+            &encrypted_request,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                }
+            }
+        };
+        let Some(sender) = canonical_peer_daemon_id(from_daemon_id) else {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "unauthorized",
+                    "workflow notification sender kernel invalid",
+                    false,
+                )),
+            };
+        };
+        if sender.starts_with("slice:")
+            || identity.subject.trim().is_empty()
+            || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
+                && identity.subject != sender)
+        {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "unauthorized",
+                    "workflow notification sender kernel mismatch",
+                    false,
+                )),
+            };
+        }
+        let Some(owner) = router.notification_peer_owner(identity) else {
+            return RelayRequestOutcome {
+                encrypted_response: None,
+                error: Some(relay_error(
+                    "unauthorized",
+                    "workflow notifications require the same authenticated owner and realm",
+                    false,
+                )),
+            };
+        };
+        state.write().await.remember_peer_public_key(
+            stable_peer_daemon_id(from_daemon_id),
+            requester_public_key.clone(),
+        );
+        let response = match router.relay_workflow_notification(
+            stable_peer_daemon_id(from_daemon_id),
+            &owner,
+            request,
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                }
+            }
+        };
+        return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+    }
     #[cfg(test)]
     let test_peer_request_release = {
         let state = state.read().await;
@@ -287,6 +362,12 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     let response = match request {
+        RelayPeerRequest::ListWorkflowNotificationSources { .. }
+        | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
+        | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
+        | RelayPeerRequest::DeliverWorkflowNotification { .. } => {
+            unreachable!("notification requests handled above")
+        }
         RelayPeerRequest::RoomBrowserController {
             session_id,
             slice_id,

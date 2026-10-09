@@ -44,6 +44,7 @@ mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -82,3 +83,5 @@ fn history_page_entry(
         },
     }
 }
+
+mod agent_lifecycle;

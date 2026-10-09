@@ -114,10 +114,41 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
     // Old pending occurrences cannot acquire an invented invocation. Retain
     // their immutable receipt identity/digest, but release queue/payload capacity
     // so a page of unsupported rows cannot starve current-contract deliveries.
+    // Protocol 437 generalizes receipts. Run this before the legacy App-only
+    // invocation repair so kernel completion receipts survive restart.
+    for (table, column, declaration) in [
+        (
+            "app_automations",
+            "source_kind",
+            "TEXT NOT NULL DEFAULT 'app_event'",
+        ),
+        ("app_automations", "notification_json", "TEXT"),
+        (
+            "app_automations",
+            "delivery_mode",
+            "TEXT NOT NULL DEFAULT 'queue' CHECK(delivery_mode IN ('queue','inject'))",
+        ),
+        (
+            "app_outbox",
+            "source_kind",
+            "TEXT NOT NULL DEFAULT 'app_event'",
+        ),
+    ] {
+        let exists: bool = connection.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"),
+            [column],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+    }
     connection.execute_batch(
         "UPDATE app_outbox SET state='failed',payload_json=NULL,invocation_json=NULL,
         revision=CASE WHEN revision<9223372036854775807 THEN revision+1 ELSE revision END
-        WHERE state IN ('accepted','retryable') AND invocation_json IS NULL;",
+        WHERE source_kind='app_event' AND state IN ('accepted','retryable') AND invocation_json IS NULL;",
     )?;
     Ok(())
 }

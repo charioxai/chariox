@@ -1,5 +1,37 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+Client grants retain the existing 30-minute lifetime, including keyed issuance
+and renewal. Initial `/relay cloud client-token` commands issued by a local
+account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
+The shared client authenticates that local endpoint from the same private CLI
+profile, checks the issuing kernel ID and renewal capability, and renews the
+admitted subject, key, session and target through that kernel. Runtime requests
+and events still travel directly to the target over the encrypted relay lanes.
+A machine-only managed target must never replace the account issuer.
+
+If the original issuer is unavailable, the client displays a notice and retries
+within the existing grant lifetime without changing authority or dropping the
+admission. Recovery resumes renewal; reaching the original expiry ends the
+session with an issuer-unavailable message. Authorization refusal still ends
+admission promptly. The issuer route is public endpoint/ID metadata, not a
+credential, and accepts only local Unix or loopback WebSocket endpoints. Moving
+the launch command to another machine does not transfer the issuing profile or
+make its local endpoint reachable. Legacy launch commands without issuer metadata
+cannot automatically discover an account issuer from a machine-only target;
+they retain their original lifetime with the existing warning/until-expiry path.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,
@@ -423,6 +455,64 @@ so a failing receipt cannot batch-roll back those startup writes.
 Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
+
+## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+`agent_tasks` in the shared session snapshot. The kernel owns their SQLite
+ledger, attributed inbox, obligations and exact provider acceptance receipts.
+Task prompt IDs stay stable through admission, queueing, promotion and replay;
+provider-native settlement must reconcile the same task. New user work cannot
+hide an older incomplete task. The shared TUI status prioritizes blocked tasks
+and shows wait reason/deadline and aggregate unresolved obligations. Web and
+native clients must consume the same projection; client integration is required
+before claiming visibility on those clients.
+
+Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
+`unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
+`task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
+or mutation. A valid yield names admitted completion registrations, covers all
+unresolved obligations and has a finite future deadline. Waiting commits only
+when the official provider turn settles. Source completion/loss and overdue
+waits wake the retained task; ACK and provider acceptance remain distinct.
+
+A final answer with unresolved obligations gets one persisted corrective turn,
+then blocks if still invalid. Unfinished work without a live wake source is
+corrected or shown as blocked, never silently left idle. The kernel sweeps every
+30 seconds. Three consecutive settled wake turns without real progress block
+further automatic wakes; the third turn may still handle progress. A handled
+result or verified public artifact resets the counter; repeated status, ACK,
+cursor or deadline changes do not. Fifteen minutes waiting without progress
+produces a notice. Unconfirmed provider delivery blocks within two minutes and
+requires reconciliation of the original receipt; uncertainty never permits
+blind replay. Damaged ledger/source rows are retained and quarantined.
+MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
+window. Repeated refusals while idle have a separate bounded escalation clock;
+an active recipient turn clears that clock. Unsupported or refused steering
+stays queued through long turns and retries when the recipient becomes idle.
+Steer rejections do not start the idle-refusal clock; idle refusals start it at
+receipt time. A damaged refusal clock is retained and quarantines only its
+own delivery through the owner-action path; supervision of other Rooms continues.
+
+`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+messages wait behind active work; idle/yielded receivers wake. Urgent messages
+use the existing exact-turn steer path, with rejected/unsupported steering
+retained for a later wake and uncertainty pinned. Explicitly stopped receivers
+keep pending items. `reply_requested=true` creates one correlated reply
+obligation; ordinary messages must not produce courtesy feedback loops.
+
+Blocked tasks create one kernel-owned **Agent needs your action** interaction,
+projected to every session client. In the TUI, open it with F8, Ctrl+G or
+`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
+revalidates the blocked revision and retained receipts; progress or reconnect
+alone cannot resume. Cancellation retains obligations until actual owned
+resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
+task; an older independent wait still receives its source completion or deadline
+wake. Historical task ordering is not an agent stop disposition.
+Legacy `/agent task` commands still address Meta tasks;
+they are not selectors for regular `agent_tasks`. Process/timer watcher sources
+belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
+paths fail visibly instead of fabricating acceptance.
 
 ## 3.4 Workflow Coordination Semantics
 
@@ -2224,8 +2314,8 @@ Workflow trigger and deployment direction:
   `event_action` refuses it for bindings persisted before 364. Older peers,
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
-- protocol 365: direct workflow event bindings are retired. Events reach
-  workflows only through Apps: an App inbox route (protocol 358) receives the
+- protocol 365: direct workflow event bindings are retired. Initially events reached
+  workflows only through Apps (protocol 452 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -2640,9 +2730,10 @@ Workflow trigger and deployment direction:
   automatic mutation replay. Numeric versions never replace capability checks.
   This describes the pre-KA framed Unix transport. KA protocol 404 replaces
   that listener with the shared kernel websocket at `ws+unix://`, admitted by
-  OS process identity and session grants. First-party terminal control uses
-  the authenticated TCP or relay websocket path; an external Unix grant does
-  not authorize global disposable-worker or managed-environment controls.
+  OS process identity and access grants. Protocol 451 grants ordinary authority
+  throughout the local kernel, including its managed execution environments.
+  First-party terminal control uses the authenticated TCP or relay websocket
+  path; external Unix grants cannot attach to another kernel.
 - protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),
@@ -2705,32 +2796,55 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, session, and lifetime.
+  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
+  and extension decisions, established from the same OS-verified holder:
+  `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
+  Linux start ticks or macOS unique process ID), `process_exec_version` (macOS
+  exec version, zero on Linux), and optional `provider_harness` (`codex`,
+  `claude`, or `opencode`). Harness recognition matches the configured native
+  executable (including Codex's official npm native package); unknown paths
+  omit it. This field is attribution, not vendor/signature attestation or new
+  authority. Text remains display-only, with quoted/escaped executable paths;
+  clients must never parse requester identity from it. TUI labels use the
+  structured object and show identity unavailable for old kernels. New access
+  requests and kernel-wide approval replies require protocol 470; refusals
+  remain supported on protocol 451 and legacy session-scoped replies retain
+  their existing route. Other client/relay/native minimums are unchanged.
+  MP-08 / MP-10 / MP-11 focused drill:
+  `python3 apps/cli/scripts/live-kernel-access-requester-drill.py --kernel <built-kernel> --cli <compiled-cli> --codex-profile <approved-product-linked-profile> --source <commit> --output <external-evidence-dir>`.
+  This real outside-Codex drill refuses the grant through TUI keyboard input,
+  never approving access or changing a shared provider login. `--local-cli`
+  is supplementary regression evidence only, not provider acceptance.
+  Approve needs a fresh
   terminal passkey; the critical-approval remember window never applies.
   The owner may choose a lifetime through the approve answer's numeric
   `custom_reply`. Refuse needs no passkey.
 
   `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
-  a credential. A grant authorizes the live holder and its OS descendants
-  for one session. Kernel-launched processes receive no external authority,
-  even if the holder is an ancestor of the kernel. Session IDs, references,
-  attachments, and every session in a batch are checked. `ListSessions`
-  returns only the granted session. Global requests fail closed. Saved workflow
-  artifacts live in kernel/user registries, so direct artifact creation, lookup,
-  enumeration, mutation, import, and artifact-target export are outside external
-  session grants even when their envelopes include a session ID. Session-local source
-  Apply/Run and exports targeting a workflow remain available. The scope
-  match covers every request variant without a fallback, so an undecided new
-  request fails compilation. A grant cannot answer kernel-owned decisions
-  or critical approvals, or submit a passkey.
+  a credential. Protocol 451 removes `session_id` from this metadata. A grant
+  authorizes the live holder and its OS descendants across the whole LOCAL
+  kernel: every ordinary session/global request a terminal can make, including
+  session creation/attachment, agent prompts/spawns, workflows, App installs and
+  bindings, routine approvals and Vault use through kernel-owned flows.
+  Kernel-launched agents receive no external authority even if the holder is
+  their ancestor. Normal ownership and membership checks still apply.
+  The holder cannot answer critical/passkey-required approvals or payments,
+  mint/extend grants, change the passkey/access configuration, read/export
+  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
+  leased-worker execution remains the local kernel’s responsibility.
+  A holder may request `/sudo` for a local agent in any local session; each
+  request requires a fresh terminal popup confirmation. No remember window
+  applies and the holder never submits the passkey or becomes a sudoagent.
 
   `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
-  terminal-only and scoped to the caller's owned grants; a null grant id
-  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  available to terminals and local grant holders and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
   Workflow controls also recheck after provider-lane and cancellation-settlement
@@ -2747,12 +2861,9 @@ Workflow trigger and deployment direction:
   or home binding persistence. Local controller jobs recheck under the supervisor
   ownership lock; computer helpers recheck inside their blocking process queue.
   A Unix connection binds to its first approved or admitted grant and never
-  switches authority. Session references resolve once to an authorized session
-  ID before dispatch. A later approval on that socket creates a grant for
-  use on a fresh connection; existing subscriptions and queued frames keep
-  their original grant. Fresh connections select an eligible grant matching
-  the requested session. For unscoped requests, a holder's own grant takes
-  precedence over inherited grants.
+  switches authority. Fresh connections prefer the holder’s own eligible
+  process grant over an ancestor’s. There is no session-based selection or
+  response filtering. Session end does not revoke a local-kernel grant.
   Grants stay in memory and do not survive a restart. Durable grant events
   record metadata and outcomes; terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
@@ -2760,10 +2871,14 @@ Workflow trigger and deployment direction:
   TCP and relay access requests return a pointer to the Unix socket; neither
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
-  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  `ws+unix:///absolute/socket`. `chariox access request
   [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
-  the popup and prints public grant metadata. The default holder is the
-  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
+  holder is the nearest installed official provider in the CLI launcher's
+  OS-verified ancestry, including native Codex behind its npm launcher. Unknown
+  programs retain the grandparent fallback and the External program label.
+  Selection preserves exact PID/start/exec identity and grant admission fences.
+  Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
@@ -2773,8 +2888,8 @@ Workflow trigger and deployment direction:
 
   ```toml
   [kernel_access]
-  grant_default_minutes = 30
-  grant_max_minutes = 240
+  grant_default_minutes = 480
+  grant_max_minutes = 1440
   grant_extend_notice_minutes = 5
   request_timeout_minutes = 10
   ```
@@ -2798,7 +2913,7 @@ Workflow trigger and deployment direction:
   Terminal authority follows the admitted `terminal` connection class, rather
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
-  access; approved external peers keep the process-bound, session-scoped grant
+  access; approved external peers keep the process-bound, whole-local-kernel grant
   path from protocol 404 and cannot answer critical approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
@@ -2826,7 +2941,7 @@ Workflow trigger and deployment direction:
   No spawned/forked agent inherits elevation.
 - protocol 415: a live external grant holder may send
   `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
-  resolves the exact target to the granted session and raises the same `sudo`
+  resolves the exact local target agent and its session and raises the same `sudo`
   popup, naming the OS-established executable/PID, target/session and full
   requester-supplied prompt. Only host terminals answer it. The outcome is
   `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.
@@ -3160,3 +3275,64 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### Workflow completion notifications — local 452 / relay peer 82 (MP-08 / MP-10 / MP-11)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+Peer 82 adds owner-bound `ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
+
+Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
+from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+`chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
+current task and prompt IDs; hidden turn context supplies both. Independent
+user prompts retain separate task records. Work can be working, waiting on
+admitted named sources with a future deadline, blocked on an explicit owner
+action, done, or owner-cancelled. Cancellation is never successful completion.
+
+Obligation/registration, wait intent, event admission and delivery intent commit
+through the shared SQLite writer. Native provider settlement commits the wait;
+a result racing it remains in the inbox. Done requires public output and no
+unresolved obligation. One persisted correction is permitted; another invalid
+end blocks on one kernel-owned interaction. Provider failures also block.
+The kernel sweeps every30 seconds; three consecutive wakes without handling a
+real result block;15 minutes without progress notifies attached/reconnecting
+clients; uncertain submission escalates after2 minutes without replay.
+
+`send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
+messages wait behind busy turns in the event inbox. Urgent delivery targets the
+exact running turn and rechecks after acquiring its provider lane. Rejected or
+unsupported steering defers to a later wake; uncertain attempts remain pinned
+and preserve recipient FIFO. Explicitly stopped receivers retain pending items.
+Structured delivery is accepted only by the existing exact finished-submit
+receipt; enqueue and inbox ACK never substitute for provider acceptance.
+Reply opt-in registers one correlated result obligation; ordinary messages
+request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
+as blocked obligations requiring exact reconciliation, without guessing success.
+
+PR10 must supply leased event execution and receipt parity before those cells
+are accepted. PR3 supplies process/timer watcher sources. These dependencies
+and the real-provider/hosted validation matrix remain acceptance gates.

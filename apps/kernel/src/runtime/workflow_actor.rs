@@ -361,6 +361,10 @@ pub(crate) fn is_workflow_command(request: &LocalDaemonRequest) -> bool {
 
 fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
     Some(match request {
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => r.session_id.clone(),
+        LocalDaemonRequest::AttachWorkflowNotification(r) => r.session_id.clone(),
+        LocalDaemonRequest::DetachWorkflowNotification(r) => r.session_id.clone(),
+        LocalDaemonRequest::ListWorkflowNotifications(r) => r.session_id.clone(),
         LocalDaemonRequest::CreateWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::CreateAgentWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::ValidateWorkflowCode(request) => request.session_id.clone(),

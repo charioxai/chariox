@@ -21,6 +21,7 @@ pub(super) struct ConfigureAppAutomation {
     pub publication_ref: String,
     pub queue_ref: Option<String>,
     pub scheduled: bool,
+    pub delivery_mode: crate::local::NotificationDeliveryMode,
 }
 impl KernelRuntimeOwnedState {
     /// Blocking ownership operation; execute on the existing bounded kernel
@@ -58,6 +59,7 @@ impl KernelRuntimeOwnedState {
                             event_name: request.event_name,
                             target,
                             scheduled: request.scheduled,
+                            delivery_mode: request.delivery_mode,
                         },
                         budget,
                     )?;

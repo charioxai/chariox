@@ -160,6 +160,7 @@ fn workflow() -> (SessionService, String, String) {
 }
 fn mutation(target: WorkflowAutomationTarget, expected: u64) -> AppAutomationMutation {
     AppAutomationMutation::Configure {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         automation_id: "automation".into(),
         expected_revision: expected,
         event_name: "changed".into(),

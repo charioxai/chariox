@@ -44,7 +44,7 @@ impl KernelRuntimeState {
         let active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
-        let Some(active_prompt) = active_prompt else {
+        let Some(mut active_prompt) = active_prompt else {
             if !force && !prompt_completed {
                 crate::logging::debug_with_fields(
                     "daemon.provider",
@@ -326,6 +326,36 @@ impl KernelRuntimeState {
             });
         }
 
+        if owned.config_projection.snapshot().room_agent_tools {
+            self.observe_git_after_prompt_completion(provider_run_id, &active_prompt)
+                .await;
+            // Git observation yields to cancellation and run replacement. Revalidate
+            // before crediting progress or settling the captured turn.
+            let current = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
+            let same_run = owned
+                .provider_store
+                .get_latest_run_for_agent(session_id, &agent_id)
+                .is_some_and(|run| run.id() == provider_run_id);
+            let Some(current) = current.filter(|p| p.id() == active_prompt.id() && same_run) else {
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: false,
+                    cancelled_prompt: false,
+                    started_next_prompt: false,
+                });
+            };
+            active_prompt = current;
+            if active_prompt.status() != crate::session::PromptStatus::Cancelling {
+                owned.record_agent_artifact_progress(
+                    session_id,
+                    &agent_id,
+                    &active_prompt,
+                    provider_run_id,
+                )?;
+            }
+        }
+
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             if !force && completion_recorded && saw_settlement_blocking_activity {
                 owned.note_prompt_settlement_requested(provider_run_id);
@@ -336,12 +366,30 @@ impl KernelRuntimeState {
                     started_next_prompt: false,
                 });
             }
+            let task_settlement = owned.settle_agent_task(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                provider_run_id,
+                true,
+            )?;
             let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
             )?;
             owned.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
+            if let Err(error) =
+                Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+            {
+                // Prompt completion is already committed. Ledger supervision
+                // errors cannot strand a promoted prompt or skip run retirement.
+                crate::logging::warn_with_fields(
+                    "daemon.agent_task",
+                    "task outcome supervision failed after prompt settlement",
+                    serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+                );
+            }
             if cancellation.released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
@@ -395,6 +443,13 @@ impl KernelRuntimeState {
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
+        let task_settlement = owned.settle_agent_task(
+            session_id,
+            &agent_id,
+            &active_prompt,
+            provider_run_id,
+            false,
+        )?;
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
         let next_queued_prompt_candidate = if provider_run_was_running {
@@ -598,6 +653,17 @@ impl KernelRuntimeState {
             };
             (completion, None)
         };
+        if let Err(error) =
+            Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
+        {
+            // Prompt completion is already committed. Ledger supervision
+            // errors cannot strand a promoted prompt or skip run retirement.
+            crate::logging::warn_with_fields(
+                "daemon.agent_task",
+                "task outcome supervision failed after prompt settlement",
+                serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+            );
+        }
         self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
             .await;
         crate::logging::debug_with_fields(

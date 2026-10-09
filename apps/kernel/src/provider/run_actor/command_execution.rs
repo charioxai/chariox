@@ -36,7 +36,9 @@ pub(super) fn execute_submit_command(
         });
     }
     if run.adapter_key() == "codex" {
-        let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
+        let (slot, mut state) = runtime_registry
+            .take_codex_runtime(&run_id)
+            .map_err(|error| error.steer_not_submitted(envelope.steering))?;
         if !envelope.steering {
             state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
                 provider_run_id: run_id.clone(),
@@ -55,7 +57,9 @@ pub(super) fn execute_submit_command(
                 resume_state: run.resume_state().clone(),
             });
         }
-        let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
+        let (slot, mut state) = runtime_registry
+            .take_claude_runtime(&run_id)
+            .map_err(|error| error.steer_not_submitted(envelope.steering))?;
         let result = submit_claude_prompt(&run, &mut state, &envelope);
         let mut resume_state = run.resume_state().clone();
         if let Some(session_id) = state.session_id() {
@@ -70,7 +74,9 @@ pub(super) fn execute_submit_command(
         });
     }
 
-    let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
+    let (slot, mut state) = runtime_registry
+        .take_opencode_runtime(&run_id)
+        .map_err(|error| error.steer_not_submitted(envelope.steering))?;
     if !envelope.steering {
         state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
             provider_run_id: run_id.clone(),

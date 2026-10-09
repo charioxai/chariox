@@ -5,6 +5,7 @@
 
 use super::*;
 
+mod agent_events;
 mod agent_messaging;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
@@ -163,10 +164,15 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
-        if self.sudo_for_auth_token(auth_token).is_ok() {
+        // Official provider harnesses cache MCP discovery before sudo begins.
+        // Advertising an interface conveys no authority: dispatch still checks
+        // the live exact sudo prompt on every invocation.
+        if matches!(provider_runs.as_slice(), [run]
+            if run.state() != crate::provider::ProviderRunState::Ended)
+        {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: "chariox_kernel_request".into(),
-                description: "Act as the host on this kernel for this sudo turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                description: "Requires a live human-authorized sudo turn; ordinary turns are denied. Act as the host on this kernel during that turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
         }
@@ -207,6 +213,7 @@ impl KernelRuntimeState {
         if matches!(provider_runs.as_slice(), [_]) {
             if self.room_agent_tools_enabled() {
                 specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
@@ -327,6 +334,12 @@ impl KernelRuntimeState {
                 return self
                     .dispatch_permission_prompt_runtime_tool_call(run, arguments)
                     .await;
+            }
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
+                let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
+                return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);

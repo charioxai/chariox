@@ -433,3 +433,10 @@ test("App slash tokenizes quoted recovery IDs while preserving input previews", 
   }
   assert.equal(parseSlashCommand('/app start "install-1')?.kind, "app")
 })
+
+// MP-08/MP-10/MP-11: actual TUI enables the shared kernel notification contract.
+test("workflow notification settings use the shared shell path", () => {
+  assert.equal(sharedShellCommandForSlashCommand("/workflow notifications"), "workflow notifications")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow notifications on retained-source"), "workflow notifications on retained-source")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow notifications-other on"), null)
+})

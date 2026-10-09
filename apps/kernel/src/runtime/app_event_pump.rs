@@ -18,6 +18,7 @@ struct State {
     delivery: Option<AppCursor>,
     maintenance: Option<AppCursor>,
     dispatch: Option<String>,
+    notification_after: Option<(String, String)>,
 }
 pub(crate) struct AppEventPass {
     state: Arc<Mutex<State>>,
@@ -36,7 +37,28 @@ impl AppEventPump {
             delivery: None,
             maintenance: None,
             dispatch: None,
+            notification_after: None,
         })))
+    }
+    /// Rotate pending injections on the existing pump, including paused/retrying
+    /// items, so a retained first page cannot starve later receipts.
+    pub(crate) fn notification_batch(
+        &self,
+        mut candidates: Vec<(String, String)>,
+        limit: usize,
+    ) -> Vec<(String, String)> {
+        candidates.sort();
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(after) = &state.notification_after {
+            let index = candidates.partition_point(|item| item <= after);
+            candidates.rotate_left(index);
+        }
+        candidates.truncate(limit);
+        state.notification_after = candidates.last().cloned();
+        candidates
     }
     pub(crate) fn wake(&self) {
         self.0
@@ -127,6 +149,19 @@ impl Drop for AppEventPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_notification_page_does_not_starve_later_items() {
+        let pump = AppEventPump::new();
+        let candidates: Vec<_> = (0..11)
+            .map(|n| ("session".to_owned(), format!("queue-{n:02}")))
+            .collect();
+        let mut observed = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            observed.extend(pump.notification_batch(candidates.clone(), 8));
+        }
+        assert_eq!(observed.len(), 11);
+    }
+
     #[test]
     fn shared_pass_keeps_wakes_and_cursors_across_cancellation() {
         let pump = AppEventPump::new();
