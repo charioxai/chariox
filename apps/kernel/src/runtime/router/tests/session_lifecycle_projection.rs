@@ -1105,3 +1105,102 @@ async fn a_page_load_never_brings_back_an_agent_a_person_deleted() {
         _ => panic!("unexpected session state response"),
     }
 }
+
+#[tokio::test]
+async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation};
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let room = session.id().to_string();
+    let other = spawn_test_agent(&mut app, &room, "reviewer", "claude-code");
+    let store = app.durable_state_store();
+    let now = crate::session::unix_epoch_ms();
+    for id in [agent.id(), other.id()] {
+        // A Sweep- or Settle-admitted task carries no owner.
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: String::new(),
+                room: room.clone(),
+                agent: id.into(),
+                prompt: format!("unowned-{id}"),
+                run: None,
+                now,
+            })
+            .unwrap();
+        let task = format!("owned-{id}");
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: room.clone(),
+                agent: id.into(),
+                prompt: task.clone(),
+                run: None,
+                now,
+            })
+            .unwrap();
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":format!("wake-{id}"), "task_id":task, "room_id":room, "agent_id":id,
+            "registration_id":format!("completion-wake-{id}"), "kind":"timer",
+            "label":"check-in", "state":"", "created_at_ms":now, "verified_at_ms":null,
+            "next_due_ms":now + 3_600_000, "interval_ms":60_000, "command":[],
+            "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null,
+            "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
+            "last_delivery":null, "last_delivered_at_ms":null,
+            "last_acknowledged_at_ms":null, "alerted_sequence":null
+        }))
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.clone(),
+                prompt: task,
+                wake,
+            })
+            .unwrap();
+    }
+    let wake_state = |id: &str| {
+        store
+            .agent_wakes(Some(&room), None)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == format!("wake-{id}"))
+            .map(|w| w.state)
+    };
+    // A removed recipient keeps no running task or pending event for the
+    // delivery sweep to retry.
+    let settled = |id: &str| {
+        let finished = store
+            .agent_tasks(Some(&room), Some(id))
+            .unwrap()
+            .iter()
+            .all(|t| matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled));
+        let pending = store.agent_pending_inbox_recipients().unwrap();
+        finished && !pending.contains(&(room.clone(), id.to_string()))
+    };
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    router
+        .runtime_state
+        .destroy_agent(other.id(), DEFAULT_LOCAL_USER_ID)
+        .await
+        .expect("deleting an agent is not blocked by its task ledger");
+    assert_eq!(wake_state(other.id()).as_deref(), Some("cancelled"));
+    assert_eq!(wake_state(agent.id()).as_deref(), Some("scheduled"));
+    assert!(settled(other.id()));
+    assert!(!settled(agent.id()), "the remaining agent keeps its task");
+
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: room.clone(),
+    });
+    let end_command = KernelCommand::from_local_request("cmd-end", None, None, &end_request);
+    let response = router
+        .dispatch(end_command, end_request)
+        .await
+        .expect("ending a Room is not blocked by its task ledger");
+    assert!(matches!(
+        response,
+        crate::local::LocalDaemonResponse::SessionEnded { .. }
+    ));
+    assert_eq!(wake_state(agent.id()).as_deref(), Some("cancelled"));
+    assert!(settled(agent.id()));
+}

@@ -450,6 +450,13 @@ impl KernelRuntimeState {
             provider_run_id,
             false,
         )?;
+        let workflow_task_pending = task_settlement.as_ref().is_some_and(|(task, _)| {
+            !matches!(
+                task.state,
+                crate::durable_state::agent_lifecycle::ExecutionState::Done
+                    | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+            )
+        });
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
         let next_queued_prompt_candidate = if provider_run_was_running {
@@ -702,7 +709,10 @@ impl KernelRuntimeState {
                 .local
                 .iter()
                 .any(|dispatch| dispatch.provider_run_id == provider_run_id);
-            if completion.completion.started_next.is_none() && !reuses_provider_run {
+            if completion.completion.started_next.is_none()
+                && !reuses_provider_run
+                && !workflow_task_pending
+            {
                 if let Ok(outcome) = owned
                     .provider_store
                     .terminate_run_provider_only(session_id, provider_run_id)

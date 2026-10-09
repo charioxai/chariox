@@ -513,14 +513,18 @@ impl KernelRuntimeOwnedState {
         if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
             return;
         }
+        let Ok(supervised_tasks) = self.supervised_workflow_targets(session_id) else {
+            return; // Failed supervision reads cannot establish orphanhood.
+        };
         let activity_mutation = self.begin_managed_activity_mutation();
         let reconciled = self
             .session_store
             .write()
-            .reconcile_live_orphaned_workflow_runs(
+            .reconcile_live_orphaned_workflow_runs_with_tasks(
                 session_id,
                 crate::session::unix_epoch_ms(),
                 LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS,
+                &supervised_tasks,
             );
         let count = match reconciled {
             Ok(count) => count,

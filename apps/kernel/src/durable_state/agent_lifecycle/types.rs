@@ -91,6 +91,41 @@ pub(crate) struct InboxEvent {
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
 }
+/// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned timer or watched
+/// process. It is a task obligation plus a live registration; its receipts
+/// record when the last occurrence fired, was delivered and acknowledged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWake {
+    pub id: String,
+    pub task_id: String,
+    pub room_id: String,
+    pub agent_id: String,
+    pub registration_id: String,
+    /// `timer` or `process`.
+    pub kind: String,
+    pub label: String,
+    /// `scheduled`, `starting`, `running`, `fired`, `exited`, `lost` or `cancelled`.
+    pub state: String,
+    pub created_at_ms: u64,
+    /// Proof of life: the scheduler (timer) or supervisor (process) armed it.
+    pub verified_at_ms: Option<u64>,
+    pub next_due_ms: Option<u64>,
+    pub interval_ms: Option<u64>,
+    pub command: Vec<String>,
+    pub match_text: Option<String>,
+    pub matched_at_ms: Option<u64>,
+    pub pid: Option<u32>,
+    pub exit_code: Option<i32>,
+    pub fire_count: u64,
+    pub missed_fires: u64,
+    pub last_fired_at_ms: Option<u64>,
+    pub last_sequence: Option<u64>,
+    pub last_delivery: Option<String>,
+    pub last_delivered_at_ms: Option<u64>,
+    pub last_acknowledged_at_ms: Option<u64>,
+    pub alerted_sequence: Option<u64>,
+}
+#[derive(Clone)]
 pub(crate) enum Operation {
     Begin {
         owner: String,
@@ -231,10 +266,63 @@ pub(crate) enum Operation {
     Withdraw {
         task: String,
     },
+    /// Private kernel lineage; not a serialized client contract.
+    BindWorkflow {
+        task: String,
+        prompt: String,
+        run: String,
+        node: String,
+    },
     OwnerResponse {
         task: String,
         revision: u64,
         resume: bool,
+        now: u64,
+    },
+    CreateWake {
+        task: String,
+        prompt: String,
+        wake: AgentWake,
+    },
+    VerifyWakes {
+        now: u64,
+    },
+    FireWakes {
+        now: u64,
+    },
+    ProcessStarted {
+        id: String,
+        pid: u32,
+        now: u64,
+    },
+    ProcessMatched {
+        id: String,
+        line: String,
+        now: u64,
+    },
+    /// `exit_code: None` records a lost process; it is never relaunched.
+    ProcessExited {
+        id: String,
+        exit_code: Option<i32>,
+        tail: String,
+        now: u64,
+    },
+    /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled task.
+    CancelWake {
+        id: String,
+        task: String,
+        prompt: Option<String>,
+    },
+    WakeAlerted {
+        id: String,
+        sequence: u64,
+    },
+    /// Kernel teardown of a Room (`agent: None`) or agent, without owner
+    /// authority: cancels its unfinished tasks, settles its armed wakes
+    /// (processes on physical exit) and expires its unresolved deliveries.
+    RetireWakes {
+        room: String,
+        agent: Option<String>,
         now: u64,
     },
 }
@@ -247,6 +335,7 @@ pub(crate) enum Outcome {
         correction: bool,
     },
     Swept(Vec<AgentTaskExecution>),
+    Wakes(Vec<AgentWake>),
     Saved,
 }
 pub(crate) struct Request {

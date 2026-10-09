@@ -67,6 +67,7 @@
     "./session-runtime-lookup": "./dist/session-runtime-lookup.js",
     "./session-runtime-transition": "./dist/session-runtime-transition.js",
     "./session-runtime-status": "./dist/session-runtime-status.js",
+    "./agent-wake-status": "./dist/agent-wake-status.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./runtime-session-normalization": "./dist/runtime-session-normalization.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",

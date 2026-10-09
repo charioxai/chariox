@@ -165,6 +165,13 @@ impl KernelRuntimeState {
                 }
                 serde_json::json!({"blocked":true})
             }
+            "chariox.events.timer"
+            | "chariox.events.process"
+            | "chariox.events.cancel_wake"
+            | "chariox.events.wakes" => {
+                self.dispatch_agent_wake_tool(run, name, &args, &task)
+                    .await?
+            }
             _ => return Err(ledger::error("unknown event tool")),
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })

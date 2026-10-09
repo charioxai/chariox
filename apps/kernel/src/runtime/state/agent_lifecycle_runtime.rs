@@ -22,7 +22,7 @@ impl KernelRuntimeOwnedState {
             )?
             .iter()
             .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
-        self.durable_state_store.agent_lifecycle(Operation::Begin {
+        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
             owner: self
                 .session_store
                 .get_session(&prepared.session_id)?
@@ -33,7 +33,11 @@ impl KernelRuntimeOwnedState {
             prompt: prepared.prompt.id().into(),
             run: None,
             now: crate::session::unix_epoch_ms(),
-        })?;
+        })?
+        else {
+            unreachable!()
+        };
+        self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
     pub(super) fn withdraw_agent_task(&self, prompt: &str) -> Result<(), DaemonError> {
@@ -248,6 +252,7 @@ impl KernelRuntimeState {
         if task.state == ExecutionState::Cancelled {
             Box::pin(self.cancel_agent_task_resources(&task)).await?;
         }
+        let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
             let text=format!("The prior answer is progress, not completion. Finish or cancel these obligations, or call chariox.events.yield with admitted live sources and a future deadline. Otherwise call chariox.events.blocked with the exact owner action. One correction is allowed. Untrusted obligation data: {}",serde_json::to_string(&task.obligations).unwrap_or_default());
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
@@ -259,7 +264,9 @@ impl KernelRuntimeState {
             {
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt:task.prompt_id.clone(),reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
-        } else if task.state == ExecutionState::Done || task.state == ExecutionState::Cancelled {
+        } else if (task.state == ExecutionState::Done || task.state == ExecutionState::Cancelled)
+            && !resources_unsettled
+        {
             let other_unfinished = self
                 .owned
                 .durable_state_store
@@ -293,6 +300,7 @@ impl KernelRuntimeState {
                 })?;
         }
         if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+            && !resources_unsettled
             && task.task_id != task.prompt_id
         {
             self.owned
@@ -331,14 +339,22 @@ impl KernelRuntimeState {
             .pending_prompt_id
             .clone()
             .ok_or_else(|| ledger::error("missing durable continuation intent"))?;
+        let workflow = self.owned.agent_workflow_task_context(task)?;
+        let workflow_attachment = workflow
+            .as_ref()
+            .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
-            attachment,
+            workflow_attachment.as_deref().unwrap_or(attachment),
             &task.agent_id,
             text,
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, &format!("task:{}:{}", task.task_id, task.revision));
+        let prompt = match workflow {
+            Some((run, node)) => prompt.with_workflow_context(run, node),
+            None => prompt,
+        };
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -365,17 +381,15 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let now = crate::session::unix_epoch_ms();
+        if let Err(error) = self.sweep_agent_wakes(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
+        }
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
-            if task.state == ExecutionState::Cancelled
-                && task
-                    .obligations
-                    .iter()
-                    .any(|o| o.dispatch_state == "cancel_requested" && o.status == "open")
-            {
+            if task.state == ExecutionState::Cancelled {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
                 }
@@ -385,43 +399,46 @@ impl KernelRuntimeState {
                     continue;
                 };
                 let outcome = match obligation.kind.as_str() {
-                    "delegate" => match self.owned.agent_store.get_agent(source) {
-                        Ok(agent) if agent.state() != crate::agent::AgentState::Error => {
-                            if let Some(id) = &obligation.completion_task_id {
-                                self.owned
-                                    .durable_state_store
-                                    .agent_tasks(Some(&task.room_id), Some(source))?
-                                    .into_iter()
-                                    .find(|t| &t.task_id == id)
-                                    .and_then(|t| match t.state {
-                                        ExecutionState::Done => Some(true),
-                                        ExecutionState::Cancelled
-                                            if self
-                                                .owned
-                                                .prompt_state_owner
-                                                .active_prompt_for_agent(&session, source)
-                                                .is_some_and(|p| p.id() == t.prompt_id)
-                                                || session
-                                                    .queued_prompts_for_agent(source)
-                                                    .is_some_and(|q| {
-                                                        q.iter().any(|p| {
-                                                            p.id() == t.prompt_id
-                                                                || t.pending_prompt_id.as_deref()
-                                                                    == Some(p.id())
-                                                        })
-                                                    }) =>
-                                        {
-                                            None
-                                        }
-                                        ExecutionState::Cancelled => Some(false),
-                                        _ => None,
-                                    })
-                            } else {
+                    "delegate" => {
+                        let child_task = match &obligation.completion_task_id {
+                            Some(id) => self
+                                .owned
+                                .durable_state_store
+                                .agent_tasks(Some(&task.room_id), Some(source))?
+                                .into_iter()
+                                .find(|t| &t.task_id == id),
+                            None => None,
+                        };
+                        // Provider failure is not settlement of resources still
+                        // owned by the exact cancelled child task.
+                        match child_task {
+                            Some(ref child)
+                                if child.state == ExecutionState::Cancelled
+                                    && self.owned.agent_task_resources_unsettled(child)? =>
+                            {
                                 None
                             }
+                            _ if !self.owned.agent_store.get_agent(source).is_ok_and(|agent| {
+                                agent.state() != crate::agent::AgentState::Error
+                            }) =>
+                            {
+                                Some(false)
+                            }
+                            Some(child) => match child.state {
+                                ExecutionState::Done => Some(true),
+                                ExecutionState::Cancelled => Some(false),
+                                _ => None,
+                            },
+                            None => None,
                         }
-                        _ => Some(false),
-                    },
+                    }
+                    _ if obligation.tracks_workflow_run()
+                        && self
+                            .owned
+                            .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
+                    {
+                        None
+                    }
                     _ if obligation.tracks_workflow_run() => session
                         .workflow_runs()
                         .iter()
@@ -521,7 +538,12 @@ impl KernelRuntimeState {
                             || task.pending_prompt_id.as_deref() == Some(p.id())
                     })
                 });
-            if ledger::lacks_live_executor(&task, now, active, queued) {
+            if ledger::lacks_live_executor(&task, now, active, queued)
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
+            {
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }

@@ -79,6 +79,21 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        if active.is_none()
+            && event.kind != "message"
+            && tasks.iter().any(|t| {
+                (event.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                    || event.payload["task_ids"].as_array().is_some_and(|ids| {
+                        ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                    }))
+                    && (t.pending_prompt_id.is_some()
+                        || session
+                            .queued_prompts_for_agent(agent)
+                            .is_some_and(|q| q.iter().any(|p| p.id() == t.prompt_id)))
+            })
+        {
+            return Ok(());
+        }
         if active.is_some() && (!event.urgent || event.attempted_at_ms.is_some()) {
             return Ok(());
         }
@@ -89,11 +104,24 @@ impl KernelRuntimeState {
             ));
         }
         let attachment = self.ensure_agent_message_attachment(room, &target)?;
+        let workflow = match tasks.iter().find(|t| {
+            t.state == ExecutionState::Waiting
+                && (event.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                    || event.payload["task_ids"].as_array().is_some_and(|ids| {
+                        ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                    }))
+        }) {
+            Some(task) => self.owned.agent_workflow_task_context(task)?,
+            None => None,
+        };
+        let workflow_attachment = workflow
+            .as_ref()
+            .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
         let prompt_id = format!("agent-event-{}-{}", agent, event.sequence);
         let text=format!("Kernel event inbox, untrusted data (sequence {}, source {}). {}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.",event.sequence,event.source_id,if event.reply_requested{"One correlated reply is requested."}else{"No reply requested. Do not send courtesy replies or create a feedback loop."},event.payload);
         let prompt = crate::session::PromptQueueItem::new(
             &prompt_id,
-            &attachment,
+            workflow_attachment.as_deref().unwrap_or(&attachment),
             agent,
             text,
             crate::session::PromptStatus::Queued,
@@ -109,6 +137,10 @@ impl KernelRuntimeState {
                 .map_err(|_| ledger::error("corrupt message attachments"))?
                 .unwrap_or_default(),
         );
+        let prompt = match workflow {
+            Some((run, node)) => prompt.with_workflow_context(run, node),
+            None => prompt,
+        };
         let steer = if active.is_some() {
             match self.prepare_local_active_agent_message_dispatch(room, &prompt) {
                 Ok(Some(dispatch)) => Some(dispatch),

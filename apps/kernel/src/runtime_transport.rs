@@ -706,6 +706,9 @@ where
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
+    let wake_state = router.runtime_state();
+    let wake_scheduler_task =
+        tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });
 
     loop {
         tokio::select! {
@@ -718,6 +721,7 @@ where
                     task.abort();
                 }
                 drop(_restart_recovery_task);
+                wake_scheduler_task.abort();
                 pump_task.abort();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 app_wake_task.abort();

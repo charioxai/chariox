@@ -7,6 +7,8 @@ use super::*;
 
 mod agent_events;
 mod agent_messaging;
+mod agent_process_permission;
+mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
