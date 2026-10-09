@@ -19,6 +19,20 @@ const commandItem: CommandCenterItem = {
   value: "/agent list",
 }
 
+test("fully typed agent profile commands bypass palette selection", () => {
+  for (const command of [
+    "/agent provider reviewer opencode",
+    "/agent model reviewer codex/gpt-6-luna",
+    "/agent account reviewer linked-profile",
+    "/agent variant reviewer low",
+  ]) {
+    assert.equal(shouldBypassCommandCenterSubmitSelection(command), true, command)
+  }
+  for (const command of ["/agent model", "/agent model reviewer", "/agent spawn reviewer codex/gpt-6-luna"]) {
+    assert.equal(shouldBypassCommandCenterSubmitSelection(command), false, command)
+  }
+})
+
 test("command center completion text expands provider, account, model, and variant items", () => {
   assert.equal(commandCenterCompletionText({
     id: "agent-review-agent",
