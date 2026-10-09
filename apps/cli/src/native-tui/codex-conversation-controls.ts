@@ -1,3 +1,4 @@
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { LocalIpcClient } from "../ipc.js"
@@ -25,6 +26,11 @@ export async function handleCodexNativeTurnSteer(
   sendClient: (message: unknown) => void,
 ) {
   try {
+    traceCodexLifecycle("steer_received", { method: message.method,
+      turnId: typeof message.params?.expectedTurnId === "string" ? message.params.expectedTurnId : null,
+      clientId: typeof message.params?.clientUserMessageId === "string" ? message.params.clientUserMessageId : null,
+      hasClientUserMessageId: typeof message.params?.clientUserMessageId === "string",
+      hasClientId: typeof message.params?.clientId === "string" })
     const turnId = message.params?.expectedTurnId
     const bound = typeof turnId === "string" ? options.bindState.displayTurns?.get(turnId) : undefined
     if (!bound || bound.threadId !== message.params?.threadId) {
@@ -49,6 +55,7 @@ export async function handleCodexNativeTurnSteer(
       clientId: typeof message.params?.clientUserMessageId === "string" ? message.params.clientUserMessageId : null,
       content: Array.isArray(message.params?.input) ? message.params.input : [],
     }
+    traceCodexLifecycle("steer_receipt", { promptId, turnId: typeof turnId === "string" ? turnId : null, threadId: bound.threadId, clientId: typeof item.clientId === "string" ? item.clientId : null })
     for (const method of ["item/started", "item/completed"]) {
       sendClient({ jsonrpc: "2.0", method, params: { threadId: bound.threadId, turnId, item } })
     }

@@ -1,3 +1,4 @@
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
 import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
 import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import {
@@ -75,6 +76,9 @@ export function createCodexKernelOutputProjection(options: {
   // Only the kernel's exact prompt settlement can complete its display turn.
   const projectAgentActivity = (activity: AgentRuntimeActivity | undefined) => {
     const completion = activity?.last_completed_turn
+    traceCodexLifecycle("activity", { promptId: completion?.prompt_id,
+      activePromptId, knownPromptIds: [...projectedTurns.keys()], activeCount: activity?.active_prompt_count,
+      settlement: completion?.settlement_status })
     if (!completion || completion.agent_id !== options.agentId || !projectedThreadId) return
     const turn = projectedTurns.get(completion.prompt_id)
     if (!turn || turn.completed) return
@@ -91,6 +95,7 @@ export function createCodexKernelOutputProjection(options: {
       })
       projectedItems.delete(key)
     }
+    traceCodexLifecycle("turn_completed", { promptId: completion.prompt_id, turnId: turn.id, threadId: projectedThreadId })
     turn.completed = true
     if (activePromptId === completion.prompt_id) {
       activePromptId = null

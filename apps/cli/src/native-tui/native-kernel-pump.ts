@@ -1,3 +1,4 @@
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
 import type { AgentRuntimeActivity, RuntimeInteraction, TerminalOutputRecord } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
@@ -38,6 +39,9 @@ export function startNativeKernelPumpLoop(
       const maxPages = options.onAgentActivity ? 8 : 1
       for (let page = 0; options.onTerminalRecords && !stopped && page < maxPages; page++) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+        traceCodexLifecycle("pump_reply", { responseKinds: Object.keys(response),
+          records: Array.isArray((response.TerminalOutput as { records?: unknown[] } | undefined)?.records)
+            ? (response.TerminalOutput as { records: unknown[] }).records.length : undefined })
         if ("TerminalOutput" in response) {
           const records = (response.TerminalOutput as { records?: unknown[] }).records
           if (Array.isArray(records) && records.length === 0) {
@@ -56,12 +60,14 @@ export function startNativeKernelPumpLoop(
           }
         }
       }
+      traceCodexLifecycle("pump_tick", { outputDrained })
       if (!stopped && outputDrained && state?.SessionState?.agent_activity) options.onAgentActivity?.(state.SessionState.agent_activity)
       if (!stopped && outputDrained && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
       if (!stopped && options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }
     } catch (error) {
+      traceCodexLifecycle("pump_error", { errorClass: error instanceof Error ? error.name : typeof error })
       options.debug?.("pump_error", {
         error: options.formatError ? options.formatError(error) : error instanceof Error ? error.message : String(error),
       })
