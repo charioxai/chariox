@@ -219,7 +219,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (sheet.disabled) record.attrs.media = 'not all';
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
       }
-      styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css });
+      styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null });
     };
     // Pre-order records; a record's children are the following records naming it.
     const serialize = (node, parent, out, depth = 0) => {
@@ -425,11 +425,12 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const [id, entry] of styleNodes) {
         const sheet = entry.node.sheet, signature = sheet ? sheetSignature(sheet) : '';
         if (dirty.sheets.has(entry.node) || signature !== entry.signature || full && entry.node.localName === 'style' && sheet && signature !== 'x' && sheet.cssRules.length <= 4000) {
-          let text = ''; let media = entry.node.getAttribute('media');
+          let text = ''; let media = entry.node.getAttribute('media'); if (media && media.length > 4096) media = null;
           if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && signature !== entry.signature) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
           entry.signature = signature;
           if (text !== entry.text) { entry.text = text; ops.push({ op: 'css', id, css: text }); }
-          if (dirty.sheets.has(entry.node)) ops.push({ op: 'attr', id, name: 'media', value: media || null });
+          // Effective media: CSSOM `sheet.disabled` changes it without any mutation or event.
+          if ((media || null) !== entry.media) { entry.media = media || null; ops.push({ op: 'attr', id, name: 'media', value: entry.media }); }
         }
       }
       const edited = full ? adoptedEdited() : new Set();

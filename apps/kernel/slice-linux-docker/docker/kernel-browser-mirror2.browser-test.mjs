@@ -182,3 +182,14 @@ test("MP-10: review #941-3 an imported sheet's url() resolves against the import
     "/themes/dark/t.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) },
     "/themes/dark/icon.svg": { type: "image/svg+xml", body: svg("#0d0e0f") },
   }));
+
+test("MP-10: review #941-6 CSSOM sheet.disabled toggles reach the viewer (disable and enable)", () => mirrored(
+  '<style id="a">p{color:rgb(1,2,3)}</style><style id="b">p{background:rgb(4,5,6)}</style><p>t</p><script>document.getElementById("b").sheet.disabled=true</script>', async ({ next, evaluate }) => {
+    const snapshot = await next(); let id = 0; const styles = [];
+    for (const row of snapshot.nodes) { id += row[0]; if (row[2] === "style") styles.push([`n${id}`, row[3]?.media ?? null]); }
+    assert.deepEqual(styles.map(([, media]) => media), [null, "not all"], "MP-10: the snapshot carries the disabled sheet as media=not all");
+    await evaluate("document.getElementById('a').sheet.disabled=true;document.getElementById('b').sheet.disabled=false;true");
+    const ops = [];
+    for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "attr" && op.name === "media"));
+    assert.deepEqual(ops.map(op => [op.id, op.value]).sort(), [[styles[0][0], "not all"], [styles[1][0], null]].sort());
+  }));
