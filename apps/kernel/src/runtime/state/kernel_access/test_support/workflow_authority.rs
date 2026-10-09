@@ -183,7 +183,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 }
 
 #[tokio::test]
-async fn kernel_access_artifact_registry_refuses_other_session_source() {
+async fn kernel_access_artifact_registry_authorizes_all_local_sources() {
     let worktree = crate::test_support::TestWorktree::new("access-artifact-source");
     let root = crate::test_support::TestWorktree::new("access-artifact-state");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -227,8 +227,6 @@ async fn kernel_access_artifact_registry_refuses_other_session_source() {
     let artifacts = registry.list().unwrap();
     assert_eq!(artifacts.len(), 1);
     let name = artifacts[0].name.clone();
-    let victim = registry.get(&name).unwrap().unwrap();
-    let before = state.session_snapshot(other.id()).await.unwrap();
     let grant = state.insert_access_grant_for_test(allowed.id());
     let requests = vec![
         LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
@@ -290,29 +288,14 @@ async fn kernel_access_artifact_registry_refuses_other_session_source() {
         ),
     ];
     for request in requests {
-        let command = external_command(&request, &grant);
-        let response = runtime.dispatch_workflow_command(command, request).await;
-        assert!(
-            response.is_err(),
-            "external grant reached global source registry"
-        );
-        assert_eq!(registry.list().unwrap(), artifacts);
-        let remaining = registry.get(&name).unwrap().unwrap();
-        assert_eq!(remaining.source, victim.source);
-        assert_eq!(remaining.metadata, victim.metadata);
+        assert!(state.authorize_external_request(&grant, &request).is_ok());
     }
-    assert!(state.session_snapshot(other.id()).await.unwrap() == before);
     let request =
         LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
             session_id: other.id().into(),
             name,
         });
-    let command = crate::runtime::command::KernelCommand::from_local_request(
-        "terminal-read-private-source",
-        None,
-        None,
-        &request,
-    );
+    let command = external_command(&request, &grant);
     assert!(matches!(
         runtime
             .dispatch_workflow_command(command, request)

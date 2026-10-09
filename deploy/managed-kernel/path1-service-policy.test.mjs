@@ -14,6 +14,17 @@ for (const [role, filename] of [
     verifyPath1ServicePolicy(unit.replace(/^([A-Za-z][A-Za-z0-9]*)=(.*)$/gm, "$1 \t= \t$2"), role)
   })
   for (const assignment of [
+    // MP-01/MP-07/MP-11: restrictions outside the old sandbox deny list.
+    "NoExecPaths=/home /tmp",
+    "ExecPaths=/usr/bin",
+    "ProtectProc=invisible",
+    "ProcSubset=pid",
+    "RestrictFileSystems=ext4",
+    "MemoryDenyWriteExecute=yes",
+    "SystemCallArchitectures=native",
+    "RestrictNetworkInterfaces=lo",
+    "DevicePolicy=closed",
+    "FutureProviderSandbox=yes",
     "ProtectHome = yes",
     "TemporaryFileSystem = /home:ro",
     "IPAddressDeny = any",

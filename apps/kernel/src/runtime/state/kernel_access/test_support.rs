@@ -13,13 +13,12 @@ mod workflow_authority;
 
 impl KernelRuntimeState {
     pub(crate) fn insert_access_grant_for_test(&self, session_id: &str) -> String {
-        let session = self.access_session(session_id).unwrap();
+        let session = self.owned.session_store.get_session(session_id).unwrap();
         let holder = process::inspect(std::process::id()).unwrap().0;
         let id = format!("queue-access-{:016x}", rand::random::<u64>());
         let grant = Grant {
             summary: KernelAccessGrant {
                 grant_id: id.clone(),
-                session_id: session_id.into(),
                 owner_user_id: session.owner_user_id().into(),
                 holder_pid: holder.pid,
                 holder_executable: holder.executable.clone(),
@@ -38,28 +37,6 @@ impl KernelRuntimeState {
             .grants
             .insert(id.clone(), grant);
         id
-    }
-
-    pub(crate) fn access_id_for_test(&self, session: &str, id: String) -> String {
-        match std::env::var("CHARIOX_ACCESS_TEST_GRANT_ORDER").as_deref() {
-            Ok("ancestor-first") => format!(
-                "{}-{id}",
-                if session == "access-session" {
-                    "a"
-                } else {
-                    "z"
-                }
-            ),
-            Ok("descendant-first") => format!(
-                "{}-{id}",
-                if session == "access-session" {
-                    "z"
-                } else {
-                    "a"
-                }
-            ),
-            _ => id,
-        }
     }
 
     pub(crate) fn use_kernel_ancestor_holder_for_test(&self) -> String {
@@ -167,5 +144,90 @@ impl KernelRuntimeState {
         }
         drop(state);
         self.pump_kernel_access();
+    }
+}
+
+// MP-08 / MP-10 / MP-11: granting access needs no session, and the shared
+// owner/timeout machinery still protects the kernel-wide board.
+#[tokio::test]
+async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_board() {
+    for owner in ["local", "cloud-local-owner"] {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        if owner != "local" {
+            config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                user_id: owner.into(),
+                ..Default::default()
+            });
+        }
+        let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            32,
+        );
+        let state = router.runtime_state();
+        assert!(state
+            .owned
+            .session_store
+            .list_non_ended_sessions_including_hidden()
+            .is_empty());
+        let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
+        let decision = |id: &str| {
+            RuntimeInteraction::for_kernel_operation(
+                id,
+                format!("access-grant:{id}"),
+                "Local kernel access",
+                "whole LOCAL kernel",
+                vec![
+                    RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                        .requiring_passkey(),
+                ],
+            )
+            .with_timeout_sec(60)
+        };
+        let rx = state
+            .create_kernel_operation_interaction(scope, owner, decision("no-session-access"))
+            .await
+            .unwrap();
+        assert_eq!(state.passkey_prompts_for(owner).len(), 1);
+        assert!(state.passkey_prompts_for("guest").is_empty());
+        assert!(state
+            .answer_terminal_runtime_interaction(
+                scope,
+                "no-session-access",
+                "refuse",
+                None,
+                Some("guest"),
+                None,
+                None,
+                Some(KernelConnectionClass::Terminal)
+            )
+            .await
+            .is_err());
+        state
+            .answer_terminal_runtime_interaction(
+                scope,
+                "no-session-access",
+                "refuse",
+                None,
+                Some(owner),
+                None,
+                None,
+                Some(KernelConnectionClass::Terminal),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap().choice_id.as_deref(), Some("refuse"));
+        assert!(state.passkey_prompts_for(owner).is_empty());
+        let rx = state
+            .create_kernel_operation_interaction(scope, owner, decision("no-session-expiry"))
+            .await
+            .unwrap();
+        state
+            .owned
+            .timeout_runtime_interaction(scope, "no-session-expiry")
+            .unwrap();
+        assert_eq!(rx.await.unwrap().status, "timed_out");
+        assert!(state.passkey_prompts_for(owner).is_empty());
     }
 }
