@@ -165,7 +165,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
   assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
-test("a delayed account catalog preserves a later model selection", async () => {
+test("a delayed account catalog preserves a later model outside its snapshot", async () => {
   let current = agent({ provider: "codex", model: "codex/old", account_profile: "first" })
   let release!: () => void
   let loaded!: () => void
@@ -183,7 +183,6 @@ test("a delayed account catalog preserves a later model selection", async () => 
       return {
         all: [{ id: "codex", name: "Codex", models: {
           old: { id: "old", name: "Old", status: "active", variants: { low: {} } },
-          newer: { id: "newer", name: "Newer", status: "active", variants: { low: {} } },
         } }], default: { codex: "old" }, connected: ["codex"],
       }
     },
