@@ -54,7 +54,8 @@ static pthread_once_t runtime_once=PTHREAD_ONCE_INIT;
 static int runtime_x264,runtime_av;
 static int runtime_resolve(void *library,const char *name,void **slot){return library&&(*slot=dlsym(library,name))!=NULL;}
 static void runtime_load(void) {
-    void *x264=dlopen("libx264.so." CX_TEXT(X264_BUILD),RTLD_NOW|RTLD_LOCAL);
+    const char *encoder=getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER");
+    void *x264=encoder&&!strcmp(encoder,"libx264")?dlopen("libx264.so." CX_TEXT(X264_BUILD),RTLD_NOW|RTLD_LOCAL):NULL;
     void *av=dlopen("libavcodec.so." CX_TEXT(LIBAVCODEC_VERSION_MAJOR),RTLD_NOW|RTLD_LOCAL);
     int ready=runtime_resolve(x264,"x264_encoder_open_" CX_TEXT(X264_BUILD),(void **)&cx_x264_encoder_open);
 #define CX_RESOLVE(library,name) ready=ready&&runtime_resolve(library,#name,(void **)&cx_##name);
@@ -294,6 +295,16 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected,int cons
 }
 /* MP-08/MP-10: retune a live session's rate without an IDR (pixelflux
  * reconfigure_rate). Hardware rows cannot; the caller reopens them. */
+/* MP-08/MP-10/MP-11: admit capture only after the selected encoder and
+ * independent H.264 output guard actually open. No display or GPU is needed. */
+int cx_codec_available(void) {
+    if(!runtime_available())return 0;
+    struct Codec c={.width=32,.height=32,.enc_width=32,.enc_height=32,.bitrate=800000,.row_count=1};
+    const char *encoder=getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER");
+    c.openh264=!(encoder&&!strcmp(encoder,"libx264"));
+    int ready=row_open(&c,&c.rows[0],32,1,1)==0;
+    row_close(&c.rows[0]);return ready;
+}
 int cx_codec_rate(struct Codec *c,int bitrate) {
     for (int r=0;r<c->row_count;r++) if (c->rows[r].hardware) return -1;
     c->bitrate=bitrate;

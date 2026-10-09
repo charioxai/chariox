@@ -35,6 +35,7 @@ impl Default for RowResult {
     }
 }
 extern "C" {
+    pub(super) fn cx_codec_available() -> i32;
     #[cfg(test)]
     pub(super) fn cx_capture_difference(
         raw: *const u8,

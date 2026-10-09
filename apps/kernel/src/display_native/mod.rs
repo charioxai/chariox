@@ -6,6 +6,12 @@ mod raster;
 mod sessions;
 mod worker;
 pub(crate) use crate::runtime::browser_controller_process::RASTER_SLOT_NAMES;
+pub fn probe_codec() -> Result<(), String> {
+    if unsafe { ffi::cx_codec_available() } == 0 {
+        return Err("MP-08/MP-10: native codec unavailable".into());
+    }
+    Ok(())
+}
 pub fn run() -> Result<(), String> {
     worker::run()
 }
