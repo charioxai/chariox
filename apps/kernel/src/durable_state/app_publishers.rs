@@ -2,16 +2,20 @@
 //! The caller authenticates ownership and obtains an exact policy/user decision;
 //! this internal API does not turn package claims into an enrollment decision.
 
+#[cfg(test)]
+use chariox_app_runtime::publisher_trust::PublisherTrustEntry;
 use std::sync::mpsc;
 
 use chariox_app_package::TrustedPublisher;
 use chariox_app_runtime::publisher_trust::{
-    PublisherTrustEntry, PublisherTrustError, PublisherTrustRegistry, TrustDecision,
-    TrustDecisionReceipt, TrustedPublisherSnapshot,
+    PublisherTrustError, PublisherTrustRegistry, TrustDecision, TrustDecisionReceipt,
+    TrustedPublisherSnapshot,
 };
 use rusqlite::Connection;
 
-use super::{DurableKernelStateStore, DurableWriterRequest};
+use super::DurableKernelStateStore;
+#[cfg(test)]
+use super::DurableWriterRequest;
 use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::AppOperationBudget;
 

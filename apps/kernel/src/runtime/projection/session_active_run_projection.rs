@@ -4,7 +4,7 @@ use crate::session::RuntimeSession;
 pub(crate) fn projected_active_provider_run_id(
     session: &RuntimeSession,
     mut provider_run_by_id: impl FnMut(&str) -> Option<RuntimeProviderRun>,
-    mut provider_run_for_agent: impl FnMut(&str) -> Option<RuntimeProviderRun>,
+    provider_run_for_agent: impl FnMut(&str) -> Option<RuntimeProviderRun>,
     mut active_prompt_for_agent: impl FnMut(&str) -> bool,
     active_prompt_agent_id: Option<String>,
 ) -> Option<String> {

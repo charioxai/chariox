@@ -13,7 +13,9 @@ use chariox_app_runtime::{
 };
 use rusqlite::Connection;
 
-use super::{apps::AppRegistryOutcome, DurableKernelStateStore, DurableWriterRequest};
+#[cfg(test)]
+use super::DurableWriterRequest;
+use super::{apps::AppRegistryOutcome, DurableKernelStateStore};
 use crate::error::DaemonError;
 
 #[derive(Debug, thiserror::Error)]

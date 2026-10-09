@@ -1,4 +1,6 @@
-use crate::session::{RuntimeSession, WorkflowDefinition, WorkflowRun};
+#[cfg(test)]
+use crate::session::WorkflowRun;
+use crate::session::{RuntimeSession, WorkflowDefinition};
 use crate::DaemonError;
 
 pub(crate) fn projected_workflow_id(

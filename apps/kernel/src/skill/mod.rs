@@ -520,7 +520,7 @@ fn prepare_skill_directory_from_source(
         let _ = fs::remove_dir_all(&temp_dir);
         return Err(error);
     }
-    let _ = parse_skill_metadata(&temp_dir.join("SKILL.md")).inspect_err(|error| {
+    let _ = parse_skill_metadata(&temp_dir.join("SKILL.md")).inspect_err(|_error| {
         let _ = fs::remove_dir_all(&temp_dir);
     })?;
     Ok(temp_dir)

@@ -1,6 +1,7 @@
 //! Verified upload-to-release preparation, below terminal adapters. This owns no
 //! second database, never grants capabilities, and never starts an App worker.
 
+#[cfg(test)]
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;

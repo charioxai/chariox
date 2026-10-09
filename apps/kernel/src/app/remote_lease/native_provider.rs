@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::provider::RuntimeProviderRun;
 use std::path::PathBuf;
 
 use base64::Engine;
@@ -5,7 +7,6 @@ use base64::Engine;
 use crate::error::DaemonError;
 use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
-    RuntimeProviderRun,
 };
 use crate::transport::relay_peer::RequiredRemoteMcp;
 

@@ -71,7 +71,7 @@ impl AppFilesBroker {
         }
         let params: Replace =
             serde_json::from_value(request.params).map_err(|_| error("INVALID_ARGUMENT", false))?;
-        if params.contents_base64.len() > (512 * 1024).div_ceil(3) * 4 {
+        if params.contents_base64.len() > (512_usize * 1024).div_ceil(3) * 4 {
             return Err(error("INVALID_ARGUMENT", false));
         }
         let bytes = STANDARD

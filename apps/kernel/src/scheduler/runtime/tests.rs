@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 
 use crate::agent::CreateAgentRequest;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};

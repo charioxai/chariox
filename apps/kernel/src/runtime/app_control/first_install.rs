@@ -2,10 +2,14 @@
 //! protocol and RuntimeInteraction decision routing are a coordinated next step.
 use super::*;
 use crate::{
-    durable_state::app_installation_operations::{InstallOperation, InstallOperationError},
-    runtime::{
-        app_operation_budget::AppOperationBudget, app_package_preparation::PreparationError,
-    },
+    durable_state::app_installation_operations::InstallOperationError,
+    runtime::app_package_preparation::PreparationError,
+};
+
+#[cfg(test)]
+use crate::{
+    durable_state::app_installation_operations::InstallOperation,
+    runtime::app_operation_budget::AppOperationBudget,
 };
 
 #[derive(Debug, thiserror::Error)]
