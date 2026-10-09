@@ -537,7 +537,14 @@ impl KernelRuntimeState {
                 }),
             );
         }
-        if let Some(usage) = poll_result.account_usage.clone() {
+        // Leased credentials and their account registry belong to the home
+        // kernel. Native quota metadata must not require that home profile to
+        // be registered on the worker, or block its output and completion.
+        if let Some(usage) = poll_result.account_usage.clone().filter(|_| {
+            !owned
+                .provider_run_projection
+                .is_leased_provider_run(provider_run_id)
+        }) {
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_owner_user_id(
                     &owned.config_projection.snapshot(),
