@@ -453,6 +453,22 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
         Some(secret.as_str()),
         "A06: the kernel filled the generated value"
     );
+    // MP-11: the capture policy records the exact filled field for masking.
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let policy: Value = serde_json::from_str(
+        &f.state
+            .owned
+            .kernel_browser_secret_observations
+            .capture_policy(&scope)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(policy["targets"].as_array().unwrap().iter().any(|target| {
+        target["kind"] == "browser"
+            && target["target_id"] == "target-login"
+            && target["document_id"] == "doc-login"
+            && target["node_ref"] == "backend:7"
+    }));
     // The page echoes the value back: protected observations scrub it.
     let observed = call(
         f,
