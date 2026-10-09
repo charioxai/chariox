@@ -25,6 +25,8 @@ mod catalog_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 #[cfg(test)]
+mod queued_agent_command_tests;
+#[cfg(test)]
 mod queued_command_tests;
 #[cfg(test)]
 mod relaunch_tests;
