@@ -486,8 +486,17 @@ remove_release_override() {
   node "$script_root/managed-kernel-upgrade-state.mjs" remove-state-file "$release_override_path"
 }
 
+# MP-07/MP-10/MP-11: observation failure never changes release settlement.
+record_diagnostic_phase() {
+  if [ -n "${CHARIOX_RUNTIME_DIAGNOSTICS_DIR:-}" ]; then
+    python3 "$script_root/runtime-diagnostics.py" event \
+      --directory "$CHARIOX_RUNTIME_DIAGNOSTICS_DIR" --event "$1" >/dev/null 2>&1 || :
+  fi
+}
+
 write_phase() {
-  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
+  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase" || return $?
+  record_diagnostic_phase "$1"
 }
 
 plan_home_migration() {
@@ -1103,6 +1112,7 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
   "$pending_transaction" "$transaction_root"
 pending_transaction=
 transaction_active=1
+record_diagnostic_phase prepared
 
 if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
