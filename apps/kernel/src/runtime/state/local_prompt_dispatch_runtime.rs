@@ -100,6 +100,7 @@ impl KernelRuntimeOwnedState {
                 );
             }
             prompt.id() == dispatch.prompt_id
+                && prompt.status() != crate::session::PromptStatus::Cancelling
         };
         Ok(self
             .prompt_state_owner
@@ -143,6 +144,8 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 mod tests {
+    mod native_cancellation;
+
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
@@ -4116,10 +4119,7 @@ impl KernelRuntimeState {
                 let attempt = self
                     .with_app_side_effect(|app| {
                         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "dispatch prompt",
-                                message: "prompt changed before native dispatch".into(),
-                            });
+                            return Ok(None);
                         }
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
@@ -4133,8 +4133,14 @@ impl KernelRuntimeState {
                                     .unwrap_or_default()
                             },
                         )
+                        .map(Some)
                     })
                     .await?;
+                let Some(attempt) = attempt else {
+                    // Cancellation owns the prompt now. Release the run lane
+                    // so its abort can clear a still-unacknowledged composer.
+                    return Ok(PromptDispatchAcceptance::Dropped);
+                };
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
@@ -4885,14 +4891,33 @@ impl KernelRuntimeState {
                     dispatch.provider_run_id.clone(),
                 );
             }
+            let session = owned.session_store.get_session(&dispatch.session_id)?;
+            let input = provider_run
+                .agent_instance_id()
+                .and_then(|agent_id| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent_id)
+                })
+                .filter(|prompt| {
+                    prompt.status() == crate::session::PromptStatus::Cancelling
+                        && prompt.delivery_pending()
+                })
+                .map(|prompt| {
+                    crate::app::claude_native_pending_prompt_cancel_input(
+                        &provider_run,
+                        prompt.id(),
+                    )
+                })
+                .unwrap_or(b"\x03");
             owned.terminal_stream.record_input(
                 &dispatch.session_id,
                 &dispatch.provider_run_id,
                 &dispatch.source_attachment_id,
-                b"\x03",
+                input,
             );
             self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
+                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, input)
             })
             .await?;
             Ok(())
