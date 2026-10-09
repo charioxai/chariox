@@ -305,15 +305,22 @@ impl std::fmt::Debug for ProjectEnvironmentLock {
 }
 impl ProjectEnvironmentStore {
     pub fn lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, false)
+        self.acquire_lock(project, false, "lock")
     }
     pub(crate) fn try_lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, true)
+        self.acquire_lock(project, true, "lock")
+    }
+    pub(super) fn identity_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "identity.lock")
     }
     fn acquire_lock(
         &self,
         project: &str,
         nonblocking: bool,
+        extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
@@ -323,7 +330,7 @@ impl ProjectEnvironmentStore {
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| environment_error("secure environment directory failed"))?;
         }
-        let path = self.path(project).with_extension("lock");
+        let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]
