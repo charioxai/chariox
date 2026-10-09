@@ -32,6 +32,17 @@ test("MP-08/MP-11 registration without a fill leaves pixels visible; unbound fil
   await assert.rejects(captureProtectedPage(browser,{target_id:'target'},['value'],[{kind:'browser',target_id:'target',node_ref:'backend:1'}],async()=>'unsafe'),/capture unavailable/);
 });
 
+test('MP-08/MP-11: negotiated controller bounds admit exact images and reject mismatches', () => {
+  const bounds={width:1920,height:1080};
+  const png=encodePng(bounds.width,bounds.height,Buffer.alloc(bounds.width*bounds.height*4,255));
+  assert.throws(()=>decodePng(png),/frame format/,'display defaults remain bounded');
+  const frame=decodePng(maskPng(png,[[100,100,20,20]],1,bounds),1,bounds);
+  assert.deepEqual([...frame.pixels.subarray((110*frame.width+110)*4,(110*frame.width+110)*4+4)],[0,0,0,255]);
+  assert.throws(()=>maskPng(png,[],1,{width:1921,height:1080}),/frame/);
+  assert.throws(()=>decodePng(png,1,{width:1920,height:1079}),/frame/);
+  for(const width of [0,-1,NaN,Infinity,1.5])assert.throws(()=>decodePng(png,1,{width,height:1080}),/frame/);
+});
+
 // MD-DISPLAY-02/04: arbitrary RGB/RGBA rows exercise every PNG predictor,
 // including first-row and left-edge rules; expected pixels are independent.
 test("MD-DISPLAY optimized PNG filters preserve all pixels and reject corruption", () => {

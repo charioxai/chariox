@@ -38,7 +38,11 @@ function paeth(a, b, c) {
   const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
-export function decodePng(data, scale = 1) {
+export function decodePng(data, scale = 1, viewport = null) {
+  // MP-08/MP-11: controller artifacts have a negotiated viewport distinct
+  // from the host display. Bind their header before allocating/inflating.
+  if (viewport && (![viewport.width, viewport.height].every(value => Number.isSafeInteger(value) && value > 0)
+      || !Number.isSafeInteger((viewport.width * 4 + 1) * viewport.height))) throw new Error('MD-5: invalid frame viewport');
   const png = Buffer.from(data, "base64");
   if (!png.subarray(0, 8).equals(signature) || png.length > 4 * 1024 * 1024) throw new Error("MD-5: unsupported frame");
   let width, height, channels, ended = false;
@@ -52,7 +56,8 @@ export function decodePng(data, scale = 1) {
       if (body.length !== 13 || width) throw new Error("MD-5: invalid frame header");
       width = body.readUInt32BE(0); height = body.readUInt32BE(4);
       channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : 0;
-      if (!width || !height || width > 1280 * scale || height > 800 * scale || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
+      const fits = viewport ? width === viewport.width && height === viewport.height : width <= 1280 * scale && height <= 800 * scale;
+      if (!width || !height || !fits || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
     } else if (type === "IDAT") {
       if (!width || ended) throw new Error("MD-5: invalid frame chunk order");
       compressed.push(body);
@@ -113,18 +118,18 @@ export function maskPixels({width,height,pixels}, regions) {
   }
   return {width,height,pixels};
 }
-export function maskPng(data, regions, scale = 1) {
-  const frame=maskPixels(decodePng(data,scale),regions);
+export function maskPng(data, regions, scale = 1, viewport = null) {
+  const frame=maskPixels(decodePng(data,scale,viewport),regions);
   return encodePng(frame.width,frame.height,frame.pixels);
 }
-export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}) {
+export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}, viewport = null) {
   if (!targets.length && !browser.fillTargets?.size) return capture();
   try {
     const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
     if (JSON.stringify(before) !== JSON.stringify(after)) throw Error("MP-11: fill target moved during capture");
-    const masked=maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale);
+    const masked=maskPng(data, before.map(([x,y,w,h]) => [(x-(clip?.x??0)*scale)*(clip?.scale??1),(y-(clip?.y??0)*scale)*(clip?.scale??1),w*(clip?.scale??1),h*(clip?.scale??1)]), scale, viewport);
     onMaskedRegions(before);
     return masked;
   } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
