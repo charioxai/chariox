@@ -175,7 +175,8 @@ test('MP-08/MP-10/MP-11 rejected native codec carries indexed exact PNG through 
  const chunk=(type,data)=>{const body=Buffer.concat([Buffer.from(type),data]),out=Buffer.alloc(body.length+8);out.writeUInt32BE(data.length);body.copy(out,4);out.writeUInt32BE(crc32(body),out.length-4);return out};
  const header=Buffer.alloc(13);header.writeUInt32BE(128);header.writeUInt32BE(128,4);header[8]=8;header[9]=3;
  const indexed=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('PLTE',Buffer.from([0,0,0])),chunk('IDAT',deflateSync(Buffer.alloc(129*128))),chunk('IEND',Buffer.alloc(0))]).toString('base64');
- assert.throws(()=>decodePng(indexed),/unsupported frame format/,'this is an actual indexed native PNG');
+ // An actual indexed native PNG; the fallback decoder expands it exactly.
+ const decoded=decodePng(indexed);assert.equal(decoded.width,128);assert.ok(decoded.pixels.every((v,i)=>i%4===3?v===255:v===0));
  let offer;const source={subscribe:f=>(offer=f,()=>{}),sample:()=>null};
  const encoder={nativeSession:'native',encode:async()=>({dropped:true}),close:async()=>{}};
  const motion=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000});
