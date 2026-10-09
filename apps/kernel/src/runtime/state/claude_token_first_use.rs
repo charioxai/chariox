@@ -146,27 +146,19 @@ impl KernelRuntimeState {
                         "Claude authorization",
                     )
                     .await?;
-                let response =
-                    crate::runtime::provider_auth_control::execute_start_provider_login_request(
-                        self,
-                        &owner,
-                        crate::local::StartProviderLoginRequest {
-                            provider: "claude".into(),
-                            account_profile: profile.profile_id.clone(),
-                            method: Some("setup_token".into()),
-                        },
-                    )
-                    .await?;
-                let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
-                    return Err(login_cancelled());
+                drop(_login_lane);
+                let response = crate::runtime::provider_auth_control::start_claude_login_for_rejected_revision(
+                    self, &owner, &profile.profile_id, verification.revision,
+                ).await?;
+                let Some(LocalDaemonResponse::ProviderLoginStarted { login }) = response else {
+                    return self
+                        .resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
+                        .await;
                 };
                 let id = format!(
                     "provider-auth-recovery:{}",
                     login.login_id.as_deref().unwrap_or_default()
                 );
-                // Consent/storage runs on this same commit lane. Release it
-                // after starting the shared login, before waiting on the human.
-                drop(_login_lane);
                 if !self
                     .wait_for_account_login(&request.session_id, &agent_id, &owner, &id, &login)
                     .await?

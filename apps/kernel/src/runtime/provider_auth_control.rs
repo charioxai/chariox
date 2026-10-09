@@ -138,7 +138,8 @@ async fn start_terminal_provider_auth(
     operation: crate::runtime::state::ProviderAuthProcessOperation,
     method: Option<String>,
     overwrite: bool,
-) -> Result<LocalDaemonResponse, DaemonError> {
+    rejected_revision: Option<Option<u64>>,
+) -> Result<Option<LocalDaemonResponse>, DaemonError> {
     let provider = crate::provider::canonical_provider_family(&provider)
         .ok_or_else(|| provider_login_error("unsupported provider"))?;
     if operation == crate::runtime::state::ProviderAuthProcessOperation::Login
@@ -173,6 +174,36 @@ async fn start_terminal_provider_auth(
             "provider-login-start:{provider}:{credential_scope}"
         ))
         .await;
+    // MP-08/MP-10/MP-11: lock order is login serialization (reconciliation),
+    // start admission, then account commit. Never reconcile while holding commit.
+    let _commit = if let Some(revision) = rejected_revision {
+        let id = crate::provider::provider_account_credential_id(
+            owner_user_id,
+            "claude",
+            &profile.profile_id,
+        );
+        let guard = runtime_state
+            .provider_runtime_lanes
+            .acquire(&format!("claude-account-login:{id}"))
+            .await;
+        let current = crate::provider::provider_account_credential_verification(
+            owner_user_id,
+            "claude",
+            &profile.profile_id,
+        )?;
+        if current.revision != revision
+            || (current.verified
+                && registry
+                    .get(owner_user_id, "claude", &profile.profile_id)?
+                    .auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated)
+        {
+            return Ok(None);
+        }
+        Some(guard)
+    } else {
+        None
+    };
     if provider == "claude"
         && operation == crate::runtime::state::ProviderAuthProcessOperation::Login
     {
@@ -180,7 +211,7 @@ async fn start_terminal_provider_auth(
             .provider_login_process_store()
             .running_start_for_profile(owner_user_id, provider, &profile.profile_id)
         {
-            return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
+            return Ok(Some(LocalDaemonResponse::ProviderLoginStarted { login }));
         }
     }
     let (program, args) = match (provider, operation) {
@@ -313,13 +344,13 @@ async fn start_terminal_provider_auth(
         return Err(error);
     }
     spawn_provider_login_monitor(runtime_state, owner_user_id, &login_id);
-    Ok(
+    Ok(Some(
         if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
             LocalDaemonResponse::ProviderLoginStarted { login: workflow }
         } else {
             LocalDaemonResponse::ProviderLogoutStarted { logout: workflow }
         },
-    )
+    ))
 }
 
 fn terminal_provider_auth_args(
@@ -804,6 +835,27 @@ pub(crate) async fn execute_cancel_provider_login_request(
     Ok(LocalDaemonResponse::ProviderLoginCancelled { login })
 }
 
+/// A rejected launch joins an existing sign-in or observes its committed repair.
+/// This conditional admission is internal; serialized RPCs stay unchanged.
+pub(in crate::runtime) async fn start_claude_login_for_rejected_revision(
+    runtime_state: &KernelRuntimeState,
+    owner: &str,
+    profile: &str,
+    revision: Option<u64>,
+) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+    start_terminal_provider_auth(
+        runtime_state,
+        owner,
+        "claude".into(),
+        profile.into(),
+        crate::runtime::state::ProviderAuthProcessOperation::Login,
+        Some(CLAUDE_SETUP_TOKEN_METHOD.into()),
+        true,
+        Some(revision),
+    )
+    .await
+}
+
 pub(crate) async fn execute_start_provider_login_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -836,8 +888,10 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
             crate::runtime::state::ProviderAuthProcessOperation::Login,
             request.method,
             overwrite,
+            None,
         )
-        .await;
+        .await?
+        .ok_or_else(|| provider_login_error("provider login was superseded"));
     }
     let registry = runtime_state.provider_account_profile_registry().clone();
     let profile = registry.get(owner_user_id, "codex", &request.account_profile)?;
@@ -953,8 +1007,10 @@ pub(crate) async fn execute_logout_provider_request(
             crate::runtime::state::ProviderAuthProcessOperation::Logout,
             None,
             true,
+            None,
         )
-        .await;
+        .await?
+        .ok_or_else(|| provider_login_error("provider logout was superseded"));
     }
     let response = tokio::task::spawn_blocking(move || {
         let provider = request.provider.clone();

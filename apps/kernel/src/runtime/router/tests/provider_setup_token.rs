@@ -1019,6 +1019,13 @@ async fn setup_token_two_login_callers_share_login_and_reload_repaired_account()
     first_use_fixture("enrollment-two").await;
 }
 
+// MP-08/MP-10/MP-11: old-token first use must not hold the account
+// commit lane while reconciliation stores an already completed replacement.
+#[tokio::test]
+async fn setup_token_rejected_first_use_reconciles_completed_replacement_without_deadlock() {
+    first_use_fixture("expired-overlap").await;
+}
+
 async fn first_use_fixture(mode: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -1063,7 +1070,7 @@ if [ "$1" = -p ]; then
     fi
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
   fi
-  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && {{ [ '{mode}' = enrollment-two ] || [ '{mode}' = enrollment-retry ]; }}; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = 'sk-ant-oat01-{replacement}' ] && {{ [ '{mode}' = enrollment-two ] || [ '{mode}' = enrollment-retry ] || [ '{mode}' = expired-overlap ]; }}; then
     echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
   fi
   [ '{mode}' = network ] && exit 3
@@ -1077,6 +1084,7 @@ fi
 echo login >> '{root}/logins'
 printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
 printf 'Paste code here if prompted > '
+if [ '{mode}' = expired-overlap ]; then printf '%s\n' 'sk-ant-oat01-{replacement}'; exit 0; fi
 IFS= read -r response
 if [ '{mode}' = enrollment-retry ]; then
   printf '\r\nOAuth error: Request failed with status code 400\r\nPress Enter to retry.\r\n'
@@ -1375,6 +1383,62 @@ exit 1
     } else {
         None
     };
+    if mode == "expired-overlap" {
+        let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
+            &router.runtime_state,
+            "local",
+            crate::local::StartProviderLoginRequest {
+                provider: "claude".into(),
+                account_profile: profile.profile_id.clone(),
+                method: Some("setup_token".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
+            panic!("login missing")
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let exited = matches!(
+                router
+                    .app
+                    .lock()
+                    .await
+                    .pty_mut()
+                    .poll_process_state(login.login_id.as_deref().unwrap()),
+                Ok(crate::pty::PtyProcessState::Exited { .. })
+            );
+            if exited {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement PTY must finish"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let prepared = tokio::time::timeout(Duration::from_secs(3), router.runtime_state.prepare_provider_launch_request_with_vault(request, "overlap replacement"))
+            .await.expect("MP-08/MP-10/MP-11 old first use must release the account lane before login reconciliation")
+            .unwrap();
+        assert!(
+            prepared
+                .provider_credential_env
+                .iter()
+                .any(|(_, value)| value == &format!("sk-ant-oat01-{}", "B".repeat(96))),
+            "launch must use the completed replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("logins"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "no redundant login after completed repair"
+        );
+        router.app.lock().await.shutdown_cleanup().unwrap();
+        return;
+    }
     let mut prepared = Box::pin(async {
         if mode.starts_with("enrollment") {
             let start = LocalDaemonRequest::SetProviderAccountCredential(
