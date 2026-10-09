@@ -114,11 +114,11 @@ export class DesktopSource {
     let timer;
     const next=await Promise.race([this.answers.next(),new Promise(resolve=>{timer=setTimeout(resolve,5000,{done:true});})]).finally(()=>clearTimeout(timer));
     if(next.done)throw Error('MP-11: desktop protection unavailable');
-    const {digest,masks}=JSON.parse(next.value);
+    const {digest,masks,state}=JSON.parse(next.value);
     if(typeof digest!=='string'||masks!==null&&!validMasks(masks,this.binding.width,this.binding.height))throw Error('MP-11: desktop protection reply');
     // Wall-clock ms like the worker's captured_ms; receipt follows completion.
     const snapshot={scope,digest,masks,start,end:Date.now()+1},now=Date.now();
-    this.timing('desktop_protection_snapshot',start,now);
+    this.timing('desktop_protection_snapshot'+(Array.isArray(state)&&state.length===4&&state.every(Number.isSafeInteger)?' a'+state[0]+'c'+state[1]+'p'+state[2]+'w'+state[3]:''),start,now);
     this.history=[...(this.history??[]).filter(item=>item.end>now-2000).slice(-63),snapshot];
     return snapshot;
   }
@@ -141,6 +141,8 @@ export class DesktopSource {
       const stable=span.every(item=>item.scope===scope&&item.digest===span[0].digest);
       this.timing(stable?'desktop_readback_bound':'desktop_readback_masked',raw.captured_ms);
       this.bind(raw,stable?span[0].masks:null,scope.serial);
+      // A whole-masked frame must not stick on a still desktop: read again.
+      if(!stable&&!this.next)this.worker.notify({refresh:true},true);
     }}catch{this.next?.release();this.next=null;void this.close().catch(()=>{});}
     finally{this.protecting=false;}
   }

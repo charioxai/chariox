@@ -26,7 +26,9 @@ def answer(request, snapshot):
     tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'])
     digest = hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     usable = tree.get('available') and tree.get('complete') and not tree.get('protected')
-    return {'digest': digest, 'masks': tree.get('masks', tree.get('uncovered', [])) if usable else None}
+    # Fixed-label diagnostics only: why masks are absent, never page data.
+    state = [int(bool(tree.get(key))) for key in ('available', 'complete', 'protected')] + [int(tree.get('browser_withheld', 0) or 0)]
+    return {'digest': digest, 'masks': tree.get('masks', tree.get('uncovered', [])) if usable else None, 'state': state}
 
 
 def main():

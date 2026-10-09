@@ -37,6 +37,7 @@ test('MP-11 a protection change across the readback masks the whole desktop',asy
   f.snapshots.push(['changed',[]]);
   f.source.next=f.raw(2,f.now()+2);await f.source.protect();
   assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
+  assert.deepEqual(f.notices,[{refresh:true},{refresh:true}],'a whole-masked frame asks for a fresh readback (no sticky black on a still desktop)');
 });
 test('MP-11 unavailable or protected snapshots mask the whole desktop',async()=>{
   const f=fixture();
