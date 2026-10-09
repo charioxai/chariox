@@ -214,7 +214,9 @@ impl KernelRuntimeState {
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_notification_profile_owner(owner)?;
-        if matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_)) {
+        if self.notification_grant().is_none()
+            && matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_))
+        {
             self.refresh_notification_sources(owner).await?;
         }
         if let LocalDaemonRequest::DetachWorkflowNotification(request) = &request {
@@ -230,6 +232,13 @@ impl KernelRuntimeState {
                         && s.target_kernel_id == self.owned.config_projection.snapshot().daemon_id
                 })
                 .ok_or_else(|| store::error("notification not attached"))?;
+            if self.notification_grant().is_some()
+                && sub.source_kernel_id != self.owned.config_projection.snapshot().daemon_id
+            {
+                return Err(store::error(
+                    "shared access cannot detach remote workflow notifications",
+                ));
+            }
             self.owned
                 .durable_state_store
                 .notify(NotificationOperation::Detach {
@@ -518,6 +527,8 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    mod local_access;
+
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
     use crate::{
