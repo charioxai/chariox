@@ -148,7 +148,6 @@ pub(super) async fn start_remote_setup_with_deadline(
     .await
 }
 
-
 pub(super) async fn get_remote_setup_status_with_deadline(
     state: &KernelRuntimeState,
     execution: &SetupExecution,

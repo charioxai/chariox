@@ -476,27 +476,42 @@ impl AgentWorker {
         agent: &str,
         home_prompt: &str,
     ) -> crate::provider::RuntimeProviderRun {
-        eventually_async("the current lease projects the exact worker prompt", || async {
-            let remote = binding(fixture, agent).await;
-            let receipt = worker_receipt(fixture, agent, home_prompt).await?;
-            if receipt.phase != crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
-                || receipt.execution_lease_id.as_deref() != Some(remote.execution_lease_id.as_str())
-            {
-                return None;
-            }
-            let projected = crate::provider::projected_leased_provider_run_id(
-                &remote.leased_agent_id,
-                &receipt.worker_provider_run_id,
-            );
-            fixture.home.provider_run_projection.list_for_session(&fixture.rooms[0])
-                .into_iter().find(|run| run.id() == projected
-                    && run.agent_instance_id() == Some(agent)
-                    && run.state() == crate::provider::ProviderRunState::Running)?;
-            self.router.app.lock().await.providers()
-                .get_run(&receipt.worker_provider_run_id).ok()
-        }).await
+        eventually_async(
+            "the current lease projects the exact worker prompt",
+            || async {
+                let remote = binding(fixture, agent).await;
+                let receipt = worker_receipt(fixture, agent, home_prompt).await?;
+                if receipt.phase != crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
+                    || receipt.execution_lease_id.as_deref()
+                        != Some(remote.execution_lease_id.as_str())
+                {
+                    return None;
+                }
+                let projected = crate::provider::projected_leased_provider_run_id(
+                    &remote.leased_agent_id,
+                    &receipt.worker_provider_run_id,
+                );
+                fixture
+                    .home
+                    .provider_run_projection
+                    .list_for_session(&fixture.rooms[0])
+                    .into_iter()
+                    .find(|run| {
+                        run.id() == projected
+                            && run.agent_instance_id() == Some(agent)
+                            && run.state() == crate::provider::ProviderRunState::Running
+                    })?;
+                self.router
+                    .app
+                    .lock()
+                    .await
+                    .providers()
+                    .get_run(&receipt.worker_provider_run_id)
+                    .ok()
+            },
+        )
+        .await
     }
-
 }
 
 async fn eventually_async<T, F: std::future::Future<Output = Option<T>>>(
@@ -757,8 +772,14 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let window_length = Duration::from_secs(8);
     let (owner, verified) =
         open_leased_sudo(&fixture, &room, &attachment, &agent, window_length).await;
-    let home_prompt = fixture.home.runtime_state.list_sudo_turns(&owner)
-        .pop().unwrap().prompt_id.unwrap();
+    let home_prompt = fixture
+        .home
+        .runtime_state
+        .list_sudo_turns(&owner)
+        .pop()
+        .unwrap()
+        .prompt_id
+        .unwrap();
     let run = worker.run_for(&fixture, &agent, &home_prompt).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let worker_session = run.session_id().to_string();
@@ -815,8 +836,13 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .router
         .dispatch_authenticated_runtime_tool_call(&token, "chariox_kernel_request", request.clone())
         .await;
-    let sibling_prompt = store(&fixture).await.agent_tasks(Some(&room), Some(&sibling))
-        .unwrap().pop().unwrap().prompt_id;
+    let sibling_prompt = store(&fixture)
+        .await
+        .agent_tasks(Some(&room), Some(&sibling))
+        .unwrap()
+        .pop()
+        .unwrap()
+        .prompt_id;
     let sibling_run = worker.run_for(&fixture, &sibling, &sibling_prompt).await;
     let sibling_token = sibling_run.runtime_mcp_auth_token().unwrap().to_string();
     let sibling_listed = lists(&sibling_token);
@@ -1186,7 +1212,9 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    let next = worker.run_for(&fixture, &agent, accepted.prompt_id.as_deref().unwrap()).await;
+    let next = worker
+        .run_for(&fixture, &agent, accepted.prompt_id.as_deref().unwrap())
+        .await;
     let next_token = next.runtime_mcp_auth_token().unwrap().to_string();
     let listed = worker
         .router

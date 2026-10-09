@@ -192,7 +192,7 @@ fn stored_archive_reopen_retains_exact_bytes_and_shared_generation_lock() {
     let package = verify(&archive, &policy).unwrap();
     let staged = store.stage(&package, &archive, budget()).unwrap();
     let mut stored = store
-        .open_stored_archive(&package.package_digest())
+        .open_stored_archive(package.package_digest())
         .unwrap();
     assert_eq!(stored.read_bytes().unwrap(), archive);
     assert_eq!(stored.read_bytes().unwrap(), archive);
@@ -222,7 +222,7 @@ fn stored_archive_rejects_tampering_oversize_and_link_replacement_before_verific
     fs::write(&path, bad).unwrap();
     permissions(&path, 0o400);
     let mut stored = store
-        .open_stored_archive(&package.package_digest())
+        .open_stored_archive(package.package_digest())
         .unwrap();
     assert!(matches!(
         stored.read_bytes(),
@@ -238,7 +238,7 @@ fn stored_archive_rejects_tampering_oversize_and_link_replacement_before_verific
         .unwrap();
     permissions(&path, 0o400);
     let mut stored = store
-        .open_stored_archive(&package.package_digest())
+        .open_stored_archive(package.package_digest())
         .unwrap();
     assert!(matches!(
         stored.read_bytes(),
@@ -250,7 +250,7 @@ fn stored_archive_rejects_tampering_oversize_and_link_replacement_before_verific
     symlink("payload/runtime/main.js", &path).unwrap();
     permissions(&staged.path, 0o500);
     assert!(store
-        .open_stored_archive(&package.package_digest())
+        .open_stored_archive(package.package_digest())
         .is_err());
 }
 

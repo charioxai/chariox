@@ -3,7 +3,6 @@ use crate::local::{WorkspaceCommitMessageUtilityInput, WorkspaceGitOverview};
 use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 
-
 pub(crate) struct WorkspaceCommitMessageUtilityPrompt {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,

@@ -63,7 +63,7 @@ impl Fixture {
         };
         let data = PrivateData {
             root: Arc::new(Dir(File::open(&path).unwrap())),
-            preparation: Arc::new(Mutex::new(prepared)),
+            _preparation: Arc::new(Mutex::new(prepared)),
             installation: "installed".into(),
             generation: 1,
             release_digest: "a".repeat(64),
@@ -411,7 +411,7 @@ fn a_deleted_or_replaced_parent_keeps_the_write_inside_the_root() {
 fn pre_spawn_storage_visit_keeps_the_domain_pinned_and_refuses_a_retained_descriptor() {
     let mut f = Fixture::new();
     let data = f.data.take().unwrap();
-    let preparation = data.preparation.clone();
+    let preparation = data._preparation.clone();
     drop(data);
     let prepared = Arc::try_unwrap(preparation)
         .ok()

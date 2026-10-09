@@ -188,7 +188,6 @@ impl CommandRouter {
         })
     }
 
-
     pub(crate) async fn relay_begin_managed_context_import_with_home_caller(
         &self,
         identity: RelayCallerIdentity,
@@ -215,7 +214,6 @@ impl CommandRouter {
         .await?;
         relay_status_response(status)
     }
-
 
     pub(crate) async fn relay_upload_managed_context_chunk_with_home_caller(
         &self,
@@ -255,7 +253,6 @@ impl CommandRouter {
         relay_status_response(status)
     }
 
-
     pub(crate) async fn relay_get_managed_context_import_status_with_home_caller(
         &self,
         identity: RelayCallerIdentity,
@@ -282,7 +279,6 @@ impl CommandRouter {
         .await?;
         relay_status_response(status)
     }
-
 
     pub(crate) async fn relay_finalize_managed_context_import_with_home_caller(
         &self,

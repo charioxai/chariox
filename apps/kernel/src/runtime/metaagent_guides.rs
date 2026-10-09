@@ -247,7 +247,6 @@ struct MetaagentGuideFrontmatter {
     commands: Vec<String>,
 }
 
-
 pub(crate) fn search_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::Value> {
     search_guides_with_context(args, &MetaagentGuideContext::embedded_only())
 }

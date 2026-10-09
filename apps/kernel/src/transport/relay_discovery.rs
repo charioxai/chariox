@@ -774,11 +774,21 @@ mod tests {
         let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
             .await
             .expect_err("failed scoped discovery must reject before opening a relay socket");
-        assert!(matches!(error, DaemonError::LocalTransport {
-            operation: "issue cloud relay inventory discovery token", ..
-        }));
-        assert_eq!(config.relay_token.as_deref(), Some("synthetic-kernel-runtime-token"));
-        assert!(config.cloud_relay.is_some(), "runtime admission must remain intact");
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "issue cloud relay inventory discovery token",
+                ..
+            }
+        ));
+        assert_eq!(
+            config.relay_token.as_deref(),
+            Some("synthetic-kernel-runtime-token")
+        );
+        assert!(
+            config.cloud_relay.is_some(),
+            "runtime admission must remain intact"
+        );
     }
 
     #[tokio::test]

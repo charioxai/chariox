@@ -78,16 +78,17 @@ pub(crate) fn isolate_environment_test() -> bool {
         .spawn()
         .expect("isolated environment test should start");
     #[cfg(unix)]
-    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
         let pid = i32::try_from(child.id()).expect("isolated child PID fits the signal API");
         assert!(pid > 1, "refusing to signal a reserved isolated child PID");
         #[cfg(unix)]
         if let Some(signals) = signals.as_mut() {
-            if signals.kill_group().is_err() {
-                let _ = signals.kill_owned_processes();
-            }
+            let _ = signals.kill_group();
+            // Detached descendants may survive even a successful group signal.
+            let _ = signals.kill_owned_processes();
         }
         // The std Child handle still owns this unreaped, validated positive PID.
         let _ = child.kill();

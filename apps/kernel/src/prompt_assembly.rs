@@ -844,7 +844,6 @@ impl PromptAssemblyService {
         Self { registry }
     }
 
-
     pub(crate) fn assemble_provider_turn(
         &self,
         run: &RuntimeProviderRun,

@@ -410,8 +410,24 @@ mod tests {
                 exclusive_session: None,
                 owned: BTreeMap::from([(root, "birth".into())]),
             };
-            assert!(guard.group_with(&rows, |_| panic!("invalid group signalled")).is_err());
+            assert!(guard
+                .group_with(&rows, |_| panic!("invalid group signalled"))
+                .is_err());
         }
+    }
+
+    #[test]
+    fn mp11_cleanup_retains_detached_descendants_after_a_group_signal() {
+        let rows = vec![row(41, 9, 41, "root"), row(45, 41, 45, "detached"), row(99, 1, 99, "foreign")];
+        let mut guard = OwnedProcessSignals {
+            root: 41,
+            exclusive_session: None,
+            owned: BTreeMap::from([(41, "root".into())]),
+        };
+        let mut sent = Vec::new();
+        guard.group_with(&rows, |pid| { sent.push(pid); Ok(()) }).unwrap();
+        guard.kill_owned_with(|| Ok(rows.clone()), |pid| { sent.push(pid); Ok(()) }).unwrap();
+        assert_eq!(sent, [-41, 45, 41]);
     }
 
     #[test]

@@ -134,7 +134,6 @@ impl CharioxEncryptedCredentialVaultStore {
             kdf_profile,
         }
     }
-
 }
 
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
