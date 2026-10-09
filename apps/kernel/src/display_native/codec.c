@@ -31,6 +31,7 @@ struct Row {
     AVCodecContext *decoder;
     AVFrame *decoded;
     uint8_t *previous,*packet,*rgb;
+    float *offsets; /* MP-11: per-macroblock x264 quant offsets of protected rows. */
     size_t packet_capacity;
     uint64_t sequence;
     /* x264 reconstruction (NV12) of the last encoded frame: bit-exact with
@@ -60,7 +61,7 @@ static void row_close(struct Row *row) {
     if (row->allocated) x264_picture_clean(&row->picture);
     avcodec_free_context(&row->hardware);av_frame_free(&row->staging);
     avcodec_free_context(&row->decoder); av_frame_free(&row->decoded);
-    free(row->previous);free(row->packet);free(row->rgb);memset(row,0,sizeof(*row));
+    free(row->previous);free(row->packet);free(row->rgb);free(row->offsets);memset(row,0,sizeof(*row));
 }
 void cx_codec_close(struct Codec *c) {
     if (!c) return;
@@ -151,10 +152,14 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
     p.i_keyint_max=X264_KEYINT_MAX_INFINITE;p.i_scenecut_threshold=0;p.i_bframe=0;p.b_repeat_headers=1;p.b_annexb=1;p.i_log_level=X264_LOG_NONE;
     p.vui.b_fullrange=0;p.i_level_idc=51;
     row_rate_control(&p,rate);
+    /* Quant offsets need AQ; x264 disables AQ at zero strength, so a
+     * negligible strength keeps the offsets and leaves rate control as is. */
+    if (protected&&!row->hardware){p.rc.i_aq_mode=X264_AQ_VARIANCE;p.rc.f_aq_strength=0.01f;}
     if (x264_param_apply_profile(&p,"baseline")) return -1;
     if(!row->hardware)row->codec=x264_encoder_open(&p);
     if ((!row->codec&&!row->hardware) || x264_picture_alloc(&row->picture,X264_CSP_I420,ew,eh)) return -1;
     row->allocated=1;row->width=ew;row->height=eh;
+    if (protected&&!row->hardware&&!(row->offsets=calloc((size_t)((ew+15)/16)*((eh+15)/16),sizeof(float))))return -1;
     if (c->row_count>1&&!(row->previous=malloc((size_t)c->width*h*4))) return -1;
     /* MP-11: protected rows keep an INDEPENDENT decode of every packet; the
      * hardware path has no reconstruction. Software rows certify repairs
@@ -196,6 +201,45 @@ void cx_mask(uint8_t *pixels,int width,int height,const struct Rect *regions,siz
         }
     }
 }
+/* MP-08/MP-11: at a low rate (a 1.5-frame VBV IDR at Retina size) a lossy
+ * macroblock straddling a mask edge flattens toward its bright neighbours,
+ * and even a wholly black macroblock decodes grey at QP 51: the decoded mask
+ * fails output_safe and every frame drops (IDR loop). Codec input masks cover
+ * whole 16x16 macroblocks of each encoded row around the 4 px pad
+ * (deblocking reaches at most 3 px into them), and those macroblocks are
+ * coded at a much lower QP (flat black costs few bits). Exact paths keep
+ * cx_mask; output_safe still decodes and checks every packet. */
+static int mask_span(const struct Codec *c,const struct Rect *region,int y,int bottom,int *box) {
+    int l=(region->left-4)&~15,r=(region->right+4+15)&~15,t=region->top-4,b=region->bottom+4;
+    if (l<0)l=0;
+    if (r>c->width)r=c->width;
+    if (t<y)t=y;
+    if (b>bottom)b=bottom;
+    if (t>=b||l>=r)return 0;
+    t=y+((t-y)&~15);b=y+((b-y+15)&~15);
+    if (b>bottom)b=bottom;
+    box[0]=l;box[1]=t;box[2]=r;box[3]=b;return 1;
+}
+static void mask_macroblocks(struct Codec *c,uint8_t *pixels,const struct Rect *regions,size_t count) {
+    for (size_t n=0;n<count;n++) for (int row=0;row<c->row_count;row++) {
+        int box[4],y=2*((c->height/2*row)/c->row_count),bottom=2*((c->height/2*(row+1))/c->row_count);
+        if (!mask_span(c,&regions[n],y,bottom,box))continue;
+        for (int dy=box[1];dy<box[3];dy++) for (int x=box[0];x<box[2];x++) {
+            uint8_t *p=pixels+((size_t)dy*c->width+x)*4;
+            p[0]=p[1]=p[2]=0;p[3]=255;
+        }
+    }
+}
+static void mask_offsets(const struct Codec *c,struct Row *row,int y,int h,const struct Rect *regions,size_t count) {
+    int columns=(row->width+15)/16,rows=(row->height+15)/16;
+    for (int i=0;i<columns*rows;i++)row->offsets[i]=0;
+    for (size_t n=0;n<count;n++) {
+        int box[4];
+        if (!mask_span(c,&regions[n],y,y+h,box))continue;
+        for (int my=(box[1]-y)/16;my<(box[3]-y+15)/16&&my<rows;my++) for (int mx=box[0]/16;mx<(box[2]+15)/16&&mx<columns;mx++)
+            row->offsets[my*columns+mx]=-30;
+    }
+}
 static int output_safe(struct Row *row,const uint8_t *packet,size_t length,int width,int h,int y,const struct Rect *regions,size_t count) {
     if (!row->decoder)return 1;
     av_frame_unref(row->decoded);
@@ -235,7 +279,7 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
     memset(c->cpu,0,sizeof(c->cpu));double at=cpu_ms();
     const uint8_t *pixels=source;
     if (count) {
-        memcpy(c->masked,source,(size_t)c->width*c->height*4);cx_mask(c->masked,c->width,c->height,regions,count);pixels=c->masked;
+        memcpy(c->masked,source,(size_t)c->width*c->height*4);cx_mask(c->masked,c->width,c->height,regions,count);mask_macroblocks(c,c->masked,regions,count);pixels=c->masked;
         for (size_t n=0;n<count;n++) for (int y=regions[n].top;y<regions[n].bottom;y++) for (int x=regions[n].left;x<regions[n].right;x++) {
             const uint8_t *p=pixels+((size_t)y*c->width+x)*4;
             if (p[0] || p[1] || p[2])return -1;
@@ -275,6 +319,7 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
             if(!hardware_packet){for(int i=0;i<8;i++)row_close(&c->rows[i]);c->fallback=3;return cx_codec_encode(c,source,255,regions,count,results);}
             length=hardware_packet->size;
         }else {
+            if (row->offsets){mask_offsets(c,row,y,h,regions,count);row->picture.prop.quant_offsets=row->offsets;row->picture.prop.quant_offsets_free=NULL;}
             length=x264_encoder_encode(row->codec,&nals,&n,&row->picture,&out);
             if(length>0&&out.img.i_csp==X264_CSP_NV12&&out.img.i_plane==2){row->recon_y=out.img.plane[0];row->recon_uv=out.img.plane[1];row->recon_y_stride=out.img.i_stride[0];row->recon_uv_stride=out.img.i_stride[1];}
             else row->recon_y=row->recon_uv=NULL;

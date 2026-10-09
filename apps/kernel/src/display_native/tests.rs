@@ -705,3 +705,57 @@ fn mp08_committed_canvas_plan_reencodes_only_changed_cells_without_a_scroll() {
         "nothing to send"
     );
 }
+#[test]
+fn mp11_protected_retina_rows_keep_the_mask_black_at_the_paced_rate() {
+    // MP-08/MP-11: dense detail starves a 1.5-frame VBV; an IDR used to decode
+    // the masked macroblocks grey, fail output_safe and drop every frame.
+    let (w, h) = (2560usize, 1600usize);
+    let regions = [
+        Rect {
+            left: 1001,
+            top: 403,
+            right: 1137,
+            bottom: 447,
+        },
+        Rect {
+            left: 90,
+            top: 603,
+            right: 333,
+            bottom: 640,
+        },
+    ];
+    let mut state = 12345u32;
+    for row_count in [1, 8] {
+        let codec = Codec(unsafe { ffi::cx_codec_open(w as i32, h as i32, 8000000, row_count, 0) });
+        assert!(!codec.0.is_null());
+        for frame in 0..6 {
+            let source: Vec<u8> = (0..w * h * 4)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    if state & 1 == 1 {
+                        250
+                    } else {
+                        (state >> 24) as u8
+                    }
+                })
+                .collect();
+            let mut rows = [RowResult::default(); 8];
+            let count = unsafe {
+                ffi::cx_codec_encode(
+                    codec.0,
+                    source.as_ptr(),
+                    if frame == 0 { 255 } else { 0 },
+                    regions.as_ptr(),
+                    regions.len(),
+                    rows.as_mut_ptr(),
+                )
+            };
+            assert!(
+                count >= 0,
+                "protected rows={row_count} frame={frame} dropped ({count})"
+            );
+        }
+    }
+}
