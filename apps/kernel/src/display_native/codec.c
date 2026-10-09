@@ -305,7 +305,7 @@ int cx_codec_available(void) {
     struct Codec c={.width=32,.height=32,.enc_width=32,.enc_height=32,.bitrate=800000,.row_count=1};
     const char *encoder=getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER");
     c.openh264=!(encoder&&!strcmp(encoder,"libx264"));
-    int ready=row_open(&c,&c.rows[0],32,1,1)==0;
+    int ready=row_open(&c,&c.rows[0],32,1)==0;
     row_close(&c.rows[0]);return ready;
 }
 int cx_codec_rate(struct Codec *c,int bitrate) {
