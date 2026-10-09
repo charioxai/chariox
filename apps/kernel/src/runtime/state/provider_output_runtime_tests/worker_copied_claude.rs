@@ -6,7 +6,7 @@ use crate::transport::relay_peer::*;
 struct WorkerFixture {
     root: crate::test_support::TestWorktree,
     app: Arc<Mutex<DaemonApp>>,
-    router: crate::runtime::router::CommandRouter,
+    router: Arc<crate::runtime::router::CommandRouter>,
     runtime: KernelRuntimeState,
     account: String,
     credential: std::path::PathBuf,
@@ -14,6 +14,10 @@ struct WorkerFixture {
 
 impl WorkerFixture {
     async fn new(copied: bool) -> Self {
+        Self::with_config(copied, |_| {}).await
+    }
+
+    async fn with_config(copied: bool, configure: impl FnOnce(&mut crate::DaemonConfig)) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = crate::test_support::TestWorktree::new("worker-copied-claude");
         let executable = root.path().join("claude");
@@ -55,6 +59,7 @@ done
         std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::ProcessMemory;
+        configure(&mut config);
         let app = DaemonApp::bootstrap(config).unwrap();
         let registry = app.provider_account_profile_registry();
         let account = if copied {
@@ -101,12 +106,13 @@ done
             std::path::Path::new(&environment["CLAUDE_CONFIG_DIR"]).join(".credentials.json");
         let app = Arc::new(Mutex::new(app));
         let lanes = app.lock().await.provider_run_operation_lanes();
-        let router =
+        let router = Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_and_provider_lanes(
                 Arc::clone(&app),
                 16,
                 lanes,
-            );
+            ),
+        );
         let runtime = router.runtime_state();
         assert!(!crate::provider::provider_account_credential_uses_vault(
             "owner", "claude", &account
@@ -480,7 +486,53 @@ async fn review_worker_missing_claude_copy_admits_first_prompt_before_human_logi
         .unwrap()
         .join("UNEXPECTED_LOGIN")
         .exists());
+    // MP-08/MP-10/MP-11: complete the receiving login; the replacement must keep
+    // the lease's workflow tools and home forwarding context for the retained turn.
+    let profile_dir = fixture.credential.parent().unwrap();
+    std::fs::write(profile_dir.join("allow-synthetic-login"), "").unwrap();
+    std::fs::write(profile_dir.join("hold-synthetic-result"), "").unwrap();
+    let interaction_id = interaction.id().to_string();
+    fixture
+        .runtime
+        .resolve_runtime_interaction(&leased.backing_session_id, &interaction_id, "login", None)
+        .await
+        .unwrap();
+    fixture.wait_for_prompt("cold-missing-workflow").await;
+    let replacement = fixture
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+        .unwrap();
+    assert_ne!(replacement.id(), run);
+    let tool_names = fixture
+        .runtime
+        .runtime_tool_specs_for_auth_token_async(
+            replacement.runtime_mcp_auth_token().unwrap().to_string(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let context = crate::app::RemoteLeaseRuntime::new(&mut *fixture.app.lock().await)
+        .leased_workflow_turn_context_for_provider_run(replacement.id());
+    std::fs::remove_file(profile_dir.join("hold-synthetic-result")).unwrap();
     fixture.app.lock().await.shutdown_cleanup().unwrap();
+    for tool in [
+        crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL,
+        crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+    ] {
+        assert!(
+            tool_names.contains(tool),
+            "leased login relaunch omitted {tool}"
+        );
+    }
+    assert_eq!(
+        context.map(|context| context.delivery_token),
+        Some("cold-missing-workflow".to_string()),
+        "leased login relaunch lost the home forwarding context"
+    );
 }
 
 // MP-08/MP-10/MP-11: a receiving copy can be missing while token auth is usable.
@@ -1273,4 +1325,319 @@ async fn review_local_workflow_missing_claude_copy_with_registered_token_deliver
         .active_interactions()
         .is_empty());
     fixture.app.lock().await.shutdown_cleanup().unwrap();
+}
+
+// MP-08/MP-10/MP-11: the leased case end to end on home -> relay -> worker. The
+// home materializes its renewable Claude login, the worker copy loses its file,
+// and the retained workflow node completes through the worker's receiving login.
+#[test]
+fn review_remote_workflow_missing_claude_copy_completes_after_receiving_login() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(32 * 1024 * 1024)
+                .build()
+                .unwrap()
+                .block_on(remote_workflow_missing_claude_copy_completes_after_receiving_login())
+        })
+        .unwrap()
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
+async fn remote_workflow_missing_claude_copy_completes_after_receiving_login() {
+    use crate::transport::runtime_tools::{
+        ACK_WORKFLOW_TURN_TOOL, VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+    };
+    let relay = chariox_relay::RelayServer::new(chariox_relay::RelayConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        shared_token: Some("secret".into()),
+    });
+    let listener = relay.bind_listener().await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = relay.registry();
+    let (relay_stop, relay_stopped) = tokio::sync::oneshot::channel::<()>();
+    let relay_task = tokio::spawn(async move {
+        relay
+            .run_listener_until(listener, async {
+                let _ = relay_stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let relay_config = |id: &'static str| {
+        move |config: &mut crate::DaemonConfig| {
+            config.daemon_id = format!("copy-{id}");
+            config.host_machine_id = format!("copy-{id}-machine");
+            config.host_machine_alias = Some(format!("copy-{id}-alias"));
+            config.relay_url = Some(format!("ws://{address}"));
+            config.relay_token = Some("secret".into());
+            config.relay_heartbeat_ms = 50;
+        }
+    };
+    let worker = WorkerFixture::with_config(false, relay_config("worker")).await;
+    let home = WorkerFixture::with_config(false, relay_config("home")).await;
+    // The home's renewable login is the test-created source the worker copies.
+    std::fs::write(
+        &home.credential,
+        br#"{"claudeAiOauth":{"refreshToken":"synthetic-refresh","accessToken":"synthetic-access","expiresAt":9999999999999}}"#,
+    )
+    .unwrap();
+    let mut connectors = Vec::new();
+    for fixture in [&worker, &home] {
+        let state = fixture.app.lock().await.relay_client_state();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        connectors.push((
+            stop,
+            tokio::spawn(
+                crate::transport::relay_client::run_daemon_relay_connector_with_router(
+                    Arc::clone(&fixture.router),
+                    state,
+                    stopped,
+                ),
+            ),
+        ));
+    }
+    for id in ["copy-worker", "copy-home"] {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while registry.read().await.daemon(id).is_none() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("kernel registers with the relay");
+    }
+    let (inventory_config, inventory) = {
+        let app = home.app.lock().await;
+        (
+            app.config_projection_store(),
+            app.remote_relay_inventory_projection_store(),
+        )
+    };
+    crate::transport::relay_client::refresh_remote_inventory_projection(
+        inventory_config,
+        inventory,
+    )
+    .await
+    .unwrap();
+
+    let (session_id, agent_id, workflow_id, endpoint_id) = {
+        let mut app = home.app.lock().await;
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(home.root.session_request().with_owner_user_id("owner"))
+            .unwrap();
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "claude")
+                    .with_owner_user_id("owner")
+                    .with_model("sonnet")
+                    .with_account_profile(home.account.clone())
+                    .with_kernel("copy-worker"),
+            )
+            .expect("home spawns the remote Claude agent and materializes its login");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("remote-copy-recovery".into()))
+            .unwrap();
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .unwrap();
+        app.sessions_mut()
+            .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+            .unwrap();
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(session.id(), workflow.id(), node.id(), Some("entry".into()))
+            .unwrap();
+        app.sessions_mut()
+            .set_workflow_endpoint_owner(session.id(), workflow.id(), endpoint.id(), "owner".into())
+            .unwrap();
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            workflow.id().to_string(),
+            endpoint.id().to_string(),
+        )
+    };
+    let leased_agent_id = home
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .leased_agent_id
+        .clone();
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut *worker.app.lock().await)
+        .leased_agent_snapshot_for_test(&leased_agent_id)
+        .unwrap();
+    // Remove only the worker's product-materialized receiving copy.
+    let worker_registry = worker.app.lock().await.provider_account_profile_registry();
+    let copy_dir = std::path::PathBuf::from(
+        &worker_registry
+            .resolve_environment("owner", "claude", &leased.account_profile)
+            .unwrap()["CLAUDE_CONFIG_DIR"],
+    );
+    assert_ne!(copy_dir, worker.credential.parent().unwrap());
+    std::fs::remove_file(copy_dir.join(".credentials.json")).unwrap();
+
+    let response = home
+        .local_request(crate::local::LocalDaemonRequest::InvokeWorkflowEndpoint(
+            crate::local::InvokeWorkflowEndpointRequest {
+                session_id: session_id.clone(),
+                workflow_ref: workflow_id,
+                endpoint_ref: endpoint_id,
+                queue_ref: None,
+                prompt: Some("retained-remote-workflow".into()),
+                publication_invocation: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let crate::local::LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } = response
+    else {
+        panic!("workflow invocation response");
+    };
+    let interaction_id = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(interaction) = worker
+                .runtime
+                .owned
+                .session_store
+                .get_session(&leased.backing_session_id)
+                .unwrap()
+                .active_interaction_for_agent(&leased.backing_agent_id)
+            {
+                break interaction.id().to_string();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the worker requests receiving login for the missing copy");
+    std::fs::write(copy_dir.join("allow-synthetic-login"), "").unwrap();
+    std::fs::write(copy_dir.join("hold-synthetic-result"), "").unwrap();
+    worker
+        .runtime
+        .resolve_runtime_interaction(&leased.backing_session_id, &interaction_id, "login", None)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !std::fs::read_to_string(copy_dir.join("synthetic-prompts"))
+            .is_ok_and(|text| text.contains("retained-remote-workflow"))
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the replacement receives the retained remote workflow turn");
+    assert!(copy_dir.join("synthetic-login-completed").exists());
+    let replacement = worker
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
+        .unwrap();
+    let auth = replacement.runtime_mcp_auth_token().unwrap().to_string();
+    let tools = worker
+        .runtime
+        .runtime_tool_specs_for_auth_token_async(auth.clone())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    for tool in [
+        ACK_WORKFLOW_TURN_TOOL,
+        VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+    ] {
+        assert!(tools.contains(tool), "replacement discovery omitted {tool}");
+    }
+    let delivery_token = home
+        .runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap()
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == workflow_run.id())
+        .unwrap()
+        .node_runs()[0]
+        .turn_envelope()
+        .unwrap()
+        .delivery_token()
+        .to_string();
+    let acknowledged = worker
+        .runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            ACK_WORKFLOW_TURN_TOOL,
+            serde_json::json!({"delivery_token": delivery_token}),
+        )
+        .await
+        .expect("the replacement forwards acknowledgement to the home workflow");
+    assert!(acknowledged.ok);
+    // The home settles the node from this forwarded output. Its response release
+    // recheck then sees the settled binding; that pre-existing main behavior is
+    // reported separately, so this regression asserts the home settlement itself.
+    let submitted = worker
+        .runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "workflow_output_json": "{\"answer\":\"remote recovered\"}",
+                "delivery_token": delivery_token,
+            }),
+        )
+        .await;
+    eprintln!("forwarded output submission response: {submitted:?}");
+    std::fs::remove_file(copy_dir.join("hold-synthetic-result")).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let response = home
+                .local_request(crate::local::LocalDaemonRequest::GetWorkflowRun(
+                    crate::local::GetWorkflowRunRequest {
+                        session_id: session_id.clone(),
+                        workflow_run_ref: workflow_run.id().to_string(),
+                    },
+                ))
+                .await
+                .unwrap();
+            let crate::local::LocalDaemonResponse::WorkflowRun {
+                workflow_run: completed,
+            } = response
+            else {
+                panic!("workflow history response");
+            };
+            if completed.status() == crate::session::WorkflowRunStatus::Completed {
+                assert_eq!(
+                    completed.final_output().unwrap().message(),
+                    "{\"answer\":\"remote recovered\"}"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the home workflow completes from the worker's forwarded output");
+    for (stop, connector) in connectors {
+        let _ = stop.send(true);
+        let _ = connector.await;
+    }
+    worker.app.lock().await.shutdown_cleanup().unwrap();
+    home.app.lock().await.shutdown_cleanup().unwrap();
+    let _ = relay_stop.send(());
+    let _ = relay_task.await;
 }

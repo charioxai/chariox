@@ -127,16 +127,26 @@ impl KernelRuntimeOwnedState {
         request: crate::provider::LaunchProviderRequest,
         previous_run_id: Option<&str>,
     ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
-        let previous_workflow_run = previous_run_id
+        let previous_run = previous_run_id
             .map(|run_id| self.provider_store.get_run(run_id))
             .transpose()?
             .filter(|run| {
-                run.workflow_tools_enabled()
-                    && run.session_id() == request.session_id
+                run.session_id() == request.session_id
                     && run.agent_instance_id() == request.agent_id.as_deref()
             });
         let mut started = self.start_provider_launch(request)?;
-        if let Some(previous) = previous_workflow_run {
+        let Some(previous) = previous_run else {
+            return Ok(started);
+        };
+        // Leased workflow discovery uses the lease marker, not the run flag.
+        if self
+            .provider_run_projection
+            .is_leased_provider_run(previous.id())
+        {
+            self.provider_run_projection
+                .mark_leased_provider_run(started.run.id());
+        }
+        if previous.workflow_tools_enabled() {
             started.run = self
                 .provider_store
                 .enable_workflow_tools(started.run.id())?;

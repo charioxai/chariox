@@ -1015,6 +1015,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
     }
 
+    // MP-08/MP-10/MP-11: login and policy relaunches continue the retained
+    // leased turns, so their home forwarding context follows the replacement.
+    pub(crate) fn transfer_leased_workflow_turns(
+        &mut self,
+        previous_provider_run_id: &str,
+        provider_run_id: &str,
+    ) {
+        for binding in self
+            .app
+            .leased_workflow_turns
+            .values_mut()
+            .filter(|binding| binding.provider_run_id == previous_provider_run_id)
+        {
+            binding.provider_run_id = provider_run_id.to_string();
+        }
+    }
+
     pub(crate) fn update_leased_agent_config(
         &mut self,
         leased_agent_id: &str,

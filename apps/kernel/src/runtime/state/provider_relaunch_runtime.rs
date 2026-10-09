@@ -92,6 +92,10 @@ impl KernelRuntimeState {
                     {
                         return Ok(false);
                     }
+                    if let Some(previous) = terminated_run_id_for_policy.as_deref() {
+                        crate::app::RemoteLeaseRuntime::new(app)
+                            .transfer_leased_workflow_turns(previous, started.run.id());
+                    }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
                         .spawn_for_launch(&started.run)
                         .map(|_| true)
