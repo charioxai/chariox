@@ -30,7 +30,7 @@ function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
     if (method === 'Runtime.evaluate') return { result: { value: [hidden ? 'hidden' : 'visible', 1, 700] } };
     if (method === 'Browser.getWindowForTarget') return { bounds: { left: 0, top: 0, width: 800, height: windowHeight, windowState: 'normal' } };
-    if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientHeight: 700 - scrollbar, pageX: 0, pageY: 0 }, cssVisualViewport: { scale: 1 } };
+    if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientWidth: 800, clientHeight: 700 - scrollbar, pageX: 0, pageY: 0 }, cssVisualViewport: { scale: 1 } };
     if (method === 'DOM.getBoxModel' && replaced) throw new Error('detached field');
     if (method === 'DOM.getBoxModel') return { model: { border: [10, 20, 110, 20, 110, 50, 10, 50] } };
     if (method === 'DOMSnapshot.captureSnapshot' && noEcho) return { strings: [], documents: [{ nodes: {}, layout: {} }] };
@@ -169,7 +169,7 @@ function framed({ transformed = false, hiddenOwner = false, unlinked = false } =
     if (method === 'Target.detachFromTarget') return {};
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
     if (method === 'Runtime.evaluate') return { result: { value: ['visible', 1, 800] } };
-    if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientHeight: 800, pageX: 0, pageY: 50 }, cssVisualViewport: { scale: 1 } };
+    if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientWidth: 1100, clientHeight: 800, pageX: 0, pageY: 50 }, cssVisualViewport: { scale: 1 } };
     if (method === 'DOM.getFrameOwner') return { backendNodeId: 12 };
     if (method === 'DOM.getBoxModel' && params.backendNodeId === 11) return { model: box([100, 50, 310, 210], 5) };
     if (method === 'DOM.getBoxModel' && params.backendNodeId === 12) {

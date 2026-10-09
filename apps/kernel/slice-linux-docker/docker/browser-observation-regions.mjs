@@ -138,7 +138,8 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
             const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
             const frameOwners = new Set((nodes.contentDocumentIndex?.index ?? []));
             const overflow = { regions: [], unmeasured: new Set() };
-            const rendered = renderedTextEchoes(strings, document, values, overflow);
+            const captureViewport = [document.scrollOffsetX ?? viewport.pageX, document.scrollOffsetY ?? viewport.pageY, viewport.clientWidth * contentScale, contentHeight * contentScale];
+            const rendered = renderedTextEchoes(strings, document, values, overflow, captureViewport);
             regions.push(...overflow.regions.map(([x,y,w,h]) => desktop(origin,
               [at.origin[0]+x-(document.scrollOffsetX??0),at.origin[1]+y-(document.scrollOffsetY??0),w,h])));
             for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
