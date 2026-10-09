@@ -18,7 +18,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureRegionMasks, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
@@ -104,7 +104,11 @@ export class KernelBrowserHost {
     return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
       width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
-  async save() {
+  save() {
+    // MP-11: display reads overlap barrier operations; one tabs.json.new writer.
+    return this.saving = (this.saving ?? Promise.resolve()).catch(() => {}).then(() => this.write());
+  }
+  async write() {
     const name = path.join(this.root, "tabs.json");
     const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
@@ -175,7 +179,7 @@ export class KernelBrowserHost {
   }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
-      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close();
+      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close().catch(()=>{});
     }
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
@@ -185,6 +189,10 @@ export class KernelBrowserHost {
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
+    // MP-11: a refused attestation (animated page, caret) costs a lease and two
+    // protected captures. Retry it per document/policy after a doubling backoff.
+    const refusals=entry?.document===tab.document_id&&entry.policy===this.protection?entry.refusals??0:0;
+    if(refusals&&performance.now()<entry.retryAt)return null;
     if(entry&&(entry.document!==tab.document_id||entry.source?.closed)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
@@ -197,7 +205,9 @@ export class KernelBrowserHost {
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
-      entry={source,document:tab.document_id,ready:source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>null)};this.compositors.set(tab.tab_id,entry);
+      const created={source,document:tab.document_id,policy};
+      created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
+      entry=created;this.compositors.set(tab.tab_id,entry);
     }
     return await entry.ready;
   }
@@ -354,9 +364,9 @@ export class KernelBrowserHost {
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
-      if(regionProtectionChanged(message,sessionId)){
-        stream.regionEpoch=(stream.regionEpoch??0)+1;
-        stream.latest=this.maskedStreamFrame(stream);captureProtected();return;
+      if(regionProtectionChanged(message,sessionId,stream.latest?.[displayMaskRegions]?.length!==0)){
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=this.maskedStreamFrame(stream);}
+        captureProtected();return;
       }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;

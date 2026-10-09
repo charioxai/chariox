@@ -353,6 +353,46 @@ test('MP-11 legacy observation retires an in-flight frame after attribute-only p
  release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
  assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],0,'retired capture cannot overwrite the opaque observation');
 }));
+test('MP-11 legacy observation keeps its bound frame through DOM tree churn',()=>using(async({host,handlers,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
+ const stream=host.streams.get(subscription.subscription_id);
+ for(let n=0;n<50&&(stream.capturing||decodePng(stream.latest.data_base64).pixels[0]!==255);n++)await new Promise(resolve=>setTimeout(resolve,5));
+ const session=sent.find(call=>call.method==='Page.startScreencast').session;
+ for(const method of ['DOM.childNodeInserted','DOM.childNodeCountUpdated'])for(const handler of handlers)handler({sessionId:session,method,params:{}});
+ for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'class'}});
+ assert.equal(decodePng((await host.request({op:'poll',...subscription})).frame.data_base64).pixels[0],255,'tree churn cannot swap in an opaque frame');
+}));
+test('MP-11 a refused compositor attestation is cached per document with backoff',()=>using(async({host,connection,handlers,pages})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ let attempts=0,shots=0;host.browser.inputCapture.hold=async()=>{attempts++;return async()=>{}};
+ const send=connection.send;
+ connection.send=async(method,params,session)=>{
+  // An animated page: every protected capture differs from the previous one.
+  if(method==='Page.captureScreenshot')return {data:encodePng(1280,800,Buffer.alloc(1280*800*4,++shots%2?255:0))};
+  const result=await send(method,params,session);
+  if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
+  return result;
+ };
+ const stream={codec:'avc1.420033',device_scale_factor:1};
+ for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(attempts,1,'credits cannot rebuild a refused source');
+ host.compositors.get(tab.tab_id).retryAt=-Infinity;
+ assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,2,'backoff expiry retries');
+ assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
+ pages.get(tab.target_id).document_id='next';tab.document_id='next';
+ assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+}));
+test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
+ await host.request({op:'open',url:'about:blank'});
+ await Promise.all(Array.from({length:20},()=>{host.lastSaved=null;return host.save();}));
+ assert.equal(JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8')).tabs.length,1);
+}));
+test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
+ const opened=await host.request({op:'open',url:'about:blank'});
+ host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
+ assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+}));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
   await host.protect({ unknown: false, values: ["synthetic-protected-value"], targets: [] });

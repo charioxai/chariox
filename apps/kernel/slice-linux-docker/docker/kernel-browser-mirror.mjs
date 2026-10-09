@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
-import {displayDeviceMetrics} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,displayDeviceMetrics} from './kernel-browser-geometry.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
@@ -53,6 +53,9 @@ export class MirrorService {
     return reply.result.value;
   }
   async subscribe(command,scope) {
+    // MP-11: the mirror tree, tiles and masks are 1280x800 CSS. Never override a
+    // different canonical display geometry on the same tab.
+    if(geometry.width!==1280||geometry.height!==800)throw new Error('MP-11: mirror requires the 1280x800 display geometry');
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor))throw new Error('MP-11: mirror negotiation bounds');
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');

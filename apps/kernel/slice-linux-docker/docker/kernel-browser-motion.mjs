@@ -31,7 +31,12 @@ export class MotionEncoder {
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
    const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
-   const encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);this.timing('motion_encode',at);
+   let encoded;
+   try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
+   // MP-11: an overlapping exact encode (busy) or one refused protected frame
+   // skips this sample; the next one starts an independent reference chain.
+   catch(error){if(!error?.busy&&!error?.refused)throw error;this.key=true;continue;}
+   this.timing('motion_encode',at);
    if(encoded.dropped){
     // MP-11: discard every lossy byte, retire its references, and present only
     // this already-protected exact raster. Never freeze a newly masked field.

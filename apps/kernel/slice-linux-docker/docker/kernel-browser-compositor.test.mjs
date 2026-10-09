@@ -1,7 +1,7 @@
 // MD-DISPLAY-02/04: attestation is a private source fence, never pixel authority.
 import test from 'node:test';
 import {createHash} from 'node:crypto';
-import {decodePng} from './kernel-browser-pixels.mjs';
+import {decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import assert from 'node:assert/strict';
 import {CompositorSource,jpegDimensions} from './kernel-browser-compositor.mjs';
 import {encodePng} from './kernel-browser-pixels.mjs';
@@ -68,5 +68,31 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  assert(!f.calls.includes('Page.stopScreencast'),'retirement cannot interrupt mouse press/release');
  release({data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))});await new Promise(r=>setTimeout(r,0));
  assert.equal(f.source.sample().data_base64,black);assert.equal(captures,2);
+ await f.source.close();
+});
+
+test('MP-11 DOM churn keeps publishing bound captures; only a changed mask set retires frames',async()=>{
+ const f=fixture();await f.source.start();let captures=0,release;const held=new Promise(r=>release=r);
+ const grey=encodePng(8,8,Buffer.alloc(8*8*4,128)),black=encodePng(8,8,Buffer.alloc(8*8*4,0)),mask=[{x:0,y:0,width:2,height:2}];
+ f.source.protect=async()=>{
+  if(++captures===1){f.emit('DOM.childNodeInserted',{});return {data_base64:grey,[displayMaskRegions]:[]};}
+  if(captures===2){await held;return {data_base64:black,[displayMaskRegions]:mask};}
+  return {data_base64:black,[displayMaskRegions]:mask};
+ };
+ f.emit('DOM.childNodeInserted',{});await new Promise(r=>setTimeout(r,0));
+ assert.equal(f.source.sample()?.data_base64,grey,'a capture bound before/after its own masks survives later tree churn');
+ assert.equal(f.source.regionRevision,0);
+ release();await new Promise(r=>setTimeout(r,0));
+ assert.equal(f.source.sample().data_base64,black);assert.equal(f.source.regionRevision,1,'a changed mask set retires older frames');
+ await f.source.close();
+});
+
+test('MP-11 style/class churn wakes captures only while protected regions exist',async()=>{
+ const f=fixture();await f.source.start();let captures=0;
+ f.source.protect=async()=>{captures++;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255)),[displayMaskRegions]:[]};};
+ f.emit('DOM.attributeModified',{name:'style'});await new Promise(r=>setTimeout(r,0));
+ assert.equal(captures,0);assert.equal(f.source.sample().serial,1);
+ f.emit('DOM.attributeModified',{name:'data-chariox-secret'});await new Promise(r=>setTimeout(r,0));
+ assert.equal(captures,1,'declared protection still recaptures');assert.equal(f.source.regionRevision,1);
  await f.source.close();
 });

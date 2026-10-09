@@ -179,6 +179,15 @@ test('MD-DISPLAY an overtaken delta after a committed frame forces an independen
  assert.equal(recovered.sequence,2);assert.equal(recovered.key,true);assert.deepEqual(resets,[true,false,true]);
 });
 
+test('MP-11 a delta dropped by a failed frame build forces an independent next frame',async()=>{
+ const resets=[];const stream=new DisplayStream(binding,{encoder:{encode:async(p,b,reset)=>{resets.push(reset);return {key:reset,data_base64:'YWJj'}},close:async()=>{}},now:()=>0,wait:async()=>{}});
+ await stream.frame(fixture(1),'d',0);
+ await assert.rejects(stream.frame(fixture(2),'d',1,async()=>{throw Error('stale document')}),/stale document/);
+ const recovered=await stream.frame(fixture(3),'d',1);
+ assert.equal(recovered.key,true);assert.deepEqual(resets,[true,false,true]);
+ await stream.close();
+});
+
 test('MD-DISPLAY native small damage requires an exact contiguous source and retains exact RGB without video',async()=>{
  const {nativeDamageTiles}=await import('./kernel-browser-tiles.mjs');
  const raw={width:1280,height:800,format:'bgr0',pixels:Buffer.alloc(1280*800*4),damage:[4,4,12,12]};

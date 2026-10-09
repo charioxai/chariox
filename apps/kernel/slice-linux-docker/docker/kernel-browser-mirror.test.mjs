@@ -271,3 +271,11 @@ test('MP-11: plain key refuses a display fallback without painted DOM focus',asy
  const packet=await service.next(next(s.subscription_id),'a');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
 });
+test('MP-11 mirror refuses a canonical geometry it cannot render instead of overriding it',async()=>{
+ const {execFileSync}=await import('node:child_process');
+ const script=`import {MirrorService} from ${JSON.stringify(new URL('./kernel-browser-mirror.mjs',import.meta.url).href)};
+ const calls=[];const host={generation:1,scales:new Map(),async target(){return {tab_id:'t',target_id:'x',document_id:'d'}},browser:{async resolvePageTarget(){return {connection:{send:async method=>{calls.push(method);return {}}},sessionId:'s'}}}};
+ try{await new MirrorService(host).subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');console.log('subscribed:'+calls.join())}catch(error){console.log('refused:'+calls.join())}`;
+ const output=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}}).toString().trim();
+ assert.equal(output,'refused:','no device metrics override before refusal');
+});

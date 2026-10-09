@@ -1,8 +1,11 @@
 # MD-DISPLAY-02/04: kernel browser display implementation and history
 
-MD-DISPLAY-02/04: current transport uses reserved local 441 / relay 84; dependent
-video requires the explicit `chariox-video-dependencies-v1` codec capability.
-Legacy offers retain independent frames. The client minimum is 441.
+MD-DISPLAY-02/04: the current kernel speaks local protocol 474 and relay peer
+protocol 96. The presenter requires local protocol 466 with CXD1 binary display
+events (474 for desktop display); relay peer 96 additionally enables binary relay
+frames (`chariox-relay-binary-v96`). Dependent video requires the explicit
+`chariox-video-dependencies-v1` codec capability; legacy offers retain
+independent frames.
 
 Current Phase 10 native motion prefers negotiated H.264, with realtime VP9 fallback,
 three default display credits, bounded reference recovery and exact PNG damage
@@ -11,8 +14,14 @@ can attempt VAAPI, falling back on actual failure. Builder evidence is software
 only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
 coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
 and reduced software motion scale are implemented; exact settled pixels stay
-native DPR. Current results remain RED and the flag stays off. See the source-bound
-Phase 10 matrix and integration limits in the performance doc.
+native DPR. Current results remain RED and the flag stays off; source-bound
+measurement receipts stay outside the repository.
+
+The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
+Xcomposite, Xtst, x264, libavcodec/libavutil, static libyuv and static
+libwebp/libsharpyuv; `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
+`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
+the CDP capture and portable encoder path.
 
 MP-08/MP-10/MP-11 phase 28 (since protocol 466 only the contention fallback
 below): unprotected, whole-frame software motion at
@@ -57,8 +66,6 @@ other deltas stay on CDP. Wheel dispatch does not wait for the renderer's
 frame-aligned ack. x264 runs on its own worker thread, and capture plans are
 requested only while a viewer canvas is exact and unprotected.
 
-The historical427/74 configuration, pipeline, client and Phase7 evidence are
-in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
 The sections below record earlier419-era implementation and receipts; their
 codec, source, pacing and credit descriptions are historical, not current
 configuration. Their source identities and limitations remain unchanged.
@@ -436,10 +443,10 @@ cursor/IME/file-chooser coverage, and criteria for Room desktop migration. Until
 those decisions and independent review, keep the flag off by default.
 
 
-## MD-DISPLAY-02/04: current Cloud integration handoff,427/74
+## MD-DISPLAY-02/04: current Cloud integration handoff, 466/474
 
-Copy `apps/browser-display/presenter.mjs`, `decoder-worker.mjs`, `tile-cache.mjs`
-and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
+Copy `apps/browser-display/presenter.mjs`, `stripe-presenter.mjs`,
+`decoder-worker.mjs` and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
 with the application's restrictive CSP and correct JavaScript MIME; no page
 scripts or provider/account state are added to the client. The self-contained
 `harness.html` demonstrates the transport adapter; coordinator wires private
@@ -449,12 +456,13 @@ Cloud separately. Do not use the historical419 instructions as a version bump.
 existing encrypted kernel `request`, event listener and scoped
 `subscribeDisplay`/`unsubscribeDisplay` adapter. Preserve shared-client sender
 pinning, display-next no-replay and durable session replay-cursor separation.
-Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:4`;
+Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:3`;
 `start()` maintains bounded continuous credits and `stop()` awaits them. For
 manual polls use `next()` while stopped. Input/takeover/release/actors route
 through the same kernel actor/document seam; `close()` releases local presenter,
 scoped relay registration and kernel subscription. Polling unchanged frames
-still renews display admission. Default-off feature and minimum427 remain.
+still renews display admission. Default-off feature and minimum 466 (474 for
+desktop display) remain.
 
 Worker decode adds no jitter buffer; authoritative frames retain dependency
 order. Keep `scrollPredictionRegion` unset unless product geometry is explicitly
@@ -462,8 +470,7 @@ trusted; prediction does not count as source acknowledgement. Surface stream
 errors and actor takeover to users through existing flows. The presenter canvas
 is an image surface, so IME/clipboard/file chooser/drag-drop remain existing
 kernel input capability questions rather than DOM replay inferred from pixels.
-See `MULTIDOMAIN_DISPLAY_PERFORMANCE.md` for RED performance targets and exact
-execution/binary evidence; this module is reviewable, not rollout acceptance.
+Performance remains RED; this module is reviewable, not rollout acceptance.
 
 ## MD-DISPLAY-04: protocol441 dependent-video compatibility
 
@@ -523,7 +530,8 @@ Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
 version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
 The presenter refuses missing/older versions and JSON-only adapters before any
 subscription request. These are adapter properties, not serialized protocol
-fields; the local protocol remains 466. Peer-96 negotiation is independent.
+fields; the presenter minimum remains 466 (474 for desktop display). Peer-96
+negotiation is independent.
 
 Only the kernel-admitted human display input path with a live caller-owned
 viewer lease may use asynchronous or native wheel dispatch. Agent wheel calls

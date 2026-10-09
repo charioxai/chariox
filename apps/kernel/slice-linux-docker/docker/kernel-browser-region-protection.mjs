@@ -61,6 +61,12 @@ export function regionProtectionChanged(message,sessionId,hasRegions=true){
     ['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method)&&(['type','autocomplete','data-chariox-secret','data-chariox-observation-protected','data-observation-protected'].includes(message.params?.name)||hasRegions&&['style','class'].includes(message.params?.name)));
 }
 
+// MP-11: declared protection retires old pixels at once. Tree/layout churn
+// only wakes a fresh capture whose own before/after check binds its masks.
+export function protectionDeclared(message){
+  return message.method==='DOM.documentUpdated'||['DOM.attributeModified','DOM.attributeRemoved'].includes(message.method)&&!['style','class'].includes(message.params?.name);
+}
+
 export async function captureRegionMasks(connection, sessionId, { mirrorStructured = false } = {}) {
   // Layout changes or failed metadata checks cannot reveal an unmapped field.
   const before = await regions(connection, sessionId, mirrorStructured);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DisplayCapture, changedClip } from './kernel-browser-display-capture.mjs';
-import { encodePng, displayMaskRegions } from './kernel-browser-pixels.mjs';
+import { encodePng, decodePng, displayMaskRegions } from './kernel-browser-pixels.mjs';
 import { captureProtectedDisplay } from './kernel-browser-region-protection.mjs';
 import { DisplayStream, PortableEncoder } from './kernel-browser-display.mjs';
 import { randomBytes } from 'node:crypto';
@@ -43,8 +43,28 @@ test('MP-11: real full-frame codec ignores offscreen masks and guards partial in
   const frame=await encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks);
   assert.equal(encoder.failure,null);assert(frame.dropped||frame.key);
   pixels[(40*128+10)*4]=255;
-  await assert.rejects(encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks),/encoder unavailable/);
+  await assert.rejects(encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks),/encode refused/);
+  assert.equal(encoder.failure,null,'one refused frame cannot disable the stream encoder');
+  pixels[(40*128+10)*4]=0;
+  const recovered=await encoder.encode(encodePng(128,128,pixels),8000000,true,'avc1.420033',masks);
+  assert(recovered.dropped||recovered.key);
  }finally{await encoder.close()}
+});
+
+test('MP-11: crop merge masks the merged raster with the crop capture full masks',async()=>{
+ const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]},late=[{x:900,y:600,width:24,height:24}];
+ const pixels=Buffer.alloc(1280*800*4,255);let shots=0;
+ // The protected field appears outside the damage between preview and crop.
+ const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:++shots>3?late:[],data_base64:encodePng(1280,800,pixels)})};
+ const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1);
+ await capture.next(tab,policy,false);
+ for(let y=100;y<140;y++)pixels.fill(0,(y*1280+100)*4,(y*1280+140)*4);
+ tab.input_epoch++;
+ const merged=await capture.next(tab,policy,true);
+ assert(merged.dirty_clip,'must exercise crop merge');
+ assert.deepEqual(merged[displayMaskRegions],late);
+ for(const [x,y] of [[900,600],[923,623]])assert.equal(merged.pixels.pixels.readUInt32BE((y*1280+x)*4),0x000000ff,`merged pixel ${x},${y} is masked`);
+ assert.equal(decodePng(merged.data_base64()).pixels.readUInt32BE((610*1280+910)*4),0x000000ff);
 });
 test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine detail', async () => {
   let pixels=Buffer.alloc(1280*800*4,255), thumbnail=Buffer.alloc(160*100*4,255);
