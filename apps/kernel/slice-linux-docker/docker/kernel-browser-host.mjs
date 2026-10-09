@@ -642,7 +642,11 @@ export class KernelBrowserHost {
           await this.start({ signal });
           return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };
         }
-        return { id: request.id, ok: true, result: await this.nativeComputer.request(nativeParams, this.protection, {signal}) };
+        const at=timestamp();
+        const result=await this.nativeComputer.request(nativeParams, this.protection, {signal});
+        // Fixed labels only: operation and input kind, never input values.
+        if(request.params.op==='input')this.timing('computer_input '+(/^[a-z_]{1,16}$/.test(request.params.input?.kind)?request.params.input.kind:'other'),at);
+        return { id: request.id, ok: true, result };
       }
       if (request.method === 'host.computer.retire') {
         await this.desktopDisplay.retire(request.params.observer);

@@ -7,6 +7,8 @@ import { processIdentity, signalOwned, settleOwned } from './linux-owned-process
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { fenceBrowserCapture } from './browser-protection-regions.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
+// MP-08/MP-10: human input the warm channel carries (no admission; see native-computer.py).
+const WARM_INPUTS = new Set(['keycode','click','move','scroll','key','drag']);
 export function nativeInput(input, binding) {
   if (!input || typeof input !== 'object') throw new Error('MP-08: invalid native input');
   const bounded = (value, max) => Number.isInteger(value) && value >= 0 && value < max;
@@ -60,17 +62,17 @@ export async function executeNative(request, environment, signal) {
   } finally { clearTimeout(timer);signal?.removeEventListener('abort',cancel); }
 }
 export class NativeComputer {
-  constructor({placement,binding,execute=executeNative,wakeCapture=()=>{}}) {
+  constructor({placement,binding,execute=executeNative,wakeCapture=()=>{},channel=execute===executeNative?environment=>new NativeKeyboardChannel(environment):null}) {
     if(!['host','slice'].includes(placement)) throw new Error('MP-08: explicit native placement required');
-    this.placement=placement;this.binding=binding;this.execute=execute;this.wakeCapture=wakeCapture;this.held=new Set();this.clipboard=null;this.heldOwner=null;
+    this.placement=placement;this.binding=binding;this.execute=execute;this.wakeCapture=wakeCapture;this.channel=channel;this.held=new Set();this.clipboard=null;this.heldOwner=null;
   }
   async primeKeyboard() {
-    if(this.execute!==executeNative)return;
+    if(!this.channel)return;
     const binding=this.binding();if(!binding)return;
     if(this.keyboard && this.keyboardBinding!==binding){
       await this.keyboard.close();this.keyboard=null;this.held.clear();this.heldOwner=null;
     }
-    if(!this.keyboard){this.keyboard=new NativeKeyboardChannel(binding.environment);this.keyboardBinding=binding;}
+    if(!this.keyboard){this.keyboard=this.channel(binding.environment);this.keyboardBinding=binding;}
     try{await this.keyboard.start();}catch(error){await this.keyboard.close();this.keyboard=null;throw error;}
   }
   async retire(observer) {
@@ -123,9 +125,12 @@ export class NativeComputer {
         else if(!this.held.has(input.keycode)) throw new Error('MP-11: key release without owned press');
       }
       try {
+        // MP-08/MP-10: human input keeps one warm, ordered helper; agent input
+        // keeps the one-shot helper with its per-press admission.
+        const warm=Boolean(this.channel)&&!command._agent_input&&WARM_INPUTS.has(input.kind);
         let physical;
-        if(input.kind==='keycode' && this.execute===executeNative){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input},signal);}
-        const result=input.kind==='keycode' && this.execute===executeNative ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:input.kind==='composition'?{kind:'text',text:input.text}:input},binding.environment,signal);
+        if(warm){await this.primeKeyboard();physical=await this.keyboard.send({op:'input',input},signal);}
+        const result=warm ? physical : input.kind==='clipboard_write' ? await this.writeClipboard(input.text,binding) : await this.execute({op:'input',...admission,input:input.kind==='composition'?{kind:'text',text:input.text}:input},binding.environment,signal);
         if(input.kind==='keycode' && input.state==='up') {this.held.delete(input.keycode);if(!this.held.size)this.heldOwner=null;}
         // Display PR5 consumes this event to wake XDamage capture immediately.
         this.wakeCapture({surface_id:binding.surface_id,generation:binding.generation,exact:true,reason:input.kind});

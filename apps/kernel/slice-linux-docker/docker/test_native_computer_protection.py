@@ -112,4 +112,22 @@ class AgentInputClipboardTests(unittest.TestCase):
         owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
         self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
         self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
+class WarmChannelTests(unittest.TestCase):
+    def test_mp11_warm_channel_carries_only_human_input(self):
+        events=[]
+        with patch.object(module,'input_action',side_effect=lambda action,processes:events.append((action['kind'],processes))):
+            held=set()
+            for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
+                            {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},
+                            {'op':'input','input':{'kind':'text','text':'x'}},
+                            {'op':'input','input':{'kind':'clipboard_write','text':'x'}},
+                            {'op':'accessibility','processes':[]}):
+                with self.assertRaises(ValueError):module.channel_request(request,held)
+            self.assertEqual(events,[])
+            for kind,extra in (('click',{'x':1,'y':1}),('scroll',{'x':1,'y':1,'steps':1}),('key',{'key':'Next'}),('keycode',{'keycode':38,'state':'down'})):
+                module.channel_request({'op':'input','input':{'kind':kind,**extra}},held)
+            self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None)])
+            self.assertEqual(held,{38})
+
+
 if __name__=='__main__':unittest.main()
