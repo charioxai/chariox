@@ -118,6 +118,7 @@ export class Mirror2 {
     return reply.result.value;
   }
   stream(stream) {
+    this.host.timing?.(`mirror2_subscribe ${this.service.streams.size}`, timestamp());
     Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0 });
     return stream;
   }
@@ -180,7 +181,9 @@ export class Mirror2 {
     mark('world');
     const variants = observationProtectedVariants(policy.values);
     const after = command.after_sequence;
-    let reset = after === 0 || after > stream.issued || after < stream.issued - 8 || stream.document_id !== tab.document_id || stream.policy !== policy || stream.fallback !== null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
+    let reset = resetReason !== null;
+    if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
