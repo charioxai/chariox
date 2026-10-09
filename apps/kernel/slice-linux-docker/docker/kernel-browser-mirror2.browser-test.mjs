@@ -26,7 +26,8 @@ async function mirrored(html, run, routes = {}) {
       assert(!reply.exceptionDetails, "MP-10: credential-free fixture evaluation failed");
       return reply.result.value;
     };
-    for (let i = 0; i < 200 && await evaluate("document.readyState").catch(() => "") !== "complete"; i++) await new Promise(resolve => setTimeout(resolve, 25));
+    // about:blank is "complete" too: wait for the fixture document itself.
+    for (let i = 0; i < 400 && await evaluate("location.protocol === 'http:' && document.readyState === 'complete'").catch(() => false) !== true; i++) await new Promise(resolve => setTimeout(resolve, 25));
     await host.request({ op: "state" });
     const subscribe = async () => {
       const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
