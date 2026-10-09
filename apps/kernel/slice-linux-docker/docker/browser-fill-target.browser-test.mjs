@@ -76,12 +76,13 @@ for(const dpr of [1,2]) {
    await evaluate(`document.querySelector('iframe').src=${JSON.stringify(url+'frame')};document.querySelector('iframe').style.left='700px';document.querySelector('iframe').style.top='350px'`);
    for(let i=0;i<100;i++){const {result}=await evaluate("!!document.querySelector('iframe').contentDocument?.querySelector('#plain')");if(result.value)break;await new Promise(r=>setTimeout(r,30));}
    await evaluate("document.querySelector('#plain').style.left='550px';document.querySelector('#plain').style.top='160px'");
-   await evaluate("document.querySelector('#password').remove();document.querySelector('iframe').contentDocument.querySelector('#password').remove()");
+   await evaluate("document.querySelector('#password').style.appearance='none'");
    const tab={tab_id:'t',target_id:targetId,document_id:documentId};
    const host={generation:1,scales:new Map(),protection:policy,browser,async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',...(clip?{clip}:{}),captureBeyondViewport:false},sessionId)).data,dpr,clip),protected_regions:[]}}};
    const service=new MirrorService(host);
    try {
      const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'test');
+     await fill('#password');
      await fill('#plain');
      const {result}=await connection.send('Runtime.evaluate',{expression:"document.querySelector('iframe').contentDocument.querySelector('#editor')",returnByValue:false},sessionId);
      const {node}=await connection.send('DOM.describeNode',{objectId:result.objectId},sessionId);
@@ -106,6 +107,9 @@ for(const dpr of [1,2]) {
          const {sessionId:clientSession}=await browser.resolvePageTarget(clientTarget);
          const render=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);const renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();await renderer.apply(${JSON.stringify(packet)});const result={overlays:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').length,masked:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').map(n=>n.style.background)};globalThis.__charioxMirrorFixtureRenderer=renderer;return result})()`},clientSession);
          assert.equal(render.exceptionDetails,undefined,'MP-11 real mirror client accepts the protected packet/hash');
+         const passwordTile=packet.nodes.find(n=>n.tag==='input'&&n.box?.x===80&&n.box?.y===150);
+         assert.equal(passwordTile.kind,'tile','MP-11 password dots use a native control tile even with custom appearance');
+         assert.equal(passwordTile.attributes,undefined);assert.equal(passwordTile.form,undefined);
          const opaque=packet.nodes.filter(n=>['cross_origin_frame','opaque_shadow'].includes(n.reason)).length;
          assert.equal(render.result.value.overlays,2+opaque);
          assert(render.result.value.masked.every(color=>color==='black'));
@@ -114,6 +118,9 @@ for(const dpr of [1,2]) {
          const rendered=decodePng(screenshot,dpr);
          for(const [x,y] of [[560,170],[790,660]]){const index=((y*dpr)*rendered.width+x*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,0,0],'MP-11 client pixels cover top and child fields');}
          {const index=((440*dpr)*rendered.width+790*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[255,0,255],'MP-11 unfilled child field stays visible');}
+         {const index=((170*dpr)*rendered.width+280*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,255,255],'MP-11 filled password control remains visible');}
+         let dots=0;for(let y=160*dpr;y<180*dpr;y++)for(let x=85*dpr;x<260*dpr;x++){const i=(y*rendered.width+x)*4;if(rendered.pixels[i]<80&&rendered.pixels[i+1]<80&&rendered.pixels[i+2]<80)dots++;}
+         assert(dots>10*dpr*dpr,'MP-11 the client retains actual password dots');
          if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-client-dpr${dpr}.png`),Buffer.from(screenshot,'base64'));
          await connection.send('Runtime.evaluate',{expression:'globalThis.__charioxMirrorFixtureRenderer.close()'},clientSession);
        }finally{await connection.send('Target.closeTarget',{targetId:clientTarget});}
