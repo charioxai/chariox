@@ -148,7 +148,7 @@ export class BrowserDisplayPresenter {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
     return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
   }
-  close() { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; this.canvas.width = 1; this.canvas.height = 1; }
+  close({preserveFrame=false}={}) { this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; if(!preserveFrame){this.canvas.width = 1; this.canvas.height = 1;} }
 }
 // Bounded credit window; events and responses can arrive in either order.
 export async function attachBrowserDisplay(canvas, transport, tab, options = {}) {
@@ -298,7 +298,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
-    async close() { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { await stop().catch(() => {}); stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }
 
@@ -397,6 +397,6 @@ function pushDisplay(presenter, transport, request, binding, tab, options) {
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation });},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation });},
     actors: () => request({ op: 'display_actors' }),
-    async close() { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }
