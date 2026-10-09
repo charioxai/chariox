@@ -3,11 +3,20 @@ use super::detect_index::{credential_configuration_name, safe_metadata, skip, Ev
 use super::*;
 use serde_json::Value;
 
+const MAX_ORIGINS: usize = 128;
+pub(super) const MAX_PROPOSAL_BYTES: usize = 2 * 1024 * 1024;
+pub(super) fn encoded_size(value: &impl serde::Serialize) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
+}
+
 pub(super) struct Importer {
     pub environment_id: String,
     pub proposals: std::collections::BTreeMap<String, EnvironmentProposal>,
     pub skips: Vec<EnvironmentItemResult>,
     pub code_folders: std::collections::BTreeSet<String>,
+    pub proposal_bytes: usize,
+    pub omitted_origins: usize,
+    pub omitted_proposals: usize,
 }
 impl Importer {
     fn add(
@@ -44,42 +53,73 @@ impl Importer {
             // A later declaration enriches that same proposal, without replacing
             // an already explicit constraint or dropping its original provenance.
             if let (
-                RequirementSpec::Software { version_constraint: current, .. },
-                RequirementSpec::Software { version_constraint: declared, .. },
+                RequirementSpec::Software {
+                    version_constraint: current,
+                    ..
+                },
+                RequirementSpec::Software {
+                    version_constraint: declared,
+                    ..
+                },
             ) = (&mut proposal.requirement.spec, &spec)
             {
-                if current.is_none() {
-                    current.clone_from(declared);
+                if current.is_none() && declared.is_some() {
+                    let extra = encoded_size(declared).saturating_sub(encoded_size(current));
+                    if self.proposal_bytes.saturating_add(extra) <= MAX_PROPOSAL_BYTES {
+                        current.clone_from(declared);
+                        self.proposal_bytes += extra;
+                    } else {
+                        self.omitted_proposals += 1;
+                    }
                 }
             }
-            if !proposal.requirement.origins.contains(&origin) {
-                proposal.requirement.origins.push(origin)
+            if proposal.requirement.origins.contains(&origin) {
+                return;
             }
+            if proposal.requirement.origins.len() >= MAX_ORIGINS {
+                self.omitted_origins += 1;
+                return;
+            }
+            // Account for the final 64-byte evidence digest and array separator
+            // before retaining an origin; repeated reference scans stay bounded.
+            let extra = encoded_size(&origin).saturating_add(65);
+            if self.proposal_bytes.saturating_add(extra) > MAX_PROPOSAL_BYTES {
+                self.omitted_proposals += 1;
+                return;
+            }
+            self.proposal_bytes += extra;
+            proposal.requirement.origins.push(origin);
             return;
         }
-        // Existing IDs retain new origins even when new-proposal admission is full.
+        // Existing IDs may retain bounded origins when new-proposal admission is full.
         if self.proposals.len() >= 2048 {
             self.skips
                 .push(skip(&file.folder_id, &file.path, "proposal_limit"));
             return;
         }
-        self.proposals.insert(
-            id.clone(),
-            EnvironmentProposal {
-                proposal_id: id.clone(),
-                requirement: Requirement {
-                    requirement_id: id,
-                    title: title.into(),
-                    scope,
-                    origins: vec![origin],
-                    spec,
-                    depends_on: vec![],
-                    platform_variants: vec![],
-                    required: false,
-                    legacy_entry: None,
-                },
+        let proposal = EnvironmentProposal {
+            proposal_id: id.clone(),
+            requirement: Requirement {
+                requirement_id: id.clone(),
+                title: title.into(),
+                scope,
+                origins: vec![origin],
+                spec,
+                depends_on: vec![],
+                platform_variants: vec![],
+                required: false,
+                legacy_entry: None,
             },
-        );
+        };
+        // Leave the other half of the private cache budget for operation results,
+        // exclusions and utility results. Include the final digest here.
+        let extra = encoded_size(&proposal).saturating_add(65);
+        if self.proposal_bytes.saturating_add(extra) > MAX_PROPOSAL_BYTES {
+            self.omitted_proposals += 1;
+            return;
+        }
+        self.proposal_bytes += extra;
+        self.proposals.insert(id, proposal);
     }
     fn software(
         &mut self,

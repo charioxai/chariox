@@ -23,12 +23,40 @@ pub fn detect_environment(
         proposals: BTreeMap::new(),
         skips: index.skips,
         code_folders: BTreeSet::new(),
+        proposal_bytes: 2,
+        omitted_origins: 0,
+        omitted_proposals: 0,
     };
     for file in &index.files {
         importer.import(file)
     }
     for file in &index.files {
         importer.import_file(file)
+    }
+    for (count, reason, summary) in [
+        (
+            importer.omitted_origins,
+            "origin_limit",
+            "reference origins omitted · retained provenance limited to 128 origins per proposal",
+        ),
+        (
+            importer.omitted_proposals,
+            "proposal_byte_limit",
+            "proposal changes omitted · retained deterministic proposals limited to 2 MiB",
+        ),
+    ] {
+        if count > 0 {
+            importer.skips.insert(
+                0,
+                EnvironmentItemResult {
+                    requirement_id: format!("detect:{reason}"),
+                    status: EnvironmentObservationStatus::NeedsYourInput,
+                    reason_code: reason.into(),
+                    safe_summary: format!("{count} {summary}"),
+                    receipt_ids: vec![],
+                },
+            );
+        }
     }
     if importer.skips.len() > 1024 {
         let omitted = importer.skips.len() - 1024;

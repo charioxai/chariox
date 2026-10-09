@@ -2,6 +2,33 @@
 use super::*;
 
 impl EnvironmentDetection {
+    // Deterministic proposals precede appended provider hints. Keep that priority
+    // while reserving the remaining cache budget for operation results.
+    fn bound_model_proposals(&mut self) {
+        let mut bytes = 2usize;
+        let mut omitted = 0usize;
+        self.proposals.retain(|proposal| {
+            let extra = super::detect_importers::encoded_size(proposal).saturating_add(1);
+            if bytes.saturating_add(extra) > super::detect_importers::MAX_PROPOSAL_BYTES {
+                omitted += 1;
+                false
+            } else {
+                bytes += extra;
+                true
+            }
+        });
+        if omitted > 0 {
+            self.skips.push(EnvironmentItemResult {
+                requirement_id: "detect:model-proposal-bytes".into(),
+                status: EnvironmentObservationStatus::NeedsYourInput,
+                reason_code: "proposal_byte_limit".into(),
+                safe_summary: format!(
+                    "{omitted} provider proposals omitted · retained proposals limited to 2 MiB"
+                ),
+                receipt_ids: vec![],
+            });
+        }
+    }
     pub fn reuse_model_metadata(
         &mut self,
         cache: &EnvironmentDetectionCache,
@@ -35,6 +62,7 @@ impl EnvironmentDetection {
                 self.proposals.push(previous.clone());
             }
         }
+        self.bound_model_proposals();
         self.proposals
             .sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
     }
@@ -156,6 +184,7 @@ impl EnvironmentDetection {
                 }
             }
         }
+        self.bound_model_proposals();
         self.proposals
             .sort_by(|a, b| a.proposal_id.cmp(&b.proposal_id));
     }
