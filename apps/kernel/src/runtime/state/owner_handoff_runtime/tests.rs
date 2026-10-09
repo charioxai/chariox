@@ -551,7 +551,7 @@ async fn mp08_mp10_mp11_a07_owner_reply_reaches_interactive_router_once() {
     let (router, room) = router_fixture_with_owner(None, DEFAULT_LOCAL_USER_ID);
     let state = router.runtime_state();
     let h = handoff();
-    let id = register(state, &room, &h).await;
+    let id = register(&state, &room, &h).await;
     let request = LocalDaemonRequest::RespondToHandoff(RespondToHandoffRequest {
         session_id: room.clone(),
         interaction_id: id.clone(),
