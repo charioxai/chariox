@@ -47,6 +47,7 @@ test("codex kernel output projection broadcasts matching agent records", () => {
     debug: () => {},
   })
   projection.setThreadId("thread-1")
+  projection.startPrompt("admitted-home-prompt")
 
   projection.project([{
     agent_id: "agent-1",
@@ -112,6 +113,7 @@ test("codex kernel output projection normalizes provider errors through shared t
     debug: () => {},
   })
   projection.setThreadId("thread-1")
+  projection.startPrompt("admitted-home-prompt")
 
   projection.project([{
     agent_id: "agent-1",
@@ -137,6 +139,7 @@ test("codex kernel output projection uses kernel record timestamps for user item
 
   projection.project([{
     agent_id: "agent-1",
+    prompt_id: "admitted-home-prompt",
     timestamp_ms: 1_700_000_123_456,
     kind: "prompt_echo",
     bytes: [...Buffer.from("hello", "utf8")],

@@ -212,7 +212,9 @@ impl StdioMcpProcess {
             .name("chariox-stdio-mcp-reader".to_string())
             .spawn(move || read_frames(stdout, &reader_name, frame_tx))
         {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             return Err(DaemonError::LocalTransport {
                 operation: "mcp.proxy.stdio.spawn",
@@ -346,7 +348,9 @@ impl StdioMcpProcess {
     }
 
     fn request_timeout_error(&mut self) -> Result<serde_json::Value, DaemonError> {
-        let _ = self.child.kill();
+        if self.child.id() > 1 {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
         Err(DaemonError::LocalTransport {
             operation: "mcp.proxy.stdio.timeout",
@@ -376,7 +380,9 @@ impl StdioMcpProcess {
 
 impl Drop for StdioMcpProcess {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if self.child.id() > 1 {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
     }
 }
