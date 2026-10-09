@@ -535,11 +535,19 @@ async fn eventually_async<T, F: std::future::Future<Output = Option<T>>>(
 }
 
 async fn spawn_on_agent_worker(fixture: &mut LiveWorker, room: &str) -> String {
+    spawn_on_agent_worker_with_model(fixture, room, "terminal-echo-a").await
+}
+
+async fn spawn_on_agent_worker_with_model(
+    fixture: &mut LiveWorker,
+    room: &str,
+    model: &str,
+) -> String {
     let placement = fixture.placement();
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent":{
-            "session_id":room, "provider":"managed-dev-stub", "model":"terminal-echo-a",
+            "session_id":room, "provider":"managed-dev-stub", "model":model,
             "kernel_ref":AGENT_WORKER, "worktree_placement":placement
         }}),
     )
@@ -763,8 +771,12 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
     let room = fixture.rooms[0].clone();
     let attachment = owner_attachment(&fixture, &room).await;
-    let agent = spawn_on_agent_worker(&mut fixture, &room).await;
-    let sibling = spawn_on_agent_worker(&mut fixture, &room).await;
+    // MP-10: a silent fixture keeps this turn active until manual completion;
+    // echo output can finish it and admit task correction before tool calls.
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    let sibling =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
     run_turn(
         &fixture,
         &room,
@@ -1091,7 +1103,10 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
     let room = fixture.rooms[0].clone();
     let attachment = owner_attachment(&fixture, &room).await;
-    let agent = spawn_on_agent_worker(&mut fixture, &room).await;
+    // MP-10: a silent fixture keeps this turn active until manual completion;
+    // echo output can finish it and admit task correction before tool calls.
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
     let (owner, _) = open_leased_sudo(
         &fixture,
         &room,
@@ -1249,8 +1264,33 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
             json!({"request":{"ListSessions":null}}),
         )
         .await;
+    // MP-08/MP-09/MP-10/MP-11: failure diagnostics contain public causal
+    // coordinates only; never format a provider run or its MCP auth token.
+    let forward_prompt = worker
+        .router
+        .runtime_state
+        .leased_forward_context(&next)
+        .await
+        .unwrap()
+        .and_then(|context| context.home_prompt_id);
     fixture.home.runtime_state.sweep_sudo();
     let remaining_windows = fixture.home.runtime_state.list_sudo_turns(&owner);
+    let home_windows: Vec<_> = remaining_windows
+        .iter()
+        .map(|window| {
+            (
+                &window.entry_id,
+                &window.task_id,
+                &window.prompt_id,
+                &window.provider_run_id,
+                window.revision,
+            )
+        })
+        .collect();
+    let fence_diagnostics = format!(
+        "original={prompt}; continuation={:?}; forward={forward_prompt:?}; home_windows={home_windows:?}",
+        accepted.prompt_id,
+    );
     worker.stop().await;
     fixture.stop().await;
     if let Some((current_wake, context)) = continuation_context {
@@ -1280,7 +1320,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         );
         assert!(
             elevated.as_ref().is_ok_and(|r| r.ok),
-            "the continuation acts as the host on both ends: {elevated:?}"
+            "the continuation acts as the host on both ends: {elevated:?}; {fence_diagnostics}"
         );
     }
 }
