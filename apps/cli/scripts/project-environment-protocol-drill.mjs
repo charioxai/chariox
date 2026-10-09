@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // MP-03/MP-08/MP-10: live protocol 471, using product-authorized client profiles.
-// Build kernel-client first. Run against a disposable kernel with no sessions.
+// Build kernel-client first. Run against a disposable kernel with no live sessions.
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises"
@@ -30,7 +30,7 @@ const profile = JSON.parse(await readFile(privateProfile, "utf8"))
 assert(profile.endpoint && profile.options, "foreign profile requires endpoint and normal LocalIpcClient options")
 const owner = new LocalIpcClient(options["--kernel-url"])
 const foreign = new LocalIpcClient(profile.endpoint, profile.options)
-const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project read without session/agent; authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
+const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project read without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
 let projectId, sessionId
 let stage = "empty-kernel-precondition"
 async function directoryDigest() {
@@ -55,7 +55,15 @@ try {
   const created = (await owner.send(requests.createSessionRequest(workspace, workspace, "Protocol 471", undefined, null, null, null, null, { kind: "new" }))).SessionCreated
   assert(created)
   projectId = created.session.project_id; sessionId = created.session.id
-  await owner.send(requests.deleteSessionRequest(sessionId)); sessionId = null
+  const bootstrap = (await owner.send(requests.getSessionStateRequest(sessionId))).SessionState.session
+  for (const agent of bootstrap.agents) await owner.send(requests.destroyAgentRequest(sessionId, agent.id))
+  await owner.send(requests.endSessionRequest(sessionId))
+  // Deleting the final Session also deletes its Project. End preserves normal
+  // history while retiring every live Session and agent, without a fixture.
+  const ended = (await owner.send(requests.getSessionStateRequest(sessionId))).SessionState.session
+  assert.equal(ended.status, "Ended"); assert.equal(ended.agents.length, 0)
+  report.bootstrapSessionEnded = true
+  report.endedBootstrapHistoryRetained = true
   assert.equal((await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, 0)
   stage = "owned-get-no-session-or-agent"
   const snapshot = (await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment
@@ -87,8 +95,10 @@ try {
   report.result = "FAIL"; report.firstFailingSeam = stage; process.exitCode = 1
 } finally {
   try {
-    if (sessionId) await owner.send(requests.deleteSessionRequest(sessionId))
-    if (projectId) await owner.send(requests.deleteProjectRequest(projectId))
+    if (projectId) {
+      const remaining = (await owner.send(requests.listProjectsRequest(true))).ProjectsListed.projects
+      if (remaining.some(project => project.id === projectId)) await owner.send(requests.deleteProjectRequest(projectId))
+    }
     report.cleanup = { sessions: (await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, ownedProjectRemoved: !(await owner.send(requests.listProjectsRequest(true))).ProjectsListed.projects.some(project => project.id === projectId) }
     assert.equal(report.cleanup.sessions, 0); assert(report.cleanup.ownedProjectRemoved)
   } catch { report.result = "FAIL"; report.cleanup = { failed: true }; process.exitCode = 1 }
