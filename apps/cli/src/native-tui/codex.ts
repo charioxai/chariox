@@ -7,6 +7,7 @@ import {
   type RuntimeProviderRun,
 } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
+import { createCliRelayIdentityStore } from "../cli-relay-identity-store.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
@@ -77,6 +78,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
       relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,

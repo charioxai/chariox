@@ -911,7 +911,7 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 }
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
-    let test_root = TestRoot(std::env::temp_dir().join(format!(
+    let test_root = TestRoot(crate::test_support::test_workspace_root().join(format!(
         "chariox-owned-workflow-admission-{}-{}-{:032x}",
         std::process::id(),
         crate::session::unix_epoch_ms(),

@@ -78,6 +78,7 @@ export function createCodexProjectionThreadTracker(options: {
       setProjectedThreadId(threadId)
     },
     isEphemeralThread: (threadId: string) => ephemeralThreadIds.has(threadId),
+    isManagedThread: (threadId: string) => tuiThreadId !== null && threadId !== tuiThreadId && !ephemeralThreadIds.has(threadId),
     observeUpstreamThread: (threadId: string, ephemeral = false) => {
       if (ephemeral) ephemeralThreadIds.add(threadId)
       if (ephemeralThreadIds.has(threadId)) return
@@ -263,6 +264,16 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       // output would otherwise settle or overwrite the visible Room turn.
       for (const downstream of downstreams) {
         if (downstream.kind !== "kernel") sendDownstream(downstream, message)
+      }
+      return
+    }
+    // MP-08 / MP-10 / MP-11: The home prompt projection owns the visible
+    // lifecycle. Execution-thread notifications must not overwrite its turn
+    // identity; server requests still reach the native approval UI.
+    if (message.id === undefined && typeof notificationThreadId === "string"
+      && projectionThreadTracker.isManagedThread(notificationThreadId)) {
+      for (const downstream of downstreams) {
+        if (downstream.kind === "kernel") sendDownstream(downstream, message)
       }
       return
     }

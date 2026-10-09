@@ -198,7 +198,7 @@ async fn failing_turn_with(
     substitutes: &[(&str, &str, Option<&str>)],
     workflow: bool,
 ) -> FailingTurn {
-    let worktree = std::env::temp_dir().join(format!(
+    let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-turn-substitute-{:016x}",
         rand::random::<u64>()
     ));
