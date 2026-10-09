@@ -128,6 +128,31 @@ class WarmChannelTests(unittest.TestCase):
                 module.channel_request({'op':'input','input':{'kind':kind,**extra}},held)
             self.assertEqual(events,[('click',None),('scroll',None),('key',None),('keycode',None)])
             self.assertEqual(held,{38})
+class VaultValueBoxTests(unittest.TestCase):
+    """MP-08 / MP-11 (owner 2026-10-09): best-effort Vault boxes from accessible text."""
+    def test_mp11_registered_value_masks_only_its_text_range(self):
+        accessibility=module.load('native-accessibility')
+        class Text:
+            characterCount=30
+            def getText(self,start,end):return 'user: synthetic-vault-value ok'[start:end]
+            def getRangeExtents(self,start,end,coords):return (100+start,50,(end-start)*7,14)
+        class Node:
+            name='Login form'
+            def queryText(self):return Text()
+            def queryComponent(self):raise NotImplementedError
+        boxes=accessibility.value_boxes(Node(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0))
+        self.assertEqual(boxes,[[106,50,147,14]])
+        class Named:
+            name='synthetic-vault-value'
+            def queryText(self):raise NotImplementedError
+            def queryComponent(self):return SimpleNamespace(getExtents=lambda coords:SimpleNamespace(x=5,y=6,width=70,height=12))
+        self.assertEqual(accessibility.value_boxes(Named(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0)),[[5,6,70,12]])
+        class Unknown:
+            name='plain'
+            def queryText(self):raise RuntimeError('cannot be checked')
+            def queryComponent(self):raise RuntimeError('cannot be checked')
+        self.assertEqual(accessibility.value_boxes(Unknown(),['synthetic-vault-value'],SimpleNamespace(DESKTOP_COORDS=0)),[])
+        self.assertEqual(accessibility.value_boxes(Named(),[],SimpleNamespace(DESKTOP_COORDS=0)),[])
 
 
 if __name__=='__main__':unittest.main()

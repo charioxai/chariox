@@ -113,7 +113,32 @@ def subtract(rect, cover):
     return parts
 
 
-def snapshot(processes, browser_processes=None, browser_protection=None):
+def value_boxes(node, values, pyatspi):
+    """MP-08 / MP-11 (owner 2026-10-09): Vault never blacks out the desktop. A
+    registered value shown as accessible text is masked by its text range (or
+    the node box for a name); anything that cannot be checked is left alone."""
+    boxes=[]
+    if not values:return boxes
+    try:
+        text=node.queryText();content=text.getText(0,min(text.characterCount,65536))
+        for value in values:
+            start=content.find(value)
+            while start>=0 and len(boxes)<16:
+                try:
+                    x,y,width,height=text.getRangeExtents(start,start+len(value),pyatspi.DESKTOP_COORDS)
+                    if width>0 and height>0:boxes.append([x,y,width,height])
+                except Exception:pass
+                start=content.find(value,start+len(value))
+    except Exception:pass
+    if any(value in (node.name or '') for value in values):
+        try:
+            rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
+        except Exception:pass
+    return boxes
+
+
+def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
     # Only the kernel's own Chromium tree was measured through CDP.
@@ -130,7 +155,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
         except OSError:pass
     # MP-11: `complete` also requires every window attributed (capture masking);
     # `traversed` only that the owned AT-SPI trees were walked without truncation.
-    nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[]
+    nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[];echoes=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -152,7 +177,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
             except NotImplementedError:pass
-        nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':'[protected]' if secret else (node.name or '')[:4096],'states':states,'bounds':bounds,'actions':actions,'protected':secret})
+        echoes.extend([] if secret else value_boxes(node,values,pyatspi))
+        name='[protected]' if secret else (node.name or '')[:4096]
+        for value in values:name=name.replace(value,'[redacted]')
+        nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
                              state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and
@@ -270,6 +298,8 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
             if node['pid'] in browsers:
                 node['native_protected']=node['protected']
                 node.update(name='[protected]',actions=[],protected=True)
+        # Best-effort Vault echo boxes, clipped to the screen (owner 2026-10-09).
+        masks.extend(part for part in (visible_rect(box,screen) for box in echoes) if part)
         return {'available':True,'complete':complete,'traversed':traversed,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks,'browser_withheld':withheld}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
