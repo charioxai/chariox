@@ -45,7 +45,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
             connected: () => true, attached: () => true, kernelConnected: () => true,
             flashFooter() {}, dimensions: () => ({ width: 100, height: 36 }), themeRevision: () => 0,
             currentFocus: () => null, promptFocus: () => null, closeOtherDialog() {}, applySession() {},
-            notify(message) { notices.push(message) },
+            notify(message) { notices.push(message) }, attachmentId: () => null,
           })
         })
         try {
