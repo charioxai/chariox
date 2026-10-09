@@ -268,7 +268,7 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
-/// The agent-model chain carries 472 provisionally on top of A01-A04 and the
-/// A10 home-ordered leased wakes and both-end sudo window fences until the
-/// coordinator allocates its next number (MP-08/09/10/11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;
+/// Version 485 coordinates the A01-A04 agent-model contracts and A10
+/// home-ordered leased wakes with both-end sudo window fences
+/// (coordinator allocated; MP-08/MP-09/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 485;

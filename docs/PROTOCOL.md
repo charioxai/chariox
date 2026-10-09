@@ -3372,8 +3372,8 @@ Reply opt-in registers one correlated result obligation; ordinary messages
 request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
 as blocked obligations requiring exact reconciliation, without guessing success.
 
-Leased recipients (MP-08 / MP-09 / MP-10 / MP-11 A10, relay peer 83): the home
-kernel orders and delivers their events through the existing leased prompt
+Leased recipients (MP-08 / MP-09 / MP-10 / MP-11 A10, local protocol
+485, relay peer 83): the home kernel orders and delivers their events through the existing leased prompt
 dispatch. The worker's exact acceptance is the delivery receipt; a lost reply
 is reconciled from `GetLeasedPromptReceipt`, never a second turn; only a proven
 worker rejection returns the event to pending, and the retry uses a new home
