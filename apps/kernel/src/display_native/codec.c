@@ -19,6 +19,82 @@ static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME
 #include <libavutil/error.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <dlfcn.h>
+
+/* MP-08/MP-10 (owner 2026-10-09, as Selkies): codec libraries are loaded at
+ * runtime, never linked into the kernel. Only the sonames these headers
+ * describe are accepted; a missing library leaves the native codec
+ * unavailable and the host keeps its other paths. */
+#define CX_X264_FUNCTIONS(F) F(x264_param_default_preset) F(x264_param_apply_profile) F(x264_picture_alloc) \
+    F(x264_picture_clean) F(x264_encoder_parameters) F(x264_encoder_reconfig) F(x264_encoder_encode) \
+    F(x264_encoder_close)
+#define CX_AV_FUNCTIONS(F) F(av_packet_free) F(av_frame_free) F(avcodec_free_context) F(av_frame_alloc) \
+    F(avcodec_open2) F(avcodec_alloc_context3) F(av_packet_alloc) F(av_dict_set) F(av_buffer_unref) \
+    F(avcodec_send_packet) F(avcodec_send_frame) F(avcodec_receive_packet) F(avcodec_receive_frame) \
+    F(avcodec_find_encoder_by_name) F(avcodec_find_decoder) F(av_strerror) F(av_new_packet) \
+    F(av_log_set_callback) F(av_log_default_callback) F(av_hwframe_transfer_data) F(av_hwframe_get_buffer) \
+    F(av_hwframe_ctx_init) F(av_hwframe_ctx_alloc) F(av_hwdevice_ctx_create) F(av_frame_unref) \
+    F(av_frame_make_writable) F(av_frame_get_buffer) F(av_dict_free)
+#define CX_POINTER(name) static __typeof__(&name) cx_##name;
+CX_X264_FUNCTIONS(CX_POINTER)
+CX_AV_FUNCTIONS(CX_POINTER)
+/* x264 versions its entry point: x264_encoder_open_<X264_BUILD>. */
+static __typeof__(&x264_encoder_open) cx_x264_encoder_open;
+#define CX_TEXT2(x) #x
+#define CX_TEXT(x) CX_TEXT2(x)
+static pthread_once_t runtime_once=PTHREAD_ONCE_INIT;
+static int runtime_ready;
+static int runtime_resolve(void *library,const char *name,void **slot){return library&&(*slot=dlsym(library,name))!=NULL;}
+static void runtime_load(void) {
+    void *x264=dlopen("libx264.so." CX_TEXT(X264_BUILD),RTLD_NOW|RTLD_LOCAL);
+    void *av=dlopen("libavcodec.so." CX_TEXT(LIBAVCODEC_VERSION_MAJOR),RTLD_NOW|RTLD_LOCAL);
+    int ready=runtime_resolve(x264,"x264_encoder_open_" CX_TEXT(X264_BUILD),(void **)&cx_x264_encoder_open);
+#define CX_RESOLVE_X264(name) ready=ready&&runtime_resolve(x264,#name,(void **)&cx_##name);
+#define CX_RESOLVE_AV(name) ready=ready&&runtime_resolve(av,#name,(void **)&cx_##name);
+    CX_X264_FUNCTIONS(CX_RESOLVE_X264)
+    CX_AV_FUNCTIONS(CX_RESOLVE_AV)
+    runtime_ready=ready;
+}
+static int runtime_available(void){pthread_once(&runtime_once,runtime_load);return runtime_ready;}
+#undef x264_encoder_open
+#define CX_CALL(name) (*cx_##name)
+#define x264_param_default_preset CX_CALL(x264_param_default_preset)
+#define x264_param_apply_profile CX_CALL(x264_param_apply_profile)
+#define x264_encoder_open CX_CALL(x264_encoder_open)
+#define x264_picture_alloc CX_CALL(x264_picture_alloc)
+#define x264_picture_clean CX_CALL(x264_picture_clean)
+#define x264_encoder_parameters CX_CALL(x264_encoder_parameters)
+#define x264_encoder_reconfig CX_CALL(x264_encoder_reconfig)
+#define x264_encoder_encode CX_CALL(x264_encoder_encode)
+#define x264_encoder_close CX_CALL(x264_encoder_close)
+#define av_packet_free CX_CALL(av_packet_free)
+#define av_frame_free CX_CALL(av_frame_free)
+#define avcodec_free_context CX_CALL(avcodec_free_context)
+#define av_frame_alloc CX_CALL(av_frame_alloc)
+#define avcodec_open2 CX_CALL(avcodec_open2)
+#define avcodec_alloc_context3 CX_CALL(avcodec_alloc_context3)
+#define av_packet_alloc CX_CALL(av_packet_alloc)
+#define av_dict_set CX_CALL(av_dict_set)
+#define av_buffer_unref CX_CALL(av_buffer_unref)
+#define avcodec_send_packet CX_CALL(avcodec_send_packet)
+#define avcodec_send_frame CX_CALL(avcodec_send_frame)
+#define avcodec_receive_packet CX_CALL(avcodec_receive_packet)
+#define avcodec_receive_frame CX_CALL(avcodec_receive_frame)
+#define avcodec_find_encoder_by_name CX_CALL(avcodec_find_encoder_by_name)
+#define avcodec_find_decoder CX_CALL(avcodec_find_decoder)
+#define av_strerror CX_CALL(av_strerror)
+#define av_new_packet CX_CALL(av_new_packet)
+#define av_log_set_callback CX_CALL(av_log_set_callback)
+#define av_log_default_callback CX_CALL(av_log_default_callback)
+#define av_hwframe_transfer_data CX_CALL(av_hwframe_transfer_data)
+#define av_hwframe_get_buffer CX_CALL(av_hwframe_get_buffer)
+#define av_hwframe_ctx_init CX_CALL(av_hwframe_ctx_init)
+#define av_hwframe_ctx_alloc CX_CALL(av_hwframe_ctx_alloc)
+#define av_hwdevice_ctx_create CX_CALL(av_hwdevice_ctx_create)
+#define av_frame_unref CX_CALL(av_frame_unref)
+#define av_frame_make_writable CX_CALL(av_frame_make_writable)
+#define av_frame_get_buffer CX_CALL(av_frame_get_buffer)
+#define av_dict_free CX_CALL(av_dict_free)
 
 struct Rect { int left,top,right,bottom; };
 struct RowResult { int row,y,height,key; uint64_t sequence,reference; const uint8_t *bytes; size_t length; };
@@ -69,7 +145,7 @@ void cx_codec_close(struct Codec *c) {
     av_buffer_unref(&c->device);free(c->masked);free(c->full);free(c);
 }
 struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count,int reduced) {
-    if (row_count!=1&&row_count!=8)return NULL;
+    if ((row_count!=1&&row_count!=8)||!runtime_available())return NULL;
     struct Codec *c=calloc(1,sizeof(*c));
     if (!c) return NULL;
     c->hardware_requested=!getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE")||strcmp(getenv("CHARIOX_BROWSER_DISPLAY_SOFTWARE"),"1");

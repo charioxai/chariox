@@ -36,16 +36,8 @@ fn main() {
         }
     }
     build.compile("chariox_display_native");
-    for library in [
-        "X11",
-        "Xext",
-        "Xdamage",
-        "Xcomposite",
-        "Xtst",
-        "x264",
-        "avcodec",
-        "avutil",
-    ] {
+    // x264 and libavcodec are loaded at runtime (codec.c), never linked.
+    for library in ["X11", "Xext", "Xdamage", "Xcomposite", "Xtst", "dl"] {
         println!("cargo:rustc-link-lib={library}");
     }
     println!("cargo:rustc-link-lib=static=yuv");
