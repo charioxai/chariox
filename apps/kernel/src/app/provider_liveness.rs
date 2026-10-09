@@ -77,17 +77,12 @@ impl ProviderRunLivenessProcesses {
             Ok(PtyProcessState::Exited { exit_code, signal }) => {
                 let terminal_diagnostic = app
                     .pty
-                    .drain_output(provider_run_id)?
-                    .into_iter()
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
-                    .collect::<String>();
-                let terminal_diagnostic =
-                    crate::provider::sanitize_provider_diagnostic(&terminal_diagnostic);
+                    .process_exit_diagnostic(provider_run_id)
+                    .filter(|diagnostic| !diagnostic.is_empty());
                 Ok(Some(ProviderProcessExit {
                     exit_code,
                     signal,
-                    terminal_diagnostic: (!terminal_diagnostic.is_empty())
-                        .then_some(terminal_diagnostic),
+                    terminal_diagnostic,
                 }))
             }
             Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
@@ -267,14 +262,24 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             &outcome.session_id,
             &outcome.provider_run_id,
             format!(
-                "Provider run `{}` for `{}` ended unexpectedly. {}",
+                "Provider run `{}` for `{}` ended unexpectedly: {}. {}{}",
                 outcome.provider_run_id,
                 outcome.ended_run.provider(),
+                outcome
+                    .provider_termination
+                    .as_ref()
+                    .map(|termination| termination.reason.as_str())
+                    .unwrap_or("provider process exited without an available status"),
                 if session_outcome.started_next_prompt {
                     "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
                     "The active prompt was closed without starting the queued backlog."
-                }
+                },
+                outcome
+                    .ended_run
+                    .terminal_diagnostic()
+                    .map(|diagnostic| format!(" Provider terminal diagnostic: {diagnostic}"))
+                    .unwrap_or_default(),
             ),
         );
 

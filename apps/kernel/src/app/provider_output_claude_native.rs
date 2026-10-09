@@ -1713,6 +1713,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(None);
         };
+        crate::logging::debug_with_fields(
+            "daemon.provider_output",
+            "Claude workspace trust native input queued",
+            serde_json::json!({
+                "provider_run_id": provider_run_id,
+                "native_selection": match input.as_slice() { b"\x1b[A" => "up", b"\x1b[B" => "down", b"\r" => "enter", _ => "cancel" },
+            }),
+        );
         self.app
             .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
         if input == b"\r" {
@@ -1797,6 +1805,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     vec![0x03]
                 }
             };
+            crate::logging::debug_with_fields(
+                "daemon.provider_output",
+                "Claude workspace trust native decision",
+                serde_json::json!({
+                    "session_id": session_id, "interaction_id": interaction_id,
+                    "native_selection": match input.as_slice() { b"\x1b[A" => "up", b"\x1b[B" => "down", b"\r" => "enter", _ => "cancel" },
+                }),
+            );
             write_claude_permission_input(&context_file, &interaction_id, &input);
         });
         Ok(())
