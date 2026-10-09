@@ -23,8 +23,8 @@ async fn kernel_access_config_websocket_drill() {
     ));
     let (mut socket, _) = connect_async(format!("ws://{addr}")).await.unwrap();
     let defaults = serde_json::json!({
-        "grant_default_minutes": 30,
-        "grant_max_minutes": 240,
+        "grant_default_minutes": 480,
+        "grant_max_minutes": 1440,
         "grant_extend_notice_minutes": 5,
         "request_timeout_minutes": 10,
     });
@@ -39,7 +39,7 @@ async fn kernel_access_config_websocket_drill() {
     );
     for (key, value) in [
         ("grant_default_minutes", "45"),
-        ("grant_max_minutes", "300"),
+        ("grant_max_minutes", "600"),
         ("grant_extend_notice_minutes", "7"),
         ("request_timeout_minutes", "12"),
     ] {

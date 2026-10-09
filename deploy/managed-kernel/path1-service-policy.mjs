@@ -1,4 +1,14 @@
 // MP-01/MP-04/MP-07/MP-11: signed Path-1 units must launch an ordinary provider.
+// Admit only the service settings used by the reviewed Path-1 units. systemd
+// keeps adding execution restrictions; a deny list cannot protect parity from
+// a new or previously unlisted filesystem, process, network or device policy.
+const supportedServiceDirectives = new Set([
+  "Type", "User", "Group", "Environment", "ExecStartPre", "ExecStart",
+  "ExecStartPost", "Delegate", "DelegateSubgroup", "Restart", "RestartSec",
+  "RestartSteps", "RestartMaxDelaySec", "KillMode", "StateDirectory",
+  "StateDirectoryMode",
+])
+
 export function parseUnitSections(source) {
   const sections = new Map()
   let section
@@ -108,6 +118,12 @@ export function verifyPath1ServicePolicy(source, role) {
   if (all.some((line) => /^(EnvironmentFile|PassEnvironment|UnsetEnvironment)=/.test(line)
     || line.startsWith("Environment=") && !/^Environment=[A-Z0-9_]+=[^\s"']+$/.test(line))) {
     fail("contains an unsupported environment override")
+  }
+  for (const line of lines) {
+    const directive = line.slice(0, line.indexOf("="))
+    if (!supportedServiceDirectives.has(directive)) {
+      fail(`contains unsupported Service directive ${directive}`)
+    }
   }
   return sections
 }

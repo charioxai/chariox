@@ -382,29 +382,41 @@ impl super::KernelRuntimeOwnedState {
                 .resume_state()
                 .provider_session_id(target_run.adapter_key()),
         ];
+        // Output recorded without a provider session id is the target
+        // session's own only when the same provider family answered it.
+        let answered_without_session_id = |latest: &crate::history::HistoryEvent, run_session| {
+            latest.provider_session_id.is_none()
+                && latest
+                    .provider
+                    .as_deref()
+                    .and_then(crate::provider::canonical_provider_family)
+                    == Some(target_run.adapter_key())
+                && self
+                    .operational_history_store
+                    .provider_session_answered_agent(session_id, agent_id, run_session)
+                    .unwrap_or_else(|error| {
+                        crate::logging::warn_with_fields(
+                            "daemon.provider_context_handoff",
+                            "failed to check whether the provider session answered the agent",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "provider_session_id": run_session,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        true
+                    })
+        };
         // Run ids restart with the kernel, so only an answer given since this
-        // run started is its own.
+        // run started is its own. A session another session answered after
+        // receives the turns it missed.
         let holds_conversation = |latest: &crate::history::HistoryEvent| {
             (latest.provider_run_id.as_deref() == Some(target_run.id())
                 && latest.timestamp_ms >= target_run.started_at_ms())
                 || run_sessions.into_iter().flatten().any(|run_session| {
                     latest.provider_session_id.as_deref() == Some(run_session)
-                        || self
-                            .operational_history_store
-                            .provider_session_answered_agent(session_id, agent_id, run_session)
-                            .unwrap_or_else(|error| {
-                                crate::logging::warn_with_fields(
-                                    "daemon.provider_context_handoff",
-                                    "failed to check whether the provider session answered the agent",
-                                    serde_json::json!({
-                                        "session_id": session_id,
-                                        "agent_id": agent_id,
-                                        "provider_session_id": run_session,
-                                        "error": error.to_string(),
-                                    }),
-                                );
-                                true
-                            })
+                        || answered_without_session_id(latest, run_session)
                 })
         };
         // An agent no provider ever answered has its prompts and errors to
@@ -1038,9 +1050,59 @@ mod tests {
         );
         let answered = fixture.run("run-new-restarted", "claude", Some("claude-session"));
         assert_eq!(fixture.prompt(&answered), "next");
-        // A session that answered this agent before holds its own conversation;
-        // turns it missed, such as a substitute's, travel as explicit handoffs.
-        assert_eq!(fixture.prompt(&resumed), "next");
+        // A session that answered this agent before still receives the turns
+        // another provider session answered since.
+        assert!(fixture.prompt(&resumed).contains("codename amber-kestrel"));
+    }
+
+    #[tokio::test]
+    async fn a_returning_native_session_receives_intervening_provider_turns() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "accepted decision: preserve native sessions");
+        fixture.output(2, "run-codex", "codex", Some("thread-codex"), "recorded");
+        fixture.user(3, "new decision: validate queued prompts once");
+        fixture.output(
+            4,
+            "run-claude",
+            "claude",
+            Some("thread-claude"),
+            "new decision recorded",
+        );
+        let returning = fixture.run("run-return", "codex", Some("thread-codex"));
+        let handoff = fixture
+            .dispatch(&returning, 5)
+            .expect("an older native session must receive work performed by another provider");
+        assert!(
+            handoff.contains("validate queued prompts once"),
+            "{handoff}"
+        );
+        assert_eq!(
+            returning.resume_state().provider_session_id("codex"),
+            Some("thread-codex")
+        );
+        fixture.runtime.owned.consume_pending_context_handoff(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &returning,
+        );
+        assert!(
+            fixture.dispatch(&returning, 5).is_none(),
+            "deliver intervening history once"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_return_receives_intervening_same_provider_turns() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "initial audit decision");
+        fixture.output(2, "run-first", "codex", Some("thread-first"), "recorded");
+        fixture.user(3, "new decision made on the second account");
+        fixture.output(4, "run-second", "codex", Some("thread-second"), "updated");
+        let returning = fixture.run("run-return", "codex", Some("thread-first"));
+        assert!(fixture
+            .dispatch(&returning, 5)
+            .expect("the old account missed newer work")
+            .contains("new decision made on the second account"));
     }
 
     #[tokio::test]
@@ -1062,7 +1124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_resumed_session_keeps_its_conversation_after_history_retention() {
+    async fn a_resumed_session_receives_retained_intervening_work() {
         let fixture = DerivedHandoffFixture::new().await;
         fixture.user(1, "remember the codename amber-kestrel");
         fixture.output_at(2, "run-old", "codex", Some("thread-old"), "OK", Some(1_000));
@@ -1074,7 +1136,7 @@ mod tests {
             .expect("retention should prune the old answer");
 
         let resumed = fixture.run("run-resumed", "codex", Some("thread-old"));
-        assert_eq!(fixture.prompt(&resumed), "next");
+        assert!(fixture.prompt(&resumed).contains("port 41000"));
     }
 
     #[tokio::test]

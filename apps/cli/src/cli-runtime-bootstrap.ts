@@ -84,6 +84,7 @@ import {
 import type { CharioxLogger } from "./logging.js"
 
 type RelayClientOptions = {
+  relayAuthorizationIssuer?: { endpoint: string; daemonId: string }
   relayAuthToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
@@ -376,6 +377,7 @@ function relayClientOptions(
     return undefined
   }
   const relayOptions: RelayClientOptions = {}
+  if (options.relayTokenIssuer) relayOptions.relayAuthorizationIssuer = options.relayTokenIssuer
   const relayAuthToken = relayAuthTokenOverride ?? options.relayToken
   if (relayAuthToken) {
     relayOptions.relayAuthToken = relayAuthToken
