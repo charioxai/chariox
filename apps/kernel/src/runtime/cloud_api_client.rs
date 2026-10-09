@@ -42,9 +42,6 @@ pub(crate) struct CloudDevicePollResponse {
     pub(crate) interval_seconds: Option<u64>,
     pub(crate) expires_at: Option<String>,
     pub(crate) profile: Option<CloudDeviceProfileResponse>,
-    pub(crate) cloud_session_token: Option<String>,
-    pub(crate) cloud_session_expires_at: Option<String>,
-    pub(crate) machine_credential: Option<String>,
     pub(crate) kernel_credential: Option<String>,
 }
 
@@ -58,8 +55,6 @@ pub(crate) struct CloudDeviceProfileResponse {
     pub(crate) realm_id: String,
     pub(crate) relay_url: String,
     pub(crate) issuer_id: String,
-    pub(crate) client_id: Option<String>,
-    pub(crate) client_alias: Option<String>,
     pub(crate) machine_id: Option<String>,
     pub(crate) machine_alias: Option<String>,
     pub(crate) kernel_id: Option<String>,

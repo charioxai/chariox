@@ -232,7 +232,7 @@ async fn collaborator_waiting_room_directory_redaction_inner() {
         realm_id: "realm-1".into(),
         ..Default::default()
     });
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let app = DaemonApp::bootstrap(config).unwrap();
     let session = app
         .sessions_mut()
         .create_session(worktree.session_request())
