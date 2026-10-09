@@ -76,6 +76,25 @@ test('MP-08/MP-10/MP-11 a container whose visual order differs from DOM order is
   assert.deepEqual(await locateBrowserRegions([target], fixture({ stale: true, reversed: true }), ['unrelated']), regions);
   assert.deepEqual(await locateBrowserRegions([target], fixture({ stale: true, reversed: true })), [[0, 0, 800, 100], [0, 776, 800, 24]]);
 });
+
+test('MP-08/MP-11 Browser-panel masks cover overflowing and zero-sized uncertain containers and their local clip fallback', async () => {
+  for(const width of [1,0]){
+    const browser=fixture({stale:true,reversed:true}),resolve=browser.resolvePageTarget;
+    browser.resolvePageTarget=async()=>{
+      const page=await resolve(),send=page.connection.send;
+      page.connection.send=async(method,params)=>{
+        const reply=await send(method,params);
+        if(method==='DOMSnapshot.captureSnapshot'){
+          reply.documents[0].layout.bounds[0]=[500,10,width,width?20:0];
+          reply.documents[0].textBoxes={layoutIndex:[2],bounds:[[470,10,40,20]]};
+        }
+        return reply;
+      };return page;
+    };
+    const regions=await locateBrowserRegions([target],browser,['synthetic-only']);
+    for(const x of [401,475,505])assert(regions.some(([left,top,w,h])=>left<=x&&x<left+w&&top<=115&&115<top+h),`overflow x=${x} width=${width}`);
+  }
+});
 test('MP-08/MP-10/MP-11 taskbar never renders document titles', async () => {
   const { readFile } = await import('node:fs/promises');
   const config = await readFile(new URL('./tint2rc', import.meta.url), 'utf8');

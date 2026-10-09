@@ -4,10 +4,10 @@
 // stays visible. Desktop placement is proven by the Xvfb drill.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { decodePng } from './kernel-browser-pixels.mjs';
+import { decodePng, encodePng, maskPng } from './kernel-browser-pixels.mjs';
 import { ProtectionGate, awaitPresented, fenceBrowserCapture, measureBrowserProtection } from './browser-protection-regions.mjs';
 import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { REORDERED, VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from './browser-protection-fixture.mjs';
@@ -17,7 +17,7 @@ assert.ok(executable, 'Explicit installed Chromium required; never download a br
 async function withFixture(dpr, run, query = '') {
   const root = await mkdtemp(path.join(tmpdir(), 'cx-protection-'));
   const fixture = await serveFixture();
-  const chromium = await launchChromium({ executable, dpr, root });
+  const chromium = await launchChromium({ executable, dpr, root, headless: process.env.CHARIOX_PROTECTION_TEST_HEADED !== '1' });
   try {
     const opened = await openFixture(chromium.browser, fixture.url + query);
     const shot = async () => decodePng((await opened.connection.send('Page.captureScreenshot', { format: 'png' }, opened.sessionId)).data, dpr);
@@ -25,6 +25,35 @@ async function withFixture(dpr, run, query = '') {
   } finally { await chromium.close(); await fixture.close(); await rm(root, { recursive: true, force: true }); }
 }
 const policy = (values = []) => ({ values, targets: [], unknown: false });
+
+for(const dpr of [1,2])test(`MP-08/MP-11 DPR ${dpr}: reversed flex overflow and zero-sized containers are covered by both collectors`,()=>withFixture(dpr,async({browser,connection,sessionId,targetId,shot})=>{
+  const a=VAULT_VALUE.slice(0,17),b=VAULT_VALUE.slice(17);
+  const {result}=await connection.send('Runtime.evaluate',{returnByValue:true,expression:`{const crops=[];for(const [top,w,h] of [[100,1,24],[Math.min(innerHeight-40,650),0,0]]){const box=document.createElement('div');box.style.cssText='position:fixed;left:550px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;flex-direction:row-reverse;color:#ff00ff;white-space:nowrap;font:bold 18px sans-serif;z-index:2147483647';for(const text of ${JSON.stringify([b,a])}){const span=document.createElement('span');span.style.cssText='flex-shrink:0;background:#fff';span.textContent=text;box.append(span);}document.body.append(box);const range=document.createRange();range.selectNodeContents(box);const r=range.getBoundingClientRect();crops.push([r.left,r.top,r.width,r.height]);}crops}`},sessionId);
+  const pixels=await shot();
+  const crops=result.value.map(([x,y,w,h])=>[Math.floor(x*dpr),Math.floor(y*dpr),Math.ceil((x+w)*dpr)-Math.floor(x*dpr),Math.ceil((y+h)*dpr)-Math.floor(y*dpr)]);
+  const crop=([x,y,w,h])=>({width:w,pixels:Buffer.concat(Array.from({length:h},(_,row)=>pixels.pixels.subarray(((y+row)*pixels.width+x)*4,((y+row)*pixels.width+x+w)*4)))});
+  const collectors={transform:async values=>(await measureBrowserProtection(browser,policy(values))).pages[0].regions,
+    panel:values=>locateBrowserRegions([],browser,values,{contentTarget:targetId,contentScale:dpr})};
+  const round=regions=>regions.map(([x,y,w,h])=>[Math.floor(x),Math.floor(y),Math.ceil(x+w)-Math.floor(x),Math.ceil(y+h)-Math.floor(y)]);
+  const inBox=([x,y],regions)=>regions.map(([rx,ry,w,h])=>[rx-x,ry-y,w,h]);
+  const exposed=[];
+  for(const [name,collect]of Object.entries(collectors)){
+    const without=round(await collect([])),withValue=round(await collect([VAULT_VALUE]));
+    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE){
+      const data=encodePng(pixels.width,pixels.height,pixels.pixels),root=process.env.CHARIOX_PROTECTION_TEST_EVIDENCE;
+      await writeFile(path.join(root,`overflow-dpr${dpr}-raw.png`),Buffer.from(data,'base64'));
+      await writeFile(path.join(root,`overflow-dpr${dpr}-${name}.png`),Buffer.from(maskPng(data,withValue,dpr),'base64'));
+    }
+    for(const box of crops){
+      assert(census(crop(box),inBox(box,without)).magenta>100*dpr*dpr,'MP-11 overflow canary pixels are visible without a saved value');
+      const left=census(crop(box),inBox(box,withValue)).magenta;if(left)exposed.push(`${name}: ${left} px`);
+    }
+    const control=[20,20,180,100].map(v=>v*dpr);
+    const ordinary=census(crop(control),inBox(control,without)),masked=census(crop(control),inBox(control,withValue));
+    assert(masked.cyan>ordinary.cyan*.95,`MP-08 ${name} unrelated ordinary content stays visible (${masked.cyan}/${ordinary.cyan})`);
+  }
+  assert.deepEqual(exposed,[],'MP-11 both collectors cover all overflowing value pixels');
+}));
 
 // Vault policy: whole-page DOMSnapshot path (echoes, markers incl. frame owners).
 // No policy on a fields-only page: selector-search path, no DOMSnapshot.

@@ -91,6 +91,29 @@ const inline = { display: 'inline' };
 const reversed = { 1: [0, 0, 200, 20], 2: [50, 0, 40, 20], 3: [50, 0, 40, 20], 4: [0, 0, 50, 20], 5: [0, 0, 50, 20] };
 const inOrder = { 1: [0, 0, 200, 20], 2: [0, 0, 40, 20], 3: [0, 0, 40, 20], 4: [40, 0, 50, 20], 5: [40, 0, 50, 20] };
 const pair = (css, boxes = reversed, outer = 'DIV') => snapshot([['#document', -1], [outer, 0], ['SPAN', 1], ['#text', 2, [], 'value'], ['SPAN', 1], ['#text', 4, [], 'vault-'], ['P', 0], ['#text', 6, [], 'ordinary']], { css, boxes });
+test('MP-08/MP-11 uncertain containers cover overflowing descendant layout and text boxes, including zero-sized containers', () => {
+  for(const box of [[100,0,1,20],[100,0,0,0]]){
+    const doc=pair({1:{display:'flex','flex-direction':'row-reverse'}},{1:box,2:[80,0,20,20],3:[80,0,20,20],4:[20,0,60,20],5:[20,0,60,20]});
+    doc.documents[0].textBoxes={layoutIndex:[3],bounds:[[80,0,28,20]]};
+    assert.deepEqual(documentProtection(doc,0).regions,[]);
+    const regions=documentProtection(doc,0,vault).regions;
+    for(const x of [20,79,80,99,107])assert(regions.some(([left,top,w,h])=>left<=x&&x<left+w&&top<=5&&5<top+h),`overflow x=${x} container=${box}`);
+    assert(!regions.some(([x,y,w,h])=>x<=200&&200<x+w&&y<=5&&5<y+h),'ordinary sibling is outside the mask');
+  }
+});
+
+test('MP-08/MP-11 unreadable descendant geometry uses the nearest local overflow clip', () => {
+  const doc=snapshot([['#document',-1],['DIV',0],['DIV',1],['SPAN',2],['#text',3,[],'value'],['SPAN',2],['#text',5,[],'vault-'],['P',0],['#text',7,[],'ordinary']],{
+    css:{1:{'overflow-x':'hidden','overflow-y':'hidden'},2:{display:'flex','flex-direction':'row-reverse'}},
+    boxes:{1:[10,0,120,20],2:[100,0,0,0],3:[80,0,20,20],4:[80,0,20,20],5:[20,0,60,20],6:[20,0,60,20]}});
+  doc.documents[0].layout.bounds[3]=undefined;
+  assert(documentProtection(doc,0,vault).regions.some(box=>JSON.stringify(box)==='[10,0,120,20]'));
+  assert(!documentProtection(doc,0,vault).regions.some(([x,y,w,h])=>x<=200&&200<x+w),'does not mask an unrelated sibling');
+  // Missing per-line text geometry follows the same bounded fallback.
+  doc.documents[0].textBoxes={layoutIndex:[4],bounds:[undefined]};
+  assert(documentProtection(doc,0,vault).regions.some(box=>JSON.stringify(box)==='[10,0,120,20]'));
+});
+
 test('flex, grid, -webkit-box and table containers whose rendered order differs from DOM order are masked whole', () => {
   for (const [label, css] of [
     ['row-reverse', { 1: { display: 'flex', 'flex-direction': 'row-reverse' } }],
@@ -146,14 +169,14 @@ test('bidi overrides, direction changes and right-to-left or bidi-control text m
     ['Arabic text', '\u0627 eulav', {}],
   ]) {
     assert.deepEqual(documentProtection(line(second, css), 0).regions, [], `${label}: ordinary without values`);
-    assert.deepEqual(documentProtection(line(second, css), 0, vault).regions, at(1), label);
+    assert.deepEqual(documentProtection(line(second, css), 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3,4), label);
   }
   // A block that changes direction is its own container; a right-to-left root differs from the default.
   const block = snapshot([['#document', -1], ['DIV', 0], ['SPAN', 1], ['#text', 2, [], 'value'], ['SPAN', 1], ['#text', 4, [], 'vault-'], ['P', 0], ['#text', 6, [], 'ordinary']],
     { css: { 1: { direction: 'rtl' }, 2: { ...inline, direction: 'rtl' }, 4: { ...inline, direction: 'rtl' } } });
-  assert.deepEqual(documentProtection(block, 0, vault).regions, at(1));
+  assert.deepEqual(documentProtection(block, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3,4,5));
   const root = snapshot([['#document', -1], ['HTML', 0], ['BODY', 1], ['#text', 2, [], 'x']], { css: { 1: { direction: 'rtl' }, 2: { direction: 'rtl' } } });
-  assert.deepEqual(documentProtection(root, 0, vault).regions, at(1));
+  assert.deepEqual(documentProtection(root, 0, vault).regions.sort((a,b)=>a[0]-b[0]), at(1,2,3));
   assert.deepEqual(documentProtection(line('ordinary', {}), 0, vault).regions, []);
 });
 
@@ -279,7 +302,7 @@ test('stream gate adopts only stable protection and releases only verified frame
 
 // MP-11: only CDP's "no layout box" errors mean no pixels on the search path;
 // any other box failure fails the whole measurement closed.
-test('MP-11 search path: an unknown box failure fails closed, an unrendered field is skipped', async () => {
+test('MP-11 search path: box failures use a trusted snapshot or fail closed', async () => {
   const { measurePageProtection } = await import('./browser-protection-regions.mjs');
   const connection = boxError => ({ async send(method, params) {
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'f', loaderId: 'l', url: 'https://example.test/' } } };
@@ -292,6 +315,10 @@ test('MP-11 search path: an unknown box failure fails closed, an unrendered fiel
     if (method === 'DOM.getSearchResults') return { nodeIds: [2] };
     if (method === 'DOM.describeNode') return { node: { localName: 'input', backendNodeId: 7 } };
     if (method === 'DOM.getBoxModel') throw new Error(boxError);
+    if (method === 'DOMSnapshot.captureSnapshot') {
+      if (boxError === 'Session closed') throw new Error(boxError);
+      return {strings: [],documents: [{nodes: {},layout: {nodeIndex: [],bounds: []}}]};
+    }
     return {};
   } });
   const policy = { values: [], targets: [] };
