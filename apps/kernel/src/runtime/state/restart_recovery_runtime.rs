@@ -212,6 +212,7 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {

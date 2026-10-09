@@ -326,6 +326,7 @@ fn cached_session_sources_match(
     visible_session_count == cached.entries.len()
 }
 
+#[cfg(test)]
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -358,6 +359,7 @@ pub(crate) fn build_waiting_room_public_snapshot(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     metaagent_events: &MetaagentEventStore,
@@ -758,6 +760,7 @@ fn hash_waiting_room_version(
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
 }
 
+#[cfg(test)]
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,

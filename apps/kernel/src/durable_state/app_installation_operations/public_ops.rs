@@ -24,6 +24,7 @@ pub(crate) struct InstallApprovalChallenge {
     deployment_id: Option<String>,
 }
 impl InstallApprovalChallenge {
+    #[cfg(test)]
     pub(crate) fn deployment_id(&self) -> Option<&str> {
         self.deployment_id.as_deref()
     }

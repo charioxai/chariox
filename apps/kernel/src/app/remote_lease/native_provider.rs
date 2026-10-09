@@ -112,6 +112,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn launch_leased_native_provider_run(
         &mut self,
         leased_agent_id: &str,

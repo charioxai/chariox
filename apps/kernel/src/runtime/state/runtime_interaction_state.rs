@@ -271,6 +271,7 @@ impl KernelRuntimeState {
         Ok(rx)
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) async fn resolve_terminal_runtime_interaction(
         &self,
         session_id: &str,

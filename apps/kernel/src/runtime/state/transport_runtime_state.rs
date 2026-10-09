@@ -523,6 +523,7 @@ impl KernelRuntimeState {
         app_result
     }
 
+    #[cfg(test)]
     pub(crate) fn session_snapshot_projection(
         &self,
         session_id: &str,

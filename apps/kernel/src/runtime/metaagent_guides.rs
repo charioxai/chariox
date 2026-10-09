@@ -312,6 +312,7 @@ pub(crate) fn search_guides_with_context(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn read_guide(guide_ref: &str) -> Option<serde_json::Value> {
     read_guide_with_context(guide_ref, &MetaagentGuideContext::embedded_only())
 }

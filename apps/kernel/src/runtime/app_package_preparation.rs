@@ -61,11 +61,13 @@ impl PreparedAppPackage {
         Ok(&self.candidate)
     }
 
+    #[cfg(test)]
     pub(crate) fn directory(&self, trusted_owner: &str) -> Result<&File> {
         self.require_owner(trusted_owner)?;
         Ok(&self.release.directory)
     }
 
+    #[cfg(test)]
     pub(crate) fn reused(&self) -> bool {
         self.release.reused
     }

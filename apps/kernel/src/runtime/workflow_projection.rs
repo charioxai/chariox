@@ -58,6 +58,7 @@ pub(crate) fn projected_resolve_workflow(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn projected_resolve_workflow_run(
     session: &RuntimeSession,
     workflow_run_ref: &str,

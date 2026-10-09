@@ -455,6 +455,7 @@ impl RelayClientState {
         self.display_streams.remove(stream_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn display_stream_sender(
         &self,
         stream_id: &str,

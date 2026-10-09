@@ -183,6 +183,7 @@ fn workspace_fence_hash(request: &LaunchProviderRequest, canonical_roots: &[Path
     hasher.finish()
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn macos_seatbelt_profile(canonical_roots: &[PathBuf], exception_roots: &[PathBuf]) -> String {
     let mut profile = "(version 1)\n".to_string();
     for root in canonical_roots {
@@ -282,6 +283,7 @@ fn collect_nested_git_repository_exception_roots(
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn seatbelt_string(path: &Path) -> String {
     let mut escaped = String::new();
     for ch in path.display().to_string().chars() {

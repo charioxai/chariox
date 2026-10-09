@@ -81,6 +81,7 @@ impl ActivePromptState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn has_active_provider_tools(&self) -> bool {
         !self.active_tool_ids.is_empty()
     }

@@ -93,6 +93,7 @@ impl ActiveStartAdmission {
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }
+    #[cfg(test)]
     pub(crate) fn attempt(&self) -> &str {
         &self.attempt
     }

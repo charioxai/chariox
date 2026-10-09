@@ -57,6 +57,7 @@ impl std::fmt::Debug for AppPublisherRequest {
 impl DurableKernelStateStore {
     /// Blocking completion means the exact decision transaction committed, not
     /// merely that it entered the queue. Retain caller admission until return.
+    #[cfg(test)]
     pub(crate) fn mutate_app_publisher(
         &self,
         trusted_owner: &str,
@@ -71,6 +72,7 @@ impl DurableKernelStateStore {
 
     /// The retained operation supplies its original cancellation and deadline.
     /// Writer queueing cannot extend that admission or invent a new decision.
+    #[cfg(test)]
     pub(crate) fn mutate_app_publisher_with_budget(
         &self,
         trusted_owner: &str,
@@ -98,6 +100,7 @@ impl DurableKernelStateStore {
         Ok(result?)
     }
 
+    #[cfg(test)]
     pub(crate) fn list_app_publishers(
         &self,
         trusted_owner: &str,

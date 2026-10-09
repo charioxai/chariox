@@ -125,6 +125,7 @@ fn outline_agent_ids(
     operational_history.list_session_history_agent_ids(&request.session_id)
 }
 
+#[cfg(test)]
 fn load_agent_outline(
     operational_history: &OperationalHistoryStore,
     session_id: &str,
@@ -509,6 +510,7 @@ fn ensure_unique_outline_turn_id(
     }
 }
 
+#[cfg(test)]
 fn outline_turn_from_events(
     prompt: &HistoryEvent,
     events: Vec<HistoryEvent>,

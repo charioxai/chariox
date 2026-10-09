@@ -222,6 +222,7 @@ impl SessionStateProjectionStore {
             .remove(session_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_external_observed_active_prompt(
         &self,
         session_id: &str,
@@ -381,6 +382,7 @@ impl SessionStateProjectionStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn external_observed_working_agents(&self) -> BTreeMap<String, BTreeSet<String>> {
         let state = self
             .state

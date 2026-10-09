@@ -87,6 +87,7 @@ impl KernelRuntimeState {
         )))
     }
 
+    #[cfg(test)]
     pub(super) fn persist_metaagent_task_session_update(
         &self,
         session_id: &str,

@@ -56,6 +56,7 @@ pub(super) struct AppVerifiedInstallationRequest {
 impl DurableKernelStateStore {
     /// Blocking return means the writer committed/rejected the transaction.
     /// The installer must retain its bounded admission until this returns.
+    #[cfg(test)]
     pub(crate) fn mutate_verified_app_installation(
         &self,
         trusted_owner: &str,

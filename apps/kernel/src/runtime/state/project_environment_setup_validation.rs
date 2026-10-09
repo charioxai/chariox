@@ -469,12 +469,14 @@ pub(super) fn canonical_worker_workspace(
     Ok(canonical)
 }
 
+#[cfg(test)]
 pub(super) fn worker_validation_environment(
     provider_run: &RuntimeProviderRun,
 ) -> BTreeMap<String, String> {
     worker_validation_environment_with_home(provider_run, None)
 }
 
+#[cfg(test)]
 pub(super) fn worker_validation_environment_with_home(
     provider_run: &RuntimeProviderRun,
     preparation_home: Option<&Path>,

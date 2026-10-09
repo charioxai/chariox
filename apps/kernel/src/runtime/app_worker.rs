@@ -270,6 +270,7 @@ impl AppWorkerOwner {
         self.admission.stop();
         self.peer.close();
     }
+    #[cfg(test)]
     pub(crate) fn shutdown_blocking(mut self) {
         let _ = self.shutdown();
     }
@@ -368,6 +369,7 @@ impl AppWorkerLease {
     pub(crate) fn is_stopped(&self) -> bool {
         self.0.available().is_err()
     }
+    #[cfg(test)]
     pub(crate) async fn cancelled(&self) {
         let mut changed = self.0.admission.changed.subscribe();
         loop {

@@ -64,6 +64,7 @@ pub(crate) struct RelayManagedContextChunkRequest {
 }
 
 impl CommandRouter {
+    #[cfg(test)]
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
         request: RelayManagedContextArmRequest,

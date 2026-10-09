@@ -22,6 +22,7 @@ pub(crate) enum FirstInstallControlError {
 impl AppControlService {
     /// owner is the authenticated kernel caller, separate from future wire
     /// fields. Neither upload metadata nor an App can assert that identity.
+    #[cfg(test)]
     pub(crate) async fn prepare_first_install(
         &self,
         owner: String,

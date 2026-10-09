@@ -771,6 +771,7 @@ fn managed_runtime_user_files_for_home(home: &Path, names: &[&str]) -> Vec<PathB
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()
@@ -781,6 +782,7 @@ fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_openbox_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()

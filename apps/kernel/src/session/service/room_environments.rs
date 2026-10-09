@@ -7,6 +7,7 @@ use crate::session::{
 };
 
 impl SessionService {
+    #[cfg(test)]
     pub(crate) fn create_room_environment(
         &mut self,
         session_id: &str,
