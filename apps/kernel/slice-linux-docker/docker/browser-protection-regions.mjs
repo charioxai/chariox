@@ -57,7 +57,10 @@ async function fieldState(connection,entry,document,backendNodeId) {
   try {
     const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
       functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
-        return {exists:this.isConnected,editable,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+        let filtered=false;
+        for(let element=this;element;element=element.parentElement??element.getRootNode().host)
+          filtered ||= element.ownerDocument.defaultView.getComputedStyle(element).filter!=='none';
+        return {exists:this.isConnected,editable,filtered,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
           textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
@@ -99,6 +102,10 @@ function contenteditableTextGeometry() {
     if(style.textShadow!=='none')throw Error('unproved filled text shadow');
     range.selectNodeContents(text.currentNode);
     for(const box of range.getClientRects()) {
+      // Filter ink is absent from Range bounds. Check the rendered text's
+      // entire descendant path; filter is composited, not inherited CSS.
+      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement)
+        if(this.ownerDocument.defaultView.getComputedStyle(element).filter!=='none')throw Error('unproved filled text filter');
       const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
       if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
     }
@@ -145,6 +152,18 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
       transforms.set(entry,map);return map;
     };
+    const checkedFramePaint=new Set();
+    const assertFramePaint=async(entry,frame)=>{
+      if(!frame.parentId||checkedFramePaint.has(frame.id))return;
+      const parent=frame.id===entry.frame.id?entry.parent:entry;
+      const parentFrame=parent&&visit(parent.tree,frame.parentId);
+      if(!parentFrame)throw Error('MP-11: fill frame paint unavailable');
+      const owner=await connection.send('DOM.getFrameOwner',{frameId:frame.id},parent.sessionId);
+      const state=await fieldState(connection,parent,{frameId:parentFrame.id},owner.backendNodeId);
+      if(!state.exists||state.filtered)throw Error('MP-11: fill frame filter coverage unavailable');
+      await assertFramePaint(parent,parentFrame);
+      checkedFramePaint.add(frame.id);
+    };
     for(const entry of frames) {
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
       if(!candidates.length)continue;
@@ -170,6 +189,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           return false;
         });
         if(!rendered)continue;
+        // Box and Range geometry cannot prove any non-none filter's ink.
+        // Include composed ancestors and frame owners, for both field kinds.
+        if(state.filtered)throw Error('MP-11: fill filter coverage unavailable');
+        await assertFramePaint(entry,frame);
         // Native text controls have the same layout/paint distinction. Password
         // dots bypass this check; hidden controls retain tracking until reveal.
         if(!state.contenteditable&&state.textShadow!=='none')throw Error('MP-11: fill text shadow coverage unavailable');
