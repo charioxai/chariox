@@ -26,6 +26,50 @@ async function withFixture(dpr, run, query = '') {
 }
 const policy = (values = []) => ({ values, targets: [], unknown: false });
 
+for (const dpr of [1, 2]) for (const collector of ['documentProtection', 'locateBrowserRegions']) {
+  test(`MP-08/MP-11 DPR ${dpr} ${collector}: inherited RTL keeps ordinary controls visible`, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
+    await connection.send('Runtime.evaluate', { expression: `{
+      document.documentElement.dir='rtl'; document.documentElement.lang='ar';
+      document.body.innerHTML='<button id="control" onclick="this.textContent=&quot;Continued&quot;" style="position:fixed;left:20px;top:20px;width:180px;height:80px;background:#00ffff;border:0">Continue</button><h1 style="position:fixed;left:550px;top:40px;width:350px;font:24px sans-serif">مرحبا שלום</h1>';
+      document.body.style.margin='0';
+    }` }, sessionId);
+    let targets = [];
+    const collect = collector === 'documentProtection'
+      ? async values => (await measureBrowserProtection(browser, policy(values))).pages[0].regions
+      : values => locateBrowserRegions(targets, browser, values, { contentTarget: targetId, contentScale: dpr });
+    const records = [];
+    const check = async (stage, values, protectedPixels) => {
+      const pixels = await shot(), start = performance.now(), regions = await collect(values), elapsed = performance.now()-start;
+      const raw = census(pixels), after = census(pixels, regions.map(([x,y,w,h]) => [Math.floor(x),Math.floor(y),Math.ceil(x+w)-Math.floor(x),Math.ceil(y+h)-Math.floor(y)]));
+      records.push({ stage, elapsed, raw, after, regions });
+      if (process.env.CHARIOX_PROTECTION_TEST_EVIDENCE) {
+        const root = process.env.CHARIOX_PROTECTION_TEST_EVIDENCE, data = encodePng(pixels.width,pixels.height,pixels.pixels);
+        await writeFile(path.join(root,`rtl-dpr${dpr}-${collector}-${stage}-raw.png`),Buffer.from(data,'base64'));
+        await writeFile(path.join(root,`rtl-dpr${dpr}-${collector}-${stage}-masked.png`),Buffer.from(maskPng(data,regions,dpr),'base64'));
+        await writeFile(path.join(root,`rtl-dpr${dpr}-${collector}.json`),JSON.stringify({items:['MP-08','MP-11'],dpr,collector,records}));
+      }
+      assert(raw.cyan>10000*dpr*dpr,'MP-08 ordinary control is rendered');
+      assert(after.cyan>=raw.cyan*.95,`MP-08 ${stage}: ordinary control stays visible (${after.cyan}/${raw.cyan})`);
+      if (protectedPixels === true) assert.equal(after.magenta,0,'MP-11 field, direct echo and local reordered run stay covered');
+      if (protectedPixels === false) assert(after.magenta>100*dpr*dpr,'MP-11 unrelated registration leaves the direct echo visible');
+    };
+    await check('ordinary', ['unrelated-value']);
+    await connection.send('Runtime.evaluate', { expression: `document.body.insertAdjacentHTML('beforeend', ${JSON.stringify('<input id="password" type="password" value="'+VAULT_VALUE+'" style="position:fixed;left:550px;top:160px;width:280px;height:40px;background:#ff00ff;border:0"><p style="position:fixed;left:550px;top:230px;margin:0;color:#ff00ff;font:bold 20px monospace">'+VAULT_VALUE+'</p><p style="position:fixed;left:550px;top:300px;width:350px;margin:0;color:#ff00ff;font:bold 20px monospace"><bdo dir="rtl">'+[...VAULT_VALUE].reverse().join('')+'</bdo></p>')})` }, sessionId);
+    // The production observation path receives the registered field reference.
+    const { root } = await connection.send('DOM.getDocument', {}, sessionId);
+    const { nodeId } = await connection.send('DOM.querySelector', { nodeId:root.nodeId, selector:'#password' }, sessionId);
+    const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
+    targets = [{ target_id:targetId, node_ref:`backend:${node.backendNodeId}` }];
+    await check('unrelated', ['unrelated-value'], false);
+    await check('protected', [VAULT_VALUE], true);
+    await connection.send('Input.dispatchMouseEvent', { type:'mousePressed', x:100, y:50, button:'left', clickCount:1 }, sessionId);
+    await connection.send('Input.dispatchMouseEvent', { type:'mouseReleased', x:100, y:50, button:'left', clickCount:1 }, sessionId);
+    const { result } = await connection.send('Runtime.evaluate', { returnByValue:true, expression:`document.getElementById('control').textContent` }, sessionId);
+    assert.equal(result.value,'Continued');
+    await check('after-control', [VAULT_VALUE], true);
+  }));
+}
+
 for (const dpr of [1, 2]) for (const kind of ['huge', 'overlap']) for (const collector of ['documentProtection', 'locateBrowserRegions']) {
   test(`MP-08/MP-11 DPR ${dpr} ${collector}: ${kind} glyph grid has a deadline`, { timeout: 15000 }, () => withFixture(dpr, async ({ browser, connection, sessionId, targetId, shot }) => {
     await connection.send('Runtime.evaluate', { expression: `{
