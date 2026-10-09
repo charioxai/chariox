@@ -1901,6 +1901,62 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
 
 // MP-08 / MP-10 / MP-11: a queued save validates the Project it actually locks.
 #[test]
+fn envp02b_detect_uses_attached_folders_after_saved_folder_detach() {
+    for select_attached in [false, true] {
+        let a = crate::test_support::TestWorktree::new("envp02b-detect-attached");
+        let b = crate::test_support::TestWorktree::new("envp02b-detect-detached");
+        let harness = envp02b_harness();
+        let paths = [
+            a.path().to_string_lossy().into_owned(),
+            b.path().to_string_lossy().into_owned(),
+        ];
+        let update = |paths: &[String]| {
+            serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":paths}})).unwrap()
+        };
+        harness.dispatch(update(&paths)).unwrap();
+        let before = envp02b_read(&harness);
+        harness.dispatch(envp02b_save(&before, "Saved")).unwrap();
+        harness.dispatch(update(&paths[..1])).unwrap();
+        let saved = envp02b_read(&harness);
+        let attached = &before.folders[0].folder_id;
+        let detached = &before.folders[1].folder_id;
+        let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
+        let detect = |folders: Vec<&str>| {
+            serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"attached-detect","folderIds":folders,"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()
+        };
+        let response = harness
+            .dispatch(detect(if select_attached {
+                vec![attached]
+            } else {
+                vec![]
+            }))
+            .expect("Detect must not preflight a detached historical folder");
+        let LocalDaemonResponse::ProjectEnvironment { environment } = response else {
+            panic!("Environment expected")
+        };
+        assert_eq!(
+            environment.operations[0].selected_items,
+            vec![attached.clone()]
+        );
+        assert_eq!(
+            environment.operations[0].phase,
+            crate::project_environment::EnvironmentOperationPhase::Ready
+        );
+        assert_eq!(
+            environment_draft_for_test(&environment),
+            environment_draft_for_test(&saved)
+        );
+        assert_eq!(environment.content_digest, saved.content_digest);
+        assert!(harness
+            .dispatch(detect(vec![detached]))
+            .unwrap_err()
+            .to_string()
+            .contains("folder does not belong"));
+    }
+}
+
+// MP-08 / MP-10 / MP-11: a queued save validates the Project it actually locks.
+#[test]
 fn envp02b_waiting_save_reloads_topology_at_zero_and_saved_revision() {
     for save_first in [false, true] {
         let harness = envp02b_harness();

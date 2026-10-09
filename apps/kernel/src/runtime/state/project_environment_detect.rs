@@ -31,22 +31,24 @@ impl KernelRuntimeState {
             ));
         }
         let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-        let mut environment = {
+        let (mut environment, attached_folders) = {
             let _lock = store.lock_briefly_async(project.id()).await?;
-            store.snapshot_locked(&project)?
+            let mut snapshot = store.snapshot_live_bindings_locked(&project)?;
+            let folders = snapshot.folders.clone();
+            store.attach_revision(&mut snapshot)?;
+            (snapshot, folders)
         };
         if request
             .folder_ids
             .iter()
             .chain(&request.allow_model_folders)
-            .any(|id| !environment.folders.iter().any(|f| &f.folder_id == id))
+            .any(|id| !attached_folders.iter().any(|f| &f.folder_id == id))
         {
             return Err(environment_error(
                 "Detect folder does not belong to Project",
             ));
         }
-        let mut folders: Vec<_> = environment
-            .folders
+        let mut folders: Vec<_> = attached_folders
             .iter()
             .filter(|f| request.folder_ids.is_empty() || request.folder_ids.contains(&f.folder_id))
             .cloned()
@@ -86,8 +88,9 @@ impl KernelRuntimeState {
             return Err(environment_error("Project bindings changed; Detect again"));
         }
         let previous = store.load_detection(project.id())?;
-        // Deterministic Detect covers every Project folder; selection limits provider disclosure.
-        let mut roots = environment.folders.clone();
+        // Deterministic Detect covers current Project attachments; saved detached folders are historical.
+        // Selection limits provider disclosure.
+        let mut roots = attached_folders.clone();
         for root in &mut roots {
             let preflight = crate::git_worktree_placement::preflight_working_directory(
                 Path::new(&root.local_workspace_binding),
@@ -125,7 +128,7 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let mut results = detection.skips.clone();
         // Shared projection discloses automatic code-folder submission and true opt-ins.
-        results.extend(environment.folders.iter().map(|folder| {
+        results.extend(attached_folders.iter().map(|folder| {
             let automatic = detection.code_folders.contains(&folder.folder_id);
             EnvironmentItemResult {
                 requirement_id: format!("detect:folder:{}", folder.folder_id),

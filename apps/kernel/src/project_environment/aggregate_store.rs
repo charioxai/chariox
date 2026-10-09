@@ -28,6 +28,16 @@ impl ProjectEnvironmentStore {
         &self,
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
+        let mut snapshot = self.snapshot_live_bindings_locked(project)?;
+        self.attach_revision(&mut snapshot)?;
+        Ok(snapshot)
+    }
+
+    // MP-08 / MP-10 / MP-11: Detect reads current attachments, independently of saved specification.
+    pub(crate) fn snapshot_live_bindings_locked(
+        &self,
+        project: &crate::session::RuntimeProject,
+    ) -> Result<ProjectEnvironment, DaemonError> {
         let identity_lock = self.identity_lock(project.id())?;
         let path = self.path(project.id()).with_extension("identity.json");
         let mut options = OpenOptions::new();
@@ -123,7 +133,6 @@ impl ProjectEnvironmentStore {
             legacy.as_ref(),
         );
         self.attach_detection(&mut snapshot)?;
-        self.attach_revision(&mut snapshot)?;
         Ok(snapshot)
     }
 }
