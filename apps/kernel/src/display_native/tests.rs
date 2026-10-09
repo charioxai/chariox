@@ -61,18 +61,29 @@ fn mp08_retina_noise_exact_reply_survives_worker_emission() {
     assert_eq!(header["length"], serialized.len());
     let decoded: Value = serde_json::from_slice(&wire[4 + header_len..]).unwrap();
     let mut restored = vec![0; w * h * 3];
-    let mut rows = 0;
+    let mut covered = vec![false; w * h];
     for tile in decoded["repair_tiles"].as_array().unwrap() {
         let data = STANDARD
             .decode(tile["data_base64"].as_str().unwrap())
             .unwrap();
         let (tw, th, rgb) = webp_rgb(&data);
+        assert!(data.len() <= (1024 * 1024 - 4096) * 3 / 4);
+        let x = tile["x"].as_u64().unwrap() as usize;
         let y = tile["y"].as_u64().unwrap() as usize;
-        assert_eq!((tile["x"].as_u64().unwrap(), tw as usize, y), (0, w, rows));
-        rows += th as usize;
-        restored[y * w * 3..rows * w * 3].copy_from_slice(&rgb);
+        for row in 0..th as usize {
+            let start = (y + row) * w + x;
+            for seen in &mut covered[start..start + tw as usize] {
+                assert!(!*seen, "repair clips cannot overlap");
+                *seen = true;
+            }
+            restored[start * 3..(start + tw as usize) * 3]
+                .copy_from_slice(&rgb[row * tw as usize * 3..(row + 1) * tw as usize * 3]);
+        }
     }
-    assert_eq!(rows, h);
+    assert!(covered.iter().all(|&seen| seen));
+    if let Some(path) = std::env::var_os("CHARIOX_RETINA_REPLY_FIXTURE") {
+        std::fs::write(path, &wire).unwrap();
+    }
     for (native, exact) in source.chunks_exact(4).zip(restored.chunks_exact(3)) {
         assert_eq!(exact, &[native[2], native[1], native[0]]);
     }
