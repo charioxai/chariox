@@ -496,6 +496,7 @@ mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
+mod workflow_notification_grants;
 mod workflow_notification_peers;
 mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;
@@ -919,6 +920,8 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        // Access grants are process-bound and never survive a kernel restart.
+        runtime.retire_notification_grants(None);
         runtime
     }
 
