@@ -11,7 +11,7 @@ use super::facts::ToolCall;
 
 pub(super) const MAX_BRIEF_BYTES: usize = 16_000;
 // A rendering change must replay history once; a legacy watermark cannot repair lost values.
-const BRIEF_FORMAT: &str = "<!-- chariox-handoff-brief: exact-values-v1 -->\n";
+const BRIEF_FORMAT: &str = "<!-- chariox-handoff-brief: exact-values-v2 -->\n";
 
 pub(super) fn current_brief(brief: &str) -> bool {
     brief.starts_with(BRIEF_FORMAT)
@@ -177,6 +177,7 @@ pub(super) fn brief_prompt(
          - UPDATE items whose state changed: move finished work to Done, replace superseded decisions, refresh Next Steps. Drop only what the transcript makes obsolete.\n\
          - Copy exact values verbatim: names, codes, numbers, ports, paths, commands, URLs, error messages, and everything the user asked to remember.\n\
          - User-recorded exact phrases and named values take priority over implementation detail. Keep each original label and scalar value in Critical Context, even when the surrounding goal or progress grows. Do not replace an explicit recorded value with a paraphrase, a topic, or a list of later work. Preserve assistant-only proposals under their original labels until explicitly superseded.\n\
+         - Keep one canonical current entry per explicitly recorded label in Critical Context, as `label = exact value`, with its source role. Later assistant recollections, JSON answers, paraphrases or summaries do not revise that record. Discard contradictory recall claims unless the user explicitly revised or superseded the original value. A later audit of more completed work belongs in Progress, not in a scalar the user recorded. For a named assistant proposal, preserve the original proposed name; a later topic description is not a replacement proposal.\n\
          - Transcript text uses JSON string escaping without surrounding quotes. Decode escapes and preserve line boundaries: a named value must not absorb its following explanation.
          - Preserve named assistant proposals verbatim and identify them as proposals until the user accepts them.
          - Describe what was done and decided, not raw tool output.\n\
