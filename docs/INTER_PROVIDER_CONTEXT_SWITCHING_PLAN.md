@@ -16,6 +16,8 @@ MP-08 / MP-10: the handoff goes out once per native session that needs the conve
 
 MP-08 / MP-10: the dispatcher prepares a native prompt’s hidden context before its first PTY injection. The output pump retries an existing native injection; it does not start one without the dispatcher’s handoff or replace a native user draft.
 
+MP-08 / MP-10: cancelling a native Claude prompt before `UserPromptSubmit` acknowledgement releases its delivery wait and leaves its hidden handoff unconsumed. The shared abort policy clears only the exact Chariox-owned unacknowledged composer; accepted turns and native user drafts retain ordinary interrupt behavior.
+
 Fork targets and turn substitutes start outside the agent's own conversation and keep an explicit one-shot handoff, consumed when the provider accepts the turn.
 
 Stored user history, prompt queues, and terminal echoes remain the original user text.

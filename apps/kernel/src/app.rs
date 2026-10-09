@@ -76,8 +76,8 @@ pub(crate) use prompt_lifecycle::{
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
 pub(crate) use provider_output_claude_native::{
-    claude_native_recent_terminal_failure, format_claude_permission_message,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
