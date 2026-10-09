@@ -122,12 +122,14 @@ def snapshot(processes, browser_processes=None):
             binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
             if 'chrome' in binary or 'chromium' in binary or 'firefox' in binary:browsers.add(pid)
         except OSError:pass
-    nodes=[];complete=True;protected=False;pending=deque();uncovered=[];masks=[]
+    # MP-11: `complete` also requires every window attributed (capture masking);
+    # `traversed` only that the owned AT-SPI trees were walked without truncation.
+    nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
-        nonlocal complete,protected
-        if depth>MAX_DEPTH or len(nodes)>=MAX_NODES:complete=False;return
+        nonlocal complete,traversed,protected
+        if depth>MAX_DEPTH or len(nodes)>=MAX_NODES:complete=traversed=False;return
         role=node.getRoleName()
         secret=node.getRole()==pyatspi.ROLE_PASSWORD_TEXT
         protected=protected or secret
@@ -158,12 +160,12 @@ def snapshot(processes, browser_processes=None):
                     (i, node.getChildAtIndex(i)) for i in range(min(node.childCount, MAX_NODES)))
                 for i, child in children:
                     if len(nodes)+len(pending)>=MAX_NODES:
-                        complete=False
+                        complete=traversed=False
                         break
                     if child:pending.append((child,pid,started,path+[i],depth+1))
-                if not managed_table and node.childCount>MAX_NODES:complete=False
+                if not managed_table and node.childCount>MAX_NODES:complete=traversed=False
             except (ValueError, NotImplementedError):
-                complete=False
+                complete=traversed=False
     try:
         for app_index in range(min(desktop.childCount,64)):
             app=desktop.getChildAtIndex(app_index)
@@ -180,11 +182,11 @@ def snapshot(processes, browser_processes=None):
                               'bounds':None,'actions':[],'protected':True})
                 continue
             pending.append((app,pid,allowed[pid],[],0))
-        if desktop.childCount>64:complete=False
+        if desktop.childCount>64:complete=traversed=False
         # MP-08: traverse applications fairly before deep hidden menu trees.
         while pending and len(nodes)<MAX_NODES:
             visit(*pending.popleft())
-        if pending:complete=False
+        if pending:complete=traversed=False
         browsers.update(node['pid'] for node in nodes if node['role']=='document web')
         # A private bus alone does not prove all visible windows expose AT-SPI.
         # Unknown/unscoped native windows make password coverage uncertain.
@@ -250,7 +252,7 @@ def snapshot(processes, browser_processes=None):
             if node['pid'] in browsers:
                 node['native_protected']=node['protected']
                 node.update(name='[protected]',actions=[],protected=True)
-        return {'available':True,'complete':complete,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
+        return {'available':True,'complete':complete,'traversed':traversed,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
         return {'available':False,'complete':False,'nodes':[],'protected':True}
@@ -291,7 +293,9 @@ def input_target(processes, expected=None):
         return expected
     tree=snapshot(processes)
     active=tree.get('active_window')
-    if not tree['available'] or not tree['complete'] or not active:
+    # Unattributed windows (e.g. a dock without _NET_WM_PID) stay masked but
+    # cannot receive keys: X focus is fenced to the proved active owned frame.
+    if not tree['available'] or not tree.get('traversed') or not active:
         raise NativeInputDenied('native focus protection unavailable')
     belongs=lambda node: (node['pid']==active['pid'] and node['started']==active['started'] and
                           node['path'][:len(active['path'])]==active['path'])

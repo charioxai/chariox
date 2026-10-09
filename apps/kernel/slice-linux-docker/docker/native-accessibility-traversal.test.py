@@ -104,6 +104,25 @@ class TraversalTest(unittest.TestCase):
         self.assertIsNone(tree['active_window'])
         self.assertFalse(tree['complete'])
 
+    def test_mp11_unattributed_dock_does_not_block_owned_focus_input(self):
+        # MP-11 (#904 Room drill): tint2 maps a dock without _NET_WM_PID. It stays
+        # masked and the capture tree incomplete, but keys go to the proved frame.
+        self.foreground()
+        root=self.connection.screen().root;writer=self.connection.create_resource_object('window',9)
+        dock=types.SimpleNamespace(id=10,get_attributes=lambda:types.SimpleNamespace(map_state=2),get_full_property=lambda atom,kind:None,
+            get_wm_name=lambda:'tint2',get_geometry=lambda:types.SimpleNamespace(x=0,y=770,width=1280,height=30,border_width=0),query_tree=lambda:types.SimpleNamespace(parent=root))
+        root.get_full_property=lambda atom,kind:types.SimpleNamespace(value=[9,10] if atom=='_NET_CLIENT_LIST_STACKING' else [9])
+        self.connection.create_resource_object=lambda kind,value:writer if value==9 else dock
+        class Focused(Node):
+            def getState(self):return types.SimpleNamespace(contains=lambda flag:True)
+        apps=[Node('Office','application',[Node('Writer','frame',[Focused('Body','text')])])]
+        tree=self.snapshot(apps)
+        self.assertFalse(tree['complete'])
+        self.assertIn([0,770,1280,30],tree['uncovered'])
+        self.desktop=Node('Desktop','desktop',apps)
+        self.assertEqual(self.driver.input_target([{'pid':200,'started':'1'}])['path'],[0,0])
+        self.assertTrue(tree['traversed'])
+
     def test_mp11_ambiguous_foreground_does_not_select_a_frame(self):
         self.foreground()
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame'),Node('Writer','frame')])])
@@ -137,6 +156,7 @@ class TraversalTest(unittest.TestCase):
         tree = self.snapshot([Node('Calc', 'application', controls)])
         self.assertTrue(tree['available'])
         self.assertFalse(tree['complete'])
+        self.assertFalse(tree['traversed'])
         self.assertLessEqual(len(tree['nodes']), 8192)
 
     def test_mp08_virtual_table_covers_visible_cells_without_enumerating_billions(self):
@@ -273,11 +293,11 @@ class TraversalTest(unittest.TestCase):
         from unittest.mock import patch
         frame={'pid':200,'started':'1','path':[0],'role':'frame','protected':False,'states':['showing'],'bounds':[0,0,640,480]}
         leaf={**frame,'path':[0,0],'role':'text','states':['showing','focused','editable']}
-        tree={'available':True,'complete':True,'protected':False,'active_window':{key:frame[key] for key in ('pid','started','path')},'nodes':[frame,leaf],'uncovered':[]}
+        tree={'available':True,'complete':True,'traversed':True,'protected':False,'active_window':{key:frame[key] for key in ('pid','started','path')},'nodes':[frame,leaf],'uncovered':[]}
         with patch.object(self.driver,'snapshot',return_value=tree):
             expected=self.driver.input_target([{'pid':200,'started':'1'}])
             self.assertEqual(expected['path'],[0,0])
-            for changed in [{**tree,'complete':False},{**tree,'active_window':None},
+            for changed in [{**tree,'traversed':False},{**tree,'active_window':None},
                 {**tree,'nodes':[frame,{**leaf,'protected':True}]},
                 {**tree,'nodes':[frame,{**leaf,'role':'document web'}]},
                 {**tree,'nodes':[frame,{**leaf,'path':[0,1]}]}]:
