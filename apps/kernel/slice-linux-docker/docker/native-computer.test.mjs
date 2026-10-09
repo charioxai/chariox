@@ -70,7 +70,7 @@ test('MP-08 immediate physical key and text are distinct and wake capture after 
 
 test('MP-08 / MP-11 real warm keyboard is reaped and replaced with the desktop generation', async () => {
   const root=await mkdtemp(path.join(os.tmpdir(),'chariox-warm-generation-'));
-  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:'/usr/bin:/bin',HOME:root,LANG:'C.UTF-8'}});
+  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:process.env.PATH,HOME:root,LANG:'C.UTF-8'}});
   const owned=await desktop.start();
   let current = { ...binding, environment: { ...owned.environment, ...publicDependencies } };
   const adapter = new NativeComputer({ placement: 'host', binding: () => current });
