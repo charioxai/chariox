@@ -1,4 +1,10 @@
-import { createProviderLoginLinkPresenter } from "./provider-login-link.js"
+import { createProviderLoginLinkPresenter, localDesktopAvailable } from "./provider-login-link.js"
+import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
+import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
+import { openExternalUrl } from "./external-url.js"
+import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
+import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import { appendInteractionCustomReply, interactionCustomReplyPasteText } from "@chariox/kernel-client/interaction-choice"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -89,7 +95,9 @@ import {
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
 import {
+  getProviderAuthStatus,
   getProviderCatalog,
+  getProviderLoginStatus,
   getProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
@@ -216,6 +224,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  void enableTerminalHyperlinks(renderer)
   const secretInput = createCliSecretInput(renderer)
   const providerLoginLink = createProviderLoginLinkPresenter(renderer)
   onCleanup(secretInput.cancel)
@@ -230,6 +239,32 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   >()
   const splitPaneFooterRenderState = createSplitPaneFooterRenderState()
   const interactionChoiceStore = createInteractionChoiceStoreController()
+  const providerLoginInteractions = createProviderLoginInteractionController({
+    getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
+    getAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    accountLabel: (provider, accountProfile) => {
+      const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
+      return profile ? providerAccountDisplayLabel(profile) : accountProfile
+    },
+    localDesktop: localDesktopAvailable,
+    openUrl: openExternalUrl,
+    copyUrl: async (url) => clipboardCopyMessage(await copyTextToClipboard(url, renderer)),
+    showPlainLink: providerLoginLink,
+    pasteCode: (interaction, text) => {
+      const line = interactionCustomReplyPasteText(text)
+      if (line === null) return
+      interactionChoiceStore.setSelectedIndex(interaction.id, interaction.choices.length)
+      interactionChoiceStore.setCustomEditing(interaction.id, true)
+      interactionChoiceStore.setCustomReply(interaction.id, appendInteractionCustomReply({
+        current: interactionChoiceStore.customReply(interaction.id), input: line,
+        maxLength: interaction.custom_choice?.max_length,
+      }))
+    },
+    appendNotice: (message, tone) => appendNotice(message, tone),
+    flashFooter: (message, tone) => flashFooter(message, tone),
+    render: () => renderAgentInteractions(),
+  })
+  onCleanup(providerLoginInteractions.dispose)
   const agentPaneRuntimeStore = createAgentPaneRuntimeStoreController<
     ScrollBoxRenderable, TranscriptEntryRenderable, BoxRenderable,
     ToolTranscriptUpdate
@@ -706,7 +741,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
       handleQueuedPromptStripAction(item, action),
-    interactionChoiceStore, promptUsageMeta, sessionHydrating, setSessionHydrating,
+    interactionChoiceStore, providerLoginInteractions, promptUsageMeta, sessionHydrating, setSessionHydrating,
     setLoadingHistory, setHistoryLoadingMessage,
     rebuildTranscript: () => rebuildTranscript(),
     focusedStatusBadge, runtimeDebugLogger, logFocusedBadgeChange, splitAgentResponseMode,
@@ -892,7 +927,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
-    showProviderLoginLink: providerLoginLink,
+    showProviderLoginLink: providerLoginLink, providerLoginInteractions,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",

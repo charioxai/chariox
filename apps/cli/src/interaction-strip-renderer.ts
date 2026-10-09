@@ -13,6 +13,8 @@ import type {
 import { providerLoginLines } from "@chariox/kernel-client/provider-login-projection"
 import { projectEnvironmentReviewLines } from "@chariox/kernel-client/project-environment-review"
 import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
+import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
+import { renderProviderLoginStrip } from "./provider-login-strip-renderer.js"
 import {
   queuedPromptActionLabel,
   queuedPromptActionState,
@@ -37,6 +39,10 @@ type InteractionStripRenderOptions = {
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
+  /** Focuses a login's code field the first time it is shown. */
+  focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
+  onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
 }
 
 export function renderAgentInteractionStrips(options: InteractionStripRenderOptions): void {
@@ -82,7 +88,24 @@ function renderInteractionStrip(
   const selectedQueuedPromptIndex = focused
     ? options.selectedQueuedPromptIndexForAgent(agent?.id ?? null)
     : -1
-  if (interaction) {
+  const providerLogin = interaction ? options.providerLoginState?.(interaction) ?? null : null
+  if (interaction && providerLogin) {
+    if (focused && providerLogin.view.takesCode) {
+      options.focusCustomChoiceOnce?.(interaction.id, interaction.choices.length, interaction.requested_at_ms)
+    }
+    renderProviderLoginStrip({
+      renderer: options.renderer,
+      container: box,
+      interaction,
+      state: providerLogin,
+      focused,
+      selectedIndex: options.selectedChoiceIndex(interaction.id),
+      reply: options.customReply(interaction.id),
+      editing: options.customEditing(interaction.id),
+      now: Date.now(),
+      onLinkClick: () => options.onProviderLoginLinkClick?.(interaction),
+    })
+  } else if (interaction) {
     const titleLine = new TextRenderable(options.renderer, {
       wrapMode: "char",
       fg: interaction.level === "critical"

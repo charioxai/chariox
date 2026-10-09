@@ -122,3 +122,32 @@ test("MP-08/MP-11 the link view copies through the renderer's OSC 52 gate", asyn
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test("MP-08/MP-11 a clicked link shows again with numbered steps, and a bracketed paste returns with the code", async () => {
+  const directory = mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "login-link-"))
+  const outputPath = path.join(directory, "terminal")
+  const fd = openSync(outputPath, "w")
+  const input = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: () => {}, resume: () => {} })
+  const renderer = { suspend: () => {}, resume: () => {}, idle: async () => {}, copyToClipboardOSC52: () => false }
+  try {
+    const present = createProviderLoginLinkPresenter(renderer, { input, output: { isTTY: true, fd } })
+    const first = present(url, { autoOpen: false })
+    await new Promise(resolve => setImmediate(resolve))
+    input.emit("data", Buffer.from("\r"))
+    assert.equal(await first, true)
+    const pasted: string[] = []
+    const again = present(url, { force: true, autoOpen: false, title: "Sign in to Claude · work", steps: ["Authorize Chariox in your browser.", "Paste the code here (Cmd-V); Chariox returns with it."], onPaste: text => pasted.push(text) })
+    await new Promise(resolve => setImmediate(resolve))
+    // Split across reads, as a terminal may deliver a long paste.
+    input.emit("data", Buffer.from("\x1b[200~code#"))
+    assert.deepEqual(pasted, [])
+    input.emit("data", Buffer.from("state\x1b[201~"))
+    assert.equal(await again, true)
+    assert.deepEqual(pasted, ["code#state"])
+    const written = readFileSync(outputPath, "utf8")
+    assert.ok(written.includes(`Sign in to Claude · work\r\n1. Open this link (Cmd-click it, or select and copy it):\r\n${providerLoginLinkText(url)}2. Authorize Chariox in your browser.\r\n3. Paste the code here (Cmd-V); Chariox returns with it.\r\n\x1b[?2004h`))
+  } finally {
+    closeSync(fd)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
