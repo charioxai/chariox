@@ -16,13 +16,52 @@ use crate::runtime::agent_utility_executor::{
 
 use super::super::project_environment_export::MetadataUtilityScratch;
 use super::super::{KernelRuntimeOwnedState, KernelRuntimeState};
-use super::brief::{brief_prompt, parse_brief, transcript_chunks};
+use super::brief::{brief_prompt, current_brief, parse_brief, transcript_chunks};
 use super::PendingAgentContextHandoff;
 
 /// How long a dispatch waits for its brief before it falls back.
 const BRIEF_DEADLINE: Duration = Duration::from_secs(120);
 /// Writes a Codex brief in about 5 s where the default gpt-5.5 took up to 19.
 const CODEX_BRIEF_MODEL: &str = "gpt-6-luna";
+
+impl KernelRuntimeOwnedState {
+    /// The protected source that a current fold has not covered. Older rendering
+    /// revisions replay source once, retaining the old durable fold on failure.
+    pub(super) fn handoff_brief_update_history(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(Option<AgentHandoffBrief>, Vec<crate::history::HistoryEvent>), DaemonError> {
+        let history = &self.operational_history_store;
+        let stored = self.protected_stored_handoff_brief(session_id, agent_id)?;
+        // Reconstruct an older-format summary from its protected source, rather
+        // than preserving values that its old renderer already changed or lost.
+        let stored = stored.filter(|stored| current_brief(&stored.brief));
+        let after = stored
+            .as_ref()
+            .map_or(0, |stored| stored.covered_through_sequence);
+        let events = history.load_session_events_for_agent_sequence_range(
+            session_id,
+            agent_id,
+            after + 1,
+            i64::MAX as u64,
+        )?;
+        let mut events = self.room_secret_observations.protect_history_events(events);
+        // The dispatching prompt is the request itself, not history to brief.
+        if let Some(end) = events
+            .iter()
+            .find(|event| {
+                event.kind == HistoryEventKind::UserPrompt
+                    && event.prompt_id.as_deref() == Some(prompt_id)
+            })
+            .map(|event| event.sequence)
+        {
+            events.retain(|event| event.sequence < end);
+        }
+        Ok((stored, events))
+    }
+}
 
 impl KernelRuntimeState {
     /// `handoff` with its brief brought up to date through the history before
@@ -106,30 +145,8 @@ impl KernelRuntimeState {
         prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
-        let stored = owned.protected_stored_handoff_brief(session_id, agent_id)?;
-        let after = stored
-            .as_ref()
-            .map_or(0, |stored| stored.covered_through_sequence);
-        let events = history.load_session_events_for_agent_sequence_range(
-            session_id,
-            agent_id,
-            after + 1,
-            i64::MAX as u64,
-        )?;
-        let mut events = owned
-            .room_secret_observations
-            .protect_history_events(events);
-        // The dispatching prompt is the request itself, not history to brief.
-        if let Some(end) = events
-            .iter()
-            .find(|event| {
-                event.kind == HistoryEventKind::UserPrompt
-                    && event.prompt_id.as_deref() == Some(prompt_id)
-            })
-            .map(|event| event.sequence)
-        {
-            events.retain(|event| event.sequence < end);
-        }
+        let (stored, events) =
+            owned.handoff_brief_update_history(session_id, agent_id, prompt_id)?;
         let mut brief = stored.map(|stored| stored.brief);
         let chunks = transcript_chunks(&events);
         if chunks.iter().all(|chunk| chunk.text.is_empty()) {

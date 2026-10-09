@@ -1404,6 +1404,69 @@ mod tests {
         );
     }
 
+    // MP-08 / MP-10 / MP-11: a legacy fold can already have lost an early exact
+    // proposal; its watermark must not hide the source needed to repair it.
+    #[tokio::test]
+    async fn a_brief_rendering_change_replays_covered_source_once() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "Remember the assistant proposal verbatim.");
+        fixture.output(
+            2,
+            "old",
+            "codex",
+            Some("old-thread"),
+            "proposal=Switch Queue Continuity\nChecks follow later.",
+        );
+        fixture.user(3, "Continue the real investigation.");
+        let legacy = "## Goal\nAudit.\n## Next Steps\nContinue.";
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: legacy.into(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+        let (stored, events) = fixture
+            .runtime
+            .owned
+            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "the old fold cannot acknowledge the corrected source format"
+        );
+        let rebuilt_source = super::brief::transcript_chunks(&events);
+        assert!(rebuilt_source.iter().any(|chunk| chunk
+            .text
+            .contains("proposal=Switch Queue Continuity\\nChecks")));
+        let current = super::brief::parse_brief(legacy).unwrap();
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: current.clone(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+        let (stored, events) = fixture
+            .runtime
+            .owned
+            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .unwrap();
+        assert_eq!(stored.unwrap().brief, current);
+        assert!(events.iter().all(|event| event.sequence > 2));
+        assert!(events
+            .iter()
+            .any(|event| event.content.as_deref() == Some("Continue the real investigation.")));
+    }
+
     #[tokio::test]
     async fn a_failed_refresh_uses_the_last_stored_brief() {
         let fixture = DerivedHandoffFixture::new().await;
