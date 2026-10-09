@@ -1103,10 +1103,19 @@ fn submit_wait_state_defers_enter_until_delay_elapses() {
 
 #[test]
 fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
+    assert_claude_dispatch_waits_for_user_prompt_submit("claude-headless");
+}
+
+#[test]
+fn claude_native_dispatch_waits_for_user_prompt_submit_acknowledgement() {
+    assert_claude_dispatch_waits_for_user_prompt_submit("claude");
+}
+
+fn assert_claude_dispatch_waits_for_user_prompt_submit(provider: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-ack-test-{}-{}",
+        "chariox-{provider}-ack-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -1119,7 +1128,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     let request = crate::provider::LaunchProviderRequest::new(
         "session-1",
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-sonnet",
     )
@@ -1185,6 +1194,29 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         )
         .expect("injected prompt should remain pending");
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
+
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "An unrelated native user draft.",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_prompt_dispatch_attempt(
+                "session-1",
+                run.id(),
+                &run,
+                &dispatch,
+                &no_context_handoff
+            )
+            .unwrap(),
+        ClaudeNativeDispatchAttempt::AwaitingInjection,
+        "an unrelated hook must not acknowledge the managed prompt",
+    );
 
     fs::write(
         &events_file,
@@ -3128,5 +3160,122 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+}
+
+#[test]
+fn native_claude_cancellation_clears_only_its_unacknowledged_composer() {
+    for (marker, expected_input) in [
+        ("injected:cancel-native", b"\x03\x15".as_slice()),
+        ("accepted:cancel-native", b"\x03".as_slice()),
+        ("injected:another-prompt", b"\x03".as_slice()),
+    ] {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "native-cancel-workspace",
+                "native-cancel-worktree",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "native-cancel-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-native-cancel-{}-{}",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context_file = root.join("hidden-context.txt");
+        fs::write(&context_file, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = RuntimeProviderRun::new(
+            "native-cancel-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "native-cancel-test".to_string(),
+                pty_target: Some("native-cancel-pty".to_string()),
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-c".to_string(), "trap '' INT; exec cat".to_string()],
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .unwrap();
+        app.pty.spawn_for_run(&run).unwrap();
+        crate::app::provider_runtime::ProviderProcessTracker::new(&mut app)
+            .register_managed_run(&run)
+            .unwrap();
+        let context = context_file.to_str().unwrap();
+        let mut prompt = crate::session::PromptQueueItem::new(
+            "cancel-native",
+            attachment.id(),
+            agent.id(),
+            "managed audit prompt",
+            crate::session::PromptStatus::Dispatching,
+        );
+        prompt.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().to_string()),
+            None,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
+        let prompt_id = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap()
+            .id()
+            .to_string();
+        let marker = match marker {
+            "injected:cancel-native" => format!("injected:{prompt_id}"),
+            "accepted:cancel-native" => format!("accepted:{prompt_id}"),
+            foreign => foreign.to_string(),
+        };
+        write_claude_native_marker(context, &marker);
+        write_claude_headless_submit_retry(
+            context,
+            &prompt_id,
+            0,
+            unix_epoch_ms(),
+            "managed audit prompt",
+        );
+        app.cancel_active_prompt(session.id(), attachment.id())
+            .unwrap();
+        assert_eq!(
+            app.terminal().input_records().last().unwrap().bytes,
+            expected_input,
+            "marker={marker}"
+        );
+        assert!(
+            app.pty.has_process(run.id()),
+            "native cancellation must preserve the user's provider TUI"
+        );
+        crate::app::provider_runtime::ProviderProcessTracker::new(&mut app)
+            .remove_run(run.id())
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }
