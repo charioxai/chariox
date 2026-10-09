@@ -232,7 +232,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
                         node['name']==name and 'showing' in node['states'] and node['bounds'] in (rect,client_rect)]
                 windows.append((int(window_id),pid,rect,frames,client_rect))
             for window_id,pid,rect,frames,client in windows:
-                frame=frames[0] if complete and len(frames)==1 else None
+                # MP-11 #904 review 3: the frame proof needs the owned trees fully
+                # traversed, not unrelated windows' capture coverage (masks still
+                # require 'complete' in every pixel consumer).
+                frame=frames[0] if traversed and len(frames)==1 else None
                 # A single accessible frame cannot authorize two X windows.
                 covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates,_ in windows)==1
                 if pid not in allowed:complete=False
