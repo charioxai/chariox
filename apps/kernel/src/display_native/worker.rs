@@ -92,21 +92,52 @@ pub(super) fn epoch() -> f64 {
         .as_secs_f64()
         * 1000.
 }
-fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
+pub(super) fn emit_to(
+    out: &mut impl Write,
+    header: Value,
+    payload: &[u8],
+    limit: usize,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec(&header).map_err(|_| "MP-11: native header")?;
-    if bytes.len() > 16384 || payload.is_empty() || payload.len() > 2560 * 1600 * 4 {
+    if bytes.len() > 8192 || payload.is_empty() || payload.len() > limit {
         return Err("MP-11: native reply bound".into());
     }
-    let mut out = std::io::stdout().lock();
     out.write_all(&(bytes.len() as u32).to_be_bytes())
         .and_then(|_| out.write_all(&bytes))
         .and_then(|_| out.write_all(payload))
         .and_then(|_| out.flush())
         .map_err(|_| "MP-11: native reply pipe".into())
 }
+fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
+    emit_to(
+        &mut std::io::stdout().lock(),
+        header,
+        payload,
+        2560 * 1600 * 4,
+    )
+}
 pub(super) fn reply(id: u64, value: Value) -> Result<(), String> {
     let bytes = serde_json::to_vec(&value).map_err(|_| "MP-11: native reply")?;
-    emit(json!({"reply":id,"length":bytes.len()}), &bytes)
+    emit_to(
+        &mut std::io::stdout().lock(),
+        json!({"reply":id,"length":bytes.len()}),
+        &bytes,
+        8 * 1024 * 1024,
+    )
+}
+pub(super) fn exact_reply_to(out: &mut impl Write, id: u64, value: Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&value).map_err(|_| "MP-11: native reply")?;
+    // MP-08/MP-10/MP-11: base64 repair bytes can exceed the raw raster's
+    // ceiling. Only the exact worker emits this larger private reply.
+    emit_to(
+        out,
+        json!({"reply":id,"length":bytes.len()}),
+        &bytes,
+        32 * 1024 * 1024,
+    )
+}
+pub(super) fn exact_reply(id: u64, value: Value) -> Result<(), String> {
+    exact_reply_to(&mut std::io::stdout().lock(), id, value)
 }
 fn read_config() -> Result<Config, String> {
     // Unbuffered first line: do not consume an immediately following control.

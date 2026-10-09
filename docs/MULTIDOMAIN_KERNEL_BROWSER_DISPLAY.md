@@ -47,8 +47,10 @@ MP-08/MP-10/MP-11: native exact preparation uses a separate, request-bound
 32 MiB private reply ceiling. At admitted 2560×1600 geometry, a random RGB
 raster needs about 16.4 MB for base64 lossless repair alone, exceeding the
 former 8 MiB ceiling. The new ceiling fits full PNG plus WebP repair and
-metadata. Raw raster and codec reply ceilings retain their existing limits;
-each public display packet still passes the 1 MiB egress check.
+metadata. Raw raster and codec reply ceilings retain their existing limits.
+the Rust exact worker and the Node pipe both apply the exact-reply ceiling,
+so base64 repair output is never constrained by the smaller raw-raster bound.
+Each public display packet still passes the 1 MiB egress check.
 
 MP-08/MP-10 protocol 466 (relay unchanged): display frame events are binary.
 The encrypted plaintext is `CXD1`, a big-endian u32 header length, the JSON

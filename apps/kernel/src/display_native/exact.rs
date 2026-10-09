@@ -2,7 +2,7 @@
 //! All codec certificates are computed on the worker thread before submission.
 use super::{
     raster,
-    worker::{epoch, reply},
+    worker::{epoch, exact_reply},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
@@ -127,7 +127,7 @@ impl ExactWorker {
         let thread = std::thread::spawn(move || {
             while let Ok((id, job)) = receiver.recv() {
                 // stdout's global lock keeps each reply/frame indivisible.
-                if reply(id, job()).is_err() {
+                if exact_reply(id, job()).is_err() {
                     break;
                 }
             }
