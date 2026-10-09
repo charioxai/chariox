@@ -48,10 +48,15 @@ impl AgentRuntimeCommandExecutor {
         executor
     }
 
-    pub(super) async fn execute(
+    // MP-08 / MP-10 / MP-11: select before constructing a handler future.
+    // An async match embeds every command's future in the agent lane and can
+    // overflow an ordinary thread before the cold-prompt authorization check.
+    pub(super) fn execute(
         &self,
         command: AgentCommand,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + '_>,
+    > {
         match command {
             AgentCommand::SubmitPrompt {
                 request,
@@ -59,7 +64,7 @@ impl AgentRuntimeCommandExecutor {
                 operation_id,
                 operation_fingerprint,
                 response_mode,
-            } => {
+            } => boxed_agent_handler(|| {
                 self.submit_prompt(
                     request,
                     trace_id,
@@ -67,27 +72,27 @@ impl AgentRuntimeCommandExecutor {
                     operation_fingerprint,
                     response_mode,
                 )
-                .await
-            }
+            }),
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id,
-            } => self.cancel_active_prompt(request, target_agent_id).await,
-            AgentCommand::SteerQueuedPrompt { request } => self.steer_queued_prompt(request).await,
+            } => boxed_agent_handler(|| self.cancel_active_prompt(request, target_agent_id)),
+            AgentCommand::SteerQueuedPrompt { request } => {
+                boxed_agent_handler(|| self.steer_queued_prompt(request))
+            }
             AgentCommand::CancelQueuedPrompt { request } => {
-                self.cancel_queued_prompt(request).await
+                boxed_agent_handler(|| self.cancel_queued_prompt(request))
             }
             AgentCommand::UpdateQueuedPrompt { request } => {
-                self.update_queued_prompt(request).await
+                boxed_agent_handler(|| self.update_queued_prompt(request))
             }
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id,
                 next_queued_prompt,
-            } => {
+            } => boxed_agent_handler(|| {
                 self.complete_prompt(request, target_agent_id, next_queued_prompt)
-                    .await
-            }
+            }),
         }
     }
 
@@ -443,4 +448,19 @@ fn completion_started_next_is_compatible(
         }
         _ => true,
     }
+}
+
+// Keep allocation in a separate frame: unrelated match arms must not reserve
+// their stack temporaries in execute or its caller.
+#[inline(never)]
+fn boxed_agent_handler<'a, F, Fut>(
+    factory: F,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>,
+>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a,
+{
+    Box::pin(factory())
 }
