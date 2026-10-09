@@ -535,7 +535,7 @@ test("waiting room inventory relay and machine patches apply without fetching", 
   ])
 
   assert.equal(harness.inventoryCalls(), 0)
-  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.inventoryStatus(), "loading")
   assert.equal(harness.relayStatus()?.daemon_id, "kernel-1")
   assert.deepEqual(harness.remoteMachines().map((machine) => machine.machine_id), ["machine-2"])
   assert.equal(harness.reconcileCount(), 2)
@@ -560,6 +560,36 @@ test("waiting room inventory relay and machine patches apply without fetching", 
   assert.equal(disconnected.relayStatus(), null)
   assert.deepEqual(disconnected.remoteMachines(), [])
   assert.equal(disconnected.reconcileCount(), 0)
+})
+
+test("relay and machine directory events do not complete pending kernel reports", () => {
+  const harness = createHarness()
+  harness.controller.applyRelayStatusChanged(inventory("directory").relayStatus)
+  assert.equal(harness.inventoryStatus(), "loading")
+  harness.controller.applyRemoteMachinesChanged([])
+  assert.equal(harness.inventoryStatus(), "loading")
+})
+
+test("cached inventory restores machines and kernels before live reports", () => {
+  const cached = inventory("cached", {
+    remoteMachines: [{ machine_id: "cached-machine", display_name: "cached", trust_status: "approved", online: true, pending: false, kernel_count: 1 }],
+    remoteKernels: [kernel("cached-kernel", { machine_id: "cached-machine" })],
+  })
+  const harness = createHarness({ cachedInventories: [cached] })
+  assert.deepEqual(harness.remoteMachines().map(row => row.machine_id), ["cached-machine"])
+  assert.deepEqual(harness.remoteKernels().map(row => row.kernel_id), ["cached-kernel"])
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+})
+
+test("a brief directory omission retains machine and kernel rows", async () => {
+  const harness = createHarness({ snapshots: [inventory("live", {
+    remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }],
+    remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })],
+  }), inventory("missing")] })
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.remoteMachines().map(machine => machine.machine_id), ["remote"])
+  assert.deepEqual(harness.remoteKernels().map(kernel => kernel.kernel_id), ["remote-kernel"])
 })
 
 function createHarness(options: {

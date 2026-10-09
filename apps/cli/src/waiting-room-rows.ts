@@ -68,6 +68,9 @@ export function waitingRoomRows(
     titleWidth,
   })
 
+  if (inventoryLoading && visibleSessions.length > 0) {
+    rows.push({ id: "inventory-refreshing", title: "Inventory", value: "cached/refreshing", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
+  }
   if (projects.length > 0) {
     rows.push(...waitingRoomProjectRows(state, remote.projects, sessions, { inventoryLoading, loadingText, titleWidth }))
   } else {
