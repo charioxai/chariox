@@ -70,6 +70,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
 
 export type WaitingRoomInventoryRefreshController = {
   applyWorkspacePreview(inventory: WaitingRoomInventory, client: LocalIpcClient): Promise<void>
+  applyTransportClosed(): void
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
@@ -126,10 +127,14 @@ export function createWaitingRoomInventoryRefreshController(
     }
   }
 
+  const retainDisconnectedRows = () => {
+    options.setRemoteMachines(retainedMachines.reconcile([], { authoritative: false }).map(row => ({ ...row, online: false })))
+    options.setRemoteKernels(retainedKernels.reconcile([], { authoritative: false }).map(row => ({ ...row, accepting_remote_leases: false })))
+  }
+
   const refreshNow = async () => {
     if (!options.isKernelConnected()) {
-      options.setRemoteMachines(retainedMachines.reconcile([], { authoritative: false }).map(row => ({ ...row, online: false })))
-      options.setRemoteKernels(retainedKernels.reconcile([], { authoritative: false }).map(row => ({ ...row, accepting_remote_leases: false })))
+      retainDisconnectedRows()
       return
     }
     if (options.getInventoryStatus() !== "ready") {
@@ -153,6 +158,8 @@ export function createWaitingRoomInventoryRefreshController(
         }
         options.warn?.("waiting room inventory refresh failed", { error: formatError(error) })
         options.setInventoryStatus("error")
+        retainDisconnectedRows()
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
       }
       refreshProjectionScope()
@@ -271,6 +278,11 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   return {
+    applyTransportClosed() {
+      options.setInventoryStatus("loading")
+      retainDisconnectedRows()
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
     async applyWorkspacePreview(inventory, client) {
       rememberInventory(inventory)
       options.persistInventory?.(inventory)

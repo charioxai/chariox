@@ -365,7 +365,7 @@ test("waiting room inventory refresh reports failures", async () => {
 
   assert.equal(harness.inventoryStatus(), "error")
   assert.equal(harness.warnings().at(-1)?.message, "waiting room inventory refresh failed")
-  assert.equal(harness.reconcileCount(), 0)
+  assert.equal(harness.reconcileCount(), 1)
 })
 
 test("waiting room inventory refresh coalesces concurrent refreshes", async () => {
@@ -599,6 +599,34 @@ test("cached rows stay visible before the disconnected transport receives its fi
   assert.equal(harness.remoteMachines()[0]?.machine_id, "cached-machine")
   assert.equal(harness.remoteKernels()[0]?.kernel_id, "cached-kernel")
   assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "cached/refreshing")
+})
+
+test("a failed live refresh retains rows as reconnecting until the next report", async () => {
+  let calls = 0
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const harness = createHarness({ getInventory: async () => { if (calls++ > 0) throw new Error("kernel websocket closed (1005)"); return live } })
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "remote")
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "reconnecting")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, false)
+  assert.equal(harness.inventoryStatus(), "error")
+  assert.equal(harness.reconcileCount(), 2)
+})
+
+
+test("transport closure immediately marks retained inventory as reconnecting", async () => {
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const harness = createHarness({ snapshots: [live] })
+  await harness.controller.refreshNow()
+  harness.controller.applyTransportClosed()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "remote")
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "reconnecting")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, false)
+  assert.equal(harness.inventoryStatus(), "loading")
+  assert.equal(harness.reconcileCount(), 2)
 })
 
 function createHarness(options: {

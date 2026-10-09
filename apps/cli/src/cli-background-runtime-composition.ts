@@ -127,6 +127,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   drainTerminalOutputRecords: AnyFn
   scheduleSharedPromptInputHistoryRefresh: AnyFn
   handleWaitingRoomRefresh: AnyFn
+  applyWaitingRoomTransportClosed: AnyFn
   applyWaitingRoomRowsChanged: AnyFn
   applyRelayStatusChanged: AnyFn
   applyRemoteMachinesChanged: AnyFn
@@ -265,6 +266,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   }
 
   const kernelEventController = createKernelEventController({
+    isAttached: deps.isAttached,
+    onWaitingRoomTransportClosed: deps.applyWaitingRoomTransportClosed,
     recordDaemonActivity,
     recordTurnActivity: deps.recordTurnActivity,
     resolveTerminalRecordAgentId: deps.resolveTerminalRecordAgentId,

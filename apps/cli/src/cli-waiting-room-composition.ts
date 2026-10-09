@@ -394,6 +394,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     await waitingRoomInventoryRefreshController.refresh()
     await workspacePlacementController?.refreshDisabledWorkspace()
   }
+  const applyWaitingRoomTransportClosed = waitingRoomInventoryRefreshController.applyTransportClosed
   const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
   const applyRelayStatusChanged = waitingRoomInventoryRefreshController.applyRelayStatusChanged
   const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged
@@ -1022,6 +1023,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject,
     renameWaitingRoomProject,
+    applyWaitingRoomTransportClosed,
     applyWaitingRoomRowsChanged,
     connectDetachedKernelFromWaitingRoom,
     currentModelId: providerPromptProjectionController.currentModelId,
