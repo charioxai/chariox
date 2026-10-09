@@ -17,8 +17,15 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     #[cfg(all(feature = "native-display", target_os = "linux"))]
-    if let Some(arg) = std::env::args_os().nth(1).filter(|arg| arg == "--display-native-worker" || arg == "--display-native-codec-probe") {
-        let result = if arg == "--display-native-codec-probe" { chariox_kernel::display_native::probe_codec() } else { chariox_kernel::display_native::run() };
+    if let Some(arg) = std::env::args_os()
+        .nth(1)
+        .filter(|arg| arg == "--display-native-worker" || arg == "--display-native-codec-probe")
+    {
+        let result = if arg == "--display-native-codec-probe" {
+            chariox_kernel::display_native::probe_codec()
+        } else {
+            chariox_kernel::display_native::run()
+        };
         if let Err(error) = result {
             // MP-08/MP-10: fixed-label stage for the host's refusal reason.
             let stage: String = error
@@ -28,11 +35,23 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
                 .trim()
                 .chars()
                 .filter(|c| c.is_ascii_alphabetic() || *c == ' ')
-                .map(|c| if c == ' ' { '_' } else { c.to_ascii_lowercase() })
+                .map(|c| {
+                    if c == ' ' {
+                        '_'
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
                 .take(48)
                 .collect();
             eprintln!("MD-DISPLAY: native stage {stage}");
             std::process::exit(1);
+        }
+        if arg == "--display-native-codec-probe" {
+            println!(
+                "MP-08/MP-10: native decoder {}",
+                chariox_kernel::display_native::codec_decoder_library()
+            );
         }
         return Ok(());
     }

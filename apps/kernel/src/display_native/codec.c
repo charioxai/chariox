@@ -297,6 +297,7 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected,int cons
  * reconfigure_rate). Hardware rows cannot; the caller reopens them. */
 /* MP-08/MP-10/MP-11: admit capture only after the selected encoder and
  * independent H.264 output guard actually open. No display or GPU is needed. */
+const char *cx_codec_decoder_library(void) {return "libavcodec.so." CX_TEXT(LIBAVCODEC_VERSION_MAJOR);}
 int cx_codec_available(void) {
     if(!runtime_available())return 0;
     struct Codec c={.width=32,.height=32,.enc_width=32,.enc_height=32,.bitrate=800000,.row_count=1};
