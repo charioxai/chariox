@@ -30,7 +30,7 @@ const profile = JSON.parse(await readFile(privateProfile, "utf8"))
 assert(profile.endpoint && profile.options, "foreign profile requires endpoint and normal LocalIpcClient options")
 const owner = new LocalIpcClient(options["--kernel-url"])
 const foreign = new LocalIpcClient(profile.endpoint, profile.options)
-const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project read without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
+const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project Get/Detect without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
 let projectId, sessionId
 let stage = "empty-kernel-precondition"
 async function liveSessions() {
@@ -69,9 +69,9 @@ try {
   report.endedBootstrapHistoryRetained = true
   assert.equal((await liveSessions()).length, 0)
   stage = "owned-get-no-session-or-agent"
-  const snapshot = (await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment
+  let snapshot = (await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment
   assert.equal(snapshot.local_project_id, projectId)
-  assert.deepEqual(snapshot.delivered_capabilities.enabled_environment_operations, ["get"])
+  assert.deepEqual(snapshot.delivered_capabilities.enabled_environment_operations, ["get", "detect"])
   assert.deepEqual(snapshot.observations, []); assert.deepEqual(snapshot.operations, [])
   report.checks.push({ name: "owned-get-no-session-or-agent", passed: true })
   stage = "authenticated-foreign-owner-denial"
@@ -80,6 +80,30 @@ try {
   catch (error) { denied = /does not own/.test(String(error.message)) }
   assert(denied, "foreign client must reach the Project owner check, not merely fail relay admission")
   report.checks.push({ name: "authenticated-foreign-owner-denial", passed: true })
+  const status = (await owner.send({ RelayStatus: null })).RelayStatus.status
+  const detectRequest = { DetectProjectEnvironment: {
+    projectId, operationId: "protocol-471-delivered-detect", folderIds: snapshot.folders.map(folder => folder.folder_id),
+    target: { machine_id: status.machine_id, target_instance_generation: status.daemon_id, slice_ref: null },
+    provider: null, allowModelFolders: [],
+  } }
+  stage = "delivered-detect-through-ipc"
+  const unchanged = { revision: snapshot.revision, requirements: snapshot.project_requirements, folders: snapshot.folders, observations: snapshot.observations }
+  snapshot = (await owner.send(detectRequest)).ProjectEnvironment.environment
+  assert.equal(snapshot.local_project_id, projectId)
+  assert(snapshot.proposals.some(proposal => proposal.requirement.origins.some(origin => origin.kind === "detected")), "real selected folder must produce deterministic proposals")
+  assert.equal(snapshot.operations.at(-1).operation_id, detectRequest.DetectProjectEnvironment.operationId)
+  assert(snapshot.evidence_digest)
+  assert.deepEqual({ revision: snapshot.revision, requirements: snapshot.project_requirements, folders: snapshot.folders, observations: snapshot.observations }, unchanged, "Detect cannot Save or check readiness")
+  assert.deepEqual((await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment, snapshot, "Get recovers the persisted Detect result")
+  report.checks.push({ name: "delivered-detect-through-ipc", passed: true, deterministicProposals: snapshot.proposals.length })
+  stage = "authenticated-foreign-detect-denial"
+  const beforeDeniedDetect = await directoryDigest()
+  denied = false
+  try { await foreign.send(detectRequest) }
+  catch (error) { denied = /does not own/.test(String(error.message)) }
+  assert(denied, "foreign Detect must reach Project ownership admission")
+  assert.equal(await directoryDigest(), beforeDeniedDetect, "foreign Detect cannot modify the cache")
+  report.checks.push({ name: "authenticated-foreign-detect-denial", passed: true })
   stage = "reserved-export-no-side-effects"
   const before = await directoryDigest()
   const destination = path.join(evidence, "must-not-be-exported.json")
