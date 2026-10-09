@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mirrorInitialStyles } from './kernel-browser-mirror-styles.mjs';
 import { mirrorObserverExpression } from './kernel-browser-mirror-observer.mjs';
 import { materializeMirrorResources,MirrorTreeHasher } from './kernel-browser-mirror-resources.mjs';
-import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
+import { sanitizeMirrorTree } from './kernel-browser-mirror-sanitize.mjs';
 import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
@@ -139,6 +139,7 @@ export class MirrorService {
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
     const sourceRevision=source.revision??0;
     delete source.resources;delete source.revision;source.selection??=null;
+    if(sanitizeMirrorTree(source,policy.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
