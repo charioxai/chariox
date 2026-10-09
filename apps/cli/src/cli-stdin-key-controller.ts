@@ -69,6 +69,9 @@ export function createCliStdinKeyController(
   }
   const handleKey = (event: CliStdinKeyEvent): boolean => {
     if (deps.handleNativeSelectionKey?.(event)) return true
+    // MP-08 / MP-10: OpenTUI also emits terminal theme notifications as
+    // empty-name keys. Replay native ownership above, then ignore non-keys.
+    if (!event.name) return false
     // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
     // without extended keyboard support (where it is indistinguishable from Ctrl+C).
     const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))

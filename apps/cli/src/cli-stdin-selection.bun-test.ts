@@ -5,6 +5,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import {
   createCliStdinKeyController,
+  type CliStdinKeyEvent,
   type CliStdinKeyControllerDeps,
 } from "./cli-stdin-key-controller.js"
 import { recordedDragStreams } from "./cli-stdin-drag-streams.test-fixture.js"
@@ -65,6 +66,42 @@ test("MP-08 / MP-10 terminal focus reports keep the selection", () => {
     const { controller, counts } = selectionController()
     controller.handleData(raw)
     assert.deepEqual(counts, { clears: 0, shortcuts: 0 })
+  }
+})
+
+test("MP-08 / MP-10 terminal theme notifications retain selection and deferred rebuild through F6", () => {
+  for (const buffer of [false, true]) for (const batched of [false, true]) for (const mode of [1, 2]) {
+    let retained = true, rebuilds = 0
+    const copied: string[] = [], replayed: string[] = [], shortcuts: string[] = []
+    const controller = createCliStdinKeyController({
+      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+      handleNativeSelectionKey: (event: CliStdinKeyEvent) => { replayed.push(event.name); return false },
+      clearTextSelection: () => { retained = false; rebuilds++ },
+      dialogOverlayOpen: () => false,
+      handleSessionBrowserKey: (event: CliStdinKeyEvent) => { shortcuts.push(event.name); return event.name !== "f6" },
+      promptFocused: () => false,
+      focusedInteractionActive: () => false,
+      handleFocusedInteractionKey: () => false,
+      copyPromptSelection: () => { copied.push(retained ? "retained transcript" : ""); return true },
+    } as unknown as CliStdinKeyControllerDeps)
+    const send = (bytes: string) => controller.handleData(buffer ? Buffer.from(bytes) : bytes)
+    // The pinned real parser emits both notifications as empty-name key events.
+    // Each must replay native ownership without dispatching ordinary shortcuts.
+    send(`\x1b[?997;${3 - mode}n`)
+    assert.equal(retained, true)
+    assert.equal(rebuilds, 0)
+    assert.deepEqual(shortcuts, [])
+    send(`\x1b[?997;${mode}n` + (batched ? "\x1b[17~" : ""))
+    assert.equal(retained, true)
+    assert.equal(rebuilds, 0)
+    if (!batched) send("\x1b[17~")
+    assert.deepEqual(replayed, ["", "", "f6"])
+    assert.deepEqual(shortcuts, ["f6"])
+    assert.deepEqual(copied, ["retained transcript"])
+    // A subsequent recognized key still clears selection and flushes the rebuild.
+    send("x")
+    assert.equal(retained, false)
+    assert.equal(rebuilds, 1)
   }
 })
 

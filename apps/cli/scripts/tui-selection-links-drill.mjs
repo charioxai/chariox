@@ -263,6 +263,25 @@ try {
     await waitFor(async () => { const now = await page.evaluate(() => terminalScreen()); const same = now === previous; previous = now; await sleep(400); return same }, 30_000)
     return rowOf(needle)
   }
+  // MP-08 / MP-10: terminal dark/light reports are unsolicited stdin input.
+  // Keep the actual TUI highlight and copy target, including a coalesced F6.
+  const themeCases = async (needle, at, before) => {
+    const cells = []
+    for (const mode of [1, 2]) for (const batched of [false, true]) {
+      await dragSelect(at, 14)
+      const selected = await cellColors(at, 13)
+      const highlighted = JSON.stringify(selected) !== JSON.stringify(before)
+      const copiesBefore = (await copiedTexts()).length
+      await press(`\x1b[?997;${mode}n` + (batched ? copySequence : ''))
+      const retained = JSON.stringify(await cellColors(at, 13)) === JSON.stringify(selected)
+      await capture(`theme-${mode}-${batched ? 'batched' : 'separate'}`)
+      if (!batched) await press(copySequence)
+      const copied = (await copiedTexts()).slice(copiesBefore).some(text => text.startsWith(needle.slice(0, 13)))
+      cells.push({ mode, batched, highlighted, retained, copied })
+    }
+    await writeFile(path.join(evidence, 'theme-notifications.json'), JSON.stringify({ items: ['MP-08', 'MP-10'], cells }, null, 2))
+    return cells
+  }
   const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
   // MP-08 / MP-10: one PTY write per toggle/input pair, as SSH can buffer
   // them. A populated focused prompt must survive entry and accept exit text.
@@ -442,6 +461,7 @@ try {
       await press(copySequence)
       const keyboardCopy = (await copiedTexts()).slice(copiesBeforeKey).some(text => text.startsWith('TUIFIX MARKER'))
       await capture('a04-legacy-copy')
+      const themes = options['theme-review'] ? await themeCases(marker, at, before) : []
       const pasted = options['paste-review'] ? await pasteCases(marker) : []
       await typeText('zq'); await sleep(500)
       const typedAfterDrag = await promptShows('zq')
@@ -454,10 +474,11 @@ try {
         cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
         dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), fragmentMouse: Boolean(options['fragment-mouse']), copyKey: options['copy-key'] ?? 'f6',
-        nativeCopy, highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
+        nativeCopy, highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted, themes,
         acceptance: 'real provider and built TUI via PTY; native clipboard uses a Linux browser terminal; Terminal.app/SSH and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
         && pasted.every(cell => cell.cleared && cell.inserted)
+        && themes.every(cell => cell.highlighted && cell.retained && cell.copied)
       console.log(JSON.stringify(result))
       if (options['expect-red']) assert.ok(!green, 'baseline must fail selection/copy review')
       else assert.ok(green, 'real-provider batched selection and legacy copy')
@@ -610,6 +631,7 @@ try {
   const copyCount = await page.evaluate(() => copies.length)
   if (!options['no-mouse']) await press(copySequence)
   const keyboardCopy = options['no-mouse'] ? null : await page.evaluate(count => copies.length > count, copyCount)
+  const themes = options['theme-review'] ? await themeCases('Provider Accounts', selection, before.slice(0, 13)) : []
   // Stage a command through real key input. Never start a real login process.
   await command('/provider login-status fixture')
   await waitFor(() => requests.includes('GetProviderLoginStatus'))
@@ -674,13 +696,14 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), nativeCopy, singleLink, retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-10','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), nativeCopy, singleLink, retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, themes, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   const copied = osc52Declined ? !exactCopy : exactCopy
   if (options['expect-red']) assert.ok(!retained || !keyboardCopy || !fullLink || !copied || !honest || !deviceLink || !transcriptLink || !linkViewOnce, 'baseline must fail')
   else assert.ok(retained && singleLink && fullLink && copied && nativeSelection && hyperlinkActivated && honest && deviceLink && transcriptLink && linkViewOnce, 'selection/link regression')
   if (!options['expect-red'] && !options['no-mouse']) assert.ok(osc52Declined ? !keyboardCopy : keyboardCopy, 'F6 must copy the retained selection only through OSC 52 support')
+  if (!options['expect-red']) assert.ok(themes.every(cell => cell.highlighted && cell.retained && cell.copied), 'theme notifications must preserve waiting-room selection and F6 copy')
   if (kernelUrl) assert.ok(upstreamResponses.some(entry => entry.request === 'ListProviderAccountProfiles' && entry.response === 'ProviderAccountProfilesListed'), 'ordinary account inventory must come from the owned real kernel')
   }
   }
