@@ -317,7 +317,10 @@ impl ProjectEnvironmentStore {
     }
     /// Reads and Saves are short: they queue behind each other for a bounded time,
     /// while a longer Detect, export or adjustment holder reports busy.
-    pub(crate) fn lock_briefly(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
+    pub(crate) fn lock_briefly(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
         let file = self.lock_file(project)?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
@@ -326,11 +329,9 @@ impl ProjectEnvironmentStore {
                 Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
                     return Err(environment_error("environment refresh lock failed"))
                 }
-                Err(_) if std::time::Instant::now() >= deadline => {
-                    return Err(environment_error(
-                        "Project environment is busy with Detect, export or adjustment; retry shortly",
-                    ))
-                }
+                Err(_) if std::time::Instant::now() >= deadline => return Err(environment_error(
+                    "Project environment is busy with Detect, export or adjustment; retry shortly",
+                )),
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
             }
         }
