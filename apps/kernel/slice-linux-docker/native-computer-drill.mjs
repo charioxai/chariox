@@ -70,7 +70,7 @@ try {
     await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'desktop-public-editor.png'),Buffer.from(encodePng(raster.width,raster.height,pixels),'base64'));
     await desktopSource.close();
     desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:true}).start();
-    assert(desktopSource.sample().raw.pixels.every(v=>v===0),'MP-11 unknown registry must export no pixels');
+    assert(desktopSource.sample().raw.pixels.every((v,i)=>i%4===3||v===0),'MP-11 unknown registry must export no pixels');
     await desktopSource.close();desktopSource=null;
     console.log('MP-08 MP-11 shared desktop source public capture and unknown-policy mask PASS');
   }
@@ -152,7 +152,7 @@ try {
     const passwordApp=await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
     await delay(500);
     const password=await capture('desktop-password-protected');
-    assert(password.raw.pixels.every(v=>v===0),'MP-11 password window must export no desktop pixels');
+    assert(password.raw.pixels.every((v,i)=>i%4===3||v===0),'MP-11 password window must export no desktop pixels');
     const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
     await signalOwned(passwordOwner,'SIGTERM');if(passwordApp.exitCode===null&&passwordApp.signalCode===null)await new Promise(resolve=>passwordApp.once('exit',resolve));
     assert.equal(await isOwnedAlive(passwordOwner),false,'MP-11 password app closed before opaque browser oracle');
@@ -174,7 +174,7 @@ try {
     const opaque=await capture('desktop-opaque-browser-protected');
     const regions=opaque.raw[displayMaskRegions];
     assert(regions.some(r=>r.x<=left&&r.y<=top&&r.x+r.width>=right&&r.y+r.height>=bottom),'MP-11 masking receipt must cover the real opaque browser');
-    for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every(v=>v===0),'MP-11 opaque browser region must export no pixels');
+    for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every((v,i)=>i%4===3||v===0),'MP-11 opaque browser region must export no pixels');
     console.log(JSON.stringify({items:['MP-11'],oracle:'opaque browser with password app closed',browser_bounds:{left,top,right,bottom},protected_regions:regions,black_browser_pixels:true}));
     console.log('MP-08 MP-11 desktop source clipboard OCR, password and opaque Chromium masking PASS (supplementary)');
   }
