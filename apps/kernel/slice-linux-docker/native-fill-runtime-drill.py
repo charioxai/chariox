@@ -47,7 +47,9 @@ if scenario != 'plain':
  if scenario == 'partial':entry.set_max_length(11)
 button=Gtk.CheckButton(label='Show password');button.connect('toggled',lambda button:entry.set_visibility(button.get_active()))
 b.pack_start(button,False,False,0);w.add(b)
-w.connect('destroy',Gtk.main_quit);w.show_all();entry.grab_focus();entry.set_position(-1);Gtk.main()
+w.connect('destroy',Gtk.main_quit);w.show_all();entry.grab_focus();entry.set_position(-1)
+if scenario == 'selection':entry.select_region(0,7)
+Gtk.main()
 '''], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, 'CHARIOX_NATIVE_FILL_SCENARIO': scenario})
     try:
         window = None
