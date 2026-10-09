@@ -4899,7 +4899,7 @@ impl KernelRuntimeState {
                 input,
             );
             self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, input)
+                app.abort_provider_pty_input_for_runtime(&dispatch.provider_run_id, input)
             })
             .await?;
             Ok(())
