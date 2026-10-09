@@ -75,16 +75,7 @@ export function createWaitingRoomKeyController(
           : keyNavigationOptions,
       )
       if (keyNavigation.action === "navigate") {
-        const openedManagedMachine = (
-          keyNavigation.key === "left" || keyNavigation.key === "right"
-        )
-          && keyNavigation.nextState.focus === "launch-machine"
-          && !waitingRoomConfiguresNewManagedMachine(keyNavigationOptions.state.selectedMachineRef)
-          && waitingRoomConfiguresNewManagedMachine(keyNavigation.nextState.selectedMachineRef)
         deps.reconcileWaitingRoom(keyNavigation.nextState)
-        if (openedManagedMachine) {
-          deps.openManagedMachineDialog?.()
-        }
         return true
       }
       if (keyNavigation.action === "release") {

@@ -71,16 +71,18 @@ test("waiting room key controller opens managed configuration from the Machine f
   assert.deepEqual(harness.calls(), ["open-managed-machine"])
 })
 
-test("waiting room key controller opens managed configuration when Machine cycles to new", () => {
-  const harness = createHarness({
-    state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
-    remote: { managedEnvironments: [] },
-  })
-
-  assert.equal(harness.controller.handleKey({ name: "right", eventType: "press" }), true)
-
-  assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
-  assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])
+test("Machine navigation waits for Enter before opening managed configuration", () => {
+  for (const name of ["right", "left"]) {
+    const harness = createHarness({
+      state: waitingRoomState({ focus: "launch-machine", selectedMachineRef: "local" }),
+      remote: { managedEnvironments: [] },
+    })
+    assert.equal(harness.controller.handleKey({ name, eventType: "press" }), true)
+    assert.equal(harness.reconciledStates().at(-1)?.selectedMachineRef, NEW_MANAGED_MACHINE_REF)
+    assert.deepEqual(harness.calls(), ["reconcile"])
+    assert.equal(harness.controller.handleKey({ name: "enter", eventType: "press" }), true)
+    assert.deepEqual(harness.calls(), ["reconcile", "open-managed-machine"])
+  }
 })
 
 test("waiting room key controller renames and restores the focused project", () => {
