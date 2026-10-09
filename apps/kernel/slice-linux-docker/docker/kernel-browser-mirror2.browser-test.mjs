@@ -126,3 +126,20 @@ test("MP-10: adopted stylesheet edits with an unchanged rule count reach the vie
     assert.match(text, /rgb\(0, 0, 255\)/, "MP-10: document sheet replaced");
     assert.match(text, /rgb\(7, 7, 7\)/, "MP-10: shadow sheet rule edited");
   }));
+
+// Compact rows -> [id, tag] for element rows (kind codes are numbers).
+const elements = packet => { const out = []; let id = 0; for (const row of packet.nodes) { id += row[0]; if (typeof row[2] === "string") out.push([`n${id}`, row[2], row[3] || {}]); } return out; };
+test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; its password field stays refused", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/form" style="width:400px;height:120px"></iframe>', async ({ next, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const snapshot = await next();
+    const fields = elements(snapshot).filter(([id, tag]) => tag === "input" && Number(id.slice(1)) >= 1e9);
+    const [field] = fields.find(([, , attrs]) => attrs.id === "f") ?? [], [secret] = fields.find(([, , attrs]) => attrs.id === "p") ?? [];
+    assert(field && secret, "MP-10: the frame's inputs are mirrored");
+    await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
+    const changed = await next(1000);
+    assert.deepEqual(changed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[field, "hi"]]);
+    await assert.rejects(input(changed.sequence, { kind: "text", node_id: secret, text: "x" }), /sensitive|protected|refus/i);
+  }, {
+    "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text"><input id="p" type="password">' },
+  }));

@@ -508,15 +508,17 @@ export class Mirror2 {
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
     // Live focus inside a mirrored cross-origin frame is validated in that frame.
     const activeTarget = async editable => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus'); return entry ? inFrame(entry, `${m}.activeTarget(${editable})`) : call(`${m}.activeTarget(${editable})`); };
+    // The shared text preflight's verdict for focus inside a mirrored cross-origin frame.
+    const frameSensitive = async expression => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); return entry ? inFrame(entry, expression) : true; };
     if (action.kind === 'key') {
       let checked = false;
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
-      return { input: { kind: 'key', key: action.key }, guard, observedFrameInput: true };
+      return { input: { kind: 'key', key: action.key }, guard, observedFrameInput: true, frameSensitive };
     }
     if (action.kind === 'text' || action.kind === 'composition') {
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
       const entry = frameOf(action.node_id);
-      return { guard, observedFrameInput: true, perform: async send => {
+      return { guard, observedFrameInput: true, frameSensitive, perform: async send => {
         if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }
         assertNotCancelled(signal); assertEpoch();
         if (action.kind === 'text') return send('Input.insertText', { text: action.text });

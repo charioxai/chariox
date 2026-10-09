@@ -14,6 +14,21 @@ const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backs
 // Viewers report a notch as 120 (wheelDelta), 100 (Chrome on Windows,
 // automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
 // stay precise on CDP.
+
+// MP-11: the focused element (through open shadow roots and, for admitted mirror
+// input, same-origin frames) must not be a sensitive field. A cross-origin frame
+// answers 'frame': its own world decides (see checkTextTarget).
+export const sensitiveFocusExpression = observedFrameInput => `(() => { let e = document.activeElement; while(e) {
+          if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
+          if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
+          if(e.tagName === 'IFRAME') {
+            if(!${observedFrameInput}) return true;
+            let leaf = null; try { leaf = e.contentDocument?.activeElement; } catch {}
+            if(!leaf) return e.contentDocument ? true : 'frame'; e = leaf; continue;
+          }
+          return false;
+        } return true; })()`;
+
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
@@ -50,22 +65,18 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     // MP-08/MP-11: admitted mirrors may target observed same-origin frame
     // descendants. Inspect the live leaf in this isolated world; direct
     // frame input and inaccessible/protected frames still fail closed.
-    const sensitive = () => `(() => { let e = document.activeElement; while(e) {
-          if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
-          if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
-          if(e.tagName === 'IFRAME') {
-            if(!${observedFrameInput}) return true;
-            try { const leaf = e.contentDocument?.activeElement; if(!leaf) return true; e = leaf; continue; } catch { return true; }
-          }
-          return false;
-        } return true; })()`;
+    const sensitive = () => sensitiveFocusExpression(observedFrameInput);
     const evaluateText = async expression => {
       const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression, returnByValue: true }, sessionId)).result?.value;
       try { return await evaluate(await textWorld()); }
       catch { return await evaluate(await textWorld(true)); }
     };
     const checkTextTarget = async () => {
-      if (await evaluateText(sensitive()) !== false) throw new UserDomainRefusal("sensitive_requires_focus");
+      let verdict = await evaluateText(sensitive());
+      // An admitted mirror focus inside a cross-origin frame: the same rules run
+      // in that frame's own world (fail closed without a resolver).
+      if (verdict === 'frame') verdict = resolved?.frameSensitive ? await resolved.frameSensitive(sensitiveFocusExpression(false)) : true;
+      if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     let mirrorGuard;
     const sendInput = async (method, params) => {
