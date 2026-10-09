@@ -35,7 +35,7 @@ void cx_openh264_close(void *encoder) {
 }
 /* The x264 stream contract: constrained baseline, Annex B with parameter sets
  * on every IDR, infinite GOP (IDRs only on reset), no skipped frames. */
-void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp) {
+void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,int min_qp) {
     ISVCEncoder *e=NULL;SEncParamExt p;
     if (!cx_openh264_available()||create_encoder(&e)||!e) return NULL;
     int quiet=WELS_LOG_QUIET; /* The worker's stderr carries no codec traces. */
@@ -50,7 +50,9 @@ void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp) 
      * starts below that cap and can exceed the1MiB packet bound before rate
      * control has any history. Start at the same protected QP cap; all output
      * checks, native geometry and exact repair remain unchanged. */
-    if (max_qp>0) p.iMinQp=p.iMaxQp=max_qp;
+    if (max_qp>0) p.iMaxQp=max_qp;
+    /* Every row shares the packet bound, including rows outside field boxes. */
+    if (min_qp>0) p.iMinQp=min_qp;
     SSpatialLayerConfig *layer=&p.sSpatialLayers[0];
     layer->iVideoWidth=width;layer->iVideoHeight=height;layer->fFrameRate=60;layer->iSpatialBitrate=bitrate;layer->iMaxSpatialBitrate=UNSPECIFIED_BIT_RATE;
     layer->uiProfileIdc=PRO_BASELINE;layer->uiLevelIdc=LEVEL_5_1;layer->bFullRange=false;
