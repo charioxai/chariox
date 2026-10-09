@@ -557,9 +557,26 @@ async fn mp08_mp10_mp11_a07_owner_reply_reaches_interactive_router_once() {
         interaction_id: id.clone(),
         action: HandoffResponseAction::Cancel,
     });
-    let command = KernelCommand::from_local_request("owner-reply", None, None, &request);
+    let mut command = KernelCommand::from_local_request("owner-reply", None, None, &request);
     assert_eq!(command.priority, KernelCommandPriority::Interactive);
     assert!(crate::runtime::interactive_command_dispatcher::is_interactive_command(&request));
+    // MP-11: a source label alone is not terminal admission. Preserve that
+    // refusal before exercising the authenticated terminal path.
+    assert!(router
+        .dispatch(command.clone(), request.clone())
+        .await
+        .is_err());
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     let response = router
         .dispatch(command, request.clone())
         .await
@@ -574,6 +591,7 @@ async fn mp08_mp10_mp11_a07_owner_reply_reaches_interactive_router_once() {
         .unwrap()
         .active_interactions()
         .is_empty());
-    let replay = KernelCommand::from_local_request("owner-replay", None, None, &request);
+    let mut replay = KernelCommand::from_local_request("owner-replay", None, None, &request);
+    replay.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     assert!(router.dispatch(replay, request).await.is_err());
 }
