@@ -4,6 +4,95 @@ use super::{
     raster,
 };
 #[test]
+fn mp08_retina_noise_exact_reply_survives_worker_emission() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::{json, Value};
+    let (w, h) = (2560, 1600);
+    let mut source = vec![0; w * h * 4];
+    let mut seed = 17u32;
+    for pixel in source.chunks_exact_mut(4) {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        pixel.copy_from_slice(&[seed as u8, (seed >> 8) as u8, (seed >> 16) as u8, 255]);
+    }
+    let repair = super::exact::ExactPlan {
+        pixels: source.clone(),
+        tiles: Vec::new(),
+        rectangles: (0..h)
+            .step_by(128)
+            .map(|y| [0, y as i32, w as i32, (y + 128).min(h) as i32])
+            .collect(),
+        w: w as i32,
+        h: h as i32,
+        patch: false,
+        repair_only: true,
+        revision: Some(1),
+        started: 0.,
+    }
+    .finish()
+    .unwrap();
+    let serialized = serde_json::to_vec(&repair).unwrap();
+    let mut wire = Vec::new();
+    // Reproduce the former emitter refusal with real encoded repair bytes.
+    assert!(serialized.len() > w * h * 4);
+    assert!(super::worker::emit_to(
+        &mut wire,
+        json!({"reply":7,"length":serialized.len()}),
+        &serialized,
+        w * h * 4
+    )
+    .is_err());
+    assert!(
+        wire.is_empty(),
+        "refused output must not write a partial packet"
+    );
+    assert!(super::worker::emit_to(
+        &mut wire,
+        json!({"reply":7,"length":serialized.len()}),
+        &serialized,
+        8 * 1024 * 1024
+    )
+    .is_err());
+    super::worker::exact_reply_to(&mut wire, 7, repair).unwrap();
+    let header_len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+    let header: Value = serde_json::from_slice(&wire[4..4 + header_len]).unwrap();
+    assert_eq!(header["reply"], 7);
+    assert_eq!(header["length"], serialized.len());
+    let decoded: Value = serde_json::from_slice(&wire[4 + header_len..]).unwrap();
+    let mut restored = vec![0; w * h * 3];
+    let mut covered = vec![false; w * h];
+    for tile in decoded["repair_tiles"].as_array().unwrap() {
+        let data = STANDARD
+            .decode(tile["data_base64"].as_str().unwrap())
+            .unwrap();
+        let (tw, th, rgb) = webp_rgb(&data);
+        assert!(data.len() <= (1024 * 1024 - 4096) * 3 / 4);
+        let x = tile["x"].as_u64().unwrap() as usize;
+        let y = tile["y"].as_u64().unwrap() as usize;
+        for row in 0..th as usize {
+            let start = (y + row) * w + x;
+            for seen in &mut covered[start..start + tw as usize] {
+                assert!(!*seen, "repair clips cannot overlap");
+                *seen = true;
+            }
+            restored[start * 3..(start + tw as usize) * 3]
+                .copy_from_slice(&rgb[row * tw as usize * 3..(row + 1) * tw as usize * 3]);
+        }
+    }
+    assert!(covered.iter().all(|&seen| seen));
+    if let Some(path) = std::env::var_os("CHARIOX_RETINA_REPLY_FIXTURE") {
+        std::fs::write(path, &wire).unwrap();
+    }
+    for (native, exact) in source.chunks_exact(4).zip(restored.chunks_exact(3)) {
+        assert_eq!(exact, &[native[2], native[1], native[0]]);
+    }
+    println!(
+        "MP-08/MP-10/MP-11 Retina exact reply: {} bytes emitted; every native RGB pixel restored",
+        serialized.len()
+    );
+}
+#[test]
 fn mp11_codec_lease_prevents_reuse_and_keeps_mapping_alive_after_owner_drop() {
     use std::os::unix::fs::DirBuilderExt;
     let root =

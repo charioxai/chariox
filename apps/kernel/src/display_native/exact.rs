@@ -2,7 +2,7 @@
 //! All codec certificates are computed on the worker thread before submission.
 use super::{
     raster,
-    worker::{epoch, reply},
+    worker::{epoch, exact_reply},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
@@ -49,39 +49,31 @@ impl ExactPlan {
             strips(&self.rectangles)
         };
         let tiles = &self.tiles;
-        let encode = |&[x, y, right, bottom]: &[i32; 4]| -> Result<Value, String> {
+        let encode = |&[x, y, right, bottom]: &[i32; 4]| -> Result<Vec<Value>, String> {
             let (width, height) = (right - x, bottom - y);
-            let (format, bytes) = if patch {
-                let (_, tile) = tiles
-                    .iter()
-                    .find(|(r, _)| *r == [x, y, width, height])
-                    .ok_or("MP-11: patch tile")?;
-                (
-                    "png",
-                    raster::png(tile, width as u32, height as u32, width as usize * 4)?,
-                )
-            } else {
-                (
-                    "webp",
-                    raster::webp(
-                        pixels,
-                        w as usize * 4,
-                        [x, y, width, height],
-                        1,
-                        50,
-                    )?,
-                )
-            };
-            Ok(
-                json!({"x":x,"y":y,"width":width,"height":height,"format":format,"data_base64":STANDARD.encode(bytes)}),
-            )
+            if !patch {
+                return repair_tiles(pixels, w as usize * 4, [x, y, width, height]);
+            }
+            let (_, tile) = tiles
+                .iter()
+                .find(|(r, _)| *r == [x, y, width, height])
+                .ok_or("MP-11: patch tile")?;
+            let bytes = raster::png(tile, width as u32, height as u32, width as usize * 4)?;
+            Ok(vec![
+                json!({"x":x,"y":y,"width":width,"height":height,"format":"png","data_base64":STANDARD.encode(bytes)}),
+            ])
         };
         let part = rectangles.len().div_ceil(8).max(1);
         let tiles = std::thread::scope(|scope| {
             let workers = rectangles
                 .chunks(part)
                 .map(|rects| {
-                    scope.spawn(move || rects.iter().map(encode).collect::<Result<Vec<_>, _>>())
+                    scope.spawn(move || {
+                        rects.iter().try_fold(Vec::new(), |mut tiles, rect| {
+                            tiles.extend(encode(rect)?);
+                            Ok::<_, String>(tiles)
+                        })
+                    })
                 })
                 .collect::<Vec<_>>();
             workers
@@ -102,6 +94,30 @@ impl ExactPlan {
         value["timings"] = json!([["native_exact_prepare", self.started, epoch()]]);
         Ok(value)
     }
+}
+/// MP-08/MP-10/MP-11: a legacy relay's outer base64 must also fit the
+/// unchanged 1 MiB egress contract. Leave room for its header/envelope.
+/// Low-entropy text keeps its full-width strip; split only oversized output.
+fn repair_tiles(pixels: &[u8], stride: usize, rect: [i32; 4]) -> Result<Vec<Value>, String> {
+    let [x, y, width, height] = rect;
+    let bytes = raster::webp(pixels, stride, rect, 1, 50)?;
+    if bytes.len() > (1024 * 1024 - 4096) * 3 / 4 {
+        let (first, second) = if width >= height && width > 1 {
+            let half = width / 2;
+            ([x, y, half, height], [x + half, y, width - half, height])
+        } else if height > 1 {
+            let half = height / 2;
+            ([x, y, width, half], [x, y + half, width, height - half])
+        } else {
+            return Err("MP-10: lossless tile bound".into());
+        };
+        let mut tiles = repair_tiles(pixels, stride, first)?;
+        tiles.extend(repair_tiles(pixels, stride, second)?);
+        return Ok(tiles);
+    }
+    Ok(vec![
+        json!({"x":x,"y":y,"width":width,"height":height,"format":"webp","data_base64":STANDARD.encode(bytes)}),
+    ])
 }
 /// Merge each 128-row band's neighbouring repair clips ([l,t,r,b]) into one
 /// strip; uncovered gaps are below a tile and are encoded exactly as well.
@@ -133,7 +149,7 @@ impl ExactWorker {
         let thread = std::thread::spawn(move || {
             while let Ok((id, job)) = receiver.recv() {
                 // stdout's global lock keeps each reply/frame indivisible.
-                if reply(id, job()).is_err() {
+                if exact_reply(id, job()).is_err() {
                     break;
                 }
             }

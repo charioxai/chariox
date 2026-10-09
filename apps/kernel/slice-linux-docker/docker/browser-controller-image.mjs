@@ -13,7 +13,8 @@ export async function captureProtectedBrowserImage({connection,sessionId,targetI
   const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},[...protectedValues],fillTargets,async()=>{
     const captured=await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true},sessionId);
     return captured.data;
-  },viewport.device_scale_factor,null,regions=>{redaction=regions.length?'fill_targets':'none';});
+  },viewport.device_scale_factor,null,regions=>{redaction=regions.length?'fill_targets':'none';},
+  {width:viewport.css_width*viewport.device_scale_factor,height:viewport.css_height*viewport.device_scale_factor});
   const bytes=Buffer.from(data,'base64');
   if(bytes.length<24||bytes.readUInt32BE(16)!==viewport.css_width*viewport.device_scale_factor||bytes.readUInt32BE(20)!==viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the canonical viewport');
   await assertBrowserFramesUnchanged(connection,frames);
