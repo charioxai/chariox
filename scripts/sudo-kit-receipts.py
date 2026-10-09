@@ -21,7 +21,7 @@ else:
     paths = ["outcome", "reason", "session_id", "interaction_id", "choice_id", "connection_class",
              "turn.entry_id", "turn.session_id", "turn.agent_id", "turn.terminal_id",
              "turn.provider_run_id", "turn.prompt_id", "turn.requester.grant_id",
-             "grant.grant_id", "grant.session_id", "grant.holder_pid", "grant.lifetime_minutes"]
+             "grant.grant_id", "grant.holder_pid", "grant.lifetime_minutes"]
     columns = ", ".join("json_extract(payload_json, '$." + path + "')" for path in paths)
     query = "SELECT sequence, event_id, kind, subject_id, timestamp_ms, " + columns + " FROM durable_state_events WHERE sequence > ? AND kind IN (?, ?, ?, ?, ?) ORDER BY sequence LIMIT 2000"
     kinds = ("kernel_access.grant", "kernel_access.sudo", "kernel_access.sudo_approval",

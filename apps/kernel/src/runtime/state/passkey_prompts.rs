@@ -66,6 +66,15 @@ pub(super) fn passkey_prompt(
     interaction: &RuntimeInteraction,
     registered_at_ms: u64,
 ) -> Result<Option<Arc<PasskeyPrompt>>, DaemonError> {
+    passkey_prompt_for_scope(session.id(), session.alias(), interaction, registered_at_ms)
+}
+
+pub(super) fn passkey_prompt_for_scope(
+    session_id: &str,
+    session_alias: Option<&str>,
+    interaction: &RuntimeInteraction,
+    registered_at_ms: u64,
+) -> Result<Option<Arc<PasskeyPrompt>>, DaemonError> {
     let choices = interaction.choices();
     if !choices
         .iter()
@@ -90,14 +99,15 @@ pub(super) fn passkey_prompt(
     };
     let timeout_ms = interaction.timeout_sec().unwrap_or_default() * 1000;
     Ok(Some(Arc::new(PasskeyPrompt {
+        requester: interaction.requester().cloned(),
         kind: match interaction.kernel_operation_id().unwrap_or_default() {
             id if id.starts_with("access-grant:") => PasskeyPromptKind::AccessGrant,
             id if id.starts_with("access-extension:") => PasskeyPromptKind::AccessExtension,
             id if id.starts_with("sudo:") => PasskeyPromptKind::Sudo,
             _ => PasskeyPromptKind::CriticalApproval,
         },
-        session_id: session.id().to_owned(),
-        session_alias: session.alias().map(str::to_owned),
+        session_id: session_id.to_owned(),
+        session_alias: session_alias.map(str::to_owned),
         interaction_id: interaction.id().to_owned(),
         title: interaction
             .title()
