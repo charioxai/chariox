@@ -82,7 +82,6 @@ impl WorkflowRuntime {
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_workflow_actor_user_id(&command);
         let caller_metaagent_id = command.caller.metaagent_id.clone();
-        let grant_id = command.external_grant_id();
         let command_state = self
             .store
             .state
@@ -91,7 +90,7 @@ impl WorkflowRuntime {
                 command.provider_run_id.as_deref(),
             )
             .with_room_request_origin(caller_metaagent_id.as_deref(), &request)
-            .with_external_command_authority(grant_id.as_deref().map(|id| (id, &request)));
+            .with_kernel_command_authority(&command, &request);
         let telemetry = LaneCommandTrace::new(
             CommandTrace::from_command(&command),
             crate::runtime::command_latency::now_ms(),
