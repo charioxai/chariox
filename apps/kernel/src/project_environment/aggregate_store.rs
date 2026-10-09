@@ -110,11 +110,13 @@ impl ProjectEnvironmentStore {
         }
         drop(identity_lock);
         let legacy = self.load(project.id())?;
-        Ok(project_environment_snapshot(
+        let mut snapshot = project_environment_snapshot(
             project,
             anchors.lineage,
             &anchors.folder_ids,
             legacy.as_ref(),
-        ))
+        );
+        self.attach_detection(&mut snapshot)?;
+        Ok(snapshot)
     }
 }

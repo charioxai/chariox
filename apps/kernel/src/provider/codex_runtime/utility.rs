@@ -107,10 +107,14 @@ pub fn run_codex_utility_prompt(
     let deadline = Instant::now() + timeout;
     let mut output = String::new();
     let mut completed = false;
+    let mut output_chunks = 0usize;
+    let mut notice_count = 0usize;
     while Instant::now() < deadline {
         let poll = drain_codex_events(run, &mut state, None)?;
+        notice_count += poll.notices.len();
         for chunk in poll.chunks {
             if chunk.kind == TerminalOutputKind::ProviderOutput {
+                output_chunks += 1;
                 output.push_str(&String::from_utf8_lossy(&chunk.bytes));
             }
         }
@@ -128,6 +132,23 @@ pub fn run_codex_utility_prompt(
         sleep(CODEX_UTILITY_POLL_INTERVAL);
     }
     if !completed {
+        // MP-08 / MP-10 / MP-11: diagnose the native seam without payloads.
+        crate::logging::warn_with_fields(
+            "daemon.environment_detect",
+            "Codex utility terminal event not observed before deadline",
+            serde_json::json!({
+                "phase": "codex_utility_timeout",
+                "reason": "provider_timeout",
+                "prompt_bytes": prompt.len(),
+                "output_bytes": output.len(),
+                "output_chunks": output_chunks,
+                "notice_count": notice_count,
+                "pending_terminal": state.turn_tracker.has_pending_terminal(),
+                "legacy_terminal": state.turn_tracker.has_legacy_completion_hint(),
+                "assistant_terminal": state.turn_tracker.has_terminal_assistant_evidence(),
+                "active_tools": state.turn_tracker.active_tool_count(),
+            }),
+        );
         let _ = abort_codex_turn(run.id(), &mut state);
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),

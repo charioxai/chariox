@@ -138,6 +138,21 @@ impl SessionService {
         &mut self,
         session_id: &str,
     ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.delete_session_with_project_retention(session_id, false)
+    }
+
+    pub(crate) fn delete_session_retaining_project(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.delete_session_with_project_retention(session_id, true)
+    }
+
+    fn delete_session_with_project_retention(
+        &mut self,
+        session_id: &str,
+        retain_project: bool,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
         let deleted =
             self.store
                 .remove(session_id)
@@ -152,9 +167,10 @@ impl SessionService {
             .list()
             .into_iter()
             .any(|session| !session.is_hidden() && session.project_id() == project_id.as_str());
-        let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
-            .then(|| self.projects.remove(&project_id))
-            .flatten();
+        let removed_project =
+            (!retain_project && !project_id.is_empty() && !project_has_visible_sessions)
+                .then(|| self.projects.remove(&project_id))
+                .flatten();
         Ok((deleted, removed_project))
     }
 

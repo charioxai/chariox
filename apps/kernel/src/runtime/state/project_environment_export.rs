@@ -279,6 +279,55 @@ impl KernelRuntimeState {
         })
     }
 
+    // MP-08 / MP-10 / MP-11: Detection uses an owned, hidden utility session and settles cleanup.
+    pub(super) async fn detect_environment_utility(
+        &self,
+        project: &crate::session::RuntimeProject,
+        folder: &EnvironmentFolder,
+        provider: Option<&EnvironmentProvider>,
+        input: &ProjectEnvironmentDiscoveryInput,
+    ) -> Result<ProjectEnvironmentManifest, DaemonError> {
+        let provider = match provider {
+            Some(EnvironmentProvider::Codex) => "codex",
+            Some(EnvironmentProvider::Claude) => "claude",
+            Some(EnvironmentProvider::OpenCode) => "opencode",
+            None => "default",
+        };
+        let response = self
+            .create_session_response(
+                crate::session::CreateSessionRequest::new(
+                    &folder.local_workspace_binding,
+                    &folder.local_workspace_binding,
+                )
+                .with_owner_user_id(project.owner_user_id())
+                .with_hidden(true)
+                .with_agent_defaults(detection_utility_agent_defaults(
+                    self.owned.configured_session_agent_defaults(),
+                    provider,
+                )),
+            )
+            .await?;
+        let LocalDaemonResponse::SessionCreated { session, agent } = response else {
+            return Err(environment_failure("Detect utility session unavailable"));
+        };
+        let cleanup_guard = EnvironmentUtilityCleanup {
+            runtime: self.clone(),
+            session: Some(session.clone()),
+        };
+        let result = self
+            .discover_project_environment(session.id(), agent.id(), input)
+            .await;
+        // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
+        let cleanup = self.delete_environment_utility_session(&session).await;
+        let mut cleanup_guard = cleanup_guard;
+        if cleanup.is_ok() {
+            cleanup_guard.session = None;
+        }
+        let manifest = result?;
+        cleanup?;
+        Ok(manifest)
+    }
+
     pub(super) async fn discover_project_environment(
         &self,
         session_id: &str,
@@ -361,7 +410,7 @@ impl KernelRuntimeState {
                 agent.id().into(),
                 Some(EnvironmentUtilityCleanup {
                     runtime: self.clone(),
-                    session_id: session.id().into(),
+                    session: Some(session.clone()),
                 }),
             )),
             _ => Err(environment_failure(
@@ -409,22 +458,66 @@ pub(crate) struct PreparedProjectEnvironmentExport {
 // MP-08 / MP-11: Only the temporary session created by this utility is retired.
 struct EnvironmentUtilityCleanup {
     runtime: KernelRuntimeState,
-    session_id: String,
+    session: Option<crate::session::RuntimeSession>,
 }
 impl Drop for EnvironmentUtilityCleanup {
     fn drop(&mut self) {
         let runtime = self.runtime.clone();
-        let session_id = self.session_id.clone();
+        let Some(session) = self.session.take() else {
+            return;
+        };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Err(error) = runtime.delete_session_ref(&session_id, None).await {
+                if let Err(error) = runtime.delete_environment_utility_session(&session).await {
                     tracing::warn!(
-                        session_id,
-                        "MP-08 / MP-11: utility session cleanup failed: {}",
+                        session_id = session.id(),
+                        "MP-08 / MP-10 / MP-11: utility session cleanup failed: {}",
                         error
                     );
                 }
             });
         }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: utility model selection follows the normal provider defaults.
+fn detection_utility_agent_defaults(
+    configured: Option<crate::session::SessionAgentDefaults>,
+    provider: &str,
+) -> crate::session::SessionAgentDefaults {
+    configured
+        .filter(|defaults| provider == "default" || defaults.provider == provider)
+        .unwrap_or_else(|| crate::session::SessionAgentDefaults::new(provider))
+        .with_execution_mode(crate::provider::AgentExecutionMode::Plan)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+}
+
+#[cfg(test)]
+mod detection_utility_tests {
+    use super::*;
+    #[test]
+    fn detection_utility_inherits_configured_model_without_escalating_permissions() {
+        let configured = crate::session::SessionAgentDefaults::new("codex")
+            .with_model("codex/gpt-6.1-sol")
+            .with_effort("low")
+            .with_execution_mode(crate::provider::AgentExecutionMode::Build)
+            .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+        for provider in ["default", "codex"] {
+            let selected = detection_utility_agent_defaults(Some(configured.clone()), provider);
+            assert_eq!(selected.provider, "codex");
+            assert_eq!(selected.model.as_deref(), Some("codex/gpt-6.1-sol"));
+            assert_eq!(selected.effort.as_deref(), Some("low"));
+            assert_eq!(
+                selected.execution_mode,
+                Some(crate::provider::AgentExecutionMode::Plan)
+            );
+            assert_eq!(
+                selected.permission_level,
+                Some(crate::provider::AgentPermissionLevel::Required)
+            );
+        }
+        let selected = detection_utility_agent_defaults(Some(configured), "opencode");
+        assert_eq!(selected.provider, "opencode");
+        assert_eq!(selected.model, None);
     }
 }

@@ -1,7 +1,7 @@
 // MP-02 / MP-03 / MP-08 / MP-10: shared projection and Project-only protocol regressions.
 import assert from "node:assert/strict"
 import test from "node:test"
-import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion, projectEnvironmentSections } from "./project-environment-aggregate.js"
+import { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion, projectEnvironmentSections, projectEnvironmentLines } from "./project-environment-aggregate.js"
 import type { ProjectEnvironment } from "./kernel-types-project-environment-aggregate.js"
 
 test("ENV P01 query has no agent/session and requires allocated protocol 471", () => {
@@ -43,4 +43,44 @@ test("ENV VERSION(P01) gates the complete reserved operation family", async () =
 test("ENV P01 provider references use the official provider IDs", () => {
   const providers: import("./kernel-types-project-environment-aggregate.js").EnvironmentProvider[] = ["codex", "claude", "opencode"]
   assert.deepEqual(providers, ["codex", "claude", "opencode"])
+})
+
+// MP-08 / MP-10 / MP-11: Real MDN has hundreds of binary skips; proposals must remain reachable.
+test("ENV P02a many evidence skips do not bury the first proposal", () => {
+  const environment = {
+    project_requirements: [], folders: [],
+    proposals: [{ proposal_id: "proposal", requirement: { requirement_id: "node", title: "Node", scope: { kind: "project" }, origins: [], spec: { kind: "software", identity: "Node", version_constraint: null, detect_only: false } } }],
+    operations: [{ kind: "detect", per_item_results: [
+      ...Array.from({ length: 100 }, (_, i) => ({ requirement_id: `image-${i}`, reason_code: "unsupported_encoding", safe_summary: `Skipped image-${i}.png · unsupported encoding` })),
+      { requirement_id: "detect:model", reason_code: "utility_completed", safe_summary: "Official provider metadata utility completed · proposals need review" },
+    ] }],
+  } as unknown as ProjectEnvironment
+  const lines = projectEnvironmentLines(environment)
+  assert(lines.findIndex(line => line.includes("Node · Not checked")) < 12)
+  assert.equal(lines.filter(line => line.startsWith("Skipped image-")).length, 100)
+})
+
+// MP-08 / MP-10 / MP-11: review931 messages use stable result identities, not English prose.
+test("review931_7 evidence labels stay short and exclusions use structured identities", async () => {
+  const { environmentOriginLabel, environmentDetectionMessages, environmentDetectionSkips } = await import("./project-environment-aggregate.js")
+  const digest = "a".repeat(64)
+  const label = environmentOriginLabel({ kind: "detected", relative_path: "src/main.ts", folder_id: "folder", line: 3, evidence_digest: digest })
+  assert(label.length < 60)
+  const environment = { operations: [{ kind: "detect", per_item_results: [
+    { requirement_id: "excluded-path", reason_code: "file_too_large", safe_summary: "Excluded video" },
+    { requirement_id: "detect:model", reason_code: "utility_completed", safe_summary: "Skipped no required metadata" },
+  ] }] } as unknown as ProjectEnvironment
+  assert.deepEqual(environmentDetectionSkips(environment), ["Excluded video"])
+  assert.deepEqual(environmentDetectionMessages(environment), ["Skipped no required metadata"])
+})
+
+// MP-08 / MP-10 / MP-11: rendering memory cannot cross a selected kernel or grow without bound.
+test("Environment view memory is bounded and isolates kernel contexts", async () => {
+  const { createEnvironmentViewCache } = await import("./project-environment-view-cache.js")
+  const cache = createEnvironmentViewCache()
+  for (let n = 0; n < 9; n++) cache.remember("one", { schema_version: 1, local_project_id: `project-${n}` } as ProjectEnvironment)
+  assert.equal(cache.peek("one", "project-0"), null)
+  assert.equal(cache.peek("one", "project-8")?.local_project_id, "project-8")
+  assert.equal(cache.peek("two", "project-8"), null)
+  assert.equal(cache.peek("one", "project-8"), null, "switching back does not resurrect a prior kernel view")
 })

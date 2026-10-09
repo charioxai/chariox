@@ -265,7 +265,7 @@ fn walk(root: &Path, directory: &Path, files: &mut Vec<String>) -> Result<(), Da
     Ok(())
 }
 
-fn referenced_names(line: &str) -> BTreeSet<String> {
+pub(super) fn referenced_names(line: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for prefix in [
         "process.env.",

@@ -1313,7 +1313,6 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
     let target = serde_json::json!({"machine_id":"machine","target_instance_generation":"generation","slice_ref":null});
     let draft = serde_json::json!({"project_requirements":[],"folders":[]});
     let future = vec![
-        serde_json::json!({"DetectProjectEnvironment":{"projectId":"project","operationId":"op","folderIds":[],"target":target,"provider":"opencode","allowModelFolders":[]}}),
         serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"project","expectedRevision":0,"draft":draft}}),
         serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"project","expectedRevision":0,"expectedContentDigest":"digest","draft":draft,"acceptedProposalIds":[],"excludedProposalIds":[]}}),
         serde_json::json!({"PlanProjectEnvironment":{"projectId":"project","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[]}}),
@@ -1339,6 +1338,120 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
     harness.with_app(|app| {
         assert!(app.sessions().list_sessions().is_empty());
         assert!(app.sessions().list_projects("local", true).is_empty());
+        assert!(!app
+            .config()
+            .private_runtime_state_root()
+            .join("project-environments")
+            .exists());
+    });
+}
+
+// MP-08 / MP-10 / MP-11: Detect is delivered; authorization precedes evidence or provider I/O.
+#[test]
+fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
+    let worktree = crate::test_support::TestWorktree::new("envp02a-utility-project");
+    let harness = LocalRouterTestHarness::new();
+    let project = crate::session::RuntimeProject::new(
+        "utility-project",
+        "local",
+        worktree.path().to_string_lossy(),
+        "Detect",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![project]));
+    let get =
+        LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
+            project_id: "utility-project".into(),
+        });
+    let before = harness.dispatch(get.clone()).unwrap();
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_hidden(true)
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: "utility-project".into(),
+                }),
+        ))
+        .unwrap();
+    let LocalDaemonResponse::SessionCreated { session, .. } = created else {
+        panic!("utility session expected")
+    };
+    let runtime = harness.runtime_state();
+    let mut foreign = session.clone();
+    foreign.set_owner_user_id("foreign");
+    assert!(harness
+        .block_on_test_task(runtime.delete_environment_utility_session(&foreign))
+        .unwrap_err()
+        .to_string()
+        .contains("binding mismatch"));
+    harness
+        .block_on_test_task(runtime.delete_environment_utility_session(&session))
+        .unwrap();
+    let after = harness
+        .dispatch(get)
+        .expect("read-only utility cleanup must retain the standalone Project");
+    let (
+        LocalDaemonResponse::ProjectEnvironment {
+            environment: before,
+        },
+        LocalDaemonResponse::ProjectEnvironment { environment: after },
+    ) = (before, after)
+    else {
+        panic!("Environment snapshots expected")
+    };
+    assert_eq!(before.lineage, after.lineage);
+    assert_eq!(before.content_digest, after.content_digest);
+    harness.with_app(|app| assert!(app.sessions().list_all_sessions().is_empty()));
+    let LocalDaemonResponse::SessionCreated { session, .. } = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request().with_hidden(true),
+        ))
+        .unwrap()
+    else {
+        panic!("temporary hidden session expected")
+    };
+    harness
+        .dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+            project_id: "utility-project".into(),
+        }))
+        .unwrap();
+    harness
+        .block_on_test_task(runtime.delete_environment_utility_session(&session))
+        .unwrap();
+    harness.with_app(|app| assert!(app.sessions().list_all_sessions().is_empty()));
+}
+
+#[test]
+fn envp02a_detect_rejects_foreign_owner_and_wrong_source_without_side_effects() {
+    let worktree = crate::test_support::TestWorktree::new("envp02a-authorization");
+    let harness = LocalRouterTestHarness::new();
+    let project = crate::session::RuntimeProject::new(
+        "detect-project",
+        "local",
+        worktree.path().to_string_lossy(),
+        "Detect",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![project]));
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "DetectProjectEnvironment": {"projectId":"detect-project","operationId":"op","folderIds":[],
+        "target":{"machine_id":"wrong","target_instance_generation":"wrong","slice_ref":null},
+        "provider":"codex","allowModelFolders":[]}
+    }))
+    .unwrap();
+    assert!(harness
+        .dispatch_as_user("foreign", request.clone())
+        .unwrap_err()
+        .to_string()
+        .contains("does not own"));
+    assert!(harness
+        .dispatch_as_user("local", request)
+        .unwrap_err()
+        .to_string()
+        .contains("source kernel"));
+    harness.with_app(|app| {
+        assert!(app.sessions().list_sessions().is_empty());
         assert!(!app
             .config()
             .private_runtime_state_root()
