@@ -63,7 +63,10 @@ static double activity(const uint8_t *y,int stride,const uint8_t *previous,int w
 /* Size roughly halves every 8 QP; the model is bits per activity at QP 45. */
 static double scale(int qp) {return exp2((45-qp)/8.);}
 /* The x264 stream contract: constrained baseline, Annex B with parameter sets
- * on every IDR, infinite GOP (IDRs only on reset), no skipped frames. model
+ * on every IDR, infinite GOP (IDRs only on reset), no skipped frames. Screen
+ * content usage forces scene-change IDRs and costs ~4x the encode CPU of
+ * camera usage (2560x1600 motion 31 vs 7 ms), which a loaded host turns
+ * directly into input latency; rate control is ours either way. model
  * holds two bits-per-activity estimates (intra, inter) that outlive the
  * encoder, so a reset's IDR starts from what earlier IDRs cost. */
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model) {
@@ -74,7 +77,7 @@ void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,d
     SEncParamExt *p=&h->p;
     int quiet=WELS_LOG_QUIET; /* The worker's stderr carries no codec traces. */
     if ((*e)->SetOption(e,ENCODER_OPTION_TRACE_LEVEL,&quiet)||(*e)->GetDefaultParams(e,p)) {cx_openh264_close(h);return NULL;}
-    p->iUsageType=SCREEN_CONTENT_REAL_TIME;p->iPicWidth=width;p->iPicHeight=height;p->iTargetBitrate=bitrate;p->iRCMode=RC_OFF_MODE;p->fMaxFrameRate=60;
+    p->iUsageType=CAMERA_VIDEO_REAL_TIME;p->iPicWidth=width;p->iPicHeight=height;p->iTargetBitrate=bitrate;p->iRCMode=RC_OFF_MODE;p->fMaxFrameRate=60;
     p->iTemporalLayerNum=1;p->iSpatialLayerNum=1;p->uiIntraPeriod=0;p->iNumRefFrame=1;p->eSpsPpsIdStrategy=CONSTANT_ID;
     p->bPrefixNalAddingCtrl=false;p->bEnableSSEI=false;p->iEntropyCodingModeFlag=0;p->iPaddingFlag=0;
     p->bEnableFrameSkip=false;p->iMaxBitrate=UNSPECIFIED_BIT_RATE;p->bEnableSceneChangeDetect=false;p->bEnableLongTermReference=false;
@@ -107,7 +110,7 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     picture.uiTimeStamp=(long long)(sequence*1000/60);
     int changed,blocks=(width/16)*(height/16);
     double busy=activity(planes[0],strides[0],sequence?h->previous:NULL,width,height,&changed);
-    /* A mostly changed frame is coded intra (screen content forces scene-change IDRs). */
+    /* A mostly changed frame costs about an intra frame. */
     int intra=!sequence||changed*5>=blocks*4;
     double rate=h->model[!intra];
     h->fill=fmin(1.5*frame_bits(h),h->fill+frame_bits(h));
@@ -125,7 +128,7 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     for (int y=0;y<height;y++) memcpy(h->previous+(size_t)y*width,planes[0]+(size_t)y*strides[0],width);
     double bits=8.*info.iFrameSizeInBytes;
     h->fill=fmax(h->fill-bits,-1.5*frame_bits(h));
-    if (busy>0&&bits>0) {double *m=&h->model[info.eFrameType!=videoFrameTypeIDR];*m=(*m+bits/(busy*scale(qp)))/2;}
+    if (busy>0&&bits>0) {double *m=&h->model[!intra];*m=(*m+bits/(busy*scale(qp)))/2;}
     if (info.eFrameType==videoFrameTypeSkip||info.eFrameType==videoFrameTypeInvalid||info.iFrameSizeInBytes<=0||info.iFrameSizeInBytes>1024*1024) return -1;
     if (*capacity<(size_t)info.iFrameSizeInBytes) {
         uint8_t *buffer=realloc(*packet,info.iFrameSizeInBytes);
