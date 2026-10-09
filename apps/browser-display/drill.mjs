@@ -16,6 +16,7 @@ import {assertIndependentNavigation} from './drill-navigation.mjs';
 import { drainRepairs, verifySettled } from './drill-settle.mjs';
 import { measureWorkload } from './drill-workloads.mjs';
 import { measureSiteLatency } from './drill-site-latency.mjs';
+import { measureAckGate } from './drill-ack-gate.mjs';
 import { fixture } from './drill-fixtures.mjs';
 import {CpuSampler,cpuSpan} from './drill-cpu.mjs';
 import { distribution } from './drill-metrics.mjs';
@@ -247,7 +248,7 @@ try {
      timing('event_received',arrived);
      const value=await api.decryptRelayEvent(sender.privateKey,message.encrypted_event,daemonKey);
      timing('client_event_decrypt',arrived);
-     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?event.data.byteLength:event.data.length,arrived_ms:arrived});for(const listener of listeners)listener(value);
+     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?event.data.byteLength:event.data.length,arrived_ms:arrived,key:value.frame.kind==='png'||value.frame.kind==='video'&&value.frame.key===true||value.frame.kind==='stripes'&&value.frame.stripes?.length===8&&value.frame.stripes.every(row=>row.key)});for(const listener of listeners)listener(value);
    }
   };
   const control=(value,reserved)=>new Promise((resolve,reject)=>{const key=reserved??String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
@@ -324,6 +325,10 @@ try {
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
  if(process.env.MD_SITE_LATENCY==='1')receipt.site_latency=await measureSiteLatency({page,pause,pair,samples:Number(process.env.MD_SITE_SAMPLES||40),secondTab:process.env.MD_SECOND_TAB==='1'});
  else {
+ if(process.env.MD_ACK_GATE==='1'){
+  receipt.ack_gate=await measureAckGate({page,pause,control:process.env.MD_ACK_GATE_CONTROL==='1'});
+  if(!receipt.ack_gate.skipped){const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('after-ack-gate-'+attempt));receipt.ack_gate.settled_lossless=settled.fidelity.lossless;if(!settled.fidelity.lossless)throw Error('MP-10: ACK gate recovery did not settle exact');}
+ }
  if(process.env.MD_FRAMES==='1'){
   // MP-11: the isolated frame is visible and clickable; its protected field stays masked.
   const dpr=geometry.dpr,read=async()=>{await page.evaluate(()=>mdStream.next());return PNG.sync.read(Buffer.from((await actual()).png.split(',')[1],'base64'))};
