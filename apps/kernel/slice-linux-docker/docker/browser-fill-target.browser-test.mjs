@@ -109,6 +109,35 @@ for(const dpr of [1,2]) {
      }finally{await connection.send('Target.closeTarget',{targetId:target});}
    }finally{clearInterval(service.expiry);service.clear();await rm(root,{recursive:true,force:true});}
  }));
+ test(`MP-08/MP-11 DPR${dpr}: registered overflowing pseudo text survives real-client incremental replay`,()=>setup(dpr,async context=>{
+   const {browser,connection,sessionId,evaluate,url,fill}=context;
+   await evaluate(`(()=>{const style=document.createElement('style');style.textContent='#generated {position:absolute;left:80px;top:460px;width:40px;height:24px;white-space:nowrap;overflow:visible;font:20px monospace;color:magenta} #generated::after {content:"${value}"}';document.head.append(style);const element=document.createElement('div');element.id='generated';document.body.append(element)})()`);
+   const service=new MirrorService(mirrorHost(context)),root=await mkdtemp(path.join(tmpdir(),'protxform-pseudo-'));
+   let clientTarget;
+   try {
+     const sub=await service.subscribe({tab_id:'fixture-tab',generation:1,device_scale_factor:dpr},'test');let sequence=0;const packets=[];
+     for(let stage=0;stage<2;stage++){
+       if(stage){await fill('#plain');await evaluate("document.querySelector('#generated').style.top='490px'");}
+       const packet=await service.next({subscription_id:sub.subscription_id,generation:1,after_sequence:sequence,drift_nodes:[]},'test');sequence=packet.sequence;packets.push(packet);
+     }
+     assert(!packets[1].reset,'MP-11 pseudo compositor fallback retains incremental state');
+     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+     const code=await readFile(bundle,'utf8');clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
+     const {sessionId:client}=await browser.resolvePageTarget(clientTarget);await waitForClientDocument(connection,client,url);
+     await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false},client);
+     const initialized=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);globalThis.renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();return true})()`},client);assert.equal(initialized.exceptionDetails,undefined);
+     for(let stage=0;stage<packets.length;stage++){
+       const packet=packets[stage];assert(!JSON.stringify(packet.nodes).includes(value),'MP-11 registered pseudo text is absent from structured bytes');
+       const applied=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`renderer.apply(${JSON.stringify(packet)})`},client);assert.equal(applied.exceptionDetails,undefined,'MP-11 actual client accepts reset/delta hashes');
+       const png=(await connection.send('Page.captureScreenshot',{format:'png'},client)).data,frame=decodePng(png,dpr);let ink=0;const top=stage?490:460;
+       for(let y=top*dpr;y<(top+30)*dpr;y++)for(let x=130*dpr;x<430*dpr;x++){const i=(y*frame.width+x)*4;if(frame.pixels[i]>120&&frame.pixels[i+1]<80&&frame.pixels[i+2]>120)ink++;}
+       if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`pseudo-client-dpr${dpr}-${stage}.png`),Buffer.from(png,'base64'));
+       assert(ink>100,'MP-08 actual mirror preserves generated text beyond the element crop');
+       if(stage){const i=(90*dpr*frame.width+100*dpr)*4;assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0],'MP-11 compositor fallback still protects the filled field');}
+     }
+     await connection.send('Runtime.evaluate',{expression:'renderer.close()'},client);
+   }finally{if(clientTarget)await connection.send('Target.closeTarget',{targetId:clientTarget});clearInterval(service.expiry);service.clear();await rm(root,{recursive:true,force:true});}
+ }));
  test(`MP-08/MP-11 DPR${dpr}: hidden filled fields remain tracked across production image video and mirror capture`,()=>setup(dpr,async context=>{
    const {browser,fill,evaluate,collect,capture,connection,sessionId,targetId,documentId}=context;
    const service=new MirrorService(mirrorHost(context));
