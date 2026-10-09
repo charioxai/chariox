@@ -28,6 +28,11 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
+// MP-08/MP-10: a refused native start mostly clears within a second (the
+// window resize landing, a transient overlay); persistent refusals back off
+// to one attempt a minute.
+export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
+
 export function scheduleHostRequest(request) {
   return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string'
@@ -173,13 +178,13 @@ export class KernelBrowserHost {
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
     // MP-08/MP-10: a CDP fallback after a refused native start retries native
-    // with backoff (5 s doubling to 60 s) for the same document.
+    // with backoff (nativeRetryDelayMs) for the same document.
     const retry=this.nativeRetryAt?.get(tab.tab_id),retryNative=entry&&!(entry.source instanceof LinuxCapture)&&retry?.document===tab.document_id&&performance.now()>=retry.at;
     if(entry&&(entry.document!==tab.document_id||entry.source?.closed||retryNative)){await this.closeCompositors(tab.tab_id);entry=null;}
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
       const policy=this.protection,generation=this.generation;
-      // MP-08/MP-10: a refused native start is retried after 5 s, not per credit.
+      // MP-08/MP-10: a refused native start is retried on the backoff, not per credit.
       const retryAt=this.nativeRetryAt?.get(tab.tab_id);
       let source=retryAt?.document===tab.document_id&&performance.now()<retryAt.at?null:await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
         // MP-08/MP-10/MP-11: one tab owns the window. A live native viewer on
@@ -194,7 +199,7 @@ export class KernelBrowserHost {
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
-          (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+Math.min(60000,5000*2**(attempts-1))});throw error;
+          (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+nativeRetryDelayMs(attempts)});throw error;
         }
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),

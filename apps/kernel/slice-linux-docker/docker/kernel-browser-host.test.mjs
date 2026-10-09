@@ -878,3 +878,8 @@ test("MP-08/MP-10 concurrent tab saves are serialized", async () => {
     assert.equal(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).tabs.length, 2);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("MP-08/MP-10 a refused native start retries after one second, backing off to a minute", async () => {
+  const { nativeRetryDelayMs } = await import("./kernel-browser-host.mjs");
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 12].map(nativeRetryDelayMs), [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]);
+});
