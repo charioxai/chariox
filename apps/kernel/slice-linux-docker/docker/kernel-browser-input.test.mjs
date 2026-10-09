@@ -162,6 +162,9 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
   await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native click falls back to CDP press/release');
+  // MP-11 (review #893 P2): the worker's asynchronous refusal also falls back.
+  await inputHostTab(browser,tab,{kind:'click',x:10,y:20},{nativeClick:async()=>false,onDispatch:()=>dispatched++});
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: a covered owned window refuses; CDP reaches the renderer');
 });
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // text-target and focus fences; anything else stays on CDP.

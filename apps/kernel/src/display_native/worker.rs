@@ -55,10 +55,10 @@ enum Command {
         refresh: bool,
     },
     Wheel {
-        wheel: [i32; 4],
+        wheel: Pointer,
     },
     Click {
-        click: [i32; 2],
+        click: Pointer,
     },
     Key {
         key: [u32; 2],
@@ -66,6 +66,16 @@ enum Command {
     Plans {
         plans: bool,
     },
+}
+/// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
+/// owned window received it, so Node falls back to CDP on a refusal.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pointer {
+    id: u64,
+    point: [i32; 2],
+    #[serde(default)]
+    notches: Option<[i32; 2]>,
 }
 fn admit_default() -> bool {
     true
@@ -340,21 +350,24 @@ pub(super) fn run() -> Result<(), String> {
                 Command::Plans { plans } => unsafe {
                     ffi::cx_capture_plans(capture.0, plans as i32)
                 },
-                // MP-08/MP-10: [x, y, dx, dy] in device pixels and notches.
-                Command::Wheel {
-                    wheel: [x, y, dx, dy],
-                } => {
-                    if unsafe { ffi::cx_capture_wheel(capture.0, x, y, dx, dy) } != 0 {
-                        return Err("MP-11: native wheel refused".into());
+                // MP-08/MP-10/MP-11: device-pixel point and [dx, dy] notches;
+                // refused (covered, not owned) wheels/clicks are reported.
+                Command::Wheel { wheel: p } => {
+                    let [dx, dy] = p.notches.ok_or("MP-11: native wheel")?;
+                    let [x, y] = p.point;
+                    let wheeled = unsafe { ffi::cx_capture_wheel(capture.0, x, y, dx, dy) } == 0;
+                    if wheeled {
+                        wake = Some(epoch());
                     }
-                    wake = Some(epoch());
+                    reply(p.id, json!({ "wheeled": wheeled }))?;
                 }
-                // MP-08/MP-10: [x, y] primary click in device pixels.
-                Command::Click { click: [x, y] } => {
-                    if unsafe { ffi::cx_capture_click(capture.0, x, y) } != 0 {
-                        return Err("MP-11: native click refused".into());
+                Command::Click { click: p } => {
+                    let [x, y] = p.point;
+                    let clicked = unsafe { ffi::cx_capture_click(capture.0, x, y) } == 0;
+                    if clicked {
+                        wake = Some(epoch());
                     }
-                    wake = Some(epoch());
+                    reply(p.id, json!({ "clicked": clicked }))?;
                 }
                 // MP-08/MP-10: [keysym, shift] one key press/release.
                 Command::Key {

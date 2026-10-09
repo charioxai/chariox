@@ -121,11 +121,22 @@ test('MP-11 Python capture stays available across planning credits and uses fenc
 
 test('MP-08/MP-10 Rust capture retains supported planning and wheel controls',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');
- const commands=[],source=new LinuxCapture({scale:1});source.valid=()=>true;source.attested=true;
- source.child={stdin:{destroyed:false}};source.nativeWorker={notify:(command,immediate)=>(commands.push({command,immediate}),true)};
+ const commands=[],requests=[],source=new LinuxCapture({scale:1});source.valid=()=>true;source.attested=true;
+ source.child={stdin:{destroyed:false}};source.nativeWorker={notify:(command,immediate)=>(commands.push({command,immediate}),true),request:async(operation,values)=>(requests.push({[operation]:values}),{wheeled:true})};
  source.plans(false);source.plans(false);source.plans(true);
- assert.equal(source.wheel(10,20,0,1),true);
- assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true},{wheel:[10,20,0,1]}]);
+ assert.equal(await source.wheel(10,20,0,1),true);
+ assert.deepEqual(commands.map(c=>c.command),[{plans:false},{plans:true}]);
+ assert.deepEqual(requests,[{wheel:{point:[10,20],notches:[0,1]}}]);
+});
+// MP-11 (review #893 P2): a pointer refused by the worker (another top-level
+// window covers the point) or a dead worker reports false; never true.
+test('MP-11 native pointer refusals are reported, not assumed dispatched',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ for(const [reply,expected] of [[{clicked:true},true],[{clicked:false},false],[Error('MP-11: native worker closed'),false]]){
+  const source=new LinuxCapture({scale:2});source.valid=()=>true;source.attested=true;source.child={stdin:{destroyed:false}};
+  const requests=[];source.nativeWorker={request:async(operation,values)=>{requests.push({[operation]:values});if(reply instanceof Error)throw reply;return reply}};
+  assert.equal(await source.click(10,20),expected);assert.deepEqual(requests,[{click:{point:[20,40]}}]);
+ }
 });
 
 // MP-08/MP-10/MP-11: The host window uses physical DPR1; negotiated page DPR

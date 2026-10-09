@@ -189,14 +189,22 @@ export class LinuxCapture {
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
-  return this.control({wheel:[px,py,dx,dy]},true);
+  return this.pointer('wheel',{point:[px,py],notches:[dx,dy]});
+ }
+ // MP-08/MP-10/MP-11: pointer input is a request. The worker reports whether
+ // the owned window received it (it refuses when another top-level window,
+ // e.g. a permission bubble outside the capture, covers the point), so a
+ // refusal falls back to CDP instead of retiring native capture.
+ async pointer(operation,values){
+  try{const reply=await this.nativeWorker.request(operation,values);return reply?.[operation==='wheel'?'wheeled':'clicked']===true;}
+  catch{return false;}
  }
  // MP-08/MP-10: primary click on the owned display (CSS coordinates).
  click(x,y){
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
-  return this.control({click:[px,py]},true);
+  return this.pointer('click',{point:[px,py]});
  }
  // MP-08/MP-10: one key press/release on the owned display (X keysym:
  // printable ASCII or a named editing key); callers fence the text target.

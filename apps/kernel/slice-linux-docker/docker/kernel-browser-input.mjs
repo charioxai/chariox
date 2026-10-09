@@ -121,7 +121,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           // XTest after the same fences (no renderer acknowledgement wait).
           if (nativeClick && !resolved) {
             await check(); await mirrorGuard?.();
-            if (nativeClick(input.x, input.y)) { onDispatch?.(); return; }
+            if (await nativeClick(input.x, input.y)) { onDispatch?.(); return; }
           }
           await sendInput("Input.dispatchMouseEvent", { type: "mousePressed", x: input.x, y: input.y, button: "left", clickCount: 1 });
           await sendInput("Input.dispatchMouseEvent", { type: "mouseReleased", x: input.x, y: input.y, button: "left", clickCount: 1 });
@@ -131,7 +131,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
             await check(); await mirrorGuard?.();
             // MP-11: a retired source has dispatched nothing. Fall back to
             // fenced CDP input without claiming an uncertain native action.
-            if (nativeWheel(input.x, input.y, nx, ny)) { onDispatch?.(); return; }
+            if (await nativeWheel(input.x, input.y, nx, ny)) { onDispatch?.(); return; }
           }
           const params = { type: "mouseWheel", x: input.x, y: input.y, deltaX: input.delta_x, deltaY: input.delta_y };
           if (!asyncScroll || (typeof asyncScroll === 'function' && !asyncScroll())) { await sendInput("Input.dispatchMouseEvent", params); return; }
