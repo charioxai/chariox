@@ -672,3 +672,21 @@ test("MP-08/MP-11 delayed defaults survive fallback projection during focus navi
   release({provider: "codex", model: "gpt-6.1-sol", effort: "high"})
   assert.deepEqual(await boot.deferred?.waitingRoomDefaults, {provider: "codex", model: "gpt-6.1-sol", effort: "high"})
 })
+
+test("MP-08/MP-11 configured defaults hydrate while provider metadata is still pending", async () => {
+  let releaseCatalog!: (value: ReturnType<typeof fallbackProviderCatalog>) => void
+  const catalog = new Promise<ReturnType<typeof fallbackProviderCatalog>>(resolve => { releaseCatalog = resolve })
+  const boot = bootstrapWaitingRoom({} as never, {clientId: "cli", model: "default", effort: "", accountProfile: "default"}, {}, {
+    getConfiguredProviderLaunchDefaults: async () => ({provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"}),
+    getProviderCatalog: () => catalog,
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let hydrated: unknown = null
+  void boot.deferred?.waitingRoomDefaults?.then(value => { hydrated = value })
+  await new Promise(resolve => setImmediate(resolve))
+  const beforeMetadata = hydrated
+  releaseCatalog(fallbackProviderCatalog())
+  await boot.deferred?.providerCatalog
+  assert.deepEqual(beforeMetadata, {provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"})
+})

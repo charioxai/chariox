@@ -20,7 +20,7 @@ export function bootstrapWaitingRoom(client: LocalIpcClient, options: CliOptions
   const providerCatalog = defaults.then(() => deps.getProviderCatalog(client, deps.logger))
   const providerCommandCatalogs = Promise.resolve().then(() => deps.getProviderCommandCatalogs(client, deps.logger))
   const terminalCommandCatalog = Promise.resolve().then(() => deps.getTerminalCommandCatalog(client, deps.logger))
-  const waitingRoomDefaults = Promise.all([defaults, providerCatalog]).then(([value]) => value)
+  const waitingRoomDefaults = defaults
   // Mount attaches consumers immediately afterward; failed network reads must
   // not become unhandled rejections during rendering initialization.
   for (const pending of [providerCatalog, providerCommandCatalogs, terminalCommandCatalog, waitingRoomDefaults]) void pending.catch(() => {})

@@ -65,6 +65,7 @@ export function waitingRoomStartRows(
     | "managedCustomIdleDelaySeconds"
     | "providerId"
     | "accountProfileId"
+    | "modelId"
   >,
   choice: WaitingRoomStartRowsChoice,
   options: {
@@ -197,7 +198,11 @@ export function waitingRoomStartRows(
     {
       id: "model",
       title: "Model",
-      value: choice.model ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback) : "No models available",
+      value: choice.model
+        ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback)
+        : choice.providerCatalogFallback
+          ? state.modelId && state.modelId !== "default" ? `${state.modelId} (refreshing)` : options.loadingText
+          : "No models available",
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "model",
