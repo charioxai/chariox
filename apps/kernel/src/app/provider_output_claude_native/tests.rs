@@ -1889,7 +1889,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_support::test_workspace_root().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
         timestamp_millis()
