@@ -12,8 +12,12 @@ from pathlib import Path
 
 
 def scope(request):
-    if set(request) != {'processes', 'browser_processes', 'browser_protection'}:
+    if set(request) - {'values'} != {'processes', 'browser_processes', 'browser_protection'}:
         raise ValueError('desktop protection request')
+    # Owner 2026-10-09: registered Vault values, masked best effort by text box.
+    values = request.get('values', [])
+    if not isinstance(values, list) or len(values) > 256 or not all(isinstance(v, str) and 0 < len(v) <= 4096 for v in values):
+        raise ValueError('desktop protection values')
     for field in ('processes', 'browser_processes'):
         if not isinstance(request[field], list) or len(request[field]) > 256:
             raise ValueError('desktop process scope')
@@ -23,7 +27,7 @@ def scope(request):
 
 
 def answer(request, snapshot):
-    tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'])
+    tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'], request.get('values', []))
     digest = hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     usable = tree.get('available') and tree.get('complete') and not tree.get('protected')
     # Fixed-label diagnostics only: why masks are absent, never page data.

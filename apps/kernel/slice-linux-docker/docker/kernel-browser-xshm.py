@@ -114,7 +114,11 @@ try:
                 if release == {'wake':True}:
                     urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
-                if desktop and set(release)=={'refresh','processes','browser_processes','browser_protection','protection_serial'} and release['refresh'] is True:
+                if desktop and set(release)-{'values'}=={'refresh','processes','browser_processes','browser_protection','protection_serial'} and release['refresh'] is True:
+                    # Owner 2026-10-09: Vault values are masked best effort by text box.
+                    values=release.get('values',[])
+                    if not isinstance(values,list) or len(values)>256 or not all(isinstance(v,str) and 0<len(v)<=4096 for v in values):raise ValueError('desktop values')
+                    config['values']=values
                     for field in ('processes','browser_processes'):
                         if not isinstance(release[field],list) or len(release[field])>256:raise ValueError('desktop process scope')
                         config[field]=release[field]
@@ -149,7 +153,7 @@ try:
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
         if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         protection_serial=config.get('protection_serial',0)
-        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
+        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
@@ -158,7 +162,7 @@ try:
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
         protected_regions=[]
         if desktop:
-            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
+            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
             if config.get('mask') or before!=after or not before.get('available') or not before.get('complete') or before.get('protected'):
                 protected_regions=[[0,0,width,height]]
             else:protected_regions=before.get('masks',before.get('uncovered',[]))

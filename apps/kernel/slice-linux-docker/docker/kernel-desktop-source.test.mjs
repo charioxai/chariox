@@ -60,7 +60,7 @@ test('MP-11 a new process or protection scope retires earlier snapshots',async()
   f.source.next=f.raw(2,f.now()+2);await f.source.protect();
   assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
 });
-test('MP-11 a Vault or unknown policy masks every native readback without snapshots',async()=>{
+test('MP-11 an unknown policy masks every native readback without snapshots',async()=>{
   const f=fixture({mask:true});
   f.source.measure=async()=>{throw Error('no snapshot under a masking policy')};
   f.source.next=f.raw(1,f.now());await f.source.protect();
@@ -153,4 +153,15 @@ test('MP-08/MP-11 a withheld kernel-browser window keeps the gate re-measuring o
     f.source.withheld=false;steps[1].finish(1,false);
     await delay(400);assert.equal(steps.length,2,'a bound desktop with nothing pending does not measure');
   }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
+});
+test('MP-08/MP-11 Vault values never mask the whole desktop; the oracle gets them for best-effort boxes',async()=>{
+  const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
+  const source=new DesktopSource({...binding},policy,{native:{executable:'/worker',root:'/packets'}});
+  const scope=await source.scope();
+  assert.equal(scope.mask,false,'owner 2026-10-09: no blackout under Vault values');
+  assert.deepEqual(scope.values,['synthetic-vault-value']);
+  const written=[];source.oracle={stdin:{write:line=>written.push(JSON.parse(line))}};
+  source.answers={next:async()=>({done:false,value:JSON.stringify({digest:'d',masks:[],state:[1,1,0,0]})})};
+  await source.measure(scope);
+  assert.deepEqual(written[0].values,['synthetic-vault-value']);
 });

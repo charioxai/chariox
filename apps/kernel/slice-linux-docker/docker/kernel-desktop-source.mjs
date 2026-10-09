@@ -52,7 +52,9 @@ export class DesktopSource {
   async scope() {
     return { processes:identities(await this.binding.ownedProcesses()), browser_processes:identities(await this.binding.browserProcesses()),
       browser_protection:this.gate.protection, serial:this.gate.protectionSerial,
-      mask:this.policy.unknown||Boolean(this.policy.values.length||this.policy.targets.length) };
+      // Owner 2026-10-09: Vault values never black out the desktop; the oracle masks
+      // their accessible-text boxes best effort (browser windows keep #935 masks).
+      mask:this.policy.unknown, values:[...this.policy.values] };
   }
   async start() {
     try { if(this.native)await this.startNative();else await this.startHelper(); }
@@ -80,7 +82,7 @@ export class DesktopSource {
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     const scope=await this.scope();
     child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
-      mask:scope.mask,processes:scope.processes,browser_processes:scope.browser_processes})+'\n');
+      mask:scope.mask,values:scope.values,processes:scope.processes,browser_processes:scope.browser_processes})+'\n');
   }
   // MP-08/MP-10/MP-11: the native worker reads the owned desktop root into
   // private slots and encodes with x264; every readback is masked here, bound
@@ -115,7 +117,7 @@ export class DesktopSource {
   }
   async measure(scope) {
     const start=Date.now();
-    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection})+'\n');
+    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,values:scope.values??[]})+'\n');
     let timer;
     const next=await Promise.race([this.answers.next(),new Promise(resolve=>{timer=setTimeout(resolve,5000,{done:true});})]).finally(()=>clearTimeout(timer));
     if(next.done)throw Error('MP-11: desktop protection unavailable');
@@ -226,7 +228,7 @@ export class DesktopSource {
         if(key(scope)!==key(this.current))this.current=scope;
         this.worker.notify({refresh:true},true);return;
       }
-      this.child?.stdin.write(JSON.stringify({refresh:true,processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,protection_serial:scope.serial})+'\n');
+      this.child?.stdin.write(JSON.stringify({refresh:true,processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,protection_serial:scope.serial,values:scope.values})+'\n');
     }catch{await this.close();}
   }
   async close() {

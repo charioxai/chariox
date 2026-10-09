@@ -31,5 +31,17 @@ class OracleTests(unittest.TestCase):
                 module.scope(bad)
 
 
+    def test_registered_values_reach_the_snapshot_for_best_effort_boxes(self):
+        # Owner 2026-10-09: Vault values never mask the whole desktop; the
+        # snapshot masks only their accessible-text boxes.
+        seen = []
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[5, 6, 7, 8]], 'nodes': []}
+        answer = module.answer({**REQUEST, 'values': ['synthetic-vault-value']}, lambda *args: seen.append(args) or tree)
+        self.assertEqual(answer['masks'], [[5, 6, 7, 8]])
+        self.assertEqual(seen[0][3], ['synthetic-vault-value'])
+        for bad in ({**REQUEST, 'values': 'x'}, {**REQUEST, 'values': [1]}, {**REQUEST, 'values': ['x'] * 257}):
+            with self.assertRaises(ValueError):
+                module.scope(bad)
+
 if __name__ == '__main__':
     unittest.main()
