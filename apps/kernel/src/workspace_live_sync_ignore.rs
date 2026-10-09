@@ -140,11 +140,8 @@ pub(crate) fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     }) {
         return true;
     }
-    path.split('/').any(|part| {
-        WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_DIRS
-            .iter()
-            .any(|excluded| part == *excluded)
-    })
+    path.split('/')
+        .any(|part| WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_DIRS.contains(&part))
 }
 
 pub(crate) fn workspace_live_sync_ignored_path(path: &str, ignore_patterns: &[String]) -> bool {

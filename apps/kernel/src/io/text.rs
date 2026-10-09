@@ -81,12 +81,11 @@ impl TextDocumentDomain {
                 })
             }
             AgentEditOperation::WriteArtifact { content } => {
-                let new_text =
-                    content
-                        .as_text()
-                        .ok_or_else(|| ArtifactEditError::UnsupportedDomain {
-                            domain: crate::io::types::ArtifactDomainKind::TextDocument,
-                        })?;
+                let new_text = content
+                    .as_text()
+                    .ok_or(ArtifactEditError::UnsupportedDomain {
+                        domain: crate::io::types::ArtifactDomainKind::TextDocument,
+                    })?;
                 Ok(TextEditPlan {
                     range: TextRange::new(0, base.len()),
                     old_text: base.to_string(),
@@ -152,7 +151,7 @@ impl TextDocumentDomain {
                 message: "rebased range is outside the current artifact".to_string(),
             });
         }
-        if &current[plan.range.start..plan.range.end] != plan.old_text {
+        if current[plan.range.start..plan.range.end] != plan.old_text {
             return Err(ArtifactEditError::InvalidOperation {
                 message: "rebased range content does not match old_text".to_string(),
             });

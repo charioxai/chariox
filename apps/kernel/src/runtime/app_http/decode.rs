@@ -84,7 +84,7 @@ pub(super) fn command(method: &str, params: Value) -> Result<Command> {
             let id = identity(take(&mut fields, "streamId")?)?;
             let encoded = string(
                 take(&mut fields, "bodyBase64")?,
-                ((CHUNK_BYTES + 2) / 3) * 4,
+                CHUNK_BYTES.div_ceil(3) * 4,
             )?;
             let bytes = STANDARD.decode(encoded).map_err(|_| HttpError::Invalid)?;
             let end = boolean(take(&mut fields, "end")?)?;

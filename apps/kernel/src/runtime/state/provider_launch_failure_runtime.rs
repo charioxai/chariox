@@ -241,8 +241,8 @@ impl KernelRuntimeState {
                             Some(started.run.id()),
                             &diagnostic,
                         );
-                        if active_prompt.workflow_run_id().is_some() {
-                            if owned
+                        if active_prompt.workflow_run_id().is_some()
+                            && owned
                                 .workflow_fail_provider_prompt_without_queue_advance(
                                     started.run.session_id(),
                                     &active_prompt,
@@ -250,9 +250,8 @@ impl KernelRuntimeState {
                                     &diagnostic,
                                 )
                                 .is_ok()
-                            {
-                                advance_workflow_queue = true;
-                            }
+                        {
+                            advance_workflow_queue = true;
                         }
                         let _ = owned.complete_local_prompt_without_advance(
                             started.run.session_id(),

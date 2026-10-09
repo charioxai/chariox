@@ -150,8 +150,7 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
             .get("example_prompt_command")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|command| command.starts_with("prompt worker ")),
-        "{:?}",
-        owned_worker
+        "{owned_worker:?}"
     );
     assert_eq!(
         overview

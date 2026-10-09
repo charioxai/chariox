@@ -173,7 +173,7 @@ pub(super) fn collect_file_candidates(
             && path
                 .extension()
                 .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extensions.iter().any(|allowed| *allowed == extension))
+                .is_some_and(|extension| extensions.contains(&extension))
         {
             files.push(path);
         }

@@ -84,8 +84,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync patch approval".to_string(),
                 format!(
-                    "Allow applying this workspace live sync patch? First patch line: `{}`",
-                    patch_preview
+                    "Allow applying this workspace live sync patch? First patch line: `{patch_preview}`"
                 ),
             ))
         }

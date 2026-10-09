@@ -1432,7 +1432,7 @@ fn operational_history_enforces_size_budget_for_temp_stores() {
             Some("agent-cap"),
             TerminalOutputKind::ProviderOutput,
             Some(format!("chunk-{index}")),
-            &"x".repeat(64 * 1024),
+            "x".repeat(64 * 1024),
         );
         let event = HistoryEvent::transcript(index + 1, &entry, HistoryEventTurnContext::default());
         store.append(&event).expect("event should append");

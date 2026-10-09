@@ -911,7 +911,7 @@ impl KernelRuntimeState {
                     route.source_event_version,
                 )
                 .is_some_and(|key| claimed.contains(&key));
-                if route.active == !taken_over {
+                if route.active != taken_over {
                     continue;
                 }
                 match self

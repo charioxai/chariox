@@ -1223,7 +1223,7 @@ impl AegsActionFailure {
     /// A sent request the generator did not refuse (no answer, or a 5xx from
     /// it or a gateway in front of it) may have acted.
     pub(crate) fn outcome_unknown(&self) -> bool {
-        self.sent && self.status.map_or(true, |status| status >= 500)
+        self.sent && self.status.is_none_or(|status| status >= 500)
     }
 }
 impl std::fmt::Display for AegsActionFailure {

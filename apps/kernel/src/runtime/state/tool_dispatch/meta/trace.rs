@@ -690,7 +690,11 @@ fn event_kind_suggestion_score(input: &str, candidate: &str) -> u8 {
         .zip(candidate.chars())
         .take_while(|(left, right)| left == right)
         .count();
-    (common_prefix >= 5).then_some(20).unwrap_or(0)
+    if common_prefix >= 5 {
+        20
+    } else {
+        0
+    }
 }
 
 fn event_kind_tokens(normalized: &str) -> Vec<&str> {

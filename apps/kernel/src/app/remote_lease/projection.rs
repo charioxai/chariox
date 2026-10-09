@@ -100,15 +100,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let mut output_chunks = pumped_output_records
             .into_iter()
-            .chain(
-                self.app
-                    .terminal
-                    .drain_output_records(
-                        &leased_agent.backing_session_id,
-                        &leased_agent.backing_attachment_id,
-                    )
-                    .into_iter(),
-            )
+            .chain(self.app.terminal.drain_output_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            ))
             .filter(|record| {
                 record.provider_run_id == provider_run_id
                     && record.kind != TerminalOutputKind::PromptEcho
@@ -309,9 +304,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
-                    && termination_prompt_id
-                        .as_deref()
-                        .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
+                    && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             })
             .and_then(|turn| turn.provider_termination);
         let mut completions = self

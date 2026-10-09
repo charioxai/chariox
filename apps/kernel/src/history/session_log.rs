@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -1102,4 +1103,3 @@ mod tests {
         );
     }
 }
-use std::collections::{HashMap, HashSet};

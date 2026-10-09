@@ -10,7 +10,7 @@ impl CharioxConnectorRegistry {
     }
 
     pub fn user() -> Result<Self, DaemonError> {
-        let root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
+        let root = Self::user_root().ok_or(DaemonError::InvalidConfig {
             field: "connector registry root",
             message: "HOME must be set to resolve ~/.chariox/connectors/definitions",
         })?;

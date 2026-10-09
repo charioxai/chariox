@@ -870,7 +870,7 @@ fn read_persistent_results_with_receipt_fence(
         if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
             continue;
         }
-        let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
+        let jsonl_bytes = line.len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
                 return Err(io::Error::other("oversized at-most-once receipt"));

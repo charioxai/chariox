@@ -178,7 +178,7 @@ impl KernelRuntimeOwnedState {
                 run.state(),
                 crate::provider::ProviderRunState::Starting
                     | crate::provider::ProviderRunState::Running
-            ) && self.provider_run_has_active_prompt(session_id, &run)?
+            ) && self.provider_run_has_active_prompt(session_id, run)?
             {
                 // An ordinary provider with an active prompt owns the session until that
                 // prompt settles. The workflow prompt remains FIFO-queued and the normal

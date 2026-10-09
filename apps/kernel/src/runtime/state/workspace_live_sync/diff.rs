@@ -169,8 +169,7 @@ fn workspace_live_sync_diff_hunks(before: &[&str], after: &[&str]) -> Vec<String
             .filter(|op| !matches!(op, WorkspaceLiveSyncDiffOp::Remove(_)))
             .count();
         lines.push(format!(
-            "@@ -{},{} +{},{} @@",
-            old_start, old_count, new_start, new_count
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@"
         ));
         lines.extend(hunk_ops.iter().map(|op| match op {
             WorkspaceLiveSyncDiffOp::Context(line) => format!(" {line}"),

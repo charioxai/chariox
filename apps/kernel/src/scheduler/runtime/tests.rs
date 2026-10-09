@@ -80,20 +80,15 @@ fn invoke_workflow_node(
     node_id: &str,
 ) -> WorkflowRun {
     app.sessions_mut()
-        .set_workflow_flush_agent_context_before_run(session_id, &workflow_id, false)
+        .set_workflow_flush_agent_context_before_run(session_id, workflow_id, false)
         .expect("workflow flush context should update");
     app.sessions_mut()
-        .create_workflow_endpoint(
-            session_id,
-            &workflow_id,
-            &node_id,
-            Some("entry".to_string()),
-        )
+        .create_workflow_endpoint(session_id, workflow_id, node_id, Some("entry".to_string()))
         .expect("endpoint should exist");
     let (workflow_run, _, _) = app
         .invoke_workflow_endpoint_and_schedule(
             session_id,
-            &workflow_id,
+            workflow_id,
             "entry",
             Some("start".to_string()),
         )
@@ -982,7 +977,7 @@ fn workflow_instruction_reference_is_written_under_kernel_state_root() {
     } else {
         std::env::remove_var("CHARIOX_HOME");
     }
-    let _ = fs::remove_dir_all(PathBuf::from(workdir));
+    let _ = fs::remove_dir_all(workdir);
 }
 
 #[test]

@@ -915,8 +915,8 @@ impl KernelRuntimeState {
             session_id,
             agent_id,
             caller_user_id,
-            execution_mode_override.clone(),
-            permission_level_override.clone(),
+            execution_mode_override,
+            permission_level_override,
             workspace_id,
             worktree_id,
         )?;

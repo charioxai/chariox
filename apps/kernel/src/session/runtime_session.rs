@@ -260,7 +260,7 @@ impl RuntimeSession {
             agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
-                format!("worktree-assignment-{}-1", id),
+                format!("worktree-assignment-{id}-1"),
                 worktree_id,
                 format!("session/{id}"),
                 WorktreeIsolationMode::SharedSession,
@@ -884,7 +884,7 @@ impl RuntimeSession {
             .retain(|existing| existing.subject() != interaction.subject());
         self.active_interactions.push(interaction);
         self.active_interactions
-            .sort_by(|left, right| left.requested_at_ms().cmp(&right.requested_at_ms()));
+            .sort_by_key(|left| left.requested_at_ms());
     }
 
     pub fn remove_active_interaction(

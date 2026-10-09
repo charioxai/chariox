@@ -12,7 +12,7 @@ pub(crate) fn projected_active_provider_run_id(
         if let Some(active_run) = provider_run_by_id(active_provider_run_id) {
             let active_run_agent_id = active_run.agent_instance_id();
             let active_prompt_is_running = active_run_agent_id
-                .map(|agent_id| active_prompt_for_agent(agent_id))
+                .map(active_prompt_for_agent)
                 .unwrap_or(false);
             if active_run.state() == ProviderRunState::Starting
                 || (active_run.state() == ProviderRunState::Running && active_prompt_is_running)

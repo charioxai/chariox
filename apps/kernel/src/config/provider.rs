@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::DaemonError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UserProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
@@ -12,17 +12,6 @@ pub struct UserProviderConfig {
     pub effort: Option<String>,
     #[serde(default)]
     pub workspace_live_sync: WorkspaceLiveSyncConfig,
-}
-
-impl Default for UserProviderConfig {
-    fn default() -> Self {
-        Self {
-            default: None,
-            model: None,
-            effort: None,
-            workspace_live_sync: WorkspaceLiveSyncConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -608,7 +608,7 @@ mod tests {
             .starts_with("https://relay.example.test/display/display-"));
         assert!(endpoint.url.contains("/vnc.html?"));
         assert!(endpoint.url.contains("path=display%2Fdisplay-"));
-        assert_eq!(endpoint.expires_at_ms.is_some(), true);
+        assert!(endpoint.expires_at_ms.is_some());
     }
 
     #[tokio::test]

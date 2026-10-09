@@ -53,6 +53,12 @@ pub struct WorkflowTurnOutputSubmissions {
     final_output: Option<WorkflowRunOutputSubmission>,
 }
 
+impl Default for WorkflowTurnOutputSubmissions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorkflowTurnOutputSubmissions {
     pub fn new() -> Self {
         Self {

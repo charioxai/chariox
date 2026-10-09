@@ -379,10 +379,7 @@ mod tests {
         assert_eq!(summary.provider, "codex");
         assert_eq!(summary.auth_type.as_deref(), Some("chatgpt"));
         assert_eq!(summary.account_id.as_deref(), Some("acct-1"));
-        assert_eq!(
-            serde_json::to_string(&summary).unwrap().contains("secret"),
-            false
-        );
+        assert!(!serde_json::to_string(&summary).unwrap().contains("secret"));
     }
 
     #[test]

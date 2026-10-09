@@ -394,7 +394,7 @@ impl KernelRuntimeState {
         let custom_reply = interaction
             .custom_choice()
             .filter(|choice| choice.id() == choice_id)
-            .and_then(|_| args.input.as_deref());
+            .and(args.input.as_deref());
         let provider_run_id = self
             .owned
             .provider_store

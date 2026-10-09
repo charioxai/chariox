@@ -472,10 +472,7 @@ impl PromptTemplateRegistry {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: "prompt-assembly".to_string(),
                 operation: "prompt_template_read",
-                message: format!(
-                    "required prompt template `{template_id}` missing at {:?}",
-                    path
-                ),
+                message: format!("required prompt template `{template_id}` missing at {path:?}"),
             });
         }
         let body =
@@ -1224,7 +1221,7 @@ fn prompt_io_error(operation: &'static str, path: &Path, error: std::io::Error) 
     DaemonError::ProviderProtocol {
         provider_run_id: "prompt-assembly".to_string(),
         operation,
-        message: format!("prompt template path {:?}: {error}", path),
+        message: format!("prompt template path {path:?}: {error}"),
     }
 }
 

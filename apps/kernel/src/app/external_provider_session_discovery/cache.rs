@@ -113,7 +113,7 @@ pub(super) fn cached_provider_observed_turns(
         && entry.path == path
         && entry.observed_len == Some(fingerprint.len)
         && entry.observed_modified_at_ms == Some(fingerprint.modified_at_ms))
-    .then(|| entry.observed_turns)
+    .then_some(entry.observed_turns)
     .flatten()
 }
 
@@ -203,7 +203,7 @@ pub(super) fn cached_provider_observed_turns_for_path(
         .get(&key)
         .cloned()?;
     (entry.provider_session_id == provider_session_id && entry.path == path)
-        .then(|| entry.observed_turns)
+        .then_some(entry.observed_turns)
         .flatten()
 }
 
@@ -219,7 +219,7 @@ pub(super) fn cached_provider_observed_transcript_for_path(
         .get(&key)
         .cloned()?;
     let observed_turns = (entry.provider_session_id == provider_session_id && entry.path == path)
-        .then(|| entry.observed_turns)
+        .then_some(entry.observed_turns)
         .flatten()?;
     Some(CachedProviderObservedTranscript {
         last_observed_offset: entry.last_observed_offset,

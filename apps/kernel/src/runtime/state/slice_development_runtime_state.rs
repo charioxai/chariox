@@ -455,8 +455,7 @@ fn run_managed_publication_access_helper(
             .map(|code| format!(": {code}"))
             .unwrap_or_default();
         Err(slice_development_error(format!(
-            "managed publication access helper failed with {}{detail}",
-            status
+            "managed publication access helper failed with {status}{detail}"
         )))
     }
 }
@@ -688,12 +687,12 @@ mod tests {
              publication: &crate::slice::SliceDevelopmentPublication| {
                 #[cfg(unix)]
                 {
-                    return run_managed_publication_access_helper(
+                    run_managed_publication_access_helper(
                         &helper,
                         action,
                         storage_root,
                         publication,
-                    );
+                    )
                 }
                 #[cfg(not(unix))]
                 {
@@ -711,7 +710,7 @@ mod tests {
             "project-1",
             &repositories,
             None,
-            &update_access,
+            update_access,
             None,
         )
         .expect("materialize slice Project");
@@ -764,7 +763,7 @@ mod tests {
             "project-1",
             &repositories,
             Some(&publication),
-            &update_access,
+            update_access,
             None,
         )
         .expect("recover slice Project after restart");

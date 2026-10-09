@@ -383,11 +383,8 @@ impl<'a> WorkflowCodeValidator<'a> {
         let mut stack = definition
             .endpoints
             .iter()
-            .filter_map(|endpoint| {
-                node_handles
-                    .contains(&endpoint.entry_node)
-                    .then(|| endpoint.entry_node.clone())
-            })
+            .filter(|&endpoint| node_handles.contains(&endpoint.entry_node))
+            .map(|endpoint| endpoint.entry_node.clone())
             .collect::<Vec<_>>();
 
         while let Some(node_handle) = stack.pop() {

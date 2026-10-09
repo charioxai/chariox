@@ -1533,7 +1533,7 @@ fn run_worker_setup_steps_until(
             command,
             workspace_root,
             environment,
-            || should_cancel(),
+            &should_cancel,
             Some(overall_deadline),
         )?;
         if exit_code != 0 {
@@ -1558,6 +1558,174 @@ pub(super) fn run_worker_setup_steps_with_total_timeout(
         Instant::now() + total_timeout,
         should_cancel,
     )
+}
+
+#[cfg(all(test, not(target_os = "linux"), unix))]
+mod non_linux_recovery_fallback_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture {
+        root: PathBuf,
+        workspace: PathBuf,
+        operation_id: String,
+        scratch: WorkerValidationScratch,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-validation-nonlinux-{}-{label}-{suffix}",
+                std::process::id(),
+            ));
+            let workspace = root.join("workspace");
+            let durable_home = root.join("home");
+            std::fs::create_dir_all(&workspace).expect("fixture workspace should be created");
+            std::fs::create_dir_all(&durable_home).expect("fixture HOME should be created");
+            let operation_id = format!("nonlinux-{label}-{suffix}");
+            let scratch = WorkerValidationScratch::create_for_worker(
+                &workspace,
+                &durable_home,
+                &operation_id,
+                1,
+                0,
+            )
+            .expect("the ordinary validation scratch should be created");
+            Self {
+                root,
+                workspace,
+                operation_id,
+                scratch,
+            }
+        }
+
+        fn run(
+            &self,
+            command: &str,
+            environment: &BTreeMap<String, String>,
+            should_cancel: impl Fn() -> bool,
+        ) -> Result<(i32, usize, usize), String> {
+            let store = super::super::ProjectEnvironmentSetupStore::default();
+            run_worker_validation_command_with_recovery(
+                command,
+                &self.workspace,
+                environment,
+                &self.scratch,
+                &store,
+                &self.operation_id,
+                1,
+                0,
+                should_cancel,
+                None,
+            )
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.scratch.cleanup();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_runs_success_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("success");
+        let result = fixture
+            .run("printf ready", &BTreeMap::new(), || false)
+            .expect("ordinary validation should use the shared runner");
+        assert_eq!(result, (0, 5, 0));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_records_failure_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("failure");
+        let result = fixture
+            .run("printf nope >&2; exit 9", &BTreeMap::new(), || false)
+            .expect("a nonzero command exit should remain an ordinary validation result");
+        assert_eq!(result, (9, 0, 4));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_cancels_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("cancel");
+        let started = fixture.root.join("command-started");
+        let environment = BTreeMap::from([(
+            "NONLINUX_VALIDATION_STARTED".to_string(),
+            started.display().to_string(),
+        )]);
+        let result = fixture.run(
+            "printf started > \"$NONLINUX_VALIDATION_STARTED\"; sleep 2",
+            &environment,
+            || started.exists(),
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(
+            started.exists(),
+            "the real validation command must start before cancel"
+        );
+        assert!(!fixture.scratch.path().exists());
+    }
+}
+
+#[cfg(unix)]
+fn terminate_validation_process_group(child: &mut std::process::Child) {
+    let process_group = child.id() as libc::pid_t;
+    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+}
+
+#[cfg(not(unix))]
+fn terminate_validation_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn count_validation_output_nonblocking<R>(
+    mut output: R,
+    stop: Arc<AtomicBool>,
+) -> Result<usize, String>
+where
+    R: Read + std::os::fd::AsRawFd,
+{
+    let mut buffer = [0_u8; 8192];
+    let mut bytes = 0_usize;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(bytes);
+        }
+        let mut descriptor = libc::pollfd {
+            fd: output.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.to_string());
+        }
+        if ready == 0 {
+            continue;
+        }
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Ok(bytes);
+            }
+            match output.read(&mut buffer) {
+                Ok(0) => return Ok(bytes),
+                Ok(read) => bytes = bytes.saturating_add(read),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2667,174 +2835,6 @@ done
             .unwrap_err()
             .contains("does not match"));
         let _ = std::fs::remove_dir_all(root);
-    }
-}
-
-#[cfg(all(test, not(target_os = "linux"), unix))]
-mod non_linux_recovery_fallback_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    struct Fixture {
-        root: PathBuf,
-        workspace: PathBuf,
-        operation_id: String,
-        scratch: WorkerValidationScratch,
-    }
-
-    impl Fixture {
-        fn new(label: &str) -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "chariox-validation-nonlinux-{}-{label}-{suffix}",
-                std::process::id(),
-            ));
-            let workspace = root.join("workspace");
-            let durable_home = root.join("home");
-            std::fs::create_dir_all(&workspace).expect("fixture workspace should be created");
-            std::fs::create_dir_all(&durable_home).expect("fixture HOME should be created");
-            let operation_id = format!("nonlinux-{label}-{suffix}");
-            let scratch = WorkerValidationScratch::create_for_worker(
-                &workspace,
-                &durable_home,
-                &operation_id,
-                1,
-                0,
-            )
-            .expect("the ordinary validation scratch should be created");
-            Self {
-                root,
-                workspace,
-                operation_id,
-                scratch,
-            }
-        }
-
-        fn run(
-            &self,
-            command: &str,
-            environment: &BTreeMap<String, String>,
-            should_cancel: impl Fn() -> bool,
-        ) -> Result<(i32, usize, usize), String> {
-            let store = super::super::ProjectEnvironmentSetupStore::default();
-            run_worker_validation_command_with_recovery(
-                command,
-                &self.workspace,
-                environment,
-                &self.scratch,
-                &store,
-                &self.operation_id,
-                1,
-                0,
-                should_cancel,
-                None,
-            )
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = self.scratch.cleanup();
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_runs_success_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("success");
-        let result = fixture
-            .run("printf ready", &BTreeMap::new(), || false)
-            .expect("ordinary validation should use the shared runner");
-        assert_eq!(result, (0, 5, 0));
-        assert!(!fixture.scratch.path().exists());
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_records_failure_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("failure");
-        let result = fixture
-            .run("printf nope >&2; exit 9", &BTreeMap::new(), || false)
-            .expect("a nonzero command exit should remain an ordinary validation result");
-        assert_eq!(result, (9, 0, 4));
-        assert!(!fixture.scratch.path().exists());
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_cancels_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("cancel");
-        let started = fixture.root.join("command-started");
-        let environment = BTreeMap::from([(
-            "NONLINUX_VALIDATION_STARTED".to_string(),
-            started.display().to_string(),
-        )]);
-        let result = fixture.run(
-            "printf started > \"$NONLINUX_VALIDATION_STARTED\"; sleep 2",
-            &environment,
-            || started.exists(),
-        );
-        assert!(result.unwrap_err().contains("cancelled"));
-        assert!(
-            started.exists(),
-            "the real validation command must start before cancel"
-        );
-        assert!(!fixture.scratch.path().exists());
-    }
-}
-
-#[cfg(unix)]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let process_group = child.id() as libc::pid_t;
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let _ = child.kill();
-}
-
-#[cfg(unix)]
-fn count_validation_output_nonblocking<R>(
-    mut output: R,
-    stop: Arc<AtomicBool>,
-) -> Result<usize, String>
-where
-    R: Read + std::os::fd::AsRawFd,
-{
-    let mut buffer = [0_u8; 8192];
-    let mut bytes = 0_usize;
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return Ok(bytes);
-        }
-        let mut descriptor = libc::pollfd {
-            fd: output.as_raw_fd(),
-            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-            revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
-        if ready < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error.to_string());
-        }
-        if ready == 0 {
-            continue;
-        }
-        loop {
-            if stop.load(Ordering::Acquire) {
-                return Ok(bytes);
-            }
-            match output.read(&mut buffer) {
-                Ok(0) => return Ok(bytes),
-                Ok(read) => bytes = bytes.saturating_add(read),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.to_string()),
-            }
-        }
     }
 }
 

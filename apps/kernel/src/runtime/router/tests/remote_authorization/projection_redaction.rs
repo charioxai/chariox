@@ -128,7 +128,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .expect("other user's agent handle should remain workflow-selectable");
     assert_eq!(redacted_local_agent.provider(), "redacted");
     assert_eq!(redacted_local_agent.model(), None);
-    assert_eq!(redacted_local_agent.visible_in_freeform(), false);
+    assert!(!redacted_local_agent.visible_in_freeform());
     assert!(redacted_session.agents().iter().any(|agent| {
         agent.id() == extra_local_agent.id()
             && agent.provider() == "redacted"
@@ -140,7 +140,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .iter()
         .find(|agent| agent.id() == user_two_agent.id())
         .expect("own agent should remain visible");
-    assert_eq!(visible_user_two_agent.visible_in_freeform(), true);
+    assert!(visible_user_two_agent.visible_in_freeform());
     let redacted_workflow = redacted_session
         .workflows()
         .iter()
@@ -186,7 +186,7 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
                 .expect("other user's redacted agent handle should be listed");
             assert_eq!(listed_local_agent.provider(), "redacted");
             assert_eq!(listed_local_agent.model(), None);
-            assert_eq!(listed_local_agent.visible_in_freeform(), false);
+            assert!(!listed_local_agent.visible_in_freeform());
             assert!(agents.iter().any(|agent| {
                 agent.id() == extra_local_agent.id()
                     && agent.provider() == "redacted"

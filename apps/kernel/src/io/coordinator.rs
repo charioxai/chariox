@@ -321,13 +321,12 @@ impl ArtifactEditCoordinator {
         tracked: TrackedArtifact,
         request: ArtifactWriteRequest,
     ) -> Result<PreparedArtifactEdit, ArtifactEditError> {
-        let current =
-            tracked
-                .content
-                .as_text()
-                .ok_or_else(|| ArtifactEditError::UnsupportedDomain {
-                    domain: tracked.domain,
-                })?;
+        let current = tracked
+            .content
+            .as_text()
+            .ok_or(ArtifactEditError::UnsupportedDomain {
+                domain: tracked.domain,
+            })?;
         let (base_version, base_content) = match request.intent.snapshot_id.as_ref() {
             Some(snapshot_id) => {
                 let snapshot = self.snapshots.get(snapshot_id).ok_or_else(|| {
@@ -340,7 +339,7 @@ impl ArtifactEditCoordinator {
                         message: "snapshot belongs to a different artifact".to_string(),
                     });
                 }
-                let base = snapshot.content.as_text().ok_or_else(|| {
+                let base = snapshot.content.as_text().ok_or({
                     ArtifactEditError::UnsupportedDomain {
                         domain: tracked.domain,
                     }

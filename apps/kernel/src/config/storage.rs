@@ -4,21 +4,12 @@ use crate::error::DaemonError;
 
 use super::{validate_non_empty, validate_optional_nonzero};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UserHistoryConfig {
     #[serde(default)]
     pub operational: UserOperationalHistoryConfig,
     #[serde(default)]
     pub archive: UserArchiveHistoryConfig,
-}
-
-impl Default for UserHistoryConfig {
-    fn default() -> Self {
-        Self {
-            operational: UserOperationalHistoryConfig::default(),
-            archive: UserArchiveHistoryConfig::default(),
-        }
-    }
 }
 
 impl UserHistoryConfig {
@@ -185,21 +176,12 @@ impl HistoryArchiveMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UserArtifactsConfig {
     #[serde(default)]
     pub operational: UserOperationalArtifactsConfig,
     #[serde(default)]
     pub archive: UserArchiveArtifactsConfig,
-}
-
-impl Default for UserArtifactsConfig {
-    fn default() -> Self {
-        Self {
-            operational: UserOperationalArtifactsConfig::default(),
-            archive: UserArchiveArtifactsConfig::default(),
-        }
-    }
 }
 
 impl UserArtifactsConfig {

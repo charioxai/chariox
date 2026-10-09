@@ -723,8 +723,7 @@ async fn publication_runtime_status_snapshot(
         .await
         .map_err(|error| format!("failed to connect to publication status endpoint: {error}"))?;
     let request = format!(
-        "GET /.well-known/chariox/publication/status HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
-        host, port,
+        "GET /.well-known/chariox/publication/status HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
     );
     stream
         .write_all(request.as_bytes())
@@ -2030,7 +2029,7 @@ fn publication_runtime_process_key(session_id: &str, publication_id: &str) -> St
 }
 
 fn publication_local_url(host: &str, port: u16) -> String {
-    format!("http://{}:{}/", host, port)
+    format!("http://{host}:{port}/")
 }
 
 /// Schedule-only and App-event triggers take no requests: their gateway gets
@@ -2066,7 +2065,7 @@ fn validate_publication_runtime_bind_address(
         });
     }
     TcpListener::bind((host, port))
-        .map(|listener| drop(listener))
+        .map(drop)
         .map_err(|error| DaemonError::LocalTransport {
             operation: "start workflow publication runtime",
             message: format!("publication runtime port {port} is not available on {host}: {error}"),
@@ -2126,7 +2125,7 @@ impl WorkflowPublicationRuntimeProcessStore {
             .lock()
             .await
             .get(key)
-            .map_or(true, |recovery| match &recovery.parked_for_digest {
+            .is_none_or(|recovery| match &recovery.parked_for_digest {
                 Some(parked) => parked != package_digest,
                 None => recovery.next_attempt_at_ms <= now_ms,
             })

@@ -177,7 +177,7 @@ fn capability_owner_request_grants_only_opened_tabs_until_revoked() {
         Box::pin(async {
             let setup = setup("capability-s01", &[], &["worker"]);
             let (agent, token) = setup.agents[1].clone();
-            let room = start(setup, &agent.owner_user_id().to_string());
+            let room = start(setup, agent.owner_user_id());
             let router = &room.router;
             let prompt = running_prompt(
                 &room,
@@ -367,7 +367,7 @@ fn capability_unrequested_turns_cannot_acquire_browser_access() {
         Box::pin(async {
             let setup = setup("capability-s02", &[], &["idle", "messaged"]);
             let agents = setup.agents.clone();
-            let room = start(setup, &agents[0].0.owner_user_id().to_string());
+            let room = start(setup, agents[0].0.owner_user_id());
             let router = &room.router;
             // No running prompt at all.
             let (_, idle) = &agents[1];
@@ -423,7 +423,7 @@ fn capability_child_subset_transfer_never_widens_and_follows_parent_revoke() {
             let (parent, parent_token) = setup.agents[0].clone();
             let (child, child_token) = setup.agents[1].clone();
             let (peer, _) = setup.agents[2].clone();
-            let room = start(setup, &parent.owner_user_id().to_string());
+            let room = start(setup, parent.owner_user_id());
             let router = &room.router;
             running_prompt(
                 &room,
@@ -557,7 +557,7 @@ fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
                     },
                 )
                 .unwrap();
-            let room = start(setup, &parent.owner_user_id().to_string());
+            let room = start(setup, parent.owner_user_id());
             let router = &room.router;
             running_prompt(
                 &room,

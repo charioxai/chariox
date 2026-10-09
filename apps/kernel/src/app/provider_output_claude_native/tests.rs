@@ -861,8 +861,8 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
             process_label: "test-claude-headless-stop".to_string(),
             pty_target: None,
             pty_program: None,
-            pty_args: managed_account_binding
-                .then(|| {
+            pty_args: if managed_account_binding {
+                {
                     vec![
                         "--bind".to_string(),
                         root.canonicalize()
@@ -874,8 +874,10 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
                         crate::provider::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
                         "1".to_string(),
                     ]
-                })
-                .unwrap_or_default(),
+                }
+            } else {
+                Default::default()
+            },
             pty_env: std::collections::BTreeMap::from([
                 (
                     "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),

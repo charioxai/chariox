@@ -1063,10 +1063,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         None => Ok(read_response.await),
     };
     let result = response.unwrap_or_else(|_| {
-        let message = format!(
-            "timed out waiting for relay peer response after {}ms",
-            response_timeout_ms
-        );
+        let message =
+            format!("timed out waiting for relay peer response after {response_timeout_ms}ms");
         trace.log_completed("timeout", Some(&message), None);
         Err(DaemonError::LocalTransport {
             operation: "read temporary relay peer response",

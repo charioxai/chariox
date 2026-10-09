@@ -857,15 +857,15 @@ fn waiting_room_session_summaries_from_refs<'a>(
                     .filter(|member| member.user_id() != session.owner_user_id())
                     .count(),
                 pending_collaboration_invite_count: pending_session_invite_count(session),
-                activity: waiting_room_session_activity_summary(&session, caller_user_id),
+                activity: waiting_room_session_activity_summary(session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
-                    &session,
+                    session,
                     metaagent_events,
                     workspace_label.clone(),
                     &mut worktree_labels,
                     caller_user_id,
                 ),
-                workflows: waiting_room_public_workflow_summaries(&session),
+                workflows: waiting_room_public_workflow_summaries(session),
             }
         })
         .collect()

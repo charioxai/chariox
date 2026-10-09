@@ -88,10 +88,7 @@ impl OpenCodeClient {
         let operation = method_to_operation(method, path);
         let message = last_error
             .map(|error| {
-                format!(
-                    "OpenCode request failed after {} attempts: {error}",
-                    retry_attempts
-                )
+                format!("OpenCode request failed after {retry_attempts} attempts: {error}")
             })
             .unwrap_or_else(|| "OpenCode request failed".to_string());
         Err(self.protocol_error(operation, message))

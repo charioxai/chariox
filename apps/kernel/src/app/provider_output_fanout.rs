@@ -95,7 +95,7 @@ impl ProviderOutputFanout {
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         if bounded_bytes.len() < delta_bytes.len() {
-            let kind_label = format!("{:?}", kind);
+            let kind_label = format!("{kind:?}");
             if let Some(suppressed_logs) = should_log_provider_output_truncation(
                 session_id,
                 provider_run_id,

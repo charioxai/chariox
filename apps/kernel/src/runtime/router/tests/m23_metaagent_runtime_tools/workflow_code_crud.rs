@@ -414,13 +414,11 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .await
         .expect("metaagent should apply and run saved workflow-code artifact");
     assert!(run.ok, "{:?}", run.payload);
-    assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        true
-    );
+    assert!(run
+        .payload
+        .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     assert_eq!(
         run.payload
             .pointer("/WorkflowCodeRun/result/invocation/kind")

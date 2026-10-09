@@ -1102,10 +1102,10 @@ fn directory_identity(path: &Path) -> Result<MaterializationIdentity, DaemonErro
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(MaterializationIdentity {
+        Ok(MaterializationIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        });
+        })
     }
     #[cfg(not(unix))]
     {

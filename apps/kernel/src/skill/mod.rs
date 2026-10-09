@@ -341,12 +341,10 @@ impl CharioxSkillRegistry {
     }
 
     fn primary_root(&self) -> Result<&PathBuf, DaemonError> {
-        self.roots
-            .first()
-            .ok_or_else(|| DaemonError::InvalidConfig {
-                field: "skill registry roots",
-                message: "must include at least one root",
-            })
+        self.roots.first().ok_or(DaemonError::InvalidConfig {
+            field: "skill registry roots",
+            message: "must include at least one root",
+        })
     }
 }
 
@@ -522,9 +520,8 @@ fn prepare_skill_directory_from_source(
         let _ = fs::remove_dir_all(&temp_dir);
         return Err(error);
     }
-    let _ = parse_skill_metadata(&temp_dir.join("SKILL.md")).map_err(|error| {
+    let _ = parse_skill_metadata(&temp_dir.join("SKILL.md")).inspect_err(|error| {
         let _ = fs::remove_dir_all(&temp_dir);
-        error
     })?;
     Ok(temp_dir)
 }

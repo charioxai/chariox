@@ -203,7 +203,7 @@ pub(crate) fn agent_activity_for_session_projection(
             }
         };
         let provider_busy = provider_turn_activity.is_some()
-            && provider_run.as_ref().map_or(true, |run| {
+            && provider_run.as_ref().is_none_or(|run| {
                 matches!(
                     run.state(),
                     ProviderRunState::Starting | ProviderRunState::Running
