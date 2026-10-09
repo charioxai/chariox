@@ -57,7 +57,7 @@ test("MP-08 LocalIpcClient replays a stalled command and records the retired lan
 
 for (const request of [
   { SubmitPrompt: { session_id: "fixture", prompt: "  /sudo protected task" } },
-  { RequestKernelAccess: { session_id: "fixture", holder_pid: process.pid } },
+  { RequestKernelAccess: { holder_pid: process.pid } },
   { RequestKernelSudo: { agent_id: "fixture", prompt: "external task" } },
 ]) {
   const kind = Object.keys(request)[0]

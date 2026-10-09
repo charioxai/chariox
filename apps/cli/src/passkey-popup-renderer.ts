@@ -3,6 +3,7 @@ import {
 } from "@opentui/core"
 import type { PasskeyPopupView } from "./passkey-popup-controller.js"
 import { theme } from "./theme.js"
+import { requesterLabels } from "./kernel-access-requester-label.js"
 
 /** The hot-keys popup's width. */
 const POPUP_WIDTH = 72
@@ -103,17 +104,21 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       const prompt = view.prompt
       // The request scrolls when the terminal is too short for all of it.
       const fixedRows = 14 + (view.error ? 2 : 0)
-      const wanted = 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
+      const requester = prompt.kind === "access_grant" || prompt.kind === "access_extension"
+        ? requesterLabels(prompt.requester) : []
+      const wanted = requester.reduce((count, label) => count + rows(label, width - 5), 0) + 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
       body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "One sudo turn" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
+      for (const label of requester) body.add(text(label))
       body.add(text(prompt.message))
       panel.add(body)
       const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
-      section(text(`Session: ${session} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
+      section(text(`${prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
+        ? "Local kernel" : `Session: ${session}`} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
