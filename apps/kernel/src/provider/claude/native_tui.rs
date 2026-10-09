@@ -276,6 +276,7 @@ if (!contextOnlyHook) {
   appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
     at: new Date().toISOString(),
     hook_event_name: eventName,
+    session_id: input.session_id ?? null,
     hook_context_request_id: hookContextRequestId,
     native_prompt_id: nativePromptId,
     prompt: input.prompt ?? null,
@@ -1241,6 +1242,32 @@ mod tests {
         assert!(std::fs::read_to_string(&native.events_file)
             .expect("hook event should be recorded")
             .contains("SessionStart"));
+    }
+
+    #[test]
+    fn native_session_start_preserves_session_identity_without_a_transcript() {
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "haiku");
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"SessionStart","source":"clear","session_id":"fresh-session-before-any-turn"}"#).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let event: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(native.events_file).unwrap()).unwrap();
+        assert_eq!(event["session_id"], "fresh-session-before-any-turn");
     }
 
     #[test]

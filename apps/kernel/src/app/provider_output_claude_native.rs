@@ -19,6 +19,7 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod permission;
+mod session_start;
 #[cfg(test)]
 mod tests;
 mod transcript;
@@ -289,6 +290,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     ) -> Result<ClaudeNativeProcessOutcome, DaemonError> {
         let mut outcome = ClaudeNativeProcessOutcome::default();
+        self.refresh_session_start(provider_run_id)?;
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(outcome);
         };

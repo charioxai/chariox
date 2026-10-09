@@ -1282,6 +1282,14 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn refresh_claude_native_session_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).refresh_session_start(provider_run_id)?;
+        self.providers.get_run(provider_run_id)
+    }
+
     pub(crate) fn process_claude_native_prompt_dispatch_attempt_for_runtime(
         &mut self,
         session_id: &str,
