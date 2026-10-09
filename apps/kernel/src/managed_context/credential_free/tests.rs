@@ -772,6 +772,18 @@ fn mp11_metadata_roles_do_not_hide_authentication_values() {
             "package.json",
             br#"{"dependencies":{"js-tokens":"^4.0.0"} // malformed"#,
         ),
+        (
+            "settings.json",
+            br#"{"api_key":"synthetic-canary","api_key":""}"#,
+        ),
+        (
+            "settings.json",
+            br#"{"nested":[{"token":"synthetic-canary","token":null}]}"#,
+        ),
+        (
+            "package.json",
+            br#"{"dependencies":{"js-tokens":"^4.0.0","js-tokens":"^5.0.0"}}"#,
+        ),
     ] {
         assert!(
             validate_bytes(path, bytes).is_err(),
@@ -779,6 +791,43 @@ fn mp11_metadata_roles_do_not_hide_authentication_values() {
         );
     }
 }
+
+// MP-08 / MP-11: exercise both boundaries independently for overlays and Git.
+macro_rules! duplicate_json_boundary_test {
+    ($name:ident, $history:expr, $assertion:ident) => {
+        #[test]
+        fn $name() {
+            crate::test_support::isolated_env_test!();
+            let _lock = crate::env_lock::lock();
+            InlineShellFixture::file(
+                "settings.json",
+                br#"{"api_key":"synthetic-canary","api_key":""}"#,
+                $history,
+            )
+            .$assertion();
+        }
+    };
+}
+duplicate_json_boundary_test!(
+    r4_duplicate_json_overlay_source,
+    false,
+    assert_source_refuses
+);
+duplicate_json_boundary_test!(
+    r4_duplicate_json_overlay_target,
+    false,
+    assert_target_refuses
+);
+duplicate_json_boundary_test!(
+    r4_duplicate_json_history_source,
+    true,
+    assert_source_refuses
+);
+duplicate_json_boundary_test!(
+    r4_duplicate_json_history_target,
+    true,
+    assert_target_refuses
+);
 
 #[test]
 fn source_refuses_renamed_and_shared_blocked_historical_paths() {

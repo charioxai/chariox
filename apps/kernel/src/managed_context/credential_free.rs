@@ -16,7 +16,6 @@ use super::development::{
 use super::kernel::KernelContextPayload;
 use super::owner_managed::admission_error;
 use crate::error::DaemonError;
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
@@ -72,7 +71,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     }
     // Inspect valid JSON structurally: object keys may name dependencies or
     // numeric counters. Scanning JSON syntax as shell assignments loses that role.
-    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+    if let Some(value) = json::parse(&text)? {
         return json::validate(&value, json::Role::for_path(&name));
     }
     if credential_text(&text) || unsupported_shell(&name, &text) {

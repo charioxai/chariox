@@ -2,7 +2,9 @@
 use super::{credential_text, credential_url, refused};
 use crate::error::DaemonError;
 use base64::Engine;
-use serde_json::Value;
+use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::{Map, Value};
+use std::fmt;
 
 #[derive(Clone, Copy)]
 pub(super) enum Role {
@@ -141,4 +143,75 @@ pub(super) fn validate(value: &Value, role: Role) -> Result<(), DaemonError> {
         _ => {}
     }
     Ok(())
+}
+
+/// Decodes JSON like `serde_json::Value` but rejects a repeated object key at any
+/// depth: `Value` keeps only the last occurrence, hiding an earlier credential.
+struct Strict(Value);
+
+struct StrictVisitor;
+
+impl<'de> Visitor<'de> for StrictVisitor {
+    type Value = Strict;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("JSON without duplicate object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Strict, E> {
+        Ok(Strict(value.into()))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Strict, E> {
+        Ok(Strict(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Strict, E> {
+        Ok(Strict(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Strict, E> {
+        Ok(Strict(Value::from(value)))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Strict, E> {
+        Ok(Strict(value.into()))
+    }
+
+    fn visit_unit<E>(self) -> Result<Strict, E> {
+        Ok(Strict(Value::Null))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Strict, A::Error> {
+        let mut values = Vec::new();
+        while let Some(Strict(value)) = seq.next_element()? {
+            values.push(value);
+        }
+        Ok(Strict(Value::Array(values)))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Strict, A::Error> {
+        let mut fields = Map::new();
+        while let Some((key, Strict(value))) = map.next_entry::<String, Strict>()? {
+            if fields.insert(key, value).is_some() {
+                return Err(serde::de::Error::custom("duplicate JSON object key"));
+            }
+        }
+        Ok(Strict(Value::Object(fields)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Strict {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+
+/// `None` when `text` is not JSON; a duplicate key is refused, not ignored.
+pub(super) fn parse(text: &str) -> Result<Option<Value>, DaemonError> {
+    match serde_json::from_str::<Strict>(text) {
+        Ok(Strict(value)) => Ok(Some(value)),
+        Err(_) if serde_json::from_str::<Value>(text).is_ok() => Err(refused()),
+        Err(_) => Ok(None),
+    }
 }

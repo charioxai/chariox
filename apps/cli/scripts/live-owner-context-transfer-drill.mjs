@@ -227,6 +227,8 @@ try {
   const ordinary='set -euo pipefail\npython -u worker.py\ngit add -u\n'
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
   const encodedMode=scenario.startsWith('utf16-')
+  const duplicateJson=scenario.startsWith('duplicate-json-')
+  const duplicateBytes=Buffer.from('{"api_key":"synthetic-canary","api_key":""}')
   const kernelOnly=scenario==='kernel-only'
   const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
   const packagedMode=scenario.startsWith('packaged-')||kernelOnly||scenario==='project-with-kernel'
@@ -255,6 +257,7 @@ try {
     'usage.json':JSON.stringify({input_tokens:42,output_tokens:7,total_tokens:49,token_count:49,max_tokens:4096})
   }
   if(scenario==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
+  if(scenario==='duplicate-json-history')await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
   for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','.'],['commit','-m','ordinary setup']]) {
     const result=await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env);assert.equal(result.code,0)
@@ -265,6 +268,12 @@ try {
       assert.equal((await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env)).code,0)
     }
   } else await writeFile(path.join(workspace,'bootstrap.ps1'),encodedMode?canary:safeScript)
+  if(scenario==='duplicate-json-history') {
+    await writeFile(path.join(workspace,'settings.json'),'{}')
+    for(const args of [['add','settings.json'],['commit','-m','replace duplicate JSON fixture']]) {
+      assert.equal((await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env)).code,0)
+    }
+  } else if(duplicateJson)await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode) {await mkdir(path.join(workspace,'overlay'));await writeFile(path.join(workspace,'overlay','package.json'),metadata['package.json']);await writeFile(path.join(workspace,'overlay','package-lock.json'),metadata['package-lock.json'])}
   await writeFile(path.join(workspace,'README.md'),'MP-05 owner context overlay\n')
   automationSocket=path.join(root,'automation.sock')
@@ -380,12 +389,12 @@ try {
       assert.equal(await readFile(path.join(launch.development.repositories[0].workspacePath,'bootstrap.sh'),'utf8'),ordinary)
       steps.push({name:'owner-repeat-copy-adds-distinct-target-project',mpItems:['MP-07','MP-08','MP-10'],first:launch.development.projectId,repeated:again.development.projectId})
     }
-  } else if(encodedMode || packagedAttack) {
+  } else if(encodedMode || packagedAttack || duplicateJson) {
     const refused=await copy('02-encoded-refusal')
-    assert.equal(refused.phase,'failed','MP-11 encoded credential must be refused on real copy path')
+    assert.equal(refused.phase,'failed','MP-11 credential-bearing context must be refused on real copy path')
     assert.match(JSON.stringify(refused.error??refused),/credential-free context/)
     assert.equal(refused.receipt??null,null,'MP-11 no destination receipt on source refusal')
-    steps.push({name:'encoded-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
+    steps.push({name:duplicateJson?'duplicate-json-source-refusal-before-transfer':'encoded-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
   } else {
   // MP-08/MP-10: inject on the first copy into a fresh target.
   const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
