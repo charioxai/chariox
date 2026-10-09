@@ -261,6 +261,8 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
+/// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
+/// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
 /// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
@@ -272,4 +274,9 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
 /// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
 /// kernel push pump of a relay display subscription; `display_next` remains).
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// MP-08 / MP-10 / MP-11: PR5 carries the #904/main 472 union with 474/475 at 475.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 475;

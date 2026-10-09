@@ -8,6 +8,7 @@ type FeatureMinimum = { feature: string; minimum: number }
 const features: Record<string, FeatureMinimum> = {
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
   KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
+  RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
   RestoreAppDataSnapshot: { feature: "App data snapshot restore", minimum: requests.appDataSnapshotRestoreMinimumProtocolVersion },
@@ -53,6 +54,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Custom managed repository root", minimum: requests.managedEnvironmentCreateMinimumProtocolVersion }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {
     feature = { feature: "Project export review", minimum: projectEnvironmentReviewMinimumProtocolVersion }
+  } else if (name === "RespondToInteraction" && payload?.session_id === "kernel-access") {
+    feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
   } else if ((name === "IssueCloudRelayClientToken" || name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {

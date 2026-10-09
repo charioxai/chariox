@@ -53,7 +53,7 @@ export class LocalIpcClient extends KernelClient {
 
   private async resolveAdvertisedProtocol(): Promise<AdvertisedProtocol> {
     const now = Date.now()
-    // Unix grants are session scoped and cannot probe global RelayStatus.
+    // Unix admission is process-bound and may precede the access popup.
     // Let the kernel's decode/authorization diagnostics handle unknown versions.
     if (this.socketPath.startsWith("ws+unix://")) {
       return { version: undefined, expiresAtMs: now + localKernelPresenceFreshnessMs }
