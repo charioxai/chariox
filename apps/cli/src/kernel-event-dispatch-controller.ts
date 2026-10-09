@@ -30,6 +30,7 @@ type KernelEventWorkflowDesignOp = Extract<KernelEvent, { event: "workflow_desig
 type KernelEventWorkflowRunUpdated = Extract<KernelEvent, { event: "workflow_run_updated" }>
 
 type KernelEventDispatchControllerDeps = {
+  getSessionId: () => string
   recordDaemonActivity: (activityType: string) => void
   queueTerminalOutputRecords: (records: TerminalOutputRecord[]) => void
   drainTerminalOutputRecords: () => void
@@ -113,6 +114,15 @@ export function createKernelEventDispatchController(
   }
 
   const handleKernelEvent = async (event: KernelEvent) => {
+    // Detaching can leave frames queued from the previous subscription. They
+    // must not replace the selected session or recover its new attachment.
+    const sessionId = event.event === "session_snapshot"
+      ? event.session.id
+      : "session_id" in event ? event.session_id : null
+    if (typeof sessionId === "string" && sessionId !== deps.getSessionId()) {
+      return
+    }
+
     switch (event.event) {
       case "terminal_output":
         deps.recordDaemonActivity("kernel_terminal_output")
