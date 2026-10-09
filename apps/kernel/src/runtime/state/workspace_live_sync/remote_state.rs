@@ -16,7 +16,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state(
 }
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content(
-    path: &PathBuf,
+    path: &Path,
     content: Option<crate::io::ArtifactContent>,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
     match content {
@@ -43,7 +43,7 @@ pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content(
 }
 
 pub(in crate::runtime::state) fn remote_workspace_live_sync_state_from_content_with_domain(
-    path: &PathBuf,
+    path: &Path,
     content: Option<crate::io::ArtifactContent>,
     domain: crate::io::ArtifactDomainKind,
 ) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {

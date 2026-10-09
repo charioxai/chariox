@@ -41,7 +41,7 @@ pub(super) fn dispatch_forwarded_edit(
     let before = remote_workspace_live_sync_text_snapshot_from_state(state);
     coordinator.read_artifact(crate::io::ArtifactReadRequest {
         workspace_identity: workspace_context.identity.clone(),
-        path: path.clone(),
+        path: path.to_path_buf(),
         domain,
         content: remote_workspace_live_sync_content_from_state(state, domain)?,
     });
@@ -65,7 +65,7 @@ pub(super) fn dispatch_forwarded_edit(
     let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
         workspace_identity: workspace_context.identity.clone(),
         intent: crate::io::AgentEditIntent {
-            path: path.clone(),
+            path: path.to_path_buf(),
             snapshot_id: workspace_live_sync_snapshot_id_from_arg(args.snapshot_id.clone()),
             operation,
         },
@@ -127,7 +127,7 @@ pub(super) fn dispatch_forwarded_write(
     let before = remote_workspace_live_sync_text_snapshot_from_state(state);
     coordinator.read_artifact(crate::io::ArtifactReadRequest {
         workspace_identity: workspace_context.identity.clone(),
-        path: path.clone(),
+        path: path.to_path_buf(),
         domain,
         content: remote_workspace_live_sync_content_from_state(state, domain)?,
     });
@@ -147,7 +147,7 @@ pub(super) fn dispatch_forwarded_write(
     let result = coordinator.apply_edit(crate::io::ArtifactWriteRequest {
         workspace_identity: workspace_context.identity.clone(),
         intent: crate::io::AgentEditIntent {
-            path: path.clone(),
+            path: path.to_path_buf(),
             snapshot_id: workspace_live_sync_write_snapshot_id_from_arg(
                 args.snapshot_id.clone(),
                 &path,
@@ -179,7 +179,7 @@ pub(super) fn dispatch_forwarded_write(
 
 fn forwarded_artifact_state<'a>(
     artifact_states: &'a [crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    path: &PathBuf,
+    path: &Path,
     operation: &'static str,
 ) -> Result<&'a crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState, DaemonError> {
     remote_workspace_live_sync_state_for_path(artifact_states, path).ok_or_else(|| {
@@ -219,7 +219,7 @@ fn current_text_snapshot(
 fn forwarded_write_after_state(
     coordinator: &crate::io::ArtifactEditCoordinator,
     workspace_context: &WorkspaceLiveSyncWorkspaceContext,
-    path: &PathBuf,
+    path: &Path,
     domain: crate::io::ArtifactDomainKind,
     result: &crate::io::EditResult,
 ) -> (

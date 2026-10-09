@@ -78,11 +78,11 @@ pub(in crate::runtime::state) fn workspace_live_sync_is_chariox_source_workspace
 }
 
 pub(in crate::runtime::state) fn workspace_identity_for_root(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
 ) -> crate::io::WorkspaceIdentity {
     let fingerprint = workspace_root
         .canonicalize()
-        .unwrap_or_else(|_| workspace_root.clone())
+        .unwrap_or_else(|_| workspace_root.to_path_buf())
         .to_string_lossy()
         .to_string();
     let git_root = git_output(workspace_root, &["rev-parse", "--show-toplevel"]);
@@ -125,7 +125,7 @@ pub(in crate::runtime::state) async fn workspace_identity_for_root_off_thread(
         })
 }
 
-fn git_output(workspace_root: &PathBuf, args: &[&str]) -> Option<String> {
+fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(workspace_root)

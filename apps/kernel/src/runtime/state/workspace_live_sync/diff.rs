@@ -195,8 +195,8 @@ fn workspace_live_sync_lcs_table(before: &[&str], after: &[&str]) -> Vec<Vec<usi
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_text_for_diff(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     allow_missing: bool,
 ) -> Option<WorkspaceLiveSyncTextSnapshot> {
     let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path)?;

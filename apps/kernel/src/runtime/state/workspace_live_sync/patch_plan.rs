@@ -14,7 +14,7 @@ pub(in crate::runtime::state) struct ManagedPatchPlan {
 }
 
 pub(in crate::runtime::state) fn plan_workspace_live_sync_patch_operations(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     operations: Vec<ManagedPatchOperation>,
 ) -> Result<WorkspaceLiveSyncPatchPlanOutcome, DaemonError> {
     let mut before_states = BTreeMap::new();
@@ -72,7 +72,7 @@ pub(in crate::runtime::state) fn plan_workspace_live_sync_patch_operations(
                     ));
                 };
                 reservation_ranges
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(range);
                 final_states.insert(path, Some(updated));
