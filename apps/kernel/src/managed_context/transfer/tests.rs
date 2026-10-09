@@ -2300,77 +2300,105 @@ fn schema_3_through_5_failed_publications_without_ownership_do_not_block_startup
     }
 }
 
+fn owner_destination() -> Option<crate::managed_context::owner_managed::OwnerManagedDestination> {
+    Some(
+        crate::managed_context::owner_managed::OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: "machine-target".to_string(),
+            kernel_id: "kernel-target".to_string(),
+        },
+    )
+}
+
+// Arms, uploads, claims and commits one owner copy; `register` runs just before
+// completion, as finalization registers the fresh target Project.
+fn commit_owner_copy(
+    store: &ManagedContextTransferStore,
+    root: &std::path::Path,
+    context_id: &str,
+    now: u64,
+    with_project: bool,
+    register: impl FnOnce(&crate::local::ManagedContextLaunchTarget),
+) -> crate::local::ManagedContextLaunchTarget {
+    let destination = owner_destination();
+    let mut caller = caller(&sha256_bytes(b"source-key"));
+    caller.target_destination = destination.clone();
+    caller.target_environment_id = None;
+    let archive = format!("owner copy of project-1 via {context_id}");
+    let archive = archive.as_bytes();
+    let mut request = arm_request(archive, now + 10_000);
+    request.plan.context_id = context_id.to_string();
+    if !with_project {
+        request.plan.development =
+            crate::managed_context::package::ManagedContextDevelopmentSelection::Empty;
+    }
+    request.plan.destination = destination.clone();
+    request.target_environment_id = String::new();
+    request.destination_parent = root.join("destinations");
+    let armed = store.arm(request, now).expect("arm owner copy");
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin owner copy");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
+            now + 2,
+        )
+        .expect("upload owner copy");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim owner copy"),
+    );
+    let mut receipt = serde_json::from_str::<
+        crate::managed_context::package::ManagedContextPackageImportReceipt,
+    >(&managed_package_receipt(
+        &armed.transfer_id,
+        archive,
+        &ready.destination_root,
+    ))
+    .expect("parse owner receipt");
+    receipt.destination = destination;
+    if !with_project {
+        receipt.development =
+            crate::managed_context::package::ManagedContextImportedDevelopment::Empty;
+    }
+    let target = store
+        .launch_target_for_import_receipt(&armed.transfer_id, &receipt)
+        .expect("owner launch target");
+    register(&target);
+    store
+        .commit_import(
+            &armed.transfer_id,
+            &serde_json::to_string(&receipt).expect("serialize owner receipt"),
+            now + 4,
+        )
+        .expect("commit owner copy");
+    target
+}
+
 #[test]
 fn repeated_owner_copies_of_one_project_register_distinct_target_projects() {
     let root = test_root("owner-repeat-copy");
     let now = current_time_ms();
     let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
-    let destination = Some(
-        crate::managed_context::owner_managed::OwnerManagedDestination::OwnerManagedMachine {
-            machine_id: "machine-target".to_string(),
-            kernel_id: "kernel-target".to_string(),
-        },
-    );
-    let mut caller = caller(&sha256_bytes(b"source-key"));
-    caller.target_destination = destination.clone();
-    caller.target_environment_id = None;
     let harness = crate::local::test_support::LocalRouterTestHarness::new();
     let runtime = harness.runtime_state();
     let mut project_ids = Vec::new();
     for context_id in ["context-1", "context-2"] {
-        let archive = format!("owner copy of project-1 via {context_id}");
-        let archive = archive.as_bytes();
-        let mut request = arm_request(archive, now + 10_000);
-        request.plan.context_id = context_id.to_string();
-        request.plan.destination = destination.clone();
-        request.target_environment_id = String::new();
-        request.destination_parent = root.join("destinations");
-        let armed = store.arm(request, now).expect("arm owner copy");
-        store
-            .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
-            .expect("begin owner copy");
-        store
-            .upload_chunk(
-                &armed.transfer_id,
-                &armed.capability,
-                &caller,
-                ManagedContextTransferChunk {
-                    offset: 0,
-                    bytes: archive,
-                    sha256: &sha256_bytes(archive),
-                },
-                now + 2,
-            )
-            .expect("upload owner copy");
-        let ready = claimed(
-            store
-                .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
-                .expect("claim owner copy"),
-        );
-        let mut receipt = serde_json::from_str::<
-            crate::managed_context::package::ManagedContextPackageImportReceipt,
-        >(&managed_package_receipt(
-            &armed.transfer_id,
-            archive,
-            &ready.destination_root,
-        ))
-        .expect("parse owner receipt");
-        receipt.destination = destination.clone();
-        let target = store
-            .launch_target_for_import_receipt(&armed.transfer_id, &receipt)
-            .expect("owner launch target");
         // MP-07 / MP-08: finalization registers each fresh copy, published
         // under its own transfer directory, before completing the import.
-        runtime
-            .ensure_managed_context_project(&target, "user-1")
-            .expect("a repeated owner copy registers its target Project");
-        store
-            .commit_import(
-                &armed.transfer_id,
-                &serde_json::to_string(&receipt).expect("serialize owner receipt"),
-                now + 4,
-            )
-            .expect("commit owner copy");
+        let target = commit_owner_copy(&store, &root, context_id, now, true, |target| {
+            runtime
+                .ensure_managed_context_project(target, "user-1")
+                .expect("a repeated owner copy registers its target Project");
+        });
         let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { project_id, .. } =
             target.development
         else {
@@ -2379,5 +2407,61 @@ fn repeated_owner_copies_of_one_project_register_distinct_target_projects() {
         project_ids.push(project_id);
     }
     assert_ne!(project_ids[0], project_ids[1]);
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn r4_owner_kernel_accepts_more_copies_than_the_disposable_record_limit() {
+    // MP-07 / MP-08: a reusable owner machine has no lifetime import ceiling;
+    // aged-out receipts preserve launch authority and replay protection.
+    let root = test_root("owner-lifetime-copies");
+    let now = current_time_ms();
+    let hour = 60 * 60 * 1_000;
+    let copies = MAX_TRANSFER_RECORDS + 44;
+    let mut store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    for index in 0..copies {
+        let at = now + index as u64 * hour;
+        commit_owner_copy(
+            &store,
+            &root,
+            &format!("context-{index:04}"),
+            at,
+            index % 2 == 0,
+            |_| {},
+        );
+        if index % 100 == 99 {
+            drop(store);
+            store = ManagedContextTransferStore::open(root.clone()).expect("reopen store");
+        }
+    }
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).expect("reopen transfer store");
+    let last = format!("context-{:04}", copies - 1);
+    let digest = format!("sha256:{}", "1".repeat(64));
+    store
+        .launch_target(&last, &digest)
+        .expect("the newest owner copy keeps its launch authority");
+    store
+        .launch_target("context-0000", &digest)
+        .expect("the oldest copy retains its launch authority");
+    store
+        .authorize_owner_launch_target(
+            "context-0000",
+            "user-1",
+            "realm-1",
+            &sha256_bytes(b"target-key"),
+        )
+        .expect("the oldest copy retains its owner authority");
+    let mut replay = arm_request(b"replay", now + copies as u64 * hour + 10_000);
+    replay.plan.context_id = "context-0000".into();
+    replay.plan.destination = owner_destination();
+    replay.target_environment_id.clear();
+    replay.destination_parent = root.join("destinations");
+    assert!(
+        store.arm(replay, now + copies as u64 * hour).is_err(),
+        "an aged-out owner copy cannot replay"
+    );
+    let at = now + copies as u64 * hour;
+    commit_owner_copy(&store, &root, "context-after-reopen", at, false, |_| {});
     fs::remove_dir_all(root).expect("remove transfer root");
 }

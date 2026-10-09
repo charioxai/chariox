@@ -121,21 +121,24 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             "managed context transfer state exceeds its record limit",
         ));
     }
-    if state.consumed_context_ids.len() > MAX_TRANSFER_RECORDS {
+    if disposable_consumed_contexts(state) > MAX_TRANSFER_RECORDS {
         return Err(transfer_error(
             "managed context consumed authorization state exceeds its record limit",
         ));
     }
-    if state.applied_contexts.len() > MAX_TRANSFER_RECORDS {
+    if state
+        .applied_contexts
+        .values()
+        .filter(|target| target.destination.is_none())
+        .count()
+        > MAX_TRANSFER_RECORDS
+    {
         return Err(transfer_error(
             "managed context launch target state exceeds its record limit",
         ));
     }
     for context_id in &state.consumed_context_ids {
         validate_identifier(context_id, "consumed context")?;
-    }
-    if state.owner_context_authorities.len() > MAX_TRANSFER_RECORDS {
-        return Err(transfer_error("owner context authority capacity exceeded"));
     }
     for (context_id, authority) in &state.owner_context_authorities {
         if !state
@@ -417,6 +420,32 @@ pub(super) fn prune_expired(state: &mut PersistedTransferState, now_ms: u64) -> 
         state.entries.remove(transfer_id);
     }
     expired
+}
+
+// MP-07 / MP-08 / MP-11: keep all replay/launch bindings for owner copies;
+// the disposable target quota counts only Cloud-environment contexts. The
+// existing bounded state-file admission still reserves space for live receipts.
+pub(super) fn disposable_consumed_contexts(state: &PersistedTransferState) -> usize {
+    state
+        .consumed_context_ids
+        .iter()
+        .filter(|id| !state.owner_context_authorities.contains_key(*id))
+        .count()
+}
+
+pub(super) fn reserved_disposable_contexts(state: &PersistedTransferState) -> usize {
+    disposable_consumed_contexts(state)
+        + state
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.plan.destination.is_none()
+                    && !matches!(
+                        entry.phase,
+                        ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
+                    )
+            })
+            .count()
 }
 
 pub(super) fn random_identifier(prefix: &str) -> String {

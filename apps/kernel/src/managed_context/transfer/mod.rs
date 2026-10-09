@@ -19,8 +19,9 @@ pub(crate) use model::{
     ReadyManagedContextImport,
 };
 use policy::{
-    authorization_error, authorize_entry, current_time_ms, random_identifier, sha256_bytes, status,
-    transfer_error, validate_arm_request, validate_persisted_state, validate_sha256,
+    authorization_error, authorize_entry, current_time_ms, disposable_consumed_contexts,
+    random_identifier, reserved_disposable_contexts, sha256_bytes, status, transfer_error,
+    validate_arm_request, validate_persisted_state, validate_sha256,
 };
 use storage::{
     create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
@@ -261,18 +262,11 @@ impl ManagedContextTransferStore {
                 "managed context launch authorization conflicts with an existing transfer",
             ));
         }
-        let reserved_contexts = state.consumed_context_ids.len()
-            + state
-                .entries
-                .values()
-                .filter(|entry| {
-                    !matches!(
-                        entry.phase,
-                        ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
-                    )
-                })
-                .count();
-        if reserved_contexts >= MAX_TRANSFER_RECORDS {
+        // MP-07 / MP-08: owner completion bindings remain authoritative after
+        // receipt retention; they do not consume a disposable-target lifetime slot.
+        if request.plan.destination.is_none()
+            && reserved_disposable_contexts(&state) >= MAX_TRANSFER_RECORDS
+        {
             return Err(transfer_error(
                 "managed context consumed authorization capacity is full",
             ));
@@ -657,16 +651,24 @@ impl ManagedContextTransferStore {
                 "owner-managed import requires an authoritative typed receipt",
             ));
         }
-        if state.consumed_context_ids.len() >= MAX_TRANSFER_RECORDS {
+        if existing.plan.destination.is_none()
+            && disposable_consumed_contexts(&state) >= MAX_TRANSFER_RECORDS
+        {
             return Err(transfer_error(
                 "managed context consumed authorization capacity is full",
             ));
         }
-        if launch_target.is_some()
+        if existing.plan.destination.is_none()
+            && launch_target.is_some()
             && !state
                 .applied_contexts
                 .contains_key(&existing.plan.context_id)
-            && state.applied_contexts.len() >= MAX_TRANSFER_RECORDS
+            && state
+                .applied_contexts
+                .values()
+                .filter(|target| target.destination.is_none())
+                .count()
+                >= MAX_TRANSFER_RECORDS
         {
             return Err(transfer_error(
                 "managed context launch target capacity is full",
