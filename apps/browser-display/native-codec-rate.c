@@ -26,7 +26,19 @@ int audited_openh264_rate(void *encoder,int bitrate) {
     assert(bitrate==expected);retunes++;
     return cx_openh264_rate(encoder,bitrate);
 }
-int main(void) {
+int main(int argc,char **argv) {
+    if(argc==2) {
+        void *codec=cx_codec_open(64,64,1000000,1,0);
+        if(!strcmp(argv[1],"missing")) {
+            assert(!codec);puts("MP-08/MP-10 missing OpenH264 does not opt into x264 PASS");
+        } else {
+            assert(!strcmp(argv[1],"x264")&&codec&&!cx_codec_openh264(codec));
+            uint8_t pixels[64*64*4];memset(pixels,255,sizeof(pixels));struct RowResult result[8];
+            assert(cx_codec_encode(codec,pixels,255,NULL,0,result)==1);cx_codec_close(codec);
+            puts("MP-08/MP-10 explicit runtime x264 opt-in PASS");
+        }
+        return 0;
+    }
     const int width=1280,height=800;unsigned char *pixels=malloc(width*height*4);
     memset(pixels,255,width*height*4);
     for(int rows=1;rows<=8;rows+=7) {
