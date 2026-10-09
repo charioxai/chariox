@@ -731,7 +731,7 @@ function inventory(
   overrides: Partial<WaitingRoomInventory> = {},
 ): WaitingRoomInventory {
   return {
-    schemaVersion: 11,
+    schemaVersion: 13,
     inventoryVersion,
     structuralVersion: `structure-${inventoryVersion}`,
     activityRevision: `activity-${inventoryVersion}`,

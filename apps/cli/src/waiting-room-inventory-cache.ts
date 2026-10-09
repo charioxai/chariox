@@ -15,7 +15,7 @@ import { join } from "node:path"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 
 const cacheSchemaVersion = 2
-const inventorySchemaVersion = 11
+const inventorySchemaVersion = 13
 const cacheRetentionMs = 30 * 24 * 60 * 60 * 1_000
 const maximumCachedKernels = 64
 const activityPersistDebounceMs = 5_000
