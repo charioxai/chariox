@@ -19,19 +19,14 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<Option<EnvironmentDetectionCache>, DaemonError> {
-        // Private proposal caches are disposable across corruption and schema rollback.
+        // Private proposal caches are disposable across corruption and schema changes.
         Ok(self.read_detection(project).ok().flatten())
     }
     fn read_detection(
         &self,
         project: &str,
     ) -> Result<Option<EnvironmentDetectionCache>, DaemonError> {
-        let model_path = self.path(project).with_extension("detect-model.json");
-        let path = if std::fs::symlink_metadata(&model_path).is_ok() {
-            model_path
-        } else {
-            self.path(project).with_extension("detect.json")
-        };
+        let path = self.path(project).with_extension("detect.json");
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
@@ -72,9 +67,7 @@ impl ProjectEnvironmentStore {
             return Err(environment_error("detection proposals exceed bounds"));
         }
         crate::config::write_private_file(
-            &self
-                .path(&cache.project_id)
-                .with_extension("detect-model.json"),
+            &self.path(&cache.project_id).with_extension("detect.json"),
             &bytes,
         )
         .map_err(|_| environment_error("detection cache write failed"))
