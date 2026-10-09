@@ -695,3 +695,12 @@ test('human navigation foregrounds the requested tab',()=>using(async({host,page
  assert.equal(pages.get(firstTarget).url,'https://www.wikipedia.org/');
  host.chromium.desktop=null;
 }));
+
+// MP-08/MP-11: background agent navigation cannot acquire the human foreground.
+for (const flags of [{_agent_input:true},{focused_agent:'agent-a'}]) test('MP-08/MP-11 agent navigation preserves physical focus '+Object.keys(flags)[0],()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://en.wikipedia.org/wiki/Linux'});
+ host.chromium.desktop={};
+ host.browser.manageTab=async()=>{throw new Error('agent navigation must not activate a desktop tab')};
+ await host.request({op:'navigate',tab_id:opened.tab_id,generation:opened.generation,url:'https://www.wikipedia.org/',...flags});
+ host.chromium.desktop=null;
+}));
