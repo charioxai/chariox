@@ -86,21 +86,25 @@ def begin(expected_window, value, connection=None):
             if owned_connection: connection.close()
         desktop = pyatspi.Registry.getDesktop(0)
         pending = [desktop.getChildAtIndex(i) for i in range(desktop.childCount)]
+        if desktop.childCount > 64: raise ValueError('Vault fill field unavailable')
         candidates = []
         visited = 0
+        complete = True
         while pending and visited < 8192:
             node = pending.pop(); visited += 1
             if not node or node.get_process_id() != pid: continue
             state = node.getState()
             if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_EDITABLE): candidates.append(node)
-            pending.extend(node.getChildAtIndex(i) for i in range(min(node.childCount, 8192-visited)))
-        if len(candidates) != 1: return None
+            count = node.childCount
+            if count > 8192-visited: complete = False
+            pending.extend(node.getChildAtIndex(i) for i in range(min(count, 8192-visited)))
+        if not complete or pending or len(candidates) != 1: raise ValueError('Vault fill field unavailable')
         node = candidates[0]
         target = {**identity(node), 'window': expected_window, 'pending': True,
                   'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
         update(lambda targets: [t for t in targets if (t['pid'],t['path']) != (target['pid'],target['path'])] + [target])
         return node, target
-    except Exception: return None  # Native best effort: no desktop blackout.
+    except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
 def finish(record):
@@ -130,7 +134,7 @@ def matches(node, target):
             return node.queryText().characterCount == target['length'] and target['length'] > 0
         value = field_value(node)
         return bool(value) and hashlib.sha256(value.encode()).hexdigest() == target['value_hash']
-    except Exception: return False
+    except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
 def regions():
@@ -139,9 +143,9 @@ def regions():
     if not targets: return []
     import pyatspi
     try:
-        from Xlib import X, display
+        from Xlib import X, display, error
     except ModuleNotFoundError:
-        from selkies.Xlib import X, display
+        from selkies.Xlib import X, display, error
     connection = open_display(display)
     desktop = pyatspi.Registry.getDesktop(0)
     retained, boxes = [], []
@@ -149,6 +153,9 @@ def regions():
         for target in targets:
             try:
                 window = connection.create_resource_object('window', target['window'])
+                owner = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
+                if owner is None or len(owner.value) != 1: raise ValueError('Vault fill field unavailable')
+                if int(owner.value[0]) != target['pid']: continue  # Reused XID retires the old field.
                 if window.get_attributes().map_state != X.IsViewable:
                     retained.append(target); continue
                 app = next((desktop.getChildAtIndex(i) for i in range(desktop.childCount)
@@ -159,7 +166,10 @@ def regions():
                     if not item: continue
                     if item.path == target['path']: node = item; break
                     pending.extend(item.getChildAtIndex(i) for i in range(min(item.childCount,8192-visited)))
-                if node is None or not matches(node, target): continue
+                if node is None:
+                    if pending: raise ValueError('Vault fill field unavailable')
+                    continue
+                if not matches(node, target): continue
                 retained.append(target)
                 if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT: continue
                 if not node.getState().contains(pyatspi.STATE_SHOWING): continue
@@ -181,7 +191,8 @@ def regions():
                 left, top = max(0,x-pad), max(0,y-pad)
                 right, bottom = min(screen.width_in_pixels,x+w+pad), min(screen.height_in_pixels,y+h+pad)
                 if right > left and bottom > top: boxes.append([left,top,right-left,bottom-top])
-            except Exception: continue  # Native best effort, never a window mask.
+            except error.BadWindow: continue  # A destroyed window retires its exact field.
+            except Exception: raise ValueError('Vault fill field unavailable') from None
     finally: connection.close()
     if retained != targets:
         removed = {t['registration'] for t in targets if t not in retained}

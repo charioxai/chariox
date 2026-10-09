@@ -46,4 +46,17 @@ class FillTests(unittest.TestCase):
             self.assertEqual(fill.read(),[{'registration':2,'value_hash':'new-fingerprint'}])
             self.assertEqual(fill.store_path().stat().st_mode & 0o777,0o600)
 
+class FillProofTests(unittest.TestCase):
+    def test_mp11_unknown_live_field_state_refuses_capture(self):
+        target={'pid':200,'started':'one','path':'/entry','value_hash':'public-fingerprint','length':5}
+        node=SimpleNamespace(getRole=lambda:0)
+        with patch.dict(sys.modules,pyatspi=SimpleNamespace(ROLE_PASSWORD_TEXT=1)),patch.object(fill,'identity',return_value={key:target[key] for key in ('pid','started','path')}),patch.object(fill,'field_value',side_effect=RuntimeError('private diagnostic')):
+            with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):
+                fill.matches(node,target)
+
+    def test_mp11_missing_registration_refuses_vault_input(self):
+        with patch.dict(sys.modules,pyatspi=None):
+            with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):
+                fill.begin(10,'public-disposable-canary')
+
 if __name__=='__main__':unittest.main()
