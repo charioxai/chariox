@@ -19,6 +19,21 @@ test('MP-11 rejects root and inherited desktop authority', () => {
   assert.equal(env.ACCESSIBILITY_ENABLED, '1');
   assert.equal(env.NO_AT_BRIDGE, '0');
 });
+test('MP-08/MP-10/MP-11 encoder settings cross the owned desktop environment boundary', () => {
+  const native = {
+    CHARIOX_BROWSER_DISPLAY_OPENH264: '/public/libopenh264.so.8',
+    CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER: 'libopenh264',
+    CHARIOX_BROWSER_DISPLAY_SOFTWARE: '1',
+    LIBVA_DRIVER_NAME: 'iHD',
+    CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS: '4',
+  };
+  const env = desktopEnvironment({ ...native, CHARIOX_TEST_CONTROL_SECRET: 'synthetic', DISPLAY: ':0' }, '/owned/runtime', 1000);
+  for (const [name, value] of Object.entries(native)) assert.equal(env[name], value, name);
+  assert.equal(env.CHARIOX_TEST_CONTROL_SECRET, undefined);
+  assert.equal(env.DISPLAY, undefined);
+  assert.equal(env.XAUTHORITY, '/owned/runtime/Xauthority');
+});
+
 test('MP-11 process identity rejects system and invalid signal targets', async () => {
   for (const pid of [0, 1, -1, undefined, NaN, 1.1, Infinity]) assert.equal(validOwnedPid(pid), false);
   assert.equal(await processIdentity(1), null);
