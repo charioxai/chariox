@@ -188,3 +188,11 @@ test('MP-08/MP-10 native readbacks publish without per-frame CDP fences; navigat
  source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});
  assert.equal(source.closed,true);assert.equal(source.sample(),null,'a navigated source never offers its pixels');await source.close();
 });
+// MP-08/MP-10: a DPR1 page on the DSF-2 window: the link-status bubble is
+// 52 physical rows (hosted Wikipedia attestation differed at y 752..771).
+test('MP-10 attestation excludes the status bubble at the window density',async()=>{
+ const {statusBand}=await import('./kernel-browser-native.mjs');
+ assert.deepEqual(statusBand({width:1280,height:800},2),{x:0,y:748,width:1280,height:52});
+ assert.deepEqual(statusBand({width:2560,height:1600},2),{x:0,y:1548,width:2560,height:52});
+ assert.deepEqual(statusBand({width:1920,height:1080},1),{x:0,y:1054,width:1920,height:26});
+});
