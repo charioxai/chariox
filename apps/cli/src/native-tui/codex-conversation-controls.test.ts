@@ -4,12 +4,20 @@ import type { RuntimeProviderRun } from "../cli-types.js"
 import type { LocalIpcClient } from "../ipc.js"
 import { bindCodexDisplayTurn, handleCodexNativeTurnSteer, mapCodexNativeCompaction } from "./codex-conversation-controls.js"
 import { createCodexKernelOutputProjection } from "./codex-kernel-output-projection.js"
+import { extractCodexSteeringPrompt } from "./codex-prompt.js"
 
 const boundRun = {
   id: "run", session_id: "session", agent_instance_id: "agent", provider: "codex",
   state: "Running", structured_endpoint: "ws://fixture", provider_session_id: "old-thread",
 } as RuntimeProviderRun
 const message = { id: "compact", method: "thread/compact/start", params: { threadId: "display-thread" } }
+
+test("MP-08 MP-10 steering receipts preserve text parts and intentional trailing whitespace", () => {
+  assert.equal(extractCodexSteeringPrompt({ input: [
+    { type: "text", text: "compare " }, { type: "text", text: "both sources\n\n" },
+    { type: "localImage", path: "/workspace/source.png" },
+  ] }), "compare both sources\n\n")
+})
 
 test("MP-08 MP-10 projected output turn steers its exact home prompt", async () => {
   const requests: unknown[] = []
@@ -31,9 +39,26 @@ test("MP-08 MP-10 projected output turn steers its exact home prompt", async () 
   } }, opts, (m) => responses.push(m))
   assert.deepEqual(requests, [{ SteerActivePrompt: {
     session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-    expected_active_prompt_id: "projected-home-prompt", prompt: "new direction\n", attachments: [],
+    expected_active_prompt_id: "projected-home-prompt", prompt: "new direction", attachments: [],
   } }])
-  assert.deepEqual(responses, [{ id: "steer", result: { turnId } }])
+  assert.deepEqual(responses.filter((value: any) => value.id !== undefined), [{ id: "steer", result: { turnId } }])
+})
+
+test("MP-08 MP-10 admitted steering returns its committed receipt to the requesting display", async () => {
+  const opts = { ...options(async () => ({ ActivePromptSteered: { prompt: { id: "steer-prompt" } } })),
+    attachmentId: "attachment", inlineLocalAttachments: false }
+  bindCodexDisplayTurn(opts.bindState, "display-thread", "display-turn", "home-prompt")
+  const input = [{ type: "text", text: "new direction" }]
+  const responses: any[] = []
+  await handleCodexNativeTurnSteer({ id: 1, method: "turn/steer", params: {
+    threadId: "display-thread", expectedTurnId: "display-turn", clientUserMessageId: "native-input", input,
+  } }, opts, value => responses.push(value))
+  const receipt = responses.find(value => value.method === "item/completed")
+  assert(receipt, "initiating native display needs a committed steering receipt")
+  assert.equal(receipt.params.turnId, "display-turn")
+  assert.equal(receipt.params.threadId, "display-thread")
+  assert.deepEqual(receipt.params.item, { type: "userMessage", id: "chariox-steering-steer-prompt", clientId: "native-input", content: input })
+  assert.deepEqual(responses.filter(value => value.id !== undefined), [{ id: 1, result: { turnId: "display-turn" } }])
 })
 
 test("MP-08 MP-10 steering preserves kernel rejection without starting or queuing a fallback", async () => {

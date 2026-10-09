@@ -6,7 +6,7 @@ import type { CodexNativeBindingState } from "./codex-turn-submission.js"
 import { getNativeProviderRun } from "./provider-run-control.js"
 import { steerActivePromptRequest } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
-import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+import { extractCodexAttachments, extractCodexSteeringPrompt } from "./codex-prompt.js"
 
 // MP-08 / MP-10: Both the turn/start reply and later output projections
 // identify the home prompt. Keep bounded display aliases, never provider IDs.
@@ -36,9 +36,22 @@ export async function handleCodexNativeTurnSteer(
     })
     const response = await options.client.send<Record<string, unknown>>(steerActivePromptRequest(
       options.sessionId, options.attachmentId, options.agentId, bound.promptId,
-      extractCodexPrompt(message.params), attachments,
+      extractCodexSteeringPrompt(message.params), attachments,
     ))
     if (!("ActivePromptSteered" in response)) throw new Error("kernel did not admit active prompt steering")
+    // MP-08 / MP-10 / MP-11: The kernel echoes steering to other attachments.
+    // Codex also needs a committed receipt on the submitting display to clear
+    // its pending input. Send it only to this caller, after exact-turn admission.
+    const promptId = (response.ActivePromptSteered as { prompt?: { id?: unknown } })?.prompt?.id
+    if (typeof promptId !== "string") throw new Error("kernel did not return a steering prompt identity")
+    const item = {
+      type: "userMessage", id: `chariox-steering-${promptId}`,
+      clientId: typeof message.params?.clientUserMessageId === "string" ? message.params.clientUserMessageId : null,
+      content: Array.isArray(message.params?.input) ? message.params.input : [],
+    }
+    for (const method of ["item/started", "item/completed"]) {
+      sendClient({ jsonrpc: "2.0", method, params: { threadId: bound.threadId, turnId, item } })
+    }
     sendClient({ id: message.id, result: { turnId } })
   } catch (error) {
     sendClient({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } })
