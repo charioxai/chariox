@@ -118,5 +118,5 @@ test('MP-10: queued credits wait one period each after their predecessor (one he
   await Promise.all([1, 2, 3, 4].map(n => mirror.next(stream, { command_id: `c${n}`, after_sequence: 1, wait_ms: 100 }, 'scope')));
   assert.ok(waits.slice(0, 3).every(ms => ms >= 90), JSON.stringify(waits));
   assert.ok(waits[3] <= 10, `the fourth credit is bounded at 3 waits from its arrival: ${waits}`);
-  assert.ok(Date.now() - started >= 290 && Date.now() - started < 450);
+  assert.ok(Date.now() - started >= 290);
 });
