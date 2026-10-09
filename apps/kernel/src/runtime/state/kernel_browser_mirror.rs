@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(mirror_wire_result(true, echo.clone()).unwrap(), echo);
         // A keystroke-sized typeahead delta (1-2 KB of repetitive records) is
         // smaller compressed; an incompressible body of that size stays plain.
-        let ops: Vec<Value> = (0..12).map(|i| json!({"op":"text","id":format!("n{}", 2700 + i),"text":"suggestion text"})).collect();
+        let ops: Vec<Value> = (0..24).map(|i| json!({"op":"text","id":format!("n{}", 2700 + i),"text":format!("suggestion text {i}")})).collect();
         let typeahead = json!({"wire":2,"sequence":3,"ops":ops,"resources":[{"key":"r1","data_base64":"AAAA"}],"tiles":[]});
         assert!(serde_json::to_vec(&typeahead).unwrap().len() < 2048);
         let wire = mirror_wire_result(true, typeahead.clone()).unwrap();
