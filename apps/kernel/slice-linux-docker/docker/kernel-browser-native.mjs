@@ -73,9 +73,10 @@ export class LinuxCapture {
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
    // Window bounds are host DIPs: the negotiated raster divided by host scale.
    const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds});
    // The X window resize is asynchronous; the worker needs its final size.
-   for(let n=0;n<50;n++){const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
+   // Chromium can drop a bounds change (the first DPR1 viewer after a browser
+   // launch kept 1280x887 DIPs): re-send until it reports the requested size.
+   for(let n=0;n<50;n++){if(n%10===0)await this.connection.send('Browser.setWindowBounds',{windowId,bounds});const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
    await this.connection.send('Page.bringToFront',{},this.sessionId);
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.

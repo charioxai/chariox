@@ -156,6 +156,24 @@ for(const scale of [1,2])test(`MP-10 native window fits negotiated DPR${scale} b
  assert.equal(source.attested,false,'bounds do not admit a surface');assert.equal(source.latest,null);
 });
 
+// MP-08/MP-10: hosted, the first DPR1 viewer after a browser launch saw its
+// bounds change dropped (Chromium still reported 1280x887 a second later), so
+// the native start refused and the view stayed on CDP capture for seconds.
+test('MP-10 native start re-sends window bounds that Chromium dropped',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const stop=Error('front'),sets=[];let applied=null;
+ const connection={subscribe:()=>()=>{},send:async(method,params)=>{
+  if(method==='Browser.getWindowForTarget')return {windowId:7};
+  if(method==='Browser.setWindowBounds'){sets.push(params.bounds);if(sets.length===2)applied=params.bounds;return {};}
+  if(method==='Browser.getWindowBounds')return {bounds:applied??{width:1280,height:887,windowState:'normal'}};
+  if(method==='Page.bringToFront')throw stop;
+  assert.fail('unexpected '+method);
+ }};
+ const source=new LinuxCapture({pid:42,connection,tab:{target_id:'own'},scale:1,hostScale:2});source.valid=()=>true;
+ await assert.rejects(source.start(),stop);
+ assert.equal(sets.length,2);assert.deepEqual(sets[1],{width:640,height:487});
+});
+
 // MP-08/MP-10/MP-11: renderer image scale must match the physical DPR1 host
 // window; deviceScaleFactor alone produces a different native DPR2 surface.
 for(const scale of [1,2])test(`MP-10 negotiated DPR${scale} also selects native view image scale`,async()=>{
