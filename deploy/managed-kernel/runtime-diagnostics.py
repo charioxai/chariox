@@ -17,7 +17,7 @@ import time
 import urllib.parse
 import urllib.request
 
-EVENTS = frozenset(('prompt_dispatch provider_dispatch_start provider_dispatch_returned provider_dispatch_failed heartbeat_sent heartbeat_failed update_poll '
+EVENTS = frozenset(('prompt_dispatch provider_dispatch_start provider_dispatch_returned provider_dispatch_failed heartbeat_sent heartbeat_failed cloud_presence_start cloud_presence_acknowledged cloud_presence_failed update_poll '
     'update_poll_failed update_unit_running update_recovery update_pending update_applied '
     'update_failed update_cloud_acknowledged update_download update_downloaded '
     'update_unit_starting update_unit_started prepared stopped activated committed '

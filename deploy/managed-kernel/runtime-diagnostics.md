@@ -28,7 +28,8 @@ observer records before beginning the A→B cell.
 MP-07/MP-08/MP-10: records distinguish user prompt dispatch from provider dispatch
 start, return and failure; provider dispatch return does not prove provider turn
 completion. Heartbeat success means a real relay socket write, not relay receipt
-or Cloud freshness. Upgrade polling, download, unit launch, recovery, pending
+or Cloud freshness. Separate Cloud presence start/acknowledged/failed records
+wrap the real signed presence HTTP request; they never contain its body. Upgrade polling, download, unit launch, recovery, pending
 settlement, applied/failed evidence and Cloud response are recorded. The detached
 transaction records prepared before stopping the kernel, then stopped, activated,
 committed or rolled_back after the corresponding durable phase write. Download
