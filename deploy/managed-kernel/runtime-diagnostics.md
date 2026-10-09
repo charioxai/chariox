@@ -50,12 +50,16 @@ Observer acknowledgement follows file and directory fsync. A failed request
 retains the guest journal and retries; no acknowledgement is manufactured.
 
 MP-07/MP-09/MP-10: before teardown, capture the failing real client screenshot and
-product state, stop the guest's bootstrap/update/ship units only after its update
-has settled or the campaign has recorded the failure, then run `ship --once`
-through the real guest shell and save its ACKNOWLEDGED_SNAPSHOT receipt on the
-observer. With producers stopped, compare its record count and snapshot hash to
-the retained observer records. Collection failure is RED, never a diagnostic
-pass. The independently armed cost/cleanup watchdog retains its authority and
+product state, run `ship --once` through the real guest provider shell while
+that shell is still alive, and save its ACKNOWLEDGED_SNAPSHOT receipt on b3.
+Compare its record count and snapshot hash against the corresponding canonical
+observer records. This proves the collected cutoff, not records written later.
+Keep continuous shipping alive until actual provider deletion. For a final
+snapshot with producers stopped, arm a detached validation unit through the
+real provider first; that unit must stop bootstrap/update/ship, run `ship --once`
+and retain its public receipt independently of the killed provider. Do not
+expect a provider inside the stopped bootstrap cgroup to collect afterward.
+Collection failure is RED, never a diagnostic pass. The independently armed cost/cleanup watchdog retains its authority and
 must still delete resources at its deadline; diagnostics cannot postpone that
 bound. Continuous shipping keeps earlier evidence on b3 if the guest becomes
 unreachable. Record an incomplete final snapshot honestly before forced deletion.
