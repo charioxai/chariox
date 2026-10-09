@@ -1,6 +1,6 @@
 import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -20,6 +20,7 @@ import {
   INVENTORY_SCHEMA,
   MP_ROWS,
   parseArgs,
+  parseStatus,
   PRIOR_REVIEWED_SOURCE_COMMIT,
   PRIOR_REVIEWED_SOURCE_TREE,
   stableJson,
@@ -27,6 +28,41 @@ import {
 
 const COMMIT = PRIOR_REVIEWED_SOURCE_COMMIT;
 const TREE = PRIOR_REVIEWED_SOURCE_TREE;
+
+test("MP-11 porcelain NUL records retain both rename/copy paths and literal arrows", () => {
+  assert.deepEqual(parseStatus("R  new name\0old name\0 C copy\0original\0 M literal -> name\0"),
+    ["new name", "old name", "copy", "original", "literal -> name"]);
+  assert.throws(() => parseStatus("R  new\0"), /incomplete git status/);
+});
+
+test("MP-11 real Git status preserves rename/copy paths, spaces, Unicode and literal arrows", () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-mp11-status-"));
+  const git = (...args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "--quiet");
+    writeFileSync(join(root, "old name"), "rename content\n".repeat(20));
+    writeFileSync(join(root, "original ü"), "copy content\n".repeat(20));
+    writeFileSync(join(root, "literal -> name"), "literal\n");
+    git("add", ".");
+    git("-c", "user.name=MP-11 fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "MP-11 status fixture");
+    git("mv", "old name", "new name");
+    copyFileSync(join(root, "original ü"), join(root, "copy -> café"));
+    // Git detects copies from modified sources with status.renames=copies.
+    writeFileSync(join(root, "original ü"), "copy content\n".repeat(20) + "changed\n");
+    writeFileSync(join(root, "literal -> name"), "literal modified\n");
+    git("add", ".");
+    writeFileSync(join(root, "untracked -> 日本語 name"), "untracked\n");
+    const output = git("-c", "status.renames=copies", "status", "--porcelain=v1", "--untracked-files=all", "-z");
+    assert.ok(output.includes("C  copy -> café\0original ü\0"), "real Git emitted a copy record");
+    assert.ok(output.includes("R  new name\0old name\0"), "real Git emitted a rename record");
+    assert.deepEqual(parseStatus(output), [
+      "copy -> café", "original ü", "literal -> name", "new name", "old name", "original ü", "untracked -> 日本語 name",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inheritedRestriction = false, unknownProjection = false, protectedParent = true, errorMapping = true, shutdown = true, path1ServiceTopology = "path1" } = {}) {
   const release = [...Array(38).fill("// reviewed release fixture"), "pub(super) fn verify_release(", "  manifest_path: &Path,", ");"].join("\n") + "\n";

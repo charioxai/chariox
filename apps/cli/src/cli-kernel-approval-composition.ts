@@ -9,7 +9,7 @@ import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
-import { respondToInteraction } from "./prompt-runtime-api.js"
+import { respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
@@ -66,7 +66,9 @@ export function createCliKernelApprovalComposition(deps: {
     respond: (prompt, choiceId, proof) =>
       (prompt.session_id === "" && userAppViewsPrototypeEnabled()
         ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
-        : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof)),
+        : prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
+          ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
+          : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof)),
     notify: deps.notify,
   })
   const surface = createKernelApprovalRenderer(deps.renderer, {
