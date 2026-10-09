@@ -237,7 +237,8 @@ static int row_open(struct Codec *c,struct Row *row,int h,int protected) {
          * so flat black masks stay black (output_safe decodes every packet). */
         long cores=sysconf(_SC_NPROCESSORS_ONLN);
         int threads=c->row_count==1?(int)(cores-1<1?1:cores-1>4?4:cores-1):1;
-        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate,threads,protected?36:0))) return -1;
+        /* x264 rates are kbit/s; OpenH264's API takes bit/s. */
+        if (!row->hardware&&!(row->openh264=cx_openh264_open(ew,eh,rate*1000,threads,protected?36:0))) return -1;
         /* Own I420 planes, laid out as an x264 picture for the shared converters. */
         size_t luma=(size_t)ew*eh,chroma=(size_t)((ew+1)/2)*((eh+1)/2);
         if (!(row->planes=malloc(luma+2*chroma))) return -1;
@@ -292,7 +293,7 @@ int cx_codec_rate(struct Codec *c,int bitrate) {
     for (int r=0;r<c->row_count;r++) {
         struct Row *row=&c->rows[r];if(!row->codec&&!row->openh264)continue;
         int h=2*((c->height/2*(r+1))/c->row_count)-2*((c->height/2*r)/c->row_count);
-        if (row->openh264) {if (cx_openh264_rate(row->openh264,row_rate(c,h))) return -1;continue;}
+        if (row->openh264) {if (cx_openh264_rate(row->openh264,row_rate(c,h)*1000)) return -1;continue;}
         x264_param_t p;x264_encoder_parameters(row->codec,&p);row_rate_control(&p,row_rate(c,h));
         if (x264_encoder_reconfig(row->codec,&p)<0) return -1;
     }
