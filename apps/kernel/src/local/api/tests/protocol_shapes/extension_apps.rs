@@ -6,7 +6,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
     use crate::transport::runtime_tools::{
         extension_runtime_tool_specs, ListExtensionsArgs, LIST_EXTENSIONS_TOOL,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let args = ListExtensionsArgs {
         kind: Some("app".into()),
         apps_cursor: Some("app-099".into()),
@@ -36,7 +36,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
 
 #[test]
 fn app_bindings_use_the_shared_extension_request_contract() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let grant = LocalDaemonRequest::GrantAgentExtension(GrantAgentExtensionRequest {
         workspace_id: None,
         agent_ref: "agent-1".into(),
@@ -93,7 +93,7 @@ fn app_bindings_use_the_shared_extension_request_contract() {
 #[test]
 fn capability_app_authority_protocol_462_shape_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         87

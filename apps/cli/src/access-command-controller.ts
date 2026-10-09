@@ -1,4 +1,4 @@
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { UserDomainAccessController, userDomainGrantExpiry, userDomainResourceLabel, userDomainUseNotice, type UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
 
 type AccessTransport = UserDomainAccessClient & {
@@ -45,6 +45,7 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
       // A command must get fresh authority, including when an earlier feed failed.
       const client = selectedClient()
       if (args[0] === "tabs") {
+        if ((client.localDaemonProtocolVersion ?? LOCAL_DAEMON_PROTOCOL_VERSION) < kernelBrowserAgentTabsMinimumProtocolVersion) throw new Error(`Agent browser tabs require kernel protocol ${kernelBrowserAgentTabsMinimumProtocolVersion} or newer.`)
         const response = await client.send<{KernelBrowser?: {result?: {tabs?: import("@chariox/kernel-client/kernel-types").KernelBrowserTab[]}}; Error?: {message?: string}}>({KernelBrowser: {command: {op: "state"}}})
         if (client !== selectedClient()) throw new Error("Kernel changed during tab command; refresh tabs.")
         const tabs = response.KernelBrowser?.result?.tabs

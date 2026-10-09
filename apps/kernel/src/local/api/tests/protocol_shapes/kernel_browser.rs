@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,9 +130,9 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let result = serde_json::from_str::<serde_json::Value>(include_str!(
-        "kernel-browser-agent-tabs-481.json"
+        "kernel-browser-agent-tabs-486.json"
     ))
     .unwrap()["KernelBrowser"]["result"]
         .clone();
@@ -147,7 +147,7 @@ fn kernel_browser_protocol_443_response_snapshot() {
 
 #[test]
 fn kernel_browser_display_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
@@ -210,11 +210,11 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
 }
 
 #[test]
-fn mp08_agent_tabs_pr937_protocol_481_snapshot_and_hash() {
-    // The combined PR937 bumps OSS main472 to the coordinator-allocated481.
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+fn mp08_agent_tabs_protocol_486_snapshot_and_hash() {
+    // MP-08/MP-11: coordinator486 adds provenance/activity to published PR937481.
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
     let snapshot: serde_json::Value =
-        serde_json::from_str(include_str!("kernel-browser-agent-tabs-481.json")).unwrap();
+        serde_json::from_str(include_str!("kernel-browser-agent-tabs-486.json")).unwrap();
     let response: LocalDaemonResponse = serde_json::from_value(snapshot.clone()).unwrap();
     assert_eq!(serde_json::to_value(response).unwrap(), snapshot);
     assert_eq!(

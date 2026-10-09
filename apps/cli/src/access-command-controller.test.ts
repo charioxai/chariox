@@ -49,7 +49,7 @@ test("retained-use feed prints the shared notice once and stops after cleanup", 
 
 test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL without control", async () => {
   const requests: any[] = [], lines: string[] = []
-  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 481, async send<T>(r: any) {
+  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 486, async send<T>(r: any) {
     requests.push(r)
     if (r.KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {})
     if (r.KernelBrowser.command.op === "list_grants") return {KernelBrowser: {result: snapshot}} as T
@@ -61,4 +61,12 @@ test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL witho
     assert.match(lines.at(-1)!, /human-tab.*Wikipedia.*https:\/\/en.wikipedia.org/)
     assert(requests.every(r => ["state", "list_grants", "subscribe_grants"].includes(r.KernelBrowser.command.op)))
   } finally {controller.stop()}
+})
+
+// MP-08/MP-11: published PR937 cannot promise opener provenance.
+test("MP-08 TUI agent tabs require allocated protocol 486", async () => {
+  const h = fixture()
+  await assert.rejects(h.controller.handle(["tabs"]), /protocol 486/)
+  assert(h.requests.every(r => r.KernelBrowser.command.op !== "state"))
+  h.controller.stop()
 })

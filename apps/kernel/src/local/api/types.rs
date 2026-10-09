@@ -281,4 +281,6 @@ pub use workspace::*;
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
 /// Version 481 combines the multidomain agent-model stack with main 472.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 481;
+/// Version 486 projects agent tab openers and activity to admitted viewers
+/// (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 486;

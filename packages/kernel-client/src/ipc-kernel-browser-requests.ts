@@ -1,8 +1,8 @@
 // MD-2: the same sessionless kernel contract for web, TUI and native clients.
 import type { KernelBrowserCommand, KernelBrowserRequest, KernelBrowserResult } from "./kernel-types.js"
 
-// MP-08/MP-11: diagnostic PR937 base; fresh coordinator allocation required before landing.
-export const kernelBrowserAgentTabsMinimumProtocolVersion = 481
+// MP-08/MP-11: coordinator allocation for shared agent tab provenance/activity.
+export const kernelBrowserAgentTabsMinimumProtocolVersion = 486
 export const kernelBrowserMinimumProtocolVersion = 443
 export const userDomainAccessMinimumProtocolVersion = 443
 

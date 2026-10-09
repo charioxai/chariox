@@ -21,7 +21,7 @@ test("MP-08/MP-10/MP-11 A02 blocked takes priority and retained obligations rema
   assert.equal(sessionAgentTaskStatus(session, "foreign"), null)
 })
 
-test("MP-08/MP-10/MP-11 A02 task DTO requires protocol452",()=>{ assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,481) })
+test("MP-08/MP-10/MP-11 A02 task DTO requires protocol452",()=>{ assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,486) })
 
 
 test("MP-08/MP-09/MP-10/MP-11 A02 malformed wait is safely blocked", () => {

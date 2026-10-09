@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
 test("MD-2: protocol 417 browser requests carry no session or claimed user", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 481)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 486)
   assert.equal(kernelBrowserMinimumProtocolVersion, 443)
   assert.deepEqual(kernelBrowserRequest({ op: "open", url: "https://example.com" }), {
     KernelBrowser: { command: { op: "open", url: "https://example.com" } },
@@ -24,9 +24,8 @@ test("MP-08/MP-11: grant requests and cross-kernel badge share protocol 443", ()
   assert.equal(userDomainWindowBadge({ ...access, focused_agent_kernel_id: "home", reachable_by_focused_agent: true }), null)
 })
 
-// MP-08/MP-11: PR937 already published481. Keep this RED until the coordinator
-// assigns the added projection a fresh version and both clients pin it.
-test("MP-08 agent tab projection requires a fresh protocol after published PR937", () => {
-  assert(kernelBrowserAgentTabsMinimumProtocolVersion > 481, "Coordinator must allocate the new tab projection protocol before landing")
+// MP-08/MP-11: coordinator allocation for the added serialized projection.
+test("MP-08 agent tab projection pins allocated protocol 486", () => {
+  assert.equal(kernelBrowserAgentTabsMinimumProtocolVersion, 486)
   assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelBrowserAgentTabsMinimumProtocolVersion)
 })

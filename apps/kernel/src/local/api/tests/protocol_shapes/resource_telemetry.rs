@@ -7,7 +7,7 @@ use crate::local::{
 
 #[test]
 fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 486);
 
     let request = LocalDaemonRequest::GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest);
     let response = LocalDaemonResponse::KernelResourceTelemetry {
