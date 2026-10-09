@@ -193,7 +193,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn read_complete_room_screenshot(
+    pub(super) async fn read_complete_room_screenshot(
         &self,
         session_id: &str,
         slice: &SliceRecord,
@@ -389,7 +389,7 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn authorize_room_screenshot(
+    pub(super) async fn authorize_room_screenshot(
         &self,
         caller: &KernelCaller,
         session_id: &str,

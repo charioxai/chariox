@@ -38,6 +38,7 @@ export type ParsedSlashCommand =
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "notifications"; raw: string; args: string[] }
   | { kind: "app"; raw: string; args: string[] }
+  | { kind: "access"; raw: string; args: string[] }
   | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
@@ -272,6 +273,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       raw: trimmed,
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
+  }
+  if (/^\/access(?:\s|$)/.test(trimmed)) {
+    return { kind: "access", raw: trimmed, args: trimmed.slice(7).trim().split(/\s+/).filter(Boolean) }
   }
   if (/^\/app(?:\s|$)/.test(trimmed)) {
     try {
@@ -530,6 +534,9 @@ export async function executeSlashCommand(
       break
     case "notifications":
       await handlers.onNotifications?.(command)
+      break
+    case "access":
+      // Owner access commands are intercepted by the shared command route.
       break
     case "app":
       await handlers.onApp?.(command)

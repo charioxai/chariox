@@ -10,12 +10,12 @@ function quadRegion(quad) {
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
 }
 
-export async function locateBrowserRegions(targets, browser, values = []) {
+export async function locateBrowserRegions(targets, browser, values = [], { contentTarget = null, contentScale = 1 } = {}) {
   const regions = [];
   if (typeof browser.ensureConnection === 'function') {
     const connection = await browser.ensureConnection();
     const { targetInfos = [] } = await connection.send('Target.getTargets');
-    const pages = targetInfos.filter(target => target.type === 'page');
+    const pages = targetInfos.filter(target => target.type === 'page' && (!contentTarget || target.targetId === contentTarget));
     // Closed tabs have no pixels. Scan all current pages for delayed copies,
     // including tabs opened by page handlers after the original insertion.
     targets = targets.filter(target => pages.some(page => page.targetId === target.target_id));
@@ -33,8 +33,8 @@ export async function locateBrowserRegions(targets, browser, values = []) {
     }
     const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frameTree.frame.id, worldName: 'chariox-observation-mask' }, sessionId);
     const { result: visibility } = await connection.send('Runtime.evaluate', { contextId: executionContextId, expression: '[document.visibilityState, window.devicePixelRatio, window.innerHeight]', returnByValue: true }, sessionId);
-    if (visibility.value?.[0] === 'hidden') continue; // Confirmed absent from desktop pixels.
-    if (visibility.value?.[0] !== 'visible' || visibility.value?.[1] !== 1) throw new Error('unbound desktop frame');
+    if (!contentTarget && visibility.value?.[0] === 'hidden') continue; // Confirmed absent from desktop pixels.
+    if ((!contentTarget && visibility.value?.[0] !== 'visible') || (visibility.value?.[1] !== (contentTarget ? contentScale : 1))) throw new Error('unbound desktop frame');
     await withBrowserFrames(connection, sessionId, target.target_id, target.document_id ?? top.frameTree.frame.loaderId, async frames => {
       let entry = target.node_ref?.startsWith('frame:')
         ? frames.find(frame => frame.prefix && target.node_ref.startsWith(frame.prefix)) : frames[0];
@@ -42,15 +42,17 @@ export async function locateBrowserRegions(targets, browser, values = []) {
       if (!entry) { target = { target_id: target.target_id, echo_only: true }; entry = frames[0]; }
       const nodeRef = target.echo_only ? 'backend:1' : target.node_ref.slice(entry.prefix.length);
       if (!/^backend:[1-9][0-9]*$/.test(nodeRef)) throw new Error('unknown region');
-      const { bounds } = await connection.send('Browser.getWindowForTarget', { targetId: target.target_id });
+      // CDP screenshots bind to the emulated content viewport, which can be
+      // larger than the native/headless window. Desktop masks still need it.
+      const bounds = contentTarget ? null : (await connection.send('Browser.getWindowForTarget', { targetId: target.target_id })).bounds;
       const { cssLayoutViewport: viewport, cssVisualViewport: visual } = await connection.send('Page.getLayoutMetrics', {}, sessionId);
-      if (bounds.windowState === 'minimized' || visual?.scale !== 1 || !viewport?.clientHeight || viewport.clientHeight > bounds.height) throw new Error('unbound frame');
+      if (visual?.scale !== 1 || !viewport?.clientHeight || (!contentTarget && (bounds.windowState === 'minimized' || viewport.clientHeight > bounds.height))) throw new Error('unbound frame');
       const contentHeight = visibility.value?.[2];
-      if (!Number.isFinite(contentHeight) || contentHeight <= 0 || contentHeight > bounds.height || contentHeight < viewport.clientHeight) throw new Error('unbound content origin');
+      if (!Number.isFinite(contentHeight) || contentHeight <= 0 || (!contentTarget && contentHeight > bounds.height) || contentHeight < viewport.clientHeight) throw new Error('unbound content origin');
       // innerHeight includes the horizontal scrollbar, unlike CDP clientHeight.
       // Browser chrome and the native border sit above the content viewport.
       // Image masking adds padding for the border and outward rounding.
-      const origin = [bounds.left, bounds.top + bounds.height - contentHeight];
+      const origin = contentTarget ? [0, 0] : [bounds.left, bounds.top + bounds.height - contentHeight];
       let offset = [0, 0];
       for (let frame = entry; frame.parent; frame = frame.parent) {
         const owner = await connection.send('DOM.getFrameOwner', { frameId: frame.frame.id }, frame.parent.sessionId);
@@ -105,8 +107,10 @@ export async function locateBrowserRegions(targets, browser, values = []) {
       }
       // Browser titles, URL bars and link-status overlays can echo a Vault value.
       // They are outside DOM layout, so mask their value-free native regions too.
-      regions.push([bounds.left, bounds.top, bounds.width, Math.max(1, bounds.height - contentHeight)]);
-      regions.push([bounds.left, bounds.top + bounds.height - 24, bounds.width, 24]);
+      if (!contentTarget) {
+        regions.push([bounds.left, bounds.top, bounds.width, Math.max(1, bounds.height - contentHeight)]);
+        regions.push([bounds.left, bounds.top + bounds.height - 24, bounds.width, 24]);
+      }
       for (const frame of frames) {
         const current = await connection.send('Page.getFrameTree', {}, frame.sessionId);
         if (current.frameTree?.frame?.loaderId !== frame.frame.loaderId) throw new Error('stale frame');

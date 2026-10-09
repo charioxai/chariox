@@ -8,23 +8,47 @@ impl CommandRouter {
     pub(super) fn authorize_external_request(
         &self,
         command: &KernelCommand,
-        request: &mut LocalDaemonRequest,
+        request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if let Some(authority) = command.external_grant_id() {
-            let session = self
-                .runtime_state
-                .authorize_external_request(&authority, request)?;
-            // Resolve once against authority, then dispatch the exact ID. An
-            // alias collision or concurrent rename cannot switch the target.
-            if command.caller.connection_class == Some(KernelConnectionClass::ExternalAgent) {
-                match request {
-                    LocalDaemonRequest::ResolveSession(request) => request.session_ref = session,
-                    LocalDaemonRequest::DeleteSession(request) => request.session_ref = session,
-                    _ => {}
-                }
-            }
+        // These public routes are human frontend channels; agents use the
+        // focus-admitted MCP seam. Refuse before generic session-grant lookup
+        // so expired/foreign grants cannot flatten the same admission denial.
+        if !command.is_terminal_caller()
+            && matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_)
+                    | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::CaptureVisibleRegion(_)
+                    | LocalDaemonRequest::OpenUserAppView(_)
+                    | LocalDaemonRequest::ListUserAppViews(_)
+                    | LocalDaemonRequest::CloseUserAppView(_)
+                    | LocalDaemonRequest::GetUserAppViewFrontend(_)
+                    | LocalDaemonRequest::CallUserAppView(_)
+                    | LocalDaemonRequest::SubscribeUserAppViews(_)
+                    | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+            )
+        {
+            return Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted,
+            });
         }
-        Ok(())
+        if self.runtime_state.room_agent_tools_enabled()
+            && !command.is_terminal_caller()
+            && (matches!(
+                request,
+                LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_)
+            ) || matches!(request, LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == crate::local::ExtensionKind::App))
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "owner focus and App acquisition require a terminal decision; agents use approved resource tools",
+            ));
+        }
+        if let Some(authority) = command.external_grant_id() {
+            self.runtime_state
+                .authorize_external_request(&authority, request)?;
+        }
+        self.runtime_state
+            .authorize_prompt_attachment_role(command, request)
     }
 
     pub(crate) fn kernel_local_socket_path(&self) -> std::path::PathBuf {
@@ -33,26 +57,6 @@ impl CommandRouter {
 
     pub(crate) fn session_id_for_attachment_access(&self, id: &str) -> Option<String> {
         self.session_projection.session_id_for_attachment(id)
-    }
-
-    pub(super) fn filter_external_response(
-        &self,
-        command: &KernelCommand,
-        result: Result<LocalDaemonResponse, DaemonError>,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        if command.caller.connection_class != Some(KernelConnectionClass::ExternalAgent) {
-            return result;
-        }
-        result.and_then(|mut response| {
-            if let LocalDaemonResponse::SessionsListed { sessions } = &mut response {
-                let granted_session = self.runtime_state.authorize_external_request(
-                    &command.caller.caller_id,
-                    &LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
-                )?;
-                sessions.retain(|session| session.id() == granted_session);
-            }
-            Ok(response)
-        })
     }
 
     pub(super) fn audit_access_terminal_attempt(
@@ -91,9 +95,12 @@ impl CommandRouter {
         ) {
             return Ok(None);
         }
-        if command.caller.connection_class != Some(KernelConnectionClass::Terminal) {
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) {
             return Err(error(
-                "only a Chariox terminal can list or revoke access grants",
+                "only a Chariox terminal or local grant holder can list or revoke access grants",
             ));
         }
         let owner = command_caller_user_id(command);
@@ -115,5 +122,61 @@ impl CommandRouter {
             }
             _ => unreachable!(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod user_domain_admission_tests {
+    use super::*;
+    use crate::runtime::command::KernelCommandSource;
+
+    #[test]
+    fn revoked_grants_and_transport_peers_get_the_same_bounded_frontend_refusal() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let app =
+                crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+            let router = CommandRouter::with_interactive_capacity(
+                std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                4,
+            );
+            for request in [
+                LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                    command: crate::local::KernelBrowserCommand::State,
+                }),
+                LocalDaemonRequest::ListUserAppViews(crate::local::ListUserAppViewsRequest {}),
+            ] {
+                for class in [
+                    KernelConnectionClass::ExternalAgent,
+                    KernelConnectionClass::KernelAgent,
+                    KernelConnectionClass::RelayPeer,
+                    KernelConnectionClass::Unauthenticated,
+                ] {
+                    let mut command = KernelCommand::from_local_request_with_source(
+                        "invalid-admission",
+                        KernelCommandSource::RelayPeer,
+                        None,
+                        None,
+                        &request,
+                    );
+                    command.caller.connection_class = Some(class);
+                    command.caller.caller_id = "revoked-grant".into();
+                    let error = router
+                        .authorize_external_request(&command, &request)
+                        .unwrap_err();
+                    assert!(matches!(
+                        error,
+                        DaemonError::UserDomainRefused {
+                            reason: crate::error::UserDomainRefusalReason::NotGranted
+                        }
+                    ));
+                    assert_eq!(error.to_string(), "User-domain request refused");
+                }
+            }
+            router.runtime_state.shutdown_cleanup().await.unwrap();
+        });
     }
 }

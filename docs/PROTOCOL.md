@@ -1,5 +1,37 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+Client grants retain the existing 30-minute lifetime, including keyed issuance
+and renewal. Initial `/relay cloud client-token` commands issued by a local
+account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
+The shared client authenticates that local endpoint from the same private CLI
+profile, checks the issuing kernel ID and renewal capability, and renews the
+admitted subject, key, session and target through that kernel. Runtime requests
+and events still travel directly to the target over the encrypted relay lanes.
+A machine-only managed target must never replace the account issuer.
+
+If the original issuer is unavailable, the client displays a notice and retries
+within the existing grant lifetime without changing authority or dropping the
+admission. Recovery resumes renewal; reaching the original expiry ends the
+session with an issuer-unavailable message. Authorization refusal still ends
+admission promptly. The issuer route is public endpoint/ID metadata, not a
+credential, and accepts only local Unix or loopback WebSocket endpoints. Moving
+the launch command to another machine does not transfer the issuing profile or
+make its local endpoint reachable. Legacy launch commands without issuer metadata
+cannot automatically discover an account issuer from a machine-only target;
+they retain their original lifetime with the existing warning/until-expiry path.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,
@@ -25,6 +57,94 @@ Draft protocol aligned with `docs/spec-v1.md`.
 
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
+
+## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+
+The owner-approved multidomain access contract is specified in
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
+Focus grants resource-scoped authority; changing focus does not revoke prior
+holders. Existing kernel turn/wake state retains grants until fully idle expiry,
+session/agent end or explicit revocation. Authenticated owner terminals use
+`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
+agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
+holders and non-focused-use notice. Revocation cancels grant epochs and idle
+subscriptions. MP-11: retained holders have the same input and mutations as
+focused agents on granted resources, including typing, keys, Tab and clicks.
+Explicit start/open is allowed; open grants its newly created tab. Claiming an
+unrelated existing resource requires focus. Loading a capability requires focus
+or the A05 owner approval described below. Vault,
+protected regions, sensitive approvals and App/passkey validation keep their
+shared protections. Ordinary input has no retained/focused classification;
+revoke and idle lapse still cancel authority immediately. Observation reads,
+including state, never start/restart Chromium or its controller for any caller;
+stopped/unavailable reads require explicit start/open (`browser_unavailable`).
+Browser/App window projections identify the owning kernel and focused-agent
+reachability; cross-kernel control is refused. Consumers of these new fields and
+commands require local 432. Existing multidomain feature minima remain 427.
+The focused MP-10 drill and protocol snapshots cover these changes; they do not
+alone establish ordinary/managed parity or official-provider wait behavior.
+
+MP-08 / MP-11: ordinary text and text-producing key events use the same
+Vault-only protected-target check, including password/OTP fields, focused
+frames and open nested shadow fields, for both focused and retained holders.
+Successful browser results are bound to the exact admission epoch under the
+grant lock before resource/subscription registration or inventory projection;
+revocation followed by refocus cannot adopt an old call's result into a fresh
+grant. A final live cancellation/provider-run check fences returned results.
+
+### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
+
+Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
+86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+`chariox.vault.generate` replaces `chariox.create_generated_credential`, and
+`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
+focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
+### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+through a human attachment supplies acquisition causation. Agent messages,
+workflows, schedules and continuations do not. A new App binding or kernel
+browser grant also requires the owner's resource-specific `RuntimeInteraction`
+reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
+and a missing owner request return the typed `user_domain_not_requested`
+refusal; a revoke reaching that agent while its decision is pending returns
+`user_domain_not_granted`. Other holders' grant changes do not affect a pending
+decision. Provider MCP errors carry the same code. Existing focus grants remain
+available through the shared browser authority path; focus is the owner's live
+act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
+through idle, revocation or session/agent end.
+Explicit owner focus promotes an existing requested or delegated browser grant
+to that focus lifecycle without retiring its resources, subscriptions or epoch.
+
+Browser loader arguments may request `lifetime_hours` from 1 through 24; the
+default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
+existing resource and Vault-sensitive actions retain the focus checks.
+`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
+to a direct local child. A delegated grant cannot open additional tabs, outlive
+its source or survive source revocation. Grant projections include absolute
+`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
+expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+
+App bindings use the existing trusted installation, admitted publisher key and
+capability checks. Issued bindings carry an optional `app_grant` generation,
+absolute expiry and prompt/delegation attribution; agents cannot submit this
+issued authority as grant input. App grants default to 8 hours and child
+bindings inherit the parent's deadline. Revocation removes only bindings
+actually delegated from that generation, wakes retained calls and prevents an
+old call or expiry wake from adopting a replacement binding. Recovery rearms
+absolute expiry; an untimed legacy binding needs fresh owner approval in room
+mode, and recovery without a live expiry executor fails closed. Recovery
+removals record the normal `agent.extension_revoked` event and
+`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
+resources; they use their Room Browser/Computer route.
+
+Clients consuming this metadata require local 462; relay peer shapes are
+unchanged. The focused A05 drill exercises the built TUI, kernel and official
+Codex resource-approval path: owner Deny with the typed refusal code, owner
+Allow with the 462 grant projection over the real client transport, and the
+live absolute-expiry wake. Source refusal and protocol snapshot tests are
+supplementary and do not establish hosted, public-site or managed acceptance.
 
 ## 1. Scope
 
@@ -2698,9 +2818,10 @@ Workflow trigger and deployment direction:
   automatic mutation replay. Numeric versions never replace capability checks.
   This describes the pre-KA framed Unix transport. KA protocol 404 replaces
   that listener with the shared kernel websocket at `ws+unix://`, admitted by
-  OS process identity and session grants. First-party terminal control uses
-  the authenticated TCP or relay websocket path; an external Unix grant does
-  not authorize global disposable-worker or managed-environment controls.
+  OS process identity and access grants. Protocol 451 grants ordinary authority
+  throughout the local kernel, including its managed execution environments.
+  First-party terminal control uses the authenticated TCP or relay websocket
+  path; external Unix grants cannot attach to another kernel.
 - protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),
@@ -2763,32 +2884,55 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, session, and lifetime.
+  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
+  and extension decisions, established from the same OS-verified holder:
+  `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
+  Linux start ticks or macOS unique process ID), `process_exec_version` (macOS
+  exec version, zero on Linux), and optional `provider_harness` (`codex`,
+  `claude`, or `opencode`). Harness recognition matches the configured native
+  executable (including Codex's official npm native package); unknown paths
+  omit it. This field is attribution, not vendor/signature attestation or new
+  authority. Text remains display-only, with quoted/escaped executable paths;
+  clients must never parse requester identity from it. TUI labels use the
+  structured object and show identity unavailable for old kernels. New access
+  requests and kernel-wide approval replies require protocol 470; refusals
+  remain supported on protocol 451 and legacy session-scoped replies retain
+  their existing route. Other client/relay/native minimums are unchanged.
+  MP-08 / MP-10 / MP-11 focused drill:
+  `python3 apps/cli/scripts/live-kernel-access-requester-drill.py --kernel <built-kernel> --cli <compiled-cli> --codex-profile <approved-product-linked-profile> --source <commit> --output <external-evidence-dir>`.
+  This real outside-Codex drill refuses the grant through TUI keyboard input,
+  never approving access or changing a shared provider login. `--local-cli`
+  is supplementary regression evidence only, not provider acceptance.
+  Approve needs a fresh
   terminal passkey; the critical-approval remember window never applies.
   The owner may choose a lifetime through the approve answer's numeric
   `custom_reply`. Refuse needs no passkey.
 
   `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
-  a credential. A grant authorizes the live holder and its OS descendants
-  for one session. Kernel-launched processes receive no external authority,
-  even if the holder is an ancestor of the kernel. Session IDs, references,
-  attachments, and every session in a batch are checked. `ListSessions`
-  returns only the granted session. Global requests fail closed. Saved workflow
-  artifacts live in kernel/user registries, so direct artifact creation, lookup,
-  enumeration, mutation, import, and artifact-target export are outside external
-  session grants even when their envelopes include a session ID. Session-local source
-  Apply/Run and exports targeting a workflow remain available. The scope
-  match covers every request variant without a fallback, so an undecided new
-  request fails compilation. A grant cannot answer kernel-owned decisions
-  or critical approvals, or submit a passkey.
+  a credential. Protocol 451 removes `session_id` from this metadata. A grant
+  authorizes the live holder and its OS descendants across the whole LOCAL
+  kernel: every ordinary session/global request a terminal can make, including
+  session creation/attachment, agent prompts/spawns, workflows, App installs and
+  bindings, routine approvals and Vault use through kernel-owned flows.
+  Kernel-launched agents receive no external authority even if the holder is
+  their ancestor. Normal ownership and membership checks still apply.
+  The holder cannot answer critical/passkey-required approvals or payments,
+  mint/extend grants, change the passkey/access configuration, read/export
+  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
+  leased-worker execution remains the local kernel’s responsibility.
+  A holder may request `/sudo` for a local agent in any local session; each
+  request requires a fresh terminal popup confirmation. No remember window
+  applies and the holder never submits the passkey or becomes a sudoagent.
 
   `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
-  terminal-only and scoped to the caller's owned grants; a null grant id
-  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  available to terminals and local grant holders and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
   Workflow controls also recheck after provider-lane and cancellation-settlement
@@ -2805,12 +2949,9 @@ Workflow trigger and deployment direction:
   or home binding persistence. Local controller jobs recheck under the supervisor
   ownership lock; computer helpers recheck inside their blocking process queue.
   A Unix connection binds to its first approved or admitted grant and never
-  switches authority. Session references resolve once to an authorized session
-  ID before dispatch. A later approval on that socket creates a grant for
-  use on a fresh connection; existing subscriptions and queued frames keep
-  their original grant. Fresh connections select an eligible grant matching
-  the requested session. For unscoped requests, a holder's own grant takes
-  precedence over inherited grants.
+  switches authority. Fresh connections prefer the holder’s own eligible
+  process grant over an ancestor’s. There is no session-based selection or
+  response filtering. Session end does not revoke a local-kernel grant.
   Grants stay in memory and do not survive a restart. Durable grant events
   record metadata and outcomes; terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
@@ -2818,10 +2959,14 @@ Workflow trigger and deployment direction:
   TCP and relay access requests return a pointer to the Unix socket; neither
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
-  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  `ws+unix:///absolute/socket`. `chariox access request
   [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
-  the popup and prints public grant metadata. The default holder is the
-  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
+  holder is the nearest installed official provider in the CLI launcher's
+  OS-verified ancestry, including native Codex behind its npm launcher. Unknown
+  programs retain the grandparent fallback and the External program label.
+  Selection preserves exact PID/start/exec identity and grant admission fences.
+  Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
@@ -2858,7 +3003,7 @@ Workflow trigger and deployment direction:
   Terminal authority follows the admitted `terminal` connection class, rather
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
-  access; approved external peers keep the process-bound, session-scoped grant
+  access; approved external peers keep the process-bound, whole-local-kernel grant
   path from protocol 404 and cannot answer critical approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
@@ -2886,7 +3031,7 @@ Workflow trigger and deployment direction:
   No spawned/forked agent inherits elevation.
 - protocol 415: a live external grant holder may send
   `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
-  resolves the exact target to the granted session and raises the same `sudo`
+  resolves the exact local target agent and its session and raises the same `sudo`
   popup, naming the OS-established executable/PID, target/session and full
   requester-supplied prompt. Only host terminals answer it. The outcome is
   `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.
@@ -3300,3 +3445,16 @@ as blocked obligations requiring exact reconciliation, without guessing success.
 PR10 must supply leased event execution and receipt parity before those cells
 are accepted. PR3 supplies process/timer watcher sources. These dependencies
 and the real-provider/hosted validation matrix remain acceptance gates.
+### Protocol 418: user-domain App views
+
+`OpenUserAppView`, `ListUserAppViews`, `CloseUserAppView`,
+`GetUserAppViewFrontend`, `CallUserAppView` and `SubscribeUserAppViews` address
+ephemeral owner-scoped App view instances with no session, Room or slice.
+Bundles contain only verified signed frontend assets; page calls retain the
+existing durable App tool/host-action path and omit the optional SDK
+`room_id`. The owner snapshot subscription includes detached kernel
+`RuntimeInteraction` decisions. `AnswerUserDomainInteraction` uses the
+existing terminal/passkey gate and shared pending-interaction authority;
+a detached passkey popup has an empty session routing field. Room App views
+retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
+for host isolation, lifecycle and migration. No relay-peer shape changes.

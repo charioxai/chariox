@@ -167,10 +167,45 @@ impl CommandRouter {
             }
         };
         let command = meta_kernel_command(Some(&provider_run), &metaagent, &request);
-        let response = match self.dispatch(command, request).await {
+        let app_grant = match &request {
+            LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == ExtensionKind::App => {
+                Some(grant.clone())
+            }
+            _ => None,
+        };
+        let dispatched = match app_grant {
+            Some(grant) => match self
+                .runtime_state
+                .authorize_agent_app_binding(
+                    session.id(),
+                    metaagent.id(),
+                    &grant.agent_ref,
+                    &grant.name,
+                )
+                .await
+            {
+                // Room mode refuses non-terminal App grants at the router, so
+                // the approved permit binds here through the same grant path.
+                Ok(Some(permit)) if self.runtime_state.room_agent_tools_enabled() => self
+                    .runtime_state
+                    .grant_agent_app(
+                        &grant.agent_ref,
+                        crate::extension::ExtensionGrant::app(&grant.name),
+                        metaagent.owner_user_id(),
+                        Some(permit),
+                    )
+                    .await
+                    .map(|agent| LocalDaemonResponse::AgentExtensionGranted { agent }),
+                Ok(Some(_)) => self.dispatch(command, request).await,
+                Ok(None) => Err(meta_command_error("App binding was not approved")),
+                Err(error) => Err(error),
+            },
+            None => self.dispatch(command, request).await,
+        };
+        let response = match dispatched {
             Ok(response) => response,
             Err(error) => {
-                let result = meta_command_failure_result(&args.command, error);
+                let result = meta_command_failure_result(&args.command, &error);
                 self.audit_meta_run_command(
                     Some(provider_run.id()),
                     &session,
@@ -180,6 +215,11 @@ impl CommandRouter {
                     result.payload.clone(),
                 )
                 .await;
+                // MP-08/MP-11: keep the refusal typed for the MCP/client code
+                // projection after recording the normal failed-command audit.
+                if matches!(error, DaemonError::UserDomainRefused { .. }) {
+                    return Err(error);
+                }
                 return Ok(result);
             }
         };
@@ -715,21 +755,13 @@ impl CommandRouter {
                     && tokens.get(2).map(String::as_str) == Some("app") =>
             {
                 let agents = self.runtime_state.session_agents(session.id());
-                let request = meta_app_binding_request(session, metaagent, &tokens[1..], &agents)?;
-                if let LocalDaemonRequest::GrantAgentExtension(grant) = &request {
-                    if !self
-                        .runtime_state
-                        .authorize_agent_app_binding(
-                            session.id(),
-                            metaagent.id(),
-                            &grant.agent_ref,
-                            &grant.name,
-                        )
-                        .await?
-                    {
-                        return Err(meta_command_error("App binding was not approved"));
-                    }
-                }
+                let request = meta_app_binding_request(
+                    session,
+                    metaagent,
+                    &tokens[1..],
+                    &agents,
+                    self.runtime_state.room_agent_tools_enabled(),
+                )?;
                 Ok(request)
             }
             "extension" | "extensions" => meta_extension_import_request(session, &tokens[1..]),

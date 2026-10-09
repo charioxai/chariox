@@ -318,6 +318,13 @@ test("/approvals clears command UI before opening and bypasses shared shell exec
   assert.equal(opened, 1)
 })
 
+test("attachment commands clear their command text before intake inserts image tokens",async()=>{
+  const events:string[]=[]
+  const harness=createHarness({clearPromptText:()=>events.push("clear"),handleAttachmentCommand:()=>{events.push("image-token")}})
+  await createSlashCommandSubmitController(harness.deps).submit("/attach region tab t 0 0 1 1",{allowSlashCommandSubmission:true})
+  assert.deepEqual(events,["clear","image-token"])
+})
+
 // MP-08/MP-10/MP-11: routing must reach the real shared executor, not alias handling.
 test("slash command submit sends workflow notification settings to shared shell", async () => {
   const harness = createHarness({

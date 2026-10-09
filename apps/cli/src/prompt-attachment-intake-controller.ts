@@ -1,3 +1,5 @@
+import { withRegionScreenshot } from "./region-screenshot.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -94,6 +96,16 @@ export function createPromptAttachmentIntakeController(deps: PromptAttachmentInt
     const value = commandLine.replace(/^\/attach\s*/, "").trim()
     if (!value) {
       deps.flashFooter("usage: /attach <path...> | /attach clear | /attach screenshot", "error")
+      return
+    }
+    if (value.startsWith("region ") && userAppViewsPrototypeEnabled()) {
+      const sessionId=deps.sessionState().id, attachmentId=deps.attachmentState()?.id
+      if(!attachmentId)throw new Error("Attach to your prompt session before capturing a region")
+      await withRegionScreenshot({args:value.slice(7).trim().split(/\s+/),sessionId,attachmentId,
+        send: request => deps.client.send(request),
+        check: () => {if(deps.sessionState().id!==sessionId || deps.attachmentState()?.id!==attachmentId)throw new Error("Prompt attachment target changed")},
+        attach: file => attachFiles([file]),
+      })
       return
     }
     if (value === "clear") {

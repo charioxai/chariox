@@ -19,7 +19,8 @@ impl KernelRuntimeState {
             .to_vec();
         match grant.kind {
             crate::extension::ExtensionKind::App => {
-                self.grant_agent_app(agent_ref, grant, caller_user_id).await
+                self.grant_agent_app(agent_ref, grant, caller_user_id, None)
+                    .await
             }
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)

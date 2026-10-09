@@ -13,6 +13,10 @@ pub enum LocalDaemonResponse {
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
+    /// MD-2: operation result; no CDP endpoints or profile paths.
+    KernelBrowser { result: serde_json::Value, },
+    Notes { result: NoteResult, },
+    VisibleRegionCaptured { capture: VisibleRegionCapture },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },
@@ -24,6 +28,13 @@ pub enum LocalDaemonResponse {
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
+    UserAppViewOpened { view: UserAppView, frontend: AppFrontendBundle },
+    UserAppViewsListed { views: Vec<UserAppView> },
+    UserAppViewClosed { view_id: String },
+    UserAppViewFrontend { view: UserAppView, frontend: AppFrontendBundle },
+    UserAppViewCallResult { result: Option<serde_json::Value>, error: Option<AppViewChannelError> },
+    UserAppViewsChanged { cursor: u64, views: Vec<UserAppView>, interactions: Vec<crate::session::RuntimeInteraction> },
+    UserDomainInteractionAnswered { interaction_id: String },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     /// The user's panel choice for the App's views in this session.
     AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },
@@ -327,6 +338,7 @@ pub enum LocalDaemonResponse {
         answer: Option<String>,
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
+    KernelAccessDecisionResponded { interaction_id: String, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
     DeploymentCredentialEnrollmentArmed {
         enrollment_id: String,

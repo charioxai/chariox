@@ -182,7 +182,7 @@ async fn run_controlled_workspace_live_sync_target(
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        82
+        87
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -229,7 +229,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        82
+        87
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -298,7 +298,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        82
+        87
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -536,6 +536,9 @@ async fn proxied_peer_requests_are_handled_through_relay() {
         RelayPeerResponse::Pong {
             value: "hello-remote-kernel".to_string(),
             daemon_id: config_b.daemon_id.clone(),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            ),
         }
     );
 

@@ -1,10 +1,12 @@
 use super::*;
 
 mod agent_lifetime;
+mod kernel_wide;
 mod maintenance;
 mod registration;
 #[cfg(test)]
 mod regression_tests;
+mod user_domain;
 
 /// Refusals that clear once the pending decision is answered.
 pub(crate) const INTERACTION_ALREADY_PENDING: &str =
@@ -28,6 +30,23 @@ fn interaction_error(message: &str) -> DaemonError {
     }
 }
 
+// Empty scope is the detached user domain. Attribute reference failures at
+// their authoritative origin, including races after public owner admission;
+// leave Room diagnostics and unrelated passkey/storage failures unchanged.
+fn interaction_reference_error(
+    session_id: &str,
+    operation: &'static str,
+    message: String,
+) -> DaemonError {
+    if session_id.is_empty() {
+        DaemonError::UserDomainRefused {
+            reason: crate::error::UserDomainRefusalReason::NotGranted,
+        }
+    } else {
+        DaemonError::LocalTransport { operation, message }
+    }
+}
+
 impl KernelRuntimeOwnedState {
     /// The owner and operation of a pending decision whose chosen choice needs
     /// the passkey, when the caller owns that decision and it has not expired
@@ -39,23 +58,37 @@ impl KernelRuntimeOwnedState {
         choice_id: &str,
         caller_user_id: Option<&str>,
     ) -> Option<(String, String)> {
-        let owner = self
+        let pending = self
             .pending_interactions
             .write()
             .get(interaction_id)
-            .filter(|pending| pending.session_id == session_id)
+            .filter(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            })
             .filter(|pending| {
                 pending
                     .kernel_operation_deadline
                     .is_none_or(|deadline| std::time::Instant::now() < deadline)
             })
-            .and_then(|pending| pending.kernel_operation_owner.clone())
+            .cloned()?;
+        let owner = pending
+            .kernel_operation_owner
+            .clone()
             .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
-        let session = self.session_store.get_session(session_id).ok()?;
-        let interaction = session
-            .active_interactions()
-            .iter()
-            .find(|interaction| interaction.id() == interaction_id)?;
+        let interaction = if let Some(interaction) = pending
+            .user_domain_interaction
+            .or(pending.kernel_wide_interaction)
+        {
+            interaction
+        } else {
+            self.session_store
+                .get_session(session_id)
+                .ok()?
+                .active_interactions()
+                .iter()
+                .find(|interaction| interaction.id() == interaction_id)?
+                .clone()
+        };
         interaction
             .choice(choice_id)
             .filter(|choice| choice.requires_passkey())?;
@@ -178,19 +211,20 @@ impl KernelRuntimeOwnedState {
         );
         let pending = {
             let pending = self.pending_interactions.write();
-            pending
-                .get(interaction_id)
-                .cloned()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "resolve runtime interaction",
-                    message: format!("interaction {interaction_id} was not pending"),
-                })?
+            pending.get(interaction_id).cloned().ok_or_else(|| {
+                interaction_reference_error(
+                    session_id,
+                    "resolve runtime interaction",
+                    format!("interaction {interaction_id} was not pending"),
+                )
+            })?
         };
         if pending.session_id != session_id || !pending.belongs_to(&self.session_store) {
-            return Err(DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: "interaction does not belong to the requested session".to_string(),
-            });
+            return Err(interaction_reference_error(
+                session_id,
+                "resolve runtime interaction",
+                "interaction does not belong to the requested session".into(),
+            ));
         }
         if !self.agent_interaction_is_live(&pending) {
             self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
@@ -204,8 +238,10 @@ impl KernelRuntimeOwnedState {
             .or(pending.terminal_credential_owner.as_deref())
             .is_some_and(|owner| Some(owner) != caller_user_id)
         {
-            return Err(interaction_error(
-                "Only the operation owner can answer this decision",
+            return Err(interaction_reference_error(
+                session_id,
+                "runtime interaction",
+                "Only the operation owner can answer this decision".into(),
             ));
         }
         if pending
@@ -214,10 +250,31 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        if let Some(interaction) = &pending.user_domain_interaction {
+            if custom_reply.is_some() || authorizing_terminal.is_some() {
+                return Err(interaction_error(
+                    "Invalid unattached decision reply authority",
+                ));
+            }
+            return self.resolve_user_domain_interaction_locked(
+                interaction_id,
+                interaction,
+                choice_id,
+                passkey_verified,
+                take_host,
+            );
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
-        let mut session = sessions.get_session(session_id)?.clone();
-        if !self.agent_interaction_turn_is_live(&pending, &session) {
+        let mut session = if pending.kernel_wide_interaction.is_some() {
+            None
+        } else {
+            Some(sessions.get_session(session_id)?.clone())
+        };
+        if session
+            .as_ref()
+            .is_some_and(|session| !self.agent_interaction_turn_is_live(&pending, session))
+        {
             drop(sessions);
             drop(activity_mutation);
             self.withdraw_agent_interaction_locked(interaction_id, &pending)?;
@@ -225,15 +282,18 @@ impl KernelRuntimeOwnedState {
                 "Agent interaction was withdrawn because its turn ended",
             ));
         }
-        let interaction = session
-            .active_interactions()
-            .iter()
-            .find(|interaction| interaction.id() == interaction_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "resolve runtime interaction",
-                message: format!("interaction {interaction_id} is not active in session"),
-            })?;
+        let interaction = pending
+            .kernel_wide_interaction
+            .clone()
+            .or_else(|| {
+                session
+                    .as_ref()?
+                    .active_interactions()
+                    .iter()
+                    .find(|interaction| interaction.id() == interaction_id)
+                    .cloned()
+            })
+            .ok_or_else(|| interaction_error("interaction is not active"))?;
         if !passkey_verified
             && interaction
                 .choice(choice_id)
@@ -377,13 +437,17 @@ impl KernelRuntimeOwnedState {
             self.passkey_prompts
                 .record_answered(session_id, interaction_id);
         }
-        let _ = session.remove_active_interaction(interaction_id);
-        sessions.restore_session(session);
+        if let Some(mut session) = session.take() {
+            session.remove_active_interaction(interaction_id);
+            sessions.restore_session(session);
+        }
         activity_mutation.record();
         drop(sessions);
-        self.session_snapshot(session_id)?;
-        self.terminal_stream
-            .notify_terminal_projection_change(session_id);
+        if pending.kernel_wide_interaction.is_none() {
+            self.session_snapshot(session_id)?;
+            self.terminal_stream
+                .notify_terminal_projection_change(session_id);
+        }
         if let Some(sender) = pending
             .responder
             .lock()
@@ -459,6 +523,24 @@ impl KernelRuntimeOwnedState {
         self.pending_interactions.write().remove(interaction_id);
         if pending.passkey_prompt.is_some() {
             self.passkey_prompts.record_change();
+        }
+        if let Some(interaction) = &pending.user_domain_interaction {
+            self.finish_user_domain_interaction(
+                &pending,
+                interaction_id,
+                timeout_runtime_interaction_resolution(interaction),
+            );
+            return Ok(());
+        } else if let Some(interaction) = pending.kernel_wide_interaction.as_ref() {
+            if let Some(sender) = pending
+                .responder
+                .lock()
+                .expect("interaction responder")
+                .take()
+            {
+                let _ = sender.send(timeout_runtime_interaction_resolution(interaction));
+            }
+            return Ok(());
         }
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();

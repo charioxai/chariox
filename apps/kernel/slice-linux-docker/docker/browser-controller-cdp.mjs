@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
+import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
@@ -54,6 +55,22 @@ export class BrowserControllerError extends Error {
     this.name = "BrowserControllerError";
     this.code = code;
   }
+}
+
+// Private provenance survives adapter normalization without trusting a caller's
+// code, message, name or public BrowserControllerError constructor.
+const normalizedStaleReferences = new WeakSet();
+export function isTrustedStaleReferenceError(error) {
+  return normalizedStaleReferences.has(error) || (
+    (error instanceof BrowserActionError || error instanceof BrowserCompatibilityError
+      || error instanceof BrowserSnapshotError)
+    && ["stale_document_reference", "stale_element_reference"].includes(error.code)
+  );
+}
+function normalizeNativeError(error) {
+  const normalized = new BrowserControllerError(error.code, error.message);
+  if (isTrustedStaleReferenceError(error)) normalizedStaleReferences.add(normalized);
+  return normalized;
 }
 
 /** A CDP failure because the target or its session no longer exists. */
@@ -466,9 +483,7 @@ export class BrowserCdpClient {
   // One isolated world per document: polls reuse it, a new document gets a new one.
   // Input capture emulates focus while it runs: report the physical visibility
   // it captured before enabling emulation instead.
-  async readFocus(connection, sessionId, targetId, frame) {
-    const captured = this.inputCapture.visibilityBySession.get(sessionId);
-    if (captured) return captured.visible;
+  async ensureFocusWorld(connection, sessionId, targetId, frame) {
     let world = this.focusWorldsByTarget.get(targetId);
     if (world?.documentId !== frame.loaderId) {
       const created = await connection.send(
@@ -479,6 +494,14 @@ export class BrowserCdpClient {
       world = { documentId: frame.loaderId, contextId: created?.executionContextId };
       this.focusWorldsByTarget.set(targetId, world);
     }
+    return world;
+  }
+  async observeNote(request) { return observeBrowserNote(this, request); }
+
+  async readFocus(connection, sessionId, targetId, frame) {
+    const captured = this.inputCapture.visibilityBySession.get(sessionId);
+    if (captured) return captured.visible;
+    const world = await this.ensureFocusWorld(connection, sessionId, targetId, frame);
     let focus;
     try {
       focus = await connection.send(
@@ -1588,25 +1611,25 @@ function normalizeControllerError(error) {
   }
   if (error instanceof BrowserArtifactError) return new BrowserControllerError(error.code, error.message);
   if (error instanceof BrowserSnapshotError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserActionError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserFileTransferError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserPermissionError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserEventError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserCompatibilityError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   if (error instanceof BrowserHistoryError) {
-    return new BrowserControllerError(error.code, error.message);
+    return normalizeNativeError(error);
   }
   return new BrowserControllerError(
     "browser_controller_internal",

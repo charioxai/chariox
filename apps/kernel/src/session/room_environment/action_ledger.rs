@@ -562,6 +562,12 @@ impl EnvironmentActionLedger {
         }
     }
 
+    /// MD-3: remove only this disconnected actor's control and pending takeover.
+    pub(crate) fn release_actor_input(&mut self, actor_id: &str) {
+        self.input_owners.retain(|_, owner| owner != actor_id);
+        self.pending_takeovers.retain(|_, owner| owner != actor_id);
+    }
+
     pub(crate) fn invalidate_after_kernel_restart(
         &mut self,
         actors: &BTreeMap<String, EnvironmentActor>,
@@ -870,6 +876,27 @@ impl EnvironmentActionLedger {
                 self.requests.remove(&action_id);
             }
             self.order.retain(|candidate| candidate != &action_id);
+        }
+    }
+
+    /// MD-3: sessionless live projections have no durable history consumer. Keep
+    /// their cold history bounded without changing Room retention or active work.
+    pub(crate) fn compact_transient_history(&mut self, capacity: usize) {
+        let removable = self
+            .history_records
+            .iter()
+            .filter(|(_, action)| {
+                action.idempotency_key.is_none() && !self.actions.contains_key(&action.action_id)
+            })
+            .map(|(sequence, _)| *sequence)
+            .collect::<Vec<_>>();
+        for sequence in removable
+            .into_iter()
+            .take(self.history_records.len().saturating_sub(capacity))
+        {
+            if let Some(action) = self.history_records.remove(&sequence) {
+                self.history_action_sequences.remove(&action.action_id);
+            }
         }
     }
 

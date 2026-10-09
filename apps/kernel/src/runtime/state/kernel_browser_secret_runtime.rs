@@ -1,0 +1,433 @@
+//! MD-5: user-domain scope over the Room Vault/observation implementation.
+use super::kernel_browser_runtime::{host_error, PASTE};
+use super::*;
+use crate::local::KernelSudoTurn;
+use crate::runtime::browser_controller_action::BrowserLocatorAction;
+use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
+use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasteArgs {
+    credential_id: String,
+    tab_id: String,
+    generation: u64,
+    document_id: String,
+    node_ref: String,
+    #[serde(default)]
+    submit: bool,
+}
+pub(super) fn paste_spec() -> RuntimeToolSpec {
+    RuntimeToolSpec {
+        name: PASTE.into(),
+        description: "MD-5: insert a Vault credential into an observed editable password field in a user-domain tab (needs focus or a sudo window). Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
+    }
+}
+
+impl KernelRuntimeState {
+    pub(super) async fn kernel_browser_operation(
+        &self,
+        user: &str,
+        agent: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, DaemonError> {
+        if self.slice_kernel_id().is_some() {
+            return Err(host_error(
+                "MD-2: the home kernel owns the user-domain browser".into(),
+            ));
+        }
+        let admission = agent
+            .map(|agent| self.owned.kernel_browser_host.admit(user, agent))
+            .transpose()
+            .map_err(host_error)?;
+        self.kernel_browser_operation_admitted(user, admission, method, params)
+            .await
+    }
+    pub(super) async fn kernel_browser_operation_admitted(
+        &self,
+        user: &str,
+        admission: Option<KernelBrowserAdmission>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, DaemonError> {
+        // Stop must remain available even when observation storage is fenced.
+        if method == "host.browser" && params["op"] == "stop" {
+            return self
+                .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
+                .await;
+        }
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        let at = std::time::Instant::now();
+        let _barrier = protection.barrier(&scope)?.read_owned().await;
+        crate::transport::kernel_browser_display::timing("barrier", at);
+        self.kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
+            .await
+    }
+
+    // Caller holds the scope's capture/input barrier for every protected operation.
+    async fn kernel_browser_bound_operation(
+        &self,
+        user: &str,
+        admission: Option<&KernelBrowserAdmission>,
+        method: &str,
+        params: Value,
+        protect: bool,
+    ) -> Result<Value, DaemonError> {
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        let policy = if protect {
+            protection.require(&scope, false)?;
+            serde_json::from_str(&protection.capture_policy(&scope)?)
+                .map_err(|_| host_error("MD-5: invalid observation policy".into()))?
+        } else {
+            Value::Null
+        };
+        let host = self.owned.kernel_browser_host.clone();
+        let admission = admission.cloned();
+        let (user, method) = (user.to_string(), method.to_string());
+        let pixels =
+            method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let display = method == "host.browser"
+            && params["op"] == "screenshot"
+            && params["display_subscription_id"].is_string();
+        let mirror = method == "host.browser" && params["op"] == "mirror_next";
+        let at = std::time::Instant::now();
+        let mut result = tokio::task::spawn_blocking(move || {
+            host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
+        })
+        .await
+        .map_err(|_| host_error("MD-5: browser task failed".into()))?
+        .map_err(|message| protection.scrub_error(&scope, message.into_daemon("kernel_browser")))?;
+        crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
+        if !protect {
+            return Ok(result);
+        }
+        // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
+        // corrupt images for short Vault values. All metadata still gets scrubbed.
+        let pixel_path = if display {
+            "/display_frame"
+        } else if result.get("frame").is_some() {
+            "/frame/data_base64"
+        } else {
+            "/data_base64"
+        };
+        let data = if pixels {
+            result.pointer_mut(pixel_path).map(Value::take)
+        } else {
+            None
+        };
+        // MP-11: mirror media has already passed protected compositor/resource
+        // admission. Scrubbing opaque base64 can corrupt bytes for short secrets.
+        let mirror_resources = if mirror {
+            result.as_object_mut().and_then(|r| r.remove("resources"))
+        } else {
+            None
+        };
+        let mirror_tiles = if mirror {
+            result.as_object_mut().and_then(|r| r.remove("tiles"))
+        } else {
+            None
+        };
+        let mut result = protection.scrub(&scope, result)?;
+        if let Some(resources) = mirror_resources {
+            result["resources"] = resources;
+        }
+        if let Some(tiles) = mirror_tiles {
+            result["tiles"] = tiles;
+        }
+        if let Some(mut data) = data {
+            if display && !data.is_null() {
+                // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
+                let frame = data
+                    .as_object_mut()
+                    .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
+                let payload = frame.remove("data_base64");
+                let tiles = frame.remove("tiles");
+                data = protection.scrub(&scope, data)?;
+                if let Some(payload) = payload {
+                    data["data_base64"] = payload;
+                }
+                if let Some(tiles) = tiles {
+                    data["tiles"] = tiles;
+                }
+            }
+            if let Some(slot) = result.pointer_mut(pixel_path) {
+                *slot = data;
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) async fn revoke_kernel_browser_observation_values(
+        &self,
+        key: &str,
+    ) -> Result<(), DaemonError> {
+        let protection = &self.owned.kernel_browser_secret_observations;
+        // Profile-directory identity survives restart, so revocation discovers
+        // dormant browsers too. Never enumerate or read their profile contents.
+        for scope in self
+            .owned
+            .kernel_browser_host
+            .profile_keys()
+            .map_err(host_error)?
+        {
+            let _barrier = protection.barrier(&scope)?.write_owned().await;
+            if protection.uses_vault_key(&scope, key)? {
+                protection.forget(&scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn kernel_browser_paste_secret(
+        &self,
+        session: &str,
+        agent: &crate::agent::AgentInstance,
+        arguments: Value,
+        admission: KernelBrowserAdmission,
+        sudo_turn: Option<&KernelSudoTurn>,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let args: PasteArgs = serde_json::from_value(arguments)
+            .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
+        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let user = user.as_str();
+        require_vault_owner(user)?;
+        let check_authority = || {
+            self.owned
+                .kernel_browser_host
+                .check_admission(Some(&admission))
+                .map_err(host_error)
+        };
+        check_authority()?;
+        // Validate the observed document before prompting for unlock. Recheck
+        // metadata, focus and target afterward, under the actual input barrier.
+        let url = self
+            .kernel_browser_secret_target_url(user, &admission, &args)
+            .await?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        let epoch = protection.revision(&scope)?;
+        let _unlock = self
+            .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
+            .await?;
+        check_authority()?;
+        let (service, _vault_guard) = self
+            .scoped_secret_input_service(protection, &scope, &args.credential_id)
+            .await?;
+        check_authority()?;
+        let _barrier = protection.barrier(&scope)?.write_owned().await;
+        check_authority()?;
+        let current = self.owned.agent_store.get_agent(agent.id())?;
+        let authorized = match sudo_turn {
+            Some(turn) => self.sudo_turn_live(turn),
+            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
+        };
+        if current.session_id() != session
+            || current.owner_user_id() != agent.owner_user_id()
+            || !authorized
+        {
+            return Err(host_error(
+                "MD-3: current local focus or sudo window required after Vault wait".into(),
+            ));
+        }
+        require_vault_owner(
+            &self.provider_account_authority_owner_user_id(current.owner_user_id()),
+        )?;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "MP-11: observation protection changed during the Vault wait; observe the page again".into(),
+            ));
+        }
+        let url = self
+            .kernel_browser_secret_target_url_bound(user, &admission, &args)
+            .await?;
+        check_authority()?;
+        crate::runtime::state::sudo::require_login_handle_scope(
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+            session,
+            sudo_turn.is_some(),
+        )?;
+        let secret = zeroize::Zeroizing::new(
+            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
+        );
+        // Reuse Room registration before any input handler, including failures.
+        let snapshot = self
+            .kernel_browser_bound_operation(
+                user,
+                Some(&admission),
+                "host.browser",
+                json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
+                true,
+            )
+            .await?;
+        check_authority()?;
+        let target = snapshot["snapshot"]["target_id"]
+            .as_str()
+            .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
+        let action = BrowserLocatorAction::Fill {
+            text: secret.to_string(),
+            append: false,
+            submit: args.submit,
+            expected_document_url: Some(url),
+        };
+        let command =
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
+                execution_id: "kernel-browser-secret".into(),
+                target_id: target.into(),
+                document_id: args.document_id.clone(),
+                node_ref: args.node_ref.clone(),
+                action: action.clone(),
+                timeout_ms: 10_000,
+            };
+        protection.register_command(&scope, &command)?;
+        check_authority()?;
+        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action}), true).await?;
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: json!({"inserted":true}),
+        })
+    }
+
+    async fn kernel_browser_secret_target_url(
+        &self,
+        user: &str,
+        admission: &KernelBrowserAdmission,
+        args: &PasteArgs,
+    ) -> Result<String, DaemonError> {
+        let scope = KernelBrowserHost::profile_key(user);
+        let _barrier = self
+            .owned
+            .kernel_browser_secret_observations
+            .barrier(&scope)?
+            .read_owned()
+            .await;
+        self.kernel_browser_secret_target_url_bound(user, admission, args)
+            .await
+    }
+    async fn kernel_browser_secret_target_url_bound(
+        &self,
+        user: &str,
+        admission: &KernelBrowserAdmission,
+        args: &PasteArgs,
+    ) -> Result<String, DaemonError> {
+        let result = self
+            .kernel_browser_bound_operation(
+                user,
+                Some(admission),
+                "host.browser",
+                json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
+                true,
+            )
+            .await?;
+        let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot = serde_json::from_value(result["snapshot"].clone()).map_err(|_| host_error("MD-5: invalid browser snapshot".into()))?;
+        snapshot
+            .validate(&snapshot.target_id, &args.document_id)
+            .map_err(host_error)?;
+        let node = snapshot
+            .dom_nodes
+            .iter()
+            .find(|node| node.node_ref == args.node_ref)
+            .ok_or_else(|| host_error("MD-5: rediscover the password field".into()))?;
+        if !node.node_name.eq_ignore_ascii_case("input")
+            || node
+                .attributes
+                .get("type")
+                .is_none_or(|kind| !kind.eq_ignore_ascii_case("password"))
+            || node.attributes.contains_key("disabled")
+            || node.attributes.contains_key("readonly")
+        {
+            return Err(host_error(
+                "MD-5: Vault input requires an editable password field".into(),
+            ));
+        }
+        snapshot
+            .document_url_for_node(&args.node_ref)
+            .map(str::to_string)
+            .map_err(host_error)
+    }
+}
+
+fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
+    // The configured Vault is host-owner state. Collaborators' browser profiles
+    // remain independent and cannot resolve this owner's credential handles.
+    if user != crate::session::DEFAULT_LOCAL_USER_ID {
+        return Err(host_error(
+            "MD-5: the kernel owner's Vault is unavailable to another user".into(),
+        ));
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
+        assert!(require_vault_owner(crate::session::DEFAULT_LOCAL_USER_ID).is_ok());
+        assert!(require_vault_owner("collaborator").is_err());
+        let arguments = json!({"credential_id":"login","tab_id":"tab","generation":1,"document_id":"doc","node_ref":"backend:1","text":"forbidden"});
+        assert!(serde_json::from_value::<PasteArgs>(arguments).is_err());
+        let schema = paste_spec().input_schema;
+        assert!(schema["properties"].get("text").is_none());
+    }
+    #[tokio::test]
+    async fn vault_retirement_finds_dormant_user_profiles_and_preserves_sealed_echoes() {
+        use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("md5-protection");
+        let mut room = TestRoom::new("md5-retirement");
+        let config = room.runtime.owned.config_projection.snapshot();
+        let host = KernelBrowserHost::new(root.path().join("runtime"));
+        std::fs::create_dir_all(host.profile_root("local")).unwrap();
+        room.runtime.owned.kernel_browser_host = host;
+        let path = root.path().join("observations");
+        room.runtime.owned.kernel_browser_secret_observations =
+            RoomSecretObservations::new(path.clone(), BTreeSet::new())
+                .with_identity(&config.relay_private_key);
+        let scope = KernelBrowserHost::profile_key("local");
+        let store = &room.runtime.owned.kernel_browser_secret_observations;
+        store
+            .register_credential_source(&scope, Some("login"))
+            .unwrap();
+        store
+            .register(&scope, "synthetic-md5-retired-only")
+            .unwrap();
+        room.runtime
+            .revoke_vault_observation_values("other-key")
+            .await
+            .unwrap();
+        assert!(store.uses_vault_key(&scope, "login").unwrap());
+        room.runtime
+            .revoke_vault_observation_values("login")
+            .await
+            .unwrap();
+        assert!(!store.uses_vault_key(&scope, "login").unwrap());
+        assert_eq!(
+            store.scrub_text_or_withhold(&scope, "echo synthetic-md5-retired-only"),
+            "echo [redacted]"
+        );
+        let recovered = RoomSecretObservations::new(path, BTreeSet::new())
+            .with_identity(&config.relay_private_key);
+        assert_eq!(
+            recovered.scrub_text_or_withhold(&scope, "synthetic-md5-retired-only"),
+            "[redacted]"
+        );
+        assert_eq!(recovered.controller_values(&scope).unwrap().len(), 1);
+        assert_eq!(
+            recovered.scrub_text_or_withhold(&KernelBrowserHost::profile_key("other"), "benign"),
+            "benign"
+        );
+    }
+}

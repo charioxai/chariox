@@ -278,7 +278,6 @@ impl KernelRuntimeState {
                         source: task.agent_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),
                         success: task.state == ExecutionState::Done,
-                        now: crate::session::unix_epoch_ms(),
                     })?;
             }
             self.owned
@@ -289,7 +288,6 @@ impl KernelRuntimeState {
                     source: task.prompt_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
-                    now: crate::session::unix_epoch_ms(),
                 })?;
         }
         if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
@@ -303,7 +301,6 @@ impl KernelRuntimeState {
                     source: task.task_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
-                    now: crate::session::unix_epoch_ms(),
                 })?;
         }
         self.schedule_agent_lifecycle_sweep();
@@ -338,7 +335,7 @@ impl KernelRuntimeState {
             text,
             crate::session::PromptStatus::Queued,
         )
-        .with_durable_operation(&id, &format!("task:{}:{}", task.task_id, task.revision));
+        .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
@@ -479,7 +476,6 @@ impl KernelRuntimeState {
                             source: obligation.completion_source().unwrap_or(source).into(),
                             occurrence,
                             success,
-                            now,
                         })?;
                 }
             }
@@ -587,14 +583,13 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
             }
-            if task.state == ExecutionState::Blocked {
-                if self
+            if task.state == ExecutionState::Blocked
+                && self
                     .ensure_task_owner_interaction(task.clone())
                     .await
                     .is_err()
-                {
-                    tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
-                }
+            {
+                tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
             if rooms.insert(task.room_id.clone()) {
                 self.retract_stale_task_owner_interactions(&task.room_id, &tasks)

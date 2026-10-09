@@ -144,7 +144,7 @@ fn activate(connection: &mut Connection, token: &StageToken, trust: &TrustedPubl
 fn context() -> CallerContext {
     CallerContext {
         actor: Actor::Agent("agent-a".into()),
-        room_id: "room-a".into(),
+        room_id: Some("room-a".into()),
         operation_id: "operation-a".into(),
         task_id: Some("task-a".into()),
         turn_id: Some("turn-a".into()),

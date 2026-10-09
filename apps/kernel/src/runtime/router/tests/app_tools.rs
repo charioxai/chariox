@@ -493,11 +493,17 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         crate::session::PromptStatus::Dispatching,
         crate::session::PromptStatus::Running,
     ] {
-        check_app_call_turn_lifetime(status);
+        check_app_call_turn_lifetime(status, false);
     }
 }
 
-fn check_app_call_turn_lifetime(status: crate::session::PromptStatus) {
+/// MP-08/MP-11 A05: revoking the binding wakes a waiting call, not only its reply.
+#[test]
+fn capability_revoking_the_app_binding_wakes_its_in_flight_app_tool() {
+    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true);
+}
+
+fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bool) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -649,9 +655,20 @@ fn check_app_call_turn_lifetime(status: crate::session::PromptStatus) {
     );
     // Keep the caller/connection alive: cancellation must observe the kernel
     // turn state, rather than depend on dropping the MCP dispatch future.
-    assert!(prompts
-        .begin_cancelling_active_prompt(&session, agent.id())
-        .is_some());
+    if revoke {
+        runtime
+            .block_on(router.runtime_state.revoke_agent_extension(
+                agent.id(),
+                crate::extension::ExtensionKind::App,
+                "installed",
+                "alice",
+            ))
+            .unwrap();
+    } else {
+        assert!(prompts
+            .begin_cancelling_active_prompt(&session, agent.id())
+            .is_some());
+    }
     let result = runtime.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(2), &mut call).await
     });

@@ -1,0 +1,175 @@
+[
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 2,
+        "device_scale_factor": 2
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_next",
+        "subscription_id": "s",
+        "generation": 2,
+        "after_sequence": 3,
+        "drift_nodes": [
+          "n1"
+        ]
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_close",
+        "subscription_id": "s",
+        "generation": 2
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "click",
+          "node_id": "n1"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "focus",
+          "node_id": "n1"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "text",
+          "node_id": "n1",
+          "text": "fixture"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "scroll",
+          "node_id": "n1",
+          "delta_x": 0,
+          "delta_y": 10
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "key",
+          "key": "Tab"
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "selection",
+          "anchor_id": "n2",
+          "anchor_offset": 0,
+          "focus_id": "n2",
+          "focus_offset": 3
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "composition",
+          "node_id": "n1",
+          "text": "abc",
+          "selection_start": 0,
+          "selection_end": 3
+        }
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_input",
+        "tab_id": "t",
+        "generation": 2,
+        "document_id": "d",
+        "subscription_id": "s",
+        "sequence": 3,
+        "action": {
+          "kind": "coordinate",
+          "input": {
+            "kind": "click",
+            "x": 1,
+            "y": 2
+          }
+        }
+      }
+    }
+  }
+]

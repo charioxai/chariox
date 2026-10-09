@@ -14,7 +14,7 @@ mod start;
 #[cfg(target_os = "macos")]
 pub(crate) use start::macos_storage_root;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod uninstall;
 use crate::{
     durable_state::{

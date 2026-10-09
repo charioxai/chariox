@@ -72,6 +72,8 @@ mod app_host_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_host;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
@@ -80,6 +82,10 @@ mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
 mod sudo;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_browser;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 pub(crate) use sudo::SudoWindowProjection;
@@ -142,6 +148,7 @@ mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod runtime_tool_call_activity;
+mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
@@ -192,10 +199,14 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    notes: crate::runtime::notes::NoteStore,
+    kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    app_grant_epochs: Arc<capability_grant_runtime::AppGrantEpochs>,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
+    kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -459,10 +470,18 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_mirror;
+mod kernel_browser_receipts;
+mod kernel_browser_runtime;
+mod kernel_browser_secret_runtime;
+mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
 mod transport_runtime_state;
+mod user_domain_access_runtime;
+
+mod capability_grant_runtime;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
@@ -813,12 +832,19 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
+                kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(config.private_runtime_state_root()),
+                app_grant_epochs: Arc::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
                 room_secret_observations,
+                kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
+                    config.private_runtime_state_root().join("kernel-browser/observations"),
+                    BTreeSet::new(),
+                ).with_identity(&config.relay_private_key),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -908,7 +934,16 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        runtime.recover_app_grant_expiries();
         runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_provider_reload_for_test(&self, agent_id: &str) -> bool {
+        self.owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent_id)
     }
 
     #[cfg(test)]
@@ -1020,13 +1055,20 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         capability_name: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let agent = agent.clone();
-        let capability_name = capability_name.map(str::to_string);
+        self.record_agent_durable_event(kind, agent, capability_name)
+    }
+
+    fn record_agent_durable_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        capability_name: Option<&str>,
+    ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             kind,
             Some(agent.id().to_string()),
             serde_json::json!({
-                "agent": &agent,
+                "agent": agent,
                 "capability_name": capability_name,
             }),
         )?;
@@ -1183,3 +1225,5 @@ mod agent_task_cancellation;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
 mod room_dispatch_obligation;
+// MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
+pub(crate) use kernel_browser_runtime::KernelBrowserDisplayRequest;

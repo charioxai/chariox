@@ -17,8 +17,10 @@ mod policy;
 mod process;
 mod receipts;
 mod scope;
+mod vault;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
+pub(crate) use vault::{require_login_handle_scope, vault_generate_spec, VAULT_GENERATE};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 mod catalog_tests;
@@ -32,6 +34,8 @@ mod queued_command_tests;
 mod relaunch_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vault_tests;
 #[cfg(test)]
 mod window_tests;
 

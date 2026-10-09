@@ -78,7 +78,6 @@ impl KernelRuntimeState {
                                             .into(),
                                         occurrence: format!("cancel-missing-{}", obligation.id),
                                         success: false,
-                                        now: crate::session::unix_epoch_ms(),
                                     },
                                 )?;
                                 continue;
@@ -138,7 +137,6 @@ impl KernelRuntimeState {
                                     source: resource.clone(),
                                     occurrence: format!("cancel-unused-{}", obligation.id),
                                     success: false,
-                                    now: crate::session::unix_epoch_ms(),
                                 },
                             )?;
                         }
@@ -180,7 +178,6 @@ impl KernelRuntimeState {
                         source: task.task_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),
                         success: false,
-                        now: crate::session::unix_epoch_ms(),
                     })?;
             }
         }

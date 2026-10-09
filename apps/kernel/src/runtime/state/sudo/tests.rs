@@ -15,7 +15,7 @@ pub(super) struct Fixture {
     pub(super) run: RuntimeProviderRun,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     fixture_with_provider(None)
 }
 
@@ -755,8 +755,30 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 }
 
 #[tokio::test]
-async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
+async fn sudo_runtime_mcp_catalog_tracks_window_but_authority_ends_at_yield() {
     let f = fixture();
+    // MP-08/MP-11: window admission refreshes official-harness discovery.
+    // Ordinary turns have neither the elevated interface nor its authority.
+    let initial_catalog = f
+        .router
+        .runtime_tool_specs_for_auth_token("sudo-fixture-bearer");
+    assert!(!f
+        .router
+        .runtime_tool_specs_for_auth_token("unknown-token")
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(!initial_catalog
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"ListSessions": null}})
+        )
+        .await
+        .is_err());
     let turn = running(&f);
     assert!(f
         .router
@@ -928,8 +950,106 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
 fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
     RequestKernelSudoRequest {
         agent_id: f.request.target_agent_id.clone().unwrap(),
-        prompt: "external first line\nfull second line".into(),
+        prompt: "  external first line\nfull second line\t  \n".into(),
     }
+}
+
+#[test]
+fn sudo_command_parser_shares_router_whitespace_and_token_boundaries() {
+    for (text, expected) in [
+        ("  /sudo task  ", Some("task")),
+        ("/sudo\ntask", Some("task")),
+        ("/sudo\ttask", Some("task")),
+        ("\n/sudo\u{2003}task", Some("task")),
+        ("/sudo", Some("")),
+        ("/sudo \t\n", Some("")),
+        ("/sudo-task", None),
+        ("/sudotask", None),
+        ("please /sudo task", None),
+    ] {
+        assert_eq!(policy::parse_sudo_prompt(text), expected, "{text:?}");
+        assert_eq!(is_sudo_prompt(text), expected.is_some(), "{text:?}");
+    }
+}
+
+async fn external_sudo_submit_prompt_whitespace_is_refusable(text: &str) {
+    let f = fixture();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut request = f.request.clone();
+    request.prompt = text.into();
+    let request = LocalDaemonRequest::SubmitPrompt(request);
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "external-sudo-whitespace",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(KernelConnectionClass::ExternalAgent);
+    command.caller.caller_id = grant_id;
+    let router = f.router.clone();
+    let task = tokio::spawn(async move { router.dispatch(command, request).await });
+    let prompt = popup(&f.state).await;
+    assert!(prompt
+        .message
+        .ends_with("Requester-supplied prompt:\nprotected task\nfull second line"));
+    assert!(prompt.message.contains("External agent"));
+    f.state
+        .answer_sudo_entry_from_terminal(
+            "local",
+            "sudo-terminal",
+            &RespondToInteractionRequest {
+                session_id: prompt.session_id.clone(),
+                interaction_id: prompt.interaction_id.clone(),
+                choice_id: "refuse".into(),
+                custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("sudo request refused"));
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+    assert!(f.state.list_sudo_turns("local").is_empty());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let (active, queued) = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, f.request.target_agent_id.as_deref().unwrap());
+    assert!(active.is_none());
+    assert!(queued.is_empty());
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_leading_whitespace() {
+    external_sudo_submit_prompt_whitespace_is_refusable(
+        "  /sudo protected task\nfull second line  ",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_newline_separator() {
+    external_sudo_submit_prompt_whitespace_is_refusable("/sudo\nprotected task\nfull second line")
+        .await;
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_tab_separator() {
+    external_sudo_submit_prompt_whitespace_is_refusable("/sudo\tprotected task\nfull second line")
+        .await;
 }
 
 #[tokio::test]
@@ -957,7 +1077,7 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
     assert!(prompt.message.contains(&f.request.session_id));
     assert!(prompt
         .message
-        .contains("Requester-supplied prompt:\nexternal first line\nfull second line"));
+        .ends_with("Requester-supplied prompt:\n  external first line\nfull second line\t  \n"));
     assert!(f.state.passkey_prompts_for("guest").is_empty());
     let mut answer = RespondToInteractionRequest {
         session_id: prompt.session_id.clone(),
@@ -997,6 +1117,21 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
         result,
         LocalDaemonResponse::KernelSudoRequested { .. }
     ));
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let (active, _) = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, f.request.target_agent_id.as_deref().unwrap());
+    assert_eq!(
+        active.unwrap().prompt(),
+        "  external first line\nfull second line\t  \n"
+    );
     let events = f
         .state
         .owned
@@ -1096,7 +1231,7 @@ async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
 }
 
 #[tokio::test]
-async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_request() {
+async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_request() {
     let f = fixture();
     let request = external_request(&f);
     assert!(f
@@ -1107,15 +1242,13 @@ async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_reques
     let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
-    assert!(!f.state.external_request_in_session(
-        "ungranted",
-        &LocalDaemonRequest::RequestKernelSudo(request.clone())
-    ));
     assert!(f
         .state
-        .request_kernel_sudo(&grant, request.clone())
-        .await
-        .is_err());
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::RequestKernelSudo(request.clone())
+        )
+        .is_ok());
     let request = LocalDaemonRequest::RequestKernelSudo(request);
     let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "external-sudo-tcp",

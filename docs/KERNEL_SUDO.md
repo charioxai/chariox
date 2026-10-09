@@ -91,7 +91,7 @@ A sudo turn's `chariox_kernel_request` takes one serialized
 {"request":{"ListSessions":null}}
 ```
 
-External agents holding a process-bound session grant can request a window
+External agents holding a process-bound local-kernel grant can request a window
 over that kernel's Unix socket:
 
 ```sh
@@ -101,8 +101,7 @@ chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /abso
 The host's popup names the grant holder's OS executable and PID, the target
 agent and session, and the full requester-supplied prompt. Only the host's
 terminals can answer it; the external client never sends or receives the
-passkey. TCP, relay, ungranted peers and targets outside the granted session
-are refused, and the window ends when the requester's grant ends. Shell CLI
+passkey. TCP, relay and ungranted peers are refused, and the window ends when the requester's grant ends. Shell CLI
 calls use the tracked provider's OS process tree. For a spawn launcher, the
 kernel also records the unique OS-verified endpoint server in that tree before
 prompt dispatch. Only descendants born after the current elevated turn binds
@@ -112,6 +111,40 @@ earlier turn has no authority in a later turn. Unix terminal subscriptions are
 limited to the window session and owner attachments. Leased sudo execution
 remains a separate leg.
 
+## Vault generation and protected login (A06)
+
+MP-08 / MP-10 / MP-11 A06. During a live window the agent also sees
+`chariox.vault.generate`: it supplies a `request_id`, the site `origin`
+(`https`, or `http` on loopback) and an optional description, length (16-128,
+default 24) and symbol choice. The kernel CSPRNG creates a password and writes
+it straight into the owner's Vault, bound to that site's `host[:port]` and to
+browser input only. The result is `{credential_id, origin, created}`; the value
+never enters the tool call, result, transcript, events or logs. Retrying the same
+`request_id` returns the same committed handle (`created: false`), never a new
+value, and cannot rebind it to another site. Ordinary agents cannot generate
+credentials; the former `chariox.create_generated_credential` tool is removed.
+
+To log in, the elevated agent uses `chariox.kernel_browser_paste_secret` on a
+tab of its retained browser grant without needing focus, then clicks the
+observed submit button with ordinary input. The kernel fills the field; the
+model never types a password. Before inserting, the kernel rechecks after
+the Vault unlock wait: the same window is still live, the target document and
+password field are unchanged, the credential is allowed for the document's
+host, a generated handle belongs to this session, and the observation
+protection did not change meanwhile. An elevated fill also requires a
+credential bound to its site. Ending the window withdraws a pending unlock
+prompt. Focused (human-approved) fills keep working without sudo.
+
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
 provider (see the lane evidence).
+
+MP-08 / MP-10 / MP-11: the shared router also filters every response to a
+local grant or sudo MCP caller. Credential read and mutation replies redact
+literal injection values. Raw MCP/connector configuration, native login
+output/codes, pairing/Cloud admission credentials and enrollment callbacks
+are withheld; inspect those through the host terminal. An operation can complete
+while its reply is withheld; check host-terminal state before retrying. Executor failures use
+a value-free error because parser/provider diagnostics can echo secrets. Exact
+constant refusal, expiry and revocation diagnostics remain available.
+This preserves normal workspace/history authority and is not a file sandbox.

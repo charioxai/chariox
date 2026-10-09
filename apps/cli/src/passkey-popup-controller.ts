@@ -62,12 +62,12 @@ export type PasskeyPopupView = {
 const isText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
 
 /** The well-formed prompts of a `passkey_prompts_changed` event. */
-export function passkeyPromptsFromEvent(prompts: unknown): PasskeyPrompt[] {
+export function passkeyPromptsFromEvent(prompts: unknown, userAppViews = false): PasskeyPrompt[] {
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
     return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo"].includes(prompt.kind ?? "")
-      && isText(prompt.session_id) && isText(prompt.interaction_id)
+      && (isText(prompt.session_id) || (userAppViews && prompt.session_id === "" && prompt.kind === "critical_approval")) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
       && prompt.approve_choice_id !== prompt.refuse_choice_id

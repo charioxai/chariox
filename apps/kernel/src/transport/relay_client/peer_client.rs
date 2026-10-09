@@ -1190,6 +1190,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1231,6 +1232,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }
@@ -1332,6 +1334,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1373,6 +1376,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }

@@ -1457,6 +1457,7 @@ async fn wait_for_hosted_slice_relay_activation(
                 Ok(Ok(crate::transport::relay_peer::RelayPeerResponse::Pong {
                     value,
                     daemon_id,
+                    ..
                 })) if value == ping_value && daemon_id == worker.kernel_id => return Ok(()),
                 Ok(Ok(_)) => {
                     last_probe_error = Some(DaemonError::LocalTransport {
@@ -1660,7 +1661,10 @@ mod tests {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
-        for version in [70, 73] {
+        for version in [
+            70,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ] {
             for (slice_id, nonce) in [
                 ("slice-1", "nonce-1"),
                 ("other", "nonce-1"),
@@ -1692,7 +1696,9 @@ mod tests {
                         "slice-1",
                         "nonce-1",
                     ),
-                    version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                    version == crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+                        && slice_id == "slice-1"
+                        && activation_nonce == "nonce-1"
                 );
             }
         }

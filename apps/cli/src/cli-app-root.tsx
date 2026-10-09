@@ -1,3 +1,5 @@
+import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
+import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -668,6 +670,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
   })
   const applySessionState = sessionStateApplyController.apply
+  let userAppViews: ReturnType<typeof createCliUserAppViewsComposition>
   const kernelApprovals = createCliKernelApprovalComposition({
     client, renderer, session: sessionState, dimensions, themeRevision,
     attached: isAttached, flashFooter,
@@ -675,10 +678,16 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     kernelConnected: () => !daemonDisconnected(),
     currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
-    closeOtherDialog: closeActiveDialogOverlay,
+    closeOtherDialog: () => { userAppViews?.hide(); closeActiveDialogOverlay() },
     applySession: applySessionState,
     notify: (message) => flashFooter(message, "info"),
     attachmentId: () => attachmentState()?.id ?? null,
+  })
+
+  userAppViews = createCliUserAppViewsComposition({
+    client: () => (client as MutableLocalIpcClient).currentClient(), renderer, dimensions, themeRevision,
+    currentFocus: currentFocusedRenderable, promptFocus: promptInputRefController.currentOrNull,
+    notify: message => flashFooter(message, "info"), approvalOwnsInput: kernelApprovals.ownsInput,
   })
 
   const runUiBatch = uiBatchController.run
@@ -880,6 +889,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    userAppViews,
     appHostTerminal: createAppHostTerminal(renderer),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
@@ -919,9 +929,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openWorkflowNodeInstructionsEditor: workflowActions.openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
-    handleKernelApprovalKey: kernelApprovals.handleKey,
+    handleKernelApprovalKey: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => kernelApprovals.handleKey(event) || userAppViews?.handleKey(event) || false,
     openKernelApprovals: kernelApprovals.openFromCommand,
-    kernelApprovalOwnsInput: kernelApprovals.ownsInput,
+    kernelApprovalOwnsInput: () => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput()),
     dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
@@ -1019,7 +1029,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      retainPromptFocus={() => { if (!kernelApprovals.ownsInput()) retainPromptFocus() }}
+      retainPromptFocus={() => { if (!kernelApprovals.ownsInput() && !userAppViews?.ownsInput()) retainPromptFocus() }}
       handlePromptSelectionSurfaceMouseUp={handlePromptSelectionSurfaceMouseUp}
       responsePaneRenderRefStore={responsePaneRenderRefStore}
       historyLoadingRenderController={historyLoadingRenderController}
@@ -1035,7 +1045,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
       assignSudoBand={kernelApprovals.assignSudoBand}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
-      kernelApprovalOwnsInput={kernelApprovals.ownsInput}
+      kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput())}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}
       focusedAgentInteraction={focusedAgentInteraction}

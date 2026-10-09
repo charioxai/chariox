@@ -36,6 +36,25 @@ impl KernelRuntimeOwnedState {
                 "Only kernel decisions can require the Chariox passkey",
             ));
         }
+        if session_id.is_empty() {
+            if forwarding.is_some() || terminal_credential_owner.is_some() {
+                return Err(interaction_error("Invalid unattached decision authority"));
+            }
+            return self.register_user_domain_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+            );
+        }
+        if session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
+            return self.register_kernel_wide_access_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+                forwarding,
+                terminal_credential_owner,
+            );
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -111,21 +130,8 @@ impl KernelRuntimeOwnedState {
                 session.remove_active_interaction(&id);
                 pending.remove(&id);
             }
-            if pending
-                .values()
-                .filter(|p| p.belongs_to(&self.session_store))
-                .filter(|p| p.kernel_operation_owner.is_some())
-                .count()
-                >= 32
-                || pending
-                    .values()
-                    .filter(|p| p.belongs_to(&self.session_store))
-                    .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
-                    .count()
-                    >= 8
-            {
-                return Err(interaction_error("Kernel decision limit reached"));
-            }
+            drop(pending);
+            self.ensure_kernel_decision_capacity(owner)?;
         }
         if session
             .active_interactions()
@@ -218,9 +224,11 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let pending = super::super::PendingInteraction {
+            kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
+            user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {

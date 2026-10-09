@@ -158,7 +158,7 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
-        let mut specs = Vec::new();
+        let mut specs = self.kernel_browser_tool_specs(&provider_runs);
         if matches!(provider_runs.as_slice(), [run]
             if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
         {
@@ -170,6 +170,7 @@ impl KernelRuntimeState {
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
+            specs.push(super::sudo::vault_generate_spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
@@ -252,9 +253,11 @@ impl KernelRuntimeState {
             .into_iter()
             .map(|run| run.session_id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
-        let mut result = match self
-            .dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments)
-            .await
+        // MD-4: do not inline every provider/tool future into transport callers.
+        let mut result = match Box::pin(
+            self.dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments),
+        )
+        .await
         {
             Ok(result) => result,
             Err(mut error) => {
@@ -282,6 +285,14 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if let Some(result) =
+            Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
+        {
+            return result;
+        }
+        if tool_name == super::sudo::VAULT_GENERATE {
+            return Box::pin(self.vault_generate(auth_token, arguments)).await;
+        }
         {
             let owned = &self.owned;
             let canonical_tool_name =
@@ -326,8 +337,7 @@ impl KernelRuntimeState {
             if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
                 let run =
                     unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
-                return self
-                    .dispatch_permission_prompt_runtime_tool_call(run, arguments)
+                return Box::pin(self.dispatch_permission_prompt_runtime_tool_call(run, arguments))
                     .await;
             }
             if let Some(name) =
@@ -350,25 +360,24 @@ impl KernelRuntimeState {
                     .home_proxy_tool(canonical_tool_name)
                     .is_some_and(|tool| tool.kind == crate::extension::ExtensionKind::App)
                 {
-                    if let Some(result) = self
-                        .try_dispatch_remote_home_extension_runtime_tool_call(
+                    if let Some(result) =
+                        Box::pin(self.try_dispatch_remote_home_extension_runtime_tool_call(
                             run,
                             canonical_tool_name,
                             arguments.clone(),
-                        )
+                        ))
                         .await?
                     {
                         return Ok(result);
                     }
                 }
-                if let Some(result) = self
-                    .try_dispatch_app_runtime_tool_call(
-                        run,
-                        auth_token,
-                        canonical_tool_name,
-                        arguments.clone(),
-                    )
-                    .await?
+                if let Some(result) = Box::pin(self.try_dispatch_app_runtime_tool_call(
+                    run,
+                    auth_token,
+                    canonical_tool_name,
+                    arguments.clone(),
+                ))
+                .await?
                 {
                     return Ok(result);
                 }
@@ -405,9 +414,12 @@ impl KernelRuntimeState {
                 {
                     return Ok(result);
                 }
-                return self
-                    .dispatch_meta_runtime_tool_call(&provider_run, canonical_tool_name, arguments)
-                    .await;
+                return Box::pin(self.dispatch_meta_runtime_tool_call(
+                    &provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
             let is_workflow_tool =
                 crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name).is_some();
@@ -420,13 +432,12 @@ impl KernelRuntimeState {
                 )?)
             };
             if is_workflow_tool {
-                return self
-                    .dispatch_authenticated_workflow_runtime_tool_call(
-                        &provider_runs,
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
+                return Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
+                    &provider_runs,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
             if matches!(
                 canonical_tool_name,
@@ -437,23 +448,23 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL
                     | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
             ) {
-                if let Some(result) = self
-                    .try_dispatch_remote_workspace_live_sync_runtime_tool_call(
+                if let Some(result) = Box::pin(
+                    self.try_dispatch_remote_workspace_live_sync_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
-                    )
-                    .await?
+                    ),
+                )
+                .await?
                 {
                     return Ok(result);
                 }
-                return self
-                    .dispatch_workspace_live_sync_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
+                return Box::pin(self.dispatch_workspace_live_sync_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
             if matches!(
                 canonical_tool_name,
@@ -469,64 +480,60 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
             ) {
-                if let Some(result) = self
-                    .try_dispatch_remote_capability_runtime_tool_call(
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_capability_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
-                    )
+                    ))
                     .await?
                 {
                     return Ok(result);
                 }
-                return self
-                    .dispatch_capability_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
+                return Box::pin(self.dispatch_capability_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
             if matches!(
                 canonical_tool_name,
                 crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                     | crate::transport::runtime_tools::QUERY_RECALL_TOOL
             ) {
-                return self
-                    .dispatch_recall_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
+                return Box::pin(self.dispatch_recall_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
-            if let Some(result) = self
-                .try_dispatch_remote_home_extension_runtime_tool_call(
+            if let Some(result) =
+                Box::pin(self.try_dispatch_remote_home_extension_runtime_tool_call(
                     provider_run.expect("non-workflow tool should have provider run"),
                     canonical_tool_name,
                     arguments.clone(),
-                )
+                ))
                 .await?
             {
                 return Ok(result);
             }
-            if let Some(result) = self
-                .try_dispatch_script_runtime_tool_call(
-                    provider_run.expect("non-workflow tool should have provider run"),
-                    canonical_tool_name,
-                    arguments.clone(),
-                )
-                .await?
+            if let Some(result) = Box::pin(self.try_dispatch_script_runtime_tool_call(
+                provider_run.expect("non-workflow tool should have provider run"),
+                canonical_tool_name,
+                arguments.clone(),
+            ))
+            .await?
             {
                 return Ok(result);
             }
-            if let Some(result) = self
-                .try_dispatch_connector_runtime_tool_call(
-                    provider_run.expect("non-workflow tool should have provider run"),
-                    canonical_tool_name,
-                    arguments.clone(),
-                )
-                .await?
+            if let Some(result) = Box::pin(self.try_dispatch_connector_runtime_tool_call(
+                provider_run.expect("non-workflow tool should have provider run"),
+                canonical_tool_name,
+                arguments.clone(),
+            ))
+            .await?
             {
                 return Ok(result);
             }
@@ -568,33 +575,33 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
             ) {
-                if let Some(result) = self
+                if let Some(result) = Box::pin(self
                     .try_dispatch_remote_meta_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments.clone(),
-                    )
+                    ))
                     .await?
                 {
                     return Ok(result);
                 }
-                return self
+                return Box::pin(self
                     .dispatch_meta_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
                         canonical_tool_name,
                         arguments,
-                    )
+                    ))
                     .await;
             }
             if is_home_credential_runtime_tool(canonical_tool_name) {
                 let provider_run =
                     provider_run.expect("non-workflow tool should have provider run");
-                if let Some(result) = self
-                    .try_dispatch_remote_home_credential_runtime_tool_call(
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_home_credential_runtime_tool_call(
                         provider_run,
                         canonical_tool_name,
                         arguments.clone(),
-                    )
+                    ))
                     .await?
                 {
                     return Ok(result);
@@ -615,23 +622,22 @@ impl KernelRuntimeState {
                     ))
                     .await;
                 }
-                return self
-                    .dispatch_credential_runtime_tool_call(
-                        provider_run,
-                        canonical_tool_name,
-                        arguments,
-                    )
-                    .await;
+                return Box::pin(self.dispatch_credential_runtime_tool_call(
+                    provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
                 let provider_run =
                     provider_run.expect("non-workflow tool should have provider run");
-                if let Some(result) = self
-                    .try_dispatch_remote_room_browser_runtime_tool_call(
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_room_browser_runtime_tool_call(
                         provider_run,
                         canonical_tool_name,
                         arguments.clone(),
-                    )
+                    ))
                     .await?
                 {
                     return Ok(result);
@@ -642,15 +648,18 @@ impl KernelRuntimeState {
                         .is_leased_provider_run(provider_run.id()),
                     is_room_browser_controller_runtime_tool(canonical_tool_name),
                 )?;
-                return self
-                    .dispatch_slice_runtime_tool_call(provider_run, canonical_tool_name, arguments)
-                    .await;
+                return Box::pin(self.dispatch_slice_runtime_tool_call(
+                    provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
             }
-            self.dispatch_authenticated_workflow_runtime_tool_call(
+            Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
                 &provider_runs,
                 canonical_tool_name,
                 arguments,
-            )
+            ))
             .await
         }
     }
@@ -684,7 +693,7 @@ impl KernelRuntimeState {
             .map(|slice| slice.id)
     }
 
-    fn slice_kernel_id(&self) -> Option<String> {
+    pub(super) fn slice_kernel_id(&self) -> Option<String> {
         crate::slice::slice_worker_id_for_config(&self.owned.config_projection.snapshot())
     }
 }
@@ -713,7 +722,6 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
-            | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
             | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
@@ -892,7 +900,6 @@ mod tests {
             );
         }
         for name in [
-            CREATE_GENERATED_CREDENTIAL_TOOL,
             REQUEST_CREDENTIAL_SECRET_TOOL,
             MANAGE_CREDENTIAL_VAULT_TOOL,
             PASTE_SECRET_TO_COMPUTER_TOOL,

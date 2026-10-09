@@ -14,6 +14,18 @@ use super::projection_policy::{
 };
 use super::store::SessionRuntimeStore;
 
+type StoreRequestFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = (
+                    Result<LocalDaemonResponse, DaemonError>,
+                    Option<SessionProjectionAction>,
+                ),
+            > + Send
+            + 'a,
+    >,
+>;
+
 #[derive(Clone)]
 pub(super) struct SessionRuntimeCommandExecutor {
     store: SessionRuntimeStore,
@@ -178,160 +190,170 @@ impl SessionRuntimeCommandExecutor {
         result
     }
 
-    async fn execute_store_request(
+    // MD-4: select before polling so FocusAgent never reserves unrelated store futures.
+    fn execute_store_request(
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
+    ) -> StoreRequestFuture<'_> {
         match request {
             LocalDaemonRequest::CreateSession(request) => {
-                self.store.create_session(request, caller_user_id).await
+                Box::pin(async move { self.store.create_session(request, caller_user_id).await })
             }
             LocalDaemonRequest::ListProjects(request) => {
-                self.store.list_projects(request, caller_user_id).await
+                Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }
             LocalDaemonRequest::RenameProject(request) => {
-                self.store.rename_project(request, caller_user_id).await
+                Box::pin(async move { self.store.rename_project(request, caller_user_id).await })
             }
-            LocalDaemonRequest::UpdateProjectWorkspaces(request) => {
+            LocalDaemonRequest::UpdateProjectWorkspaces(request) => Box::pin(async move {
                 self.store
                     .update_project_workspaces(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::ArchiveProject(request) => {
-                self.store.archive_project(request, caller_user_id).await
+                Box::pin(async move { self.store.archive_project(request, caller_user_id).await })
             }
             LocalDaemonRequest::DeleteProject(request) => {
-                self.store.delete_project(request, caller_user_id).await
+                Box::pin(async move { self.store.delete_project(request, caller_user_id).await })
             }
             LocalDaemonRequest::RestoreProject(request) => {
-                self.store.restore_project(request, caller_user_id).await
+                Box::pin(async move { self.store.restore_project(request, caller_user_id).await })
             }
-            LocalDaemonRequest::AttachToSession(request) => {
-                self.store.attach_to_session(request, caller_user_id).await
-            }
+            LocalDaemonRequest::AttachToSession(request) => Box::pin(async move {
+                self.store
+                    .attach_to_session(request, caller_user_id, terminal_caller)
+                    .await
+            }),
             LocalDaemonRequest::DetachFromSession(request) => {
-                self.store.detach_from_session(request).await
+                Box::pin(async move { self.store.detach_from_session(request).await })
             }
             LocalDaemonRequest::FocusAgent(request) => {
-                self.store.focus_agent(request, caller_user_id).await
+                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
             }
-            LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::CycleAgentFocus(request) => {
-                self.store.cycle_agent_focus(request, caller_user_id).await
+                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
             }
             LocalDaemonRequest::ResizeTerminal(request) => {
-                self.store.resize_terminal(request).await
+                Box::pin(async move { self.store.resize_terminal(request).await })
             }
             LocalDaemonRequest::SendTerminalInput(request) => {
-                self.store.send_terminal_input(request).await
+                Box::pin(async move { self.store.send_terminal_input(request).await })
             }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
-                self.store.poll_runtime_notices(request).await
+                Box::pin(async move { self.store.poll_runtime_notices(request).await })
             }
             LocalDaemonRequest::UpdateSessionConfig(request) => {
-                self.store.update_session_config(request).await
+                Box::pin(async move { self.store.update_session_config(request).await })
             }
-            LocalDaemonRequest::StartRoomEnvironment(request) => {
+            LocalDaemonRequest::StartRoomEnvironment(request) => Box::pin(async move {
                 self.store
                     .start_room_environment(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::BindRoomEnvironmentSlice(request) => self
-                .store
-                .bind_room_environment_slice(request, caller_user_id),
+            }),
+            LocalDaemonRequest::BindRoomEnvironmentSlice(request) => Box::pin(async move {
+                self.store
+                    .bind_room_environment_slice(request, caller_user_id)
+            }),
             LocalDaemonRequest::StopRoomEnvironment(request) => {
-                self.store.stop_room_environment(request).await
+                Box::pin(async move { self.store.stop_room_environment(request).await })
             }
             LocalDaemonRequest::RetryRoomEnvironment(request) => {
-                self.store.retry_room_environment(request).await
+                Box::pin(async move { self.store.retry_room_environment(request).await })
             }
-            LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+            LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Box::pin(async move {
                 self.store
                     .update_room_environment_viewport(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::SetRoomBrowserBar(request) => {
+            }),
+            LocalDaemonRequest::SetRoomBrowserBar(request) => Box::pin(async move {
                 self.store
                     .set_room_browser_bar(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+            }),
+            LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Box::pin(async move {
                 self.store
                     .update_room_environment_pointer(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
-                self.store
-                    .request_room_environment_input_takeover(request, caller_user_id)
-                    .await
+                Box::pin(async move {
+                    self.store
+                        .request_room_environment_input_takeover(request, caller_user_id)
+                        .await
+                })
             }
-            LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => {
+            LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => Box::pin(async move {
                 self.store
                     .release_room_environment_input(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
+            }),
+            LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => Box::pin(async move {
                 self.store
                     .submit_room_environment_action(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => {
-                self.store
-                    .submit_room_environment_browser_action(request, caller_user_id)
-                    .await
+                Box::pin(async move {
+                    self.store
+                        .submit_room_environment_browser_action(request, caller_user_id)
+                        .await
+                })
             }
-            LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
+            LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => Box::pin(async move {
                 self.store
                     .read_room_environment_clipboard(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
+            }),
+            LocalDaemonRequest::CancelRoomEnvironmentAction(request) => Box::pin(async move {
                 self.store
                     .cancel_room_environment_action(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
-                self.store.create_agent_prompt_schedule(request).await
+                Box::pin(async move { self.store.create_agent_prompt_schedule(request).await })
             }
             LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
-                self.store.cancel_agent_prompt_schedule(request).await
+                Box::pin(async move { self.store.cancel_agent_prompt_schedule(request).await })
             }
-            LocalDaemonRequest::UpdateAgentConfig(request) => {
+            LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
                     .update_agent_config(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::UpdateAgentProfile(request) => {
+            }),
+            LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
                 self.store
                     .update_agent_profile(request, caller_user_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::AliasAgent(request) => {
-                self.store.alias_agent(request, caller_user_id).await
+                Box::pin(async move { self.store.alias_agent(request, caller_user_id).await })
             }
-            LocalDaemonRequest::UpdateAgentSubstitutes(request) => {
+            LocalDaemonRequest::UpdateAgentSubstitutes(request) => Box::pin(async move {
                 self.store
                     .update_agent_substitutes(request, caller_user_id)
                     .await
-            }
-            LocalDaemonRequest::RespondToInteraction(request) => {
+            }),
+            LocalDaemonRequest::RespondToInteraction(request) => Box::pin(async move {
                 // Managed host controllers keep their existing owner decision
                 // route, without becoming terminals. The interaction gate still
                 // refuses host passkeys and credential-prompt answers.
                 let owner_caller = terminal_caller
                     || (caller_metaagent_id.is_none()
-                        && connection_class == Some(KernelConnectionClass::Host));
+                        && matches!(
+                            connection_class,
+                            Some(
+                                KernelConnectionClass::Host | KernelConnectionClass::ExternalAgent
+                            )
+                        ));
                 self.store
                     .respond_to_interaction(
                         request,
@@ -339,38 +361,46 @@ impl SessionRuntimeCommandExecutor {
                         connection_class,
                     )
                     .await
+            }),
+            LocalDaemonRequest::AliasSession(request) => {
+                Box::pin(async move { self.store.alias_session(request).await })
             }
-            LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
-            LocalDaemonRequest::SpawnAgent(request) => {
+            LocalDaemonRequest::SpawnAgent(request) => Box::pin(async move {
                 self.store
                     .spawn_agent(request, caller_user_id, caller_metaagent_id)
                     .await
-            }
-            LocalDaemonRequest::SpawnAgents(request) => {
+            }),
+            LocalDaemonRequest::SpawnAgents(request) => Box::pin(async move {
                 self.store
                     .spawn_agents(request, caller_user_id, caller_metaagent_id)
                     .await
-            }
+            }),
             LocalDaemonRequest::UndoTurn(request) => {
-                self.store.undo_turn(request, caller_user_id).await
+                Box::pin(async move { self.store.undo_turn(request, caller_user_id).await })
             }
             LocalDaemonRequest::ForkAgent(request) => {
-                self.store.fork_agent(request, caller_user_id).await
+                Box::pin(async move { self.store.fork_agent(request, caller_user_id).await })
             }
-            LocalDaemonRequest::DestroyAgent(request) => {
+            LocalDaemonRequest::DestroyAgent(request) => Box::pin(async move {
                 self.store
                     .destroy_agent(request, caller_user_id, caller_metaagent_id.is_some())
                     .await
+            }),
+            LocalDaemonRequest::EndSession(request) => {
+                Box::pin(async move { self.store.end_session(request).await })
             }
-            LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,
-            LocalDaemonRequest::DeleteSession(request) => self.store.delete_session(request).await,
-            _ => (
-                Err(DaemonError::LocalTransport {
-                    operation: "execute session request",
-                    message: "request is not handled by the session runtime".to_string(),
-                }),
-                None,
-            ),
+            LocalDaemonRequest::DeleteSession(request) => {
+                Box::pin(async move { self.store.delete_session(request).await })
+            }
+            _ => Box::pin(async move {
+                (
+                    Err(DaemonError::LocalTransport {
+                        operation: "execute session request",
+                        message: "request is not handled by the session runtime".to_string(),
+                    }),
+                    None,
+                )
+            }),
         }
     }
 }

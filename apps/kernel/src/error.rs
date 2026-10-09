@@ -1,10 +1,15 @@
 use thiserror::Error;
+mod user_domain_refusal;
+pub(crate) use user_domain_refusal::HostFailure;
+pub use user_domain_refusal::UserDomainRefusalReason;
 
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("User-domain request refused")]
+    UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
     InvalidConfig {
         field: &'static str,
@@ -17,6 +22,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    /// MP-08 / MP-11: preserve mapped executor semantics for external grants
+    /// and sudo without retaining any diagnostic values or source error.
+    #[error("external request failed; details are available only in the host terminal")]
+    ExternalRequestFailed { code: String, retryable: bool },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]

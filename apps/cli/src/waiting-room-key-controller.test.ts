@@ -21,6 +21,27 @@ test("waiting room key controller yields while attached or command center owns i
   assert.deepEqual(commandHarness.calls(), [])
 })
 
+test("opted-in slash opens command input without activating a session", () => {
+  for (const promptFocused of [false, true]) {
+    const harness = createHarness({ commandInput: true, promptFocused })
+    assert.equal(harness.controller.handleKey({name:"/",eventType:"press"}),true)
+    assert.deepEqual(harness.calls(),["begin-command"])
+  }
+})
+test("slash command entry ignores releases/modifiers, drafts and the disabled path", () => {
+  for (const event of [{name:"/",eventType:"release"},{name:"/",ctrl:true},{name:"/",alt:true}]) {
+    const harness = createHarness({ commandInput:true })
+    harness.controller.handleKey(event)
+    assert.deepEqual(harness.calls(),[])
+  }
+  const disabled=createHarness()
+  disabled.controller.handleKey({name:"/"})
+  assert.deepEqual(disabled.calls(),[])
+  const draft=createHarness({commandInput:true,promptFocused:true,commandCenterQuery:"/app"})
+  assert.equal(draft.controller.handleKey({name:"/"}),false)
+  assert.deepEqual(draft.calls(),[])
+})
+
 test("waiting room key controller reconciles navigation keys", () => {
   const harness = createHarness()
 
@@ -100,6 +121,7 @@ test("waiting room key controller renames and restores the focused project", () 
 })
 
 function createHarness(options: {
+  commandInput?: boolean
   attached?: boolean
   hotkeysOpen?: boolean
   promptFocused?: boolean
@@ -149,6 +171,7 @@ function createHarness(options: {
     restoreProject: (projectId) => {
       calls.push(`restore:${projectId}`)
     },
+    ...(options.commandInput ? {beginCommand: () => {calls.push("begin-command")}} : {}),
     activateWaitingRoom: () => {
       calls.push("activate")
     },

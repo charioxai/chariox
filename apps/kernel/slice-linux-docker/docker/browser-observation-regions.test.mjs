@@ -4,7 +4,7 @@ import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { handleBrowserControllerRequest } from './browser-controller.mjs';
 
 const target = { kind: 'browser', target_id: 'target', document_id: 'document', node_ref: 'backend:42' };
-function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false } = {}) {
+function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false, windowHeight = 800 } = {}) {
   const methods = [];
   return { methods, async resolvePageTarget() { return { sessionId: 'session', connection: { async send(method) {
     methods.push(method);
@@ -12,7 +12,7 @@ function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 
     if (method === 'Target.getTargets') return { targetInfos: [] };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
     if (method === 'Runtime.evaluate') return { result: { value: [hidden ? 'hidden' : 'visible', 1, 700] } };
-    if (method === 'Browser.getWindowForTarget') return { bounds: { left: 0, top: 0, width: 800, height: 800, windowState: 'normal' } };
+    if (method === 'Browser.getWindowForTarget') return { bounds: { left: 0, top: 0, width: 800, height: windowHeight, windowState: 'normal' } };
     if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientHeight: 700 - scrollbar, pageX: 0, pageY: 0 }, cssVisualViewport: { scale: 1 } };
     if (method === 'DOM.getBoxModel' && replaced) throw new Error('detached field');
     if (method === 'DOM.getBoxModel') return { model: { border: [10, 20, 110, 20, 110, 50, 10, 50] } };
@@ -76,4 +76,13 @@ test('MP-08/MP-10/MP-11 closed page targets are pruned while replacement pages a
 
 test('MP-08/MP-10/MP-11 removed field with no remaining echoes does not block captures', async () => {
   assert.deepEqual(await locateBrowserRegions([target], fixture({ replaced: true, noEcho: true }), ['synthetic-only']), [[0, 0, 800, 100], [0, 776, 800, 24]]);
+});
+
+// MD-5: background user-domain content still has pixels in CDP captures.
+test('MD-5 content capture reuses Room field/echo/opaque masks without native chrome offsets', async () => {
+  const browser = fixture({ hidden: true, windowHeight: 600 });
+  const regions = await locateBrowserRegions([target], browser, ['synthetic-only'], { contentTarget: 'target' });
+  assert.deepEqual(regions, [[10, 20, 100, 30], [200, 10, 200, 20], [0, 300, 300, 100]]);
+  assert(!browser.methods.includes('Browser.getWindowForTarget'));
+  await assert.rejects(locateBrowserRegions([target], fixture({ windowHeight: 600 }), ['synthetic-only']), /unbound frame/);
 });

@@ -241,6 +241,24 @@ fn single_agent_projection_id(projections: &[AgentRuntimeProjection]) -> Option<
     }
 }
 
+impl AgentRuntime {
+    /// MP-11 SB-01: automation may route by alias; only an admitted human
+    /// terminal action also changes the owner's focus authority/projection.
+    pub(super) async fn focus_alias_target_from_terminal(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        session: &str,
+        agent: &str,
+        user: &str,
+    ) -> Result<(), DaemonError> {
+        if command.is_terminal_caller() {
+            self.store.focus_agent(session, agent, user).await?;
+            self.focus_projection.update(session, Some(agent)).await;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod alias_route_tests {
     use super::*;

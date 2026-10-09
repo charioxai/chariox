@@ -1452,6 +1452,7 @@ impl PromptStateOwner {
         agent_id: &str,
         prompt_id: &str,
         prompt: impl Into<String>,
+        editor: &crate::attachment::RuntimeAttachment,
     ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
@@ -1463,6 +1464,9 @@ impl PromptStateOwner {
             .iter_mut()
             .find(|queued| queued.id() == prompt_id)?;
         queued.set_prompt(prompt);
+        // MP-08/MP-11 R1: text and acquisition provenance change under one
+        // queue lock. An automated edit cannot keep a human owner's request.
+        *queued = queued.clone().with_source_attachment(editor);
         Some(queued.clone())
     }
 

@@ -828,7 +828,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 460);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,
@@ -844,4 +844,41 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
         assert!(workflow_run_updated_events(&current, Some(&previous)).is_empty());
         assert!(workflow_run_updated_events(&current, None).is_empty());
     }
+}
+
+#[test]
+fn user_domain_refusals_protocol_443_snapshot() {
+    use crate::error::UserDomainRefusalReason as Reason;
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        87
+    );
+    let values = [
+        Reason::NotFocusedAgent,
+        Reason::ForeignOwner,
+        Reason::StaleEpoch,
+        Reason::StaleReference,
+        Reason::NotGranted,
+        Reason::SensitiveRequiresFocus,
+    ];
+    let actual: Vec<_> = values.into_iter().map(|reason|serde_json::json!({"reason":reason,"error":map_kernel_error(&DaemonError::UserDomainRefused {reason})})).collect();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
+        ),
+        "a0404cb11a870cd5a843adb8060aa7a0892e9a7365c2f823f1455b02bc789102"
+    );
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
+    assert_eq!(serde_json::json!(actual), expected);
+    // Neither unknown controller text nor a generic local error can acquire authority.
+    let generic = map_kernel_error(&DaemonError::LocalTransport {
+        operation: "kernel_browser",
+        message: "user_domain_not_granted".into(),
+    });
+    assert_eq!(generic.code, "local_transport_error");
+    assert!(generic.retryable);
 }

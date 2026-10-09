@@ -34,6 +34,7 @@ use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
+mod browser_display;
 mod connection_config;
 mod connection_state;
 mod connector;
@@ -164,6 +165,21 @@ pub(crate) struct RelayOutgoingSender {
 }
 
 impl RelayOutgoingSender {
+    // MD-DISPLAY-02/04: only the admitted display producer selects this path.
+    // Small input acknowledgements avoid event batching; large repair/video
+    // envelopes stay on the bounded event lane so controls are not starved.
+    async fn send_display_event(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        debug_assert!(matches!(envelope, RelayEnvelope::DaemonEvent { .. }));
+        let small = matches!(&envelope, RelayEnvelope::DaemonEvent { encrypted_event, .. } if encrypted_event.ciphertext.len() <= 12 * 1024);
+        if small {
+            self.priority_tx.send(envelope).await
+        } else {
+            self.send_event(envelope).await
+        }
+    }
     fn new(
         priority_tx: mpsc::Sender<RelayEnvelope>,
         event_tx: mpsc::Sender<RelayEnvelope>,

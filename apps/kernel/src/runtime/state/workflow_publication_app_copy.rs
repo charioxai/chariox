@@ -137,16 +137,17 @@ impl KernelRuntimeState {
         self.remove_deployment_copy_sessions(&owner, deployment_id, Some(&key))
             .await?;
         let (session_id, agents) = self.materialize_deployment_copy(publication, &key)?;
-        let applied = self
-            .apply_deployment_app_copy(
-                &owner,
-                publication,
-                (deployment_id, release_id, &consent),
-                &apps,
-                &session_id,
-                &agents,
-            )
-            .await;
+        // MD-4: this orchestration must not inline the entire App control tree
+        // into every deployment/recovery future (including the transport pump).
+        let applied = Box::pin(self.apply_deployment_app_copy(
+            &owner,
+            publication,
+            (deployment_id, release_id, &consent),
+            &apps,
+            &session_id,
+            &agents,
+        ))
+        .await;
         // A copy that could not be applied takes no occurrences: its runtime
         // does not start, so the owner's routes it would take over resume.
         if applied.is_err() {
@@ -640,7 +641,7 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         what: &str,
     ) -> Result<(), DaemonError> {
-        self.app_control_response(owner.to_owned(), installation_id.to_owned(), request)
+        Box::pin(self.app_control_response(owner.to_owned(), installation_id.to_owned(), request))
             .await
             .map(|_| ())
             .map_err(|code| app_error(what, code))

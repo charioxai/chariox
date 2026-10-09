@@ -615,3 +615,102 @@ pub struct RestoreAppDataSnapshotRequest {
     pub expected_generation: String,
     pub snapshot_id: String,
 }
+
+/// Protocol 418: a view in the user domain, without a session or slice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenUserAppViewRequest {
+    pub installation_id: String,
+    /// Native is the default; use the kernel browser only when native rendering
+    /// is unavailable. No caller-selected controller, owner or Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<UserAppViewHost>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserAppViewHost {
+    ClientNative,
+    KernelBrowser,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserAppViewBrowser {
+    pub tab_id: String,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserAppViewRequest {
+    pub view_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListUserAppViewsRequest {}
+
+/// Complete owner snapshot; repeat with the returned cursor to subscribe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscribeUserAppViewsRequest {
+    pub after: Option<u64>,
+    pub wait_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallUserAppViewRequest {
+    pub view_id: String,
+    pub method: String,
+    pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerUserDomainInteractionRequest {
+    pub interaction_id: String,
+    pub choice_id: String,
+    pub passkey: Option<super::ApprovalPasskey>,
+    pub passkey_remember_minutes: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserAppView {
+    pub view_id: String,
+    pub installation_id: String,
+    /// Exact generation, safe across JavaScript transports.
+    pub generation: String,
+    pub origin: String,
+    /// Transport-neutral tab reference, never a raw CDP target or endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<UserAppViewBrowser>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<UserDomainWindowAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppFrontendAsset {
+    pub path: String,
+    pub content_type: String,
+    pub body_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppFrontendBundle {
+    pub entry: String,
+    pub assets: Vec<AppFrontendAsset>,
+    pub content_security_policy: String,
+    pub iframe_sandbox: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppViewChannelError {
+    pub code: String,
+    pub message: String,
+}

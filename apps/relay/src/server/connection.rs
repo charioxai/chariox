@@ -105,6 +105,9 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
+    // MD-DISPLAY-02/04: interactive encrypted event/receipt pairs must not
+    // wait for TCP delayed ACKs. The relay still routes opaque packets.
+    stream.set_nodelay(true)?;
     let socket =
         match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, accept_async(stream)).await {
             Ok(Ok(socket)) => socket,
@@ -362,6 +365,12 @@ pub(crate) async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
+                            if verified_identity.as_ref().is_some_and(|previous| {
+                                !super::client_renewal::retains_client_authority(previous, &identity)
+                            }) {
+                                send_close(&outgoing_tx, "relay authorization renewal changed identity or reduced permissions".into());
+                                break;
+                            }
                             auth_expiry_deadline = relay_auth_expiry_deadline(
                                 &auth_verifier,
                                 identity.expires_at_ms,

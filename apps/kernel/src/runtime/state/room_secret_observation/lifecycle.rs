@@ -28,6 +28,7 @@ impl KernelRuntimeState {
         &self,
         key: &str,
     ) -> Result<(), DaemonError> {
+        self.revoke_kernel_browser_observation_values(key).await?;
         let rooms = self.owned.session_store.list_all_sessions();
         for session in rooms {
             if self
@@ -58,6 +59,24 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        self.scoped_secret_input_service(&self.owned.room_secret_observations, room, credential)
+            .await
+    }
+
+    // MD-5: Room and user-domain input share the Vault lifecycle lock and
+    // authoritative metadata reload; only their observation scope differs.
+    pub(in crate::runtime::state) async fn scoped_secret_input_service(
+        &self,
+        protection: &RoomSecretObservations,
+        scope: &str,
+        credential: &str,
+    ) -> Result<
+        (
+            crate::secret::RuntimeSecretService,
+            tokio::sync::OwnedRwLockReadGuard<()>,
+        ),
+        DaemonError,
+    > {
         let guard = self
             .owned
             .room_secret_observations
@@ -68,9 +87,7 @@ impl KernelRuntimeState {
         // Metadata and Vault configuration must be authoritative after every
         // unlock, approval and lifecycle wait. Keep this guard through insertion.
         let service = self.home_runtime_secret_service()?;
-        self.owned
-            .room_secret_observations
-            .register_credential_source(room, service.credential_vault_key(credential)?)?;
+        protection.register_credential_source(scope, service.credential_vault_key(credential)?)?;
         Ok((service, guard))
     }
 

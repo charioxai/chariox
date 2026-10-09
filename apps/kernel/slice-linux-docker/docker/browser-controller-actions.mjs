@@ -160,7 +160,7 @@ function invalidAction(message) {
   return new BrowserActionError("browser_action_invalid", message);
 }
 
-async function assertCurrentDocument(connection, sessionId, targetId, documentId) {
+export async function assertCurrentDocument(connection, sessionId, targetId, documentId) {
   const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
   const currentDocumentId = frameTree?.frameTree?.frame?.loaderId;
   if (currentDocumentId !== documentId) {

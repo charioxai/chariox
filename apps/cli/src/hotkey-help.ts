@@ -1,5 +1,6 @@
 import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 
 export type HotkeyItem = {
   keys: string
@@ -42,6 +43,8 @@ export function buildHotkeySections(attached: boolean): HotkeySection[] {
     { title: "Global", items: GLOBAL_HOTKEYS },
     attached
       ? { title: "Session", items: SESSION_HOTKEYS }
-      : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
+      : { title: "Waiting room", items: userAppViewsPrototypeEnabled()
+        ? [...WAITING_ROOM_HOTKEYS, { keys: "/", description: "Enter a user-domain command, including /app views and /app view open INSTALLATION." }]
+        : WAITING_ROOM_HOTKEYS },
   ]
 }

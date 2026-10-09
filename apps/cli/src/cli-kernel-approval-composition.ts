@@ -1,3 +1,5 @@
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
+import { answerUserDomainInteraction } from "./user-domain-interaction-api.js"
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { createEffect, onCleanup } from "solid-js"
 import type { RuntimeSession } from "./cli-types.js"
@@ -8,7 +10,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { extendKernelSudo, revokeKernelAccessGrant } from "./kernel-api.js"
-import { respondToInteraction } from "./prompt-runtime-api.js"
+import { respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
 import { createSudoWindowBand } from "./sudo-window-band.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 
@@ -34,6 +36,13 @@ export function createCliKernelApprovalComposition(deps: {
   notify(message: string): void
   attachmentId(): string | null
 }) {
+  const actualClient = () => (deps.client as LocalIpcClient & {currentClient?(): LocalIpcClient}).currentClient?.() ?? deps.client
+  const userPromptClients = new Map<string, LocalIpcClient>()
+  const respondUserPrompt = (id: string, choice: string, proof?: import("./ipc-requests.js").InteractionPasskeyProof) => {
+    const source = userPromptClients.get(id)
+    if (!source || source !== actualClient()) throw new Error("The App approval belongs to the previous kernel")
+    return answerUserDomainInteraction(source, id, choice, proof)
+  }
   let savedFocus: CliDialogFocusTarget | null = null
   let dialogs = 0
   const opened = () => {
@@ -58,7 +67,11 @@ export function createCliKernelApprovalComposition(deps: {
     onClose: closed,
     scroll: popupSurface.scroll,
     respond: (prompt, choiceId, proof) =>
-      respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
+      (prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
+        ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
+        : (prompt.session_id === "" && userAppViewsPrototypeEnabled()
+        ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
+        : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof))),
     notify: deps.notify,
   })
   const surface = createKernelApprovalRenderer(deps.renderer, {
@@ -112,7 +125,12 @@ export function createCliKernelApprovalComposition(deps: {
     popupSurface.render(popup.view(), deps.dimensions())
   })
   onCleanup(deps.client.onKernelEvent((event) => {
-    if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
+    if (event.event === "passkey_prompts_changed") {
+      const prompts = passkeyPromptsFromEvent(event.prompts, userAppViewsPrototypeEnabled())
+      userPromptClients.clear()
+      for (const prompt of prompts) if (prompt.session_id === "") userPromptClients.set(prompt.interaction_id, actualClient())
+      popup.apply(prompts)
+    }
   }))
   // A paste while the popup or the panel is open never reaches the prompt;
   // in the popup it belongs to the passkey.

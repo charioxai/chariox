@@ -32,7 +32,7 @@ pub fn is_context_id(id: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct CallerContext {
     pub actor: Actor,
-    pub room_id: String,
+    pub room_id: Option<String>,
     pub operation_id: String,
     pub task_id: Option<String>,
     pub turn_id: Option<String>,
@@ -54,7 +54,7 @@ impl CallerContext {
         };
         let ids = [
             Some(actor_id.as_str()),
-            Some(self.room_id.as_str()),
+            self.room_id.as_deref(),
             Some(self.operation_id.as_str()),
             self.task_id.as_deref(),
             self.turn_id.as_deref(),
@@ -62,8 +62,11 @@ impl CallerContext {
         if !ids.into_iter().flatten().all(Self::valid_id) {
             return Err(CatalogError::Invalid);
         }
-        let mut context = json!({"installation_id": installation, "room_id": self.room_id,
+        let mut context = json!({"installation_id": installation,
             "operation_id": self.operation_id, "actor": self.actor});
+        if let Some(room) = &self.room_id {
+            context["room_id"] = json!(room);
+        }
         if let Actor::Agent(id) = &self.actor {
             context["agent_id"] = json!(id);
         }

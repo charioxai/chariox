@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import http from 'node:http'
+import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { spawnOwned, signalOwnedProcess } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,7 +11,8 @@ import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artif
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
-const artifactsDir = path.join(repoRoot, '.artifacts')
+const drillRoot = process.env.CHARIOX_DRILL_ROOT ?? path.join(os.homedir(), '.chariox', 'dev', 'live-agent-vault-credential-drill')
+const artifactsDir = process.env.CHARIOX_DRILL_EVIDENCE_ROOT ?? path.join(os.homedir(), '.codex', 'evidence', 'live-agent-vault-credential-drill')
 
 const DEFAULT_PROVIDERS = ['codex', 'claude-p', 'claude-headless']
 const DEFAULT_MODEL = 'gpt-5.5'
@@ -45,8 +48,12 @@ function parseArgs(argv) {
       console.log([
         'Usage: node apps/cli/scripts/live-agent-vault-credential-drill.mjs [options]',
         '',
-        'Prompts live Chariox agents to create generated and user-entered vault credentials,',
-        'then use those handles through chariox.http_request_with_credential.',
+        'Prompts live Chariox agents to store a user-entered vault credential and use it through',
+        'chariox.http_request_with_credential, checks that an ordinary agent cannot generate one, then',
+        'opens an owner-authorized /sudo window in which the agent generates a site-bound password with',
+        'chariox.vault.generate and receives only its handle.',
+        '',
+        'Environment: CHARIOX_KERNEL_BINARY (skip the cargo build), CHARIOX_DRILL_ROOT (scratch root).',
         '',
         'Options:',
         `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -90,6 +97,10 @@ async function run(command, args, options = {}) {
 }
 
 async function resolveKernelBinary() {
+  if (process.env.CHARIOX_KERNEL_BINARY) {
+    await access(process.env.CHARIOX_KERNEL_BINARY)
+    return process.env.CHARIOX_KERNEL_BINARY
+  }
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const result = await run('cargo', [
     'build',
@@ -105,10 +116,10 @@ async function resolveKernelBinary() {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  child.kill('SIGTERM')
+  signalOwnedProcess(child, 'SIGTERM')
   await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(5_000)])
   if (child.exitCode == null) {
-    child.kill('SIGKILL')
+    signalOwnedProcess(child, 'SIGKILL')
     await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(2_000)])
   }
 }
@@ -301,26 +312,65 @@ async function respondToSecretInteraction({ client, sessionId, agentId, secret, 
   throw new Error(`timed out waiting for secret interaction for ${agentId}`)
 }
 
-async function respondToVaultUnlockInteraction({ client, sessionId, agentId, passphrase, choiceId = 'unlock_default_ttl', getSessionStateRequest, respondToInteractionRequest, timeoutMs, pollMs }) {
+async function waitForInteraction({ client, sessionId, getSessionStateRequest, timeoutMs, pollMs, label, predicate }) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const session = state.session ?? state
-    const interaction = (session.active_interactions ?? [])
-      .find((entry) => entry.agent_id === agentId &&
-        entry.custom_choice?.input_kind === 'secret' &&
-        String(entry.title ?? '').includes('Unlock Chariox Vault'))
-    if (interaction) {
-      const choice = (interaction.choices ?? []).find((entry) => entry.id === choiceId)
-      if (!choice) {
-        throw new Error(`vault unlock interaction did not offer choice ${choiceId}; choices=${JSON.stringify(interaction.choices ?? [])}`)
-      }
-      await client.send(respondToInteractionRequest(sessionId, interaction.id, choice.id, passphrase))
-      return interaction
-    }
+    const interaction = (session.active_interactions ?? []).find(predicate)
+    if (interaction) return interaction
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for Chariox vault unlock interaction for ${agentId}`)
+  throw new Error(`timed out waiting for ${label}`)
+}
+
+// The vault passphrase popup, then its unlock-duration popup.
+async function respondToVaultUnlockInteraction({ client, sessionId, agentId, passphrase, getSessionStateRequest, respondToInteractionRequest, timeoutMs, pollMs }) {
+  const wait = { client, sessionId, getSessionStateRequest, timeoutMs, pollMs }
+  const interaction = await waitForInteraction({
+    ...wait,
+    label: `Chariox vault unlock interaction for ${agentId}`,
+    predicate: (entry) => entry.agent_id === agentId &&
+      entry.custom_choice?.input_kind === 'secret' &&
+      String(entry.title ?? '').includes('Unlock Chariox Vault'),
+  })
+  await client.send(respondToInteractionRequest(sessionId, interaction.id, interaction.custom_choice.id, passphrase))
+  const lease = await waitForInteraction({
+    ...wait,
+    label: 'vault unlock duration interaction',
+    predicate: (entry) => entry.agent_id === agentId && entry.title === 'Choose Vault Unlock Duration',
+  })
+  await client.send(respondToInteractionRequest(sessionId, lease.id, 'unlock_default_ttl'))
+  return { ...interaction, choices: lease.choices }
+}
+
+// The owner's sudo popup: approve with the Chariox passkey (the vault passphrase) for one hour.
+async function respondToSudoPopup({ client, sessionId, passkey, getSessionStateRequest, respondToInteractionRequest, timeoutMs, pollMs }) {
+  const popup = await waitForInteraction({
+    client, sessionId, getSessionStateRequest, timeoutMs, pollMs,
+    label: 'sudo passkey popup',
+    predicate: (entry) => String(entry.id ?? '').startsWith('sudo:') && entry.title === 'Authorize sudo window',
+  })
+  const approve = (popup.choices ?? []).find((choice) => choice.requires_passkey)
+  if (!approve) throw new Error(`sudo popup has no passkey choice: ${JSON.stringify(popup.choices ?? [])}`)
+  await client.send(respondToInteractionRequest(sessionId, popup.id, approve.id, null, { passkey, accessLifetimeMinutes: 60 }))
+  return popup
+}
+
+// Credentials the agent created other than the user-entered one.
+async function agentCreatedCredentials(client, listCredentialsRequest, agentId, userCredentialId) {
+  const credentials = unwrapVariant(await client.send(listCredentialsRequest()), 'CredentialsListed').credentials ?? []
+  return credentials.filter((credential) => credential.metadata?.created_by_id === agentId && credential.id !== userCredentialId)
+}
+
+async function waitForSudoWindowsToEnd({ client, sessionId, timeoutMs, pollMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const listed = unwrapVariant(await client.send({ ListKernelAccessGrants: {} }), 'KernelAccessGrantsListed')
+    if (!(listed.sudo_turns ?? []).some((turn) => turn.session_id === sessionId)) return
+    await sleep(pollMs)
+  }
+  throw new Error('sudo window outlived its work')
 }
 
 function startCredentialEchoServer(expectedUserSecret) {
@@ -382,6 +432,8 @@ async function renderTerminalScreenshot(fileName, title, lines) {
 <text x="48" y="72" fill="#ffffff" font-family="Menlo, Consolas, monospace" font-size="24" font-weight="700">${escaped(title)}</text>
 <g font-family="Menlo, Consolas, monospace">${body}</g>
 </svg>`, 'utf8')
+  // sips is macOS-only; elsewhere the SVG is the artifact.
+  if (process.platform !== 'darwin') return svgPath
   const result = await run('sips', ['-s', 'format', 'png', svgPath, '--out', pngPath])
   if (result.code !== 0) throw new Error(`failed to render screenshot ${fileName}: ${result.stdout}\n${result.stderr}`)
   await rm(svgPath, { force: true })
@@ -397,8 +449,9 @@ function assertNoSecretLeak(entries, secret, label) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const rootDir = path.join(repoRoot, 'target', 'live-agent-vault-credential-drill', `${process.pid}-${Date.now()}`)
-  const workspace = path.join(rootDir, 'workspace')
+  const runId = `${process.pid}-${Date.now()}`
+  const rootDir = path.join(drillRoot, runId)
+  const workspace = path.join(os.homedir(), 'chariox-worktrees', 'live-agent-vault-credential-drill', runId)
   const historyDir = path.join(rootDir, 'history')
   const capabilityRoot = path.join(rootDir, 'capabilities')
   const charioxHome = path.join(rootDir, 'chariox-home')
@@ -464,6 +517,7 @@ async function main() {
       getProviderRunRequest,
       getSessionStateRequest,
       launchProviderRunRequest,
+      listCredentialsRequest,
       listProviderProcessesRequest,
       respondToInteractionRequest,
       spawnAgentRequest,
@@ -475,7 +529,7 @@ async function main() {
 
     const kernel = await resolveKernelBinary()
     echo = await startCredentialEchoServer(userSecret)
-    daemon = spawn(kernel, [], {
+    daemon = spawnOwned(kernel, [], {
       cwd: repoRoot,
       env: daemonEnv,
       stdio: ['ignore', 'ignore', 'inherit'],
@@ -501,11 +555,13 @@ async function main() {
       'SessionAttached',
     ).attachment
 
+    let vaultUnlock = null
     for (const provider of options.providers) {
       const nonce = `${Date.now()}-${Math.floor(Math.random() * 10000)}`
-      const generatedCredentialId = `m17-generated-${provider}-${nonce}`
       const userCredentialId = `m17-user-${provider}-${nonce}`
-      credentialKeys.push(generatedCredentialId, userCredentialId)
+      const requestId = `m17-generate-${provider}-${nonce}`
+      const origin = `http://127.0.0.1:${echo.port}`
+      credentialKeys.push(userCredentialId)
 
       const agent = unwrapVariant(
         await client.send(spawnAgentRequest(
@@ -530,73 +586,17 @@ async function main() {
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
       })
-
-      const generatedStartedAt = Date.now()
-      const generatedEchoStart = echo.calls.length
-      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-        'This is an M17/M26 Chariox vault credential creation live drill.',
-        'Use Chariox runtime MCP tools only. Do not write files for this task.',
-        'Step 1: call `chariox.create_generated_credential` with this exact JSON argument:',
-        JSON.stringify({
-          credential: {
-            id: generatedCredentialId,
-            description: `Generated credential drill for ${provider}`,
-            allowed_hosts: [`127.0.0.1:${echo.port}`],
-            allowed_uses: ['http'],
-            injection: { kind: 'header', name: 'authorization', value: 'Bearer ${secret}' },
-          },
-          generator: { kind: 'password', length: 24, symbols: true, avoid_ambiguous: true },
-          overwrite: false,
-        }),
-        'Step 2: call `chariox.http_request_with_credential` with this exact JSON argument:',
-        JSON.stringify({
-          credential_id: generatedCredentialId,
-          method: 'GET',
-          url: `http://127.0.0.1:${echo.port}/generated`,
-          max_response_bytes: 4096,
-        }),
-        'When the HTTP response body shows verified true, reply exactly M17_GENERATED_CREDENTIAL_DONE.',
-      ].join('\n'), []))
-
-      const vaultUnlock = await respondToVaultUnlockInteraction({
+      const idle = (timeoutMs) => waitForAgentPromptIdle({
         client,
         sessionId: session.id,
+        attachmentId: attachment.id,
         agentId: agent.id,
-        passphrase: vaultPassphrase,
         getSessionStateRequest,
-        respondToInteractionRequest,
-        timeoutMs: Math.min(options.timeoutMs, 240_000),
+        timeoutMs,
         pollMs: options.pollMs,
       })
 
-      const generatedCreateCall = await waitForHistoryToolCall({
-        historyDir,
-        agentId: agent.id,
-        sinceMs: generatedStartedAt,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-        predicate: (update) => toolName(update).endsWith('create_generated_credential') &&
-          update.status === 'completed' &&
-          update.input?.credential?.id === generatedCredentialId,
-      })
-      const generatedUseCall = await waitForHistoryToolCall({
-        historyDir,
-        agentId: agent.id,
-        sinceMs: generatedStartedAt,
-        timeoutMs: options.timeoutMs,
-        pollMs: options.pollMs,
-        predicate: (update) => toolName(update).endsWith('http_request_with_credential') &&
-          update.status === 'completed' &&
-          update.input?.credential_id === generatedCredentialId,
-      })
-      const generatedEchoCall = await waitForVerifiedEchoCall({
-        calls: echo.calls,
-        route: '/generated',
-        sinceIndex: generatedEchoStart,
-        timeoutMs: 30_000,
-        pollMs: options.pollMs,
-      })
-
+      // The first user-entered credential creates the vault; its passphrase is the sudo passkey.
       const userStartedAt = Date.now()
       const userEchoStart = echo.calls.length
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
@@ -631,6 +631,16 @@ async function main() {
         'When the HTTP response body shows verified true, reply exactly M17_USER_CREDENTIAL_DONE.',
       ].join('\n'), []))
 
+      vaultUnlock ??= await respondToVaultUnlockInteraction({
+        client,
+        sessionId: session.id,
+        agentId: agent.id,
+        passphrase: vaultPassphrase,
+        getSessionStateRequest,
+        respondToInteractionRequest,
+        timeoutMs: Math.min(options.timeoutMs, 240_000),
+        pollMs: options.pollMs,
+      })
       const interaction = await respondToSecretInteraction({
         client,
         sessionId: session.id,
@@ -668,17 +678,65 @@ async function main() {
         timeoutMs: 30_000,
         pollMs: options.pollMs,
       })
-      await waitForAgentPromptIdle({
+      await idle(Math.min(options.timeoutMs, 30_000))
+
+      // A06: an ordinary agent has no generator, so it cannot mint a credential.
+      await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+        'This is the ordinary-agent half of the M17 live drill. Do not use shell commands or files.',
+        'If you have a Chariox tool that generates and stores a password (for example `chariox.vault.generate`',
+        'or `chariox.create_generated_credential`), call it once with this exact JSON argument:',
+        JSON.stringify({ request_id: `${requestId}-ordinary`, origin }),
+        'If no such tool is available to you, reply exactly M17_NO_GENERATION_TOOL.',
+      ].join('\n'), []))
+      await idle(options.timeoutMs)
+      const ordinaryGenerated = await agentCreatedCredentials(client, listCredentialsRequest, agent.id, userCredentialId)
+      if (ordinaryGenerated.length) throw new Error(`${provider} ordinary agent created ${ordinaryGenerated.length} credential(s)`)
+
+      // A06: the owner opens a sudo window; the kernel generates the value into the vault
+      // and the agent receives only the site-bound handle.
+      const sudoStartedAt = Date.now()
+      const sudoSubmitted = client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+        '/sudo This is the generated-credential half of the M17 live drill.',
+        'Use Chariox runtime MCP tools only. Do not use shell commands or files.',
+        'Call `chariox.vault.generate` exactly once with this exact JSON argument:',
+        JSON.stringify({ request_id: requestId, origin, description: `Generated credential drill for ${provider}` }),
+        'Then reply exactly M17_GENERATED_CREDENTIAL_DONE followed by the returned credential_id. Never guess or print a password.',
+      ].join('\n'), []))
+      const sudoPopup = await respondToSudoPopup({
         client,
         sessionId: session.id,
-        attachmentId: attachment.id,
-        agentId: agent.id,
+        passkey: vaultPassphrase,
         getSessionStateRequest,
-        timeoutMs: Math.min(options.timeoutMs, 30_000),
+        respondToInteractionRequest,
+        timeoutMs: Math.min(options.timeoutMs, 60_000),
         pollMs: options.pollMs,
       })
+      await sudoSubmitted
+      const generateCall = await waitForHistoryToolCall({
+        historyDir,
+        agentId: agent.id,
+        sinceMs: sudoStartedAt,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        predicate: (update) => /vault[._]generate$/.test(toolName(update)) &&
+          update.status === 'completed' &&
+          update.input?.request_id === requestId,
+      })
+      await idle(options.timeoutMs)
+      const generated = await agentCreatedCredentials(client, listCredentialsRequest, agent.id, userCredentialId)
+      credentialKeys.push(...generated.map((credential) => credential.id))
+      const [credential] = generated
+      if (generated.length !== 1 ||
+        credential.metadata?.created_by_kind !== 'vault_generate' ||
+        credential.source?.key !== credential.id ||
+        JSON.stringify(credential.allowed_hosts) !== JSON.stringify([new URL(origin).origin]) ||
+        JSON.stringify(credential.allowed_uses) !== JSON.stringify(['browser'])) {
+        throw new Error(`${provider} sudo generation did not store exactly one site-bound browser credential: ${JSON.stringify(generated.map(({ id, allowed_hosts, allowed_uses, metadata }) => ({ id, allowed_hosts, allowed_uses, kind: metadata?.created_by_kind })))}`)
+      }
+      await waitForSudoWindowsToEnd({ client, sessionId: session.id, timeoutMs: 60_000, pollMs: options.pollMs })
 
-      const transcript = await providerTranscript({ historyDir, agentId: agent.id, sinceMs: generatedStartedAt })
+      const transcript = await providerTranscript({ historyDir, agentId: agent.id, sinceMs: userStartedAt })
+      if (!JSON.stringify(transcript).includes(credential.id)) throw new Error(`${provider} never received the generated handle`)
       assertNoSecretLeak(transcript, userSecret, provider)
       assertNoSecretLeak(transcript, vaultPassphrase, `${provider} vault passphrase`)
       await mkdir(artifactsDir, { recursive: true })
@@ -689,28 +747,31 @@ async function main() {
       )
       const screenshot = await renderTerminalScreenshot(`m17-agent-vault-credential-${provider}.png`, `M17 Agent Vault Credential Drill (${provider})`, [
         `PASS encrypted Chariox vault popup title="${vaultUnlock.title}" input_kind=${vaultUnlock.custom_choice?.input_kind ?? 'missing'}`,
-        'PASS vault popup was answered with a fixed TTL choice plus kernel-only custom passphrase',
-        'PASS provider agent called chariox.create_generated_credential',
-        `PASS generated credential used through ${generatedUseCall.tool}`,
-        `PASS verifier received generated credential request auth_length=${generatedEchoCall.authLength}`,
+        'PASS vault popup was answered with a kernel-only passphrase and a fixed TTL choice',
         'PASS provider agent called chariox.request_credential_secret',
         `PASS redacted interaction input_kind=${interaction.custom_choice?.input_kind ?? 'missing'}`,
         `PASS user-entered credential used through ${userUseCall.tool}`,
         `PASS verifier received user credential request auth_length=${userEchoCall.authLength}`,
+        'PASS ordinary agent created no credential',
+        `PASS owner approved "${sudoPopup.title}" with the passkey`,
+        `PASS elevated agent called ${generateCall.tool}; vault holds ${credential.id} for ${credential.allowed_hosts[0]} (browser only)`,
+        'PASS sudo window ended with its work',
         'PASS provider history artifact contains neither the user-entered secret nor the vault passphrase',
       ])
 
       results.push({
         provider,
         agentId: agent.id,
-        generatedCredentialId,
         userCredentialId,
-        generatedCreateTool: generatedCreateCall.tool,
-        generatedUseTool: generatedUseCall.tool,
-        generatedVerifiedAuthLength: generatedEchoCall.authLength,
         userCreateTool: userCreateCall.tool,
         userUseTool: userUseCall.tool,
         userVerifiedAuthLength: userEchoCall.authLength,
+        ordinaryGeneratedCount: ordinaryGenerated.length,
+        sudoPopupTitle: sudoPopup.title,
+        generateTool: generateCall.tool,
+        generatedCredentialId: credential.id,
+        generatedAllowedHosts: credential.allowed_hosts,
+        generatedAllowedUses: credential.allowed_uses,
         vaultUnlockTitle: vaultUnlock.title,
         vaultUnlockChoiceIds: (vaultUnlock.choices ?? []).map((choice) => choice.id),
         screenshot,
@@ -751,6 +812,7 @@ async function main() {
     }
     await echo?.close?.().catch(() => {})
     await terminateChild(daemon)
+    await rm(workspace, { recursive: true, force: true })
     await finalizeDrillArtifacts({
       rootDir,
       passed: succeeded,

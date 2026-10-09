@@ -9,7 +9,7 @@ import { grantAppFileRequest, saveAppFileExportRequest } from "./ipc-app-request
 import { prepareDeploymentAppsRequest, previewDeploymentAppsRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 460)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 481)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -177,14 +177,33 @@ test("deployment App preview names the publication and optionally a release", ()
 
 test("App host acceptance names only the session and operation, never a client payload or owner", async () => {
   const { acceptAppHostActionRequest } = await import("./ipc-app-requests.js")
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 460)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 481)
   assert.deepEqual(acceptAppHostActionRequest("s", "offer"), { AcceptAppHostAction: { session_id: "s", operation_id: "offer" } })
 })
 
 import { restoreAppDataSnapshotRequest } from "./ipc-app-requests.js"
 test("snapshot restore binds installation, generation and saved identity without authority", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 460)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 481)
   assert.deepEqual(restoreAppDataSnapshotRequest("todo", "3", "snapshot-1"), {
     RestoreAppDataSnapshot: { installation_id: "todo", expected_generation: "3", snapshot_id: "snapshot-1" },
   })
+})
+
+import { openUserAppViewRequest, listUserAppViewsRequest, closeUserAppViewRequest, getUserAppViewFrontendRequest, callUserAppViewRequest, subscribeUserAppViewsRequest, answerUserDomainInteractionRequest, userAppViewsMinimumProtocolVersion } from "./ipc-app-requests.js"
+
+test("protocol 418 user-domain channel and subscription supply no session or caller authority", () => {
+  assert.equal(userAppViewsMinimumProtocolVersion, 443)
+  assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
+  assert.deepEqual(listUserAppViewsRequest(), { ListUserAppViews: {} })
+  assert.deepEqual(closeUserAppViewRequest("v"), { CloseUserAppView: { view_id: "v" } })
+  assert.deepEqual(getUserAppViewFrontendRequest("v"), { GetUserAppViewFrontend: { view_id: "v" } })
+  assert.deepEqual(callUserAppViewRequest("v", "echo", { text: "hi" }), { CallUserAppView: { view_id: "v", method: "echo", input: { text: "hi" } } })
+  assert.deepEqual(subscribeUserAppViewsRequest(4), { SubscribeUserAppViews: { after: 4, wait_ms: 25000 } })
+  assert.deepEqual(answerUserDomainInteractionRequest({ interactionId: "d", choiceId: "deny" }), { AnswerUserDomainInteraction: { interaction_id: "d", choice_id: "deny", passkey: null, passkey_remember_minutes: null } })
+})
+
+test("protocol 418 kernel browser fallback is explicit; the native default stays wire-compatible", async () => {
+  const { openUserAppViewRequest } = await import("./ipc-app-requests.js")
+  assert.deepEqual(openUserAppViewRequest("todo"), { OpenUserAppView: { installation_id: "todo" } })
+  assert.deepEqual(openUserAppViewRequest("todo", "kernel_browser"), { OpenUserAppView: { installation_id: "todo", host: "kernel_browser" } })
 })

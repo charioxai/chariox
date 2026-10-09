@@ -159,13 +159,13 @@ impl CommandRouter {
                     .runtime_state
                     .with_room_provider_origin(run.agent_instance_id(), Some(run.id()));
             }
-            return router
-                .dispatch_meta_run_command(auth_token, arguments)
-                .await;
+            return Box::pin(router.dispatch_meta_run_command(auth_token, arguments)).await;
         }
-        self.runtime_state
-            .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
-            .await
+        Box::pin(
+            self.runtime_state
+                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments),
+        )
+        .await
     }
 
     pub(crate) fn runtime_tool_specs_for_auth_token(

@@ -57,13 +57,13 @@ test("provider isolation probe uses the same canonical slice identity as the per
   ])
 })
 
-test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 435 and peer protocol 73", async () => {
+test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 481 and peer protocol 87", async () => {
   const [rust, client, peer] = await Promise.all([
     readFile(new URL("apps/kernel/src/local/api/types.rs", root), "utf8"),
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 450)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 450)
-  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 73)
+  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 481)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 481)
+  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 87)
 })
