@@ -107,12 +107,12 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
 // Viewer flow with a scripted kernel and a recording renderer (no DOM needed).
 const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
   const applied: number[] = [], failures: unknown[] = []
-  let failNext = false
+  let failNext = false, always = false
   const packets: Mirror2Packet[] = []
-  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = false; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
   const transport = { protocolVersion: 489, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
-  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, start: () => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer }) }
+  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
 const packet = (sequence: number, reset: boolean, _base?: number | null) => reset ? { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { wire: 2, sequence, ops: [] }
@@ -198,4 +198,14 @@ test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); o
   assert.equal(press('PageDown'), false); assert.equal(press('PageUp'), false)
   assert.equal(press('Tab'), true)
   assert.deepEqual(sent, [{ kind: 'key', key: 'Tab' }])
+})
+
+test('MP-08/MP-10: replies that never apply keep the failure streak, so the mirror ends (video fallback) instead of retrying forever', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : packet(++sequence, true))
+  f.failAlways(); const mirror = await f.start(400)
+  await until(() => f.failures.length > 0, 3000)
+  await mirror.close()
+  assert.equal(f.failures.length, 1, 'MP-08: a renderer that cannot apply any snapshot reaches the terminal failure')
+  assert.deepEqual(f.applied, [])
 })
