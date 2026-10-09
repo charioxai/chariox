@@ -61,32 +61,72 @@ impl KernelRuntimeState {
             authority.map(|(grant_id, request)| ExternalCommandAuthority {
                 grant_id: grant_id.to_owned(),
                 request: request.clone(),
-                sudo_binding: grant_id
-                    .starts_with("sudo:")
-                    .then(|| {
-                        let turn = self.owned.sudo_turns.lock().ok()?.get(grant_id)?.clone();
-                        let run = self
-                            .owned
-                            .provider_store
-                            .get_run_for_agent(&turn.session_id, &turn.agent_id)?;
-                        let bound = self.sudo_for_provider_run(run.id()).ok()?;
-                        bound.prompt_id.zip(bound.provider_run_id)
-                    })
-                    .flatten(),
+                // Re-scoping the same command for a follow-up operation must
+                // retain its original turn, including a missing binding.
+                sudo_binding: match self
+                    .external_command_authority
+                    .as_ref()
+                    .filter(|authority| authority.grant_id == grant_id)
+                {
+                    Some(authority) => authority.sudo_binding.clone(),
+                    None => grant_id
+                        .starts_with("sudo:")
+                        .then(|| {
+                            let turn = self.owned.sudo_turns.lock().ok()?.get(grant_id)?.clone();
+                            let run = self
+                                .owned
+                                .provider_store
+                                .get_run_for_agent(&turn.session_id, &turn.agent_id)?;
+                            let bound = self.sudo_for_provider_run(run.id()).ok()?;
+                            bound.prompt_id.zip(bound.provider_run_id)
+                        })
+                        .flatten(),
+                },
             });
         state
     }
 
-    /// Pin the MCP call's captured origin rather than whichever continuation
-    /// happens to be current when asynchronous scope approval finishes.
-    pub(crate) fn with_sudo_command_turn(&self, prompt: &str, run: Option<&str>) -> Self {
+    /// Scope a command's external grant. A sudo MCP call is pinned to the
+    /// turn that submitted it rather than whichever continuation happens to be
+    /// current when asynchronous scope approval or a queued lane runs it.
+    pub(crate) fn with_kernel_command_authority(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let state = self.with_external_command_authority(
+            command
+                .external_grant_id()
+                .as_deref()
+                .map(|id| (id, request)),
+        );
+        if !command.is_sudo_command() {
+            return state;
+        }
+        state.with_sudo_binding(
+            command
+                .provider_run_id
+                .clone()
+                .map(|run| (command.correlation_id.clone(), run)),
+        )
+    }
+
+    /// The submitting turn a sudo command is bound to, carried across lanes.
+    pub(crate) fn sudo_binding(&self) -> Option<(String, String)> {
+        self.external_command_authority
+            .as_ref()?
+            .sudo_binding
+            .clone()
+    }
+
+    pub(crate) fn with_sudo_binding(&self, binding: Option<(String, String)>) -> Self {
         let mut state = self.clone();
         if let Some(authority) = state
             .external_command_authority
             .as_mut()
             .filter(|a| a.grant_id.starts_with("sudo:"))
         {
-            authority.sudo_binding = run.map(|run| (prompt.to_owned(), run.to_owned()));
+            authority.sudo_binding = binding;
         }
         state
     }
