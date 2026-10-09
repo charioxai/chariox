@@ -17,11 +17,11 @@ const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
-async function videoPixels(png,dpr,label,required=false) {
+async function videoPixels(png,dpr,label,required=false,regions=[]) {
   if(!required&&process.env.CHARIOX_FILL_VIDEO!=='1')return null;
   const encoder=new PortableEncoder();
   try {
-    const packet=await encoder.encode(png,8000000,true,'avc1.420033');
+    const packet=await encoder.encode(png,8000000,true,'avc1.420033',regions.map(([x,y,width,height])=>({x,y,width,height})));
     const data=typeof packet==='string'?packet:packet.data_base64,codec=typeof packet==='string'?'vp9':'h264';
     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.${codec}`),Buffer.from(data,'base64'));
     return await new Promise((resolve,reject)=>{
@@ -132,7 +132,8 @@ for(const dpr of [1,2]) {
          const y=selector==='#plain'?90:310,i=((y*dpr)*revealed.width+100*dpr)*4;
          assert.deepEqual([...revealed.pixels.subarray(i,i+3)],[0,0,0]);
          const protectedPng=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},context.policy.values,context.policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr);
-         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true);
+         // MP-11: production sends trusted device-pixel mask metadata with its protected raster.
+         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true,await collect());
          assert([...revealedVideo.subarray(i,i+3)].every(channel=>channel<5),'MP-11 revealed field stays covered in decoded production video');
        }
        await evaluate(`document.querySelector(${JSON.stringify(selector)}).${selector==='#editor'?'textContent':'value'}=''`);assert.deepEqual(await collect(),[]);
