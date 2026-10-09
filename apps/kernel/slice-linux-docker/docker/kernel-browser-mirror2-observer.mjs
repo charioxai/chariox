@@ -116,7 +116,12 @@ export function installMirror2(sanitizeMirrorCss) {
     const plainText = node => node.localName === 'input' ? PLAIN.has(node.type) : node.localName === 'textarea' || node.isContentEditable;
     const secretElement = node => targets.has(node) && plainText(node);
     const listened = new WeakSet(), listening = new AbortController();
-    const dispose = () => { observer.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
+    // Loaded resource URLs: a PerformanceObserver still sees entries once the page's
+    // Resource Timing buffer is full (250 by default, or whatever the page set).
+    const timed = new Set();
+    const timing = new PerformanceObserver(list => { for (const entry of list.getEntries()) { timed.delete(entry.name); timed.add(entry.name); if (timed.size > 20000) timed.delete(timed.values().next().value); } });
+    try { timing.observe({ type: 'resource', buffered: true }); } catch {}
+    const dispose = () => { observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
     const watch = (root, rootId) => {
       roots.set(rootId, root);
       observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -575,8 +580,9 @@ export function installMirror2(sanitizeMirrorCss) {
     const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
-    const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
-    const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
+    const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
+    // Changes when the page loads something (an image may complete without a new entry).
+    const loadedCount = () => { let complete = 0; for (const img of document.images) if (img.complete) complete++; return timed.size + performance.getEntriesByType('resource').length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
     // size; element images elsewhere wait until the view comes near them.
     const nearImages = margin => {

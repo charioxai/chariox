@@ -38,7 +38,7 @@ async function mirrored(html, run, routes = {}) {
         let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence;
         if (packet.reset) context = Buffer.alloc(0);
         if (packet.encoding === "deflate") { context = Buffer.concat([context, Buffer.from(packet.packet_base64, "base64")]); const out = inflateRawSync(context, { finishFlush: zlib.Z_SYNC_FLUSH }); packet = { ...JSON.parse(out.subarray(out.length - packet.packet_bytes)), resources: packet.resources ?? [], tiles: packet.tiles ?? [] }; }
-        return { ops: [], ...packet };
+        return { ops: [], resources: [], tiles: [], ...packet };
       };
       const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
       return { next, input };
@@ -149,4 +149,21 @@ test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; 
     await assert.rejects(input(changed.sequence, { kind: "text", node_id: secret, text: "x" }), /sensitive|protected|refus/i);
   }, {
     "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text"><input id="p" type="password">' },
+  }));
+
+// A page may shrink its Resource Timing buffer (Chrome keeps 250 entries by default): bytes the
+// page loads afterwards (here a CSS image applied after load) must still reach the viewer.
+const svg = color => `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="${color}"/></svg>`;
+test("MP-10: a CSS image the page loads after its Resource Timing buffer is full still reaches the viewer", () => mirrored(
+  '<script>performance.setResourceTimingBufferSize(1)</script><style>.late{width:40px;height:40px;background-image:url(/late.svg)}</style><img src="/early.svg"><div id="box"></div>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal((await next()).reset, true);
+    // The page loads the image itself (a preload) once its buffer is full, then uses it.
+    await evaluate("new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(true);image.src='/late.svg'}).then(()=>{document.getElementById('box').className='late';return true})");
+    const delivered = [];
+    for (let i = 0; i < 8 && !delivered.some(r => Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c")); i++) delivered.push(...(await next(1000)).resources);
+    assert(delivered.some(r => r.mime_type === "image/svg+xml" && Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c")), `MP-10: the late CSS image arrived (${delivered.map(r => r.key)})`);
+  }, {
+    "/early.svg": { type: "image/svg+xml", body: svg("#010203") },
+    "/late.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
   }));
