@@ -404,9 +404,16 @@ impl KernelRuntimeState {
             (HandoffResponseAction::Done, _) => {
                 outcome(&interaction_id, HandoffStatus::Completed, kind, None)
             }
-            (_, Some((user, _, admission))) => {
-                self.handoff_browser_action(&user, admission, &handoff, &interaction_id, &action)
-                    .await
+            (_, Some((user, actor, admission))) => {
+                self.handoff_browser_action(
+                    &user,
+                    &actor,
+                    admission,
+                    &handoff,
+                    &interaction_id,
+                    &action,
+                )
+                .await
             }
             _ => outcome(
                 &interaction_id,

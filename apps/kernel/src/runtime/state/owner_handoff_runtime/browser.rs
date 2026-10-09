@@ -6,6 +6,7 @@ impl KernelRuntimeState {
     pub(super) async fn handoff_browser_action(
         &self,
         user: &str,
+        actor: &str,
         admission: KernelBrowserAdmission,
         handoff: &RuntimeHandoff,
         id: &str,
@@ -125,7 +126,7 @@ impl KernelRuntimeState {
                 user,
                 Some(&admission),
                 "host.secret",
-                json!({"tab_id":target.tab_id,"generation":target.generation,"document_id":target.document_id,"node_ref":target.node_ref,"action":locator}),
+                Self::handoff_input_params(target, actor, locator),
                 true,
             )
             .await
@@ -137,6 +138,18 @@ impl KernelRuntimeState {
             // Dispatch may have reached the page: report, never replay.
             Err(_) => outcome(id, HandoffStatus::Uncertain, kind, Some("input_uncertain")),
         }
+    }
+
+    /// MP-11 A07: carry the authenticated terminal identity into the existing
+    /// browser input ledger, including an already-held same-terminal takeover.
+    pub(in crate::runtime) fn handoff_input_params(
+        target: &crate::session::HandoffTarget,
+        actor: &str,
+        action: BrowserLocatorAction,
+    ) -> serde_json::Value {
+        json!({"tab_id":target.tab_id,"generation":target.generation,
+            "document_id":target.document_id,"node_ref":target.node_ref,
+            "action":action,"observed_by":actor})
     }
 
     /// MP-11: preserve task, expiry and source grant authority through physical dispatch.

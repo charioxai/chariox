@@ -780,6 +780,37 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_mp10_mp11_a07_owner_handoff_keeps_authenticated_actor_after_takeover() {
+        let mut model = KernelBrowserActors::default();
+        model.reconcile(&serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"doc-a"}]})).unwrap();
+        let actor = "terminal:owner-scoped-view";
+        model
+            .takeover(
+                EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
+                "host-tab-a",
+                1,
+            )
+            .unwrap();
+        let target = crate::session::HandoffTarget {
+            tab_id: "host-tab-a".into(),
+            generation: 1,
+            document_id: "doc-a".into(),
+            node_ref: "backend:5".into(),
+            origin: "https://www.hetzner.com".into(),
+            path: "/firewalls".into(),
+            label: "Save".into(),
+        };
+        let params = crate::runtime::state::KernelRuntimeState::handoff_input_params(
+            &target,
+            actor,
+            crate::transport::room_browser_controller::BrowserLocatorAction::Click,
+        );
+        assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
+            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");
+    }
+
     #[test]
     fn mp08_mp10_mp11_a07_owner_handoff_preserves_inflight_terminal_lifetime_authority() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/owner-handoff-lifetime"));
