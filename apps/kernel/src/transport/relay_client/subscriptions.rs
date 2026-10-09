@@ -1172,7 +1172,7 @@ mod tests {
             first_key.clone(),
             RelaySubscriptionTask {
                 display_id: None,
-            display_pump: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1186,7 +1186,7 @@ mod tests {
             second_key,
             RelaySubscriptionTask {
                 display_id: None,
-            display_pump: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,

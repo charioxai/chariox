@@ -35,12 +35,12 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
-mod display_pump;
 mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
 mod display_ingress;
+mod display_pump;
 mod display_tunnel;
 mod envelope_io;
 mod events;

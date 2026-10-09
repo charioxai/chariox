@@ -88,13 +88,14 @@ pub(super) async fn handle_subscribe(
         },
     );
     drop(guard);
-    let request = crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
-        command: crate::local::KernelBrowserCommand::DisplayNext {
-            subscription_id: display_id.clone(),
-            generation,
-            after_sequence: 0,
-        },
-    });
+    let request =
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::DisplayNext {
+                subscription_id: display_id.clone(),
+                generation,
+                after_sequence: 0,
+            },
+        });
     let pump_caller = KernelCommand::from_local_request_with_caller(
         format!("{request_id}-push"),
         KernelCommandSource::RelayClient,
