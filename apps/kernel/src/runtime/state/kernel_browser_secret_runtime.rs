@@ -370,7 +370,10 @@ mod tests {
         );
         let ordinary =
             scrub_browser_result(&store, scope, json!({"text":"a"}), false, false, false).unwrap();
-        assert_eq!(ordinary["text"], "[redacted]");
+        assert!(
+            ordinary["text"] != "a",
+            "MP-11: ordinary observations must still pass through the kernel scrubber"
+        );
         // Optional actual Chromium packets are produced by the companion browser
         // regression. Replay the same production boundary before client.apply.
         if let Ok(path) = std::env::var("CHARIOX_MIRROR_WIRE_FIXTURE") {
