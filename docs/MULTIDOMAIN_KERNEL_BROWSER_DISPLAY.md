@@ -51,6 +51,10 @@ metadata. Raw raster and codec reply ceilings retain their existing limits.
 the Rust exact worker and the Node pipe both apply the exact-reply ceiling,
 so base64 repair output is never constrained by the smaller raw-raster bound.
 Each public display packet still passes the 1 MiB egress check.
+If a prepared lossless strip exceeds the legacy relay's base64 egress budget,
+the native worker bisects it into independently decodable lossless clips.
+Ordinary text strips keep their original geometry and encoding. The existing
+repair queue marks the frame exact only after every clip has been delivered.
 
 MP-08/MP-10 protocol 466 (relay unchanged): display frame events are binary.
 The encrypted plaintext is `CXD1`, a big-endian u32 header length, the JSON
