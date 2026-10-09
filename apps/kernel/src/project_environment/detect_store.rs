@@ -94,6 +94,7 @@ impl ProjectEnvironmentStore {
             .delivered_capabilities
             .enabled_environment_operations =
             vec![EnvironmentCapability::Get, EnvironmentCapability::Detect];
+        refresh_environment_content_digest(snapshot);
         Ok(())
     }
 }

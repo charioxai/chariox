@@ -235,6 +235,7 @@ impl KernelRuntimeState {
         environment.proposals.extend(detection.proposals);
         environment.evidence_digest = Some(detection.evidence_digest);
         environment.operations = vec![operation];
+        refresh_environment_content_digest(&mut environment);
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 }
