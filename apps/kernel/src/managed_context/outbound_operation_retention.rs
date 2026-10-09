@@ -1,5 +1,6 @@
 //! MP-08/MP-11: bounded terminal receipts, without retiring recovery authority.
 use super::*;
+use std::io;
 
 // Keep up to 128 recent terminal receipts for at most the archive retention
 // window (24 hours), reserving capacity for a new status plus two owner files.
@@ -9,6 +10,56 @@ const MAX_OPERATION_METADATA_SCAN_ENTRIES: usize = MAX_OUTBOUND_OPERATIONS * 3 +
 fn terminal(status: &ManagedContextOutboundOperationStatus) -> bool {
     status.phase == ManagedContextOutboundOperationPhase::Completed
         || (status.phase == ManagedContextOutboundOperationPhase::Failed && !status.retryable)
+}
+
+// MP-08 / MP-11: an inactive operation past the recovery window may retire
+// only when no matching, unexpired package can still resume it. Never interpret
+// unreadable or unsafe recovery state as permission to remove owner authority.
+fn retirable(
+    status: &ManagedContextOutboundOperationStatus,
+    artifact_parent: &Path,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    if terminal(status) {
+        return Ok(true);
+    }
+    if now.saturating_sub(status.updated_at_ms) < OUTBOUND_ARTIFACT_RETENTION_MS {
+        return Ok(false);
+    }
+    let root = artifact_parent.join(&status.context_id);
+    if !path_entry_exists(&root)? {
+        return Ok(true);
+    }
+    validate_artifact_root(&root)?;
+    if path_entry_exists(&root.join("retired"))? || !path_entry_exists(&root.join("state.json"))? {
+        return Ok(true);
+    }
+    let bytes =
+        read_bounded_regular_file(&root.join("state.json"), MAX_OUTBOUND_ARTIFACT_STATE_BYTES)?;
+    let persisted: PersistedOutboundArtifact = serde_json::from_slice(&bytes)
+        .map_err(|_| outbound_service_error("invalid operation recovery state", false))?;
+    if persisted.schema_version != OUTBOUND_ARTIFACT_SCHEMA_VERSION
+        || persisted.plan_digest != status.plan_digest
+    {
+        return Ok(false);
+    }
+    if persisted.created_at_ms == 0
+        || now.saturating_sub(persisted.created_at_ms) >= OUTBOUND_ARTIFACT_RETENTION_MS
+    {
+        return Ok(true);
+    }
+    let package = root.join("managed-context.pkg");
+    let metadata = match fs::symlink_metadata(&package) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => {
+            return Err(outbound_service_io_error(
+                "inspect operation recovery package",
+                error,
+            ))
+        }
+    };
+    Ok(metadata.is_file() && metadata.len() != persisted.package_size_bytes)
 }
 
 fn sync_metadata_directory(parent: &Path) -> Result<(), DaemonError> {
@@ -48,6 +99,7 @@ impl ManagedContextOutboundOperationStore {
                 false,
             ));
         }
+        let now = crate::session::unix_epoch_ms();
         let mut entry_count = entries.len();
         let mut statuses = Vec::new();
         let mut disk_unfinished = BTreeSet::new();
@@ -72,13 +124,17 @@ impl ManagedContextOutboundOperationStore {
                     continue;
                 }
                 let retiring = name == format!(".retired-{}.json", status.context_id);
-                if name == format!("{}.json", status.context_id) || (retiring && terminal(&status))
-                {
-                    if !terminal(&status) {
+                let eligible = retirable(
+                    &status,
+                    self.artifact_parent.as_deref().expect("artifact parent"),
+                    now,
+                )?;
+                if name == format!("{}.json", status.context_id) || (retiring && eligible) {
+                    if !eligible {
                         disk_unfinished.insert(status.context_id.clone());
                     }
                     *disk_counts.entry(status.context_id.clone()).or_default() += 1;
-                    statuses.push((status, path, retiring));
+                    statuses.push((status, path, retiring, eligible));
                 }
             } else if let Ok(saved) = serde_json::from_slice::<PersistedOwnerTicket>(&bytes) {
                 let plan = saved.ticket.context_plan.package_binding();
@@ -127,14 +183,15 @@ impl ManagedContextOutboundOperationStore {
                 entry_count = entry_count.saturating_sub(1);
             }
         }
-        statuses.retain(|(status, _, retiring)| {
-            terminal(status)
+        statuses.retain(|(status, _, retiring, eligible)| {
+            *eligible
                 && !active.contains(&status.context_id)
                 && !disk_unfinished.contains(&status.context_id)
                 && disk_counts.get(&status.context_id) == Some(&1)
                 && (*retiring || protected_context != Some(status.context_id.as_str()))
                 && state.get(&status.context_id).is_none_or(|memory| {
-                    terminal(memory)
+                    memory.phase == status.phase
+                        && memory.retryable == status.retryable
                         && memory.plan_digest == status.plan_digest
                         && memory.updated_at_ms == status.updated_at_ms
                 })
@@ -144,12 +201,11 @@ impl ManagedContextOutboundOperationStore {
                         .all(|(_, digest)| digest == &status.plan_digest)
                 })
         });
-        statuses.sort_by(|(a, _, ar), (b, _, br)| {
+        statuses.sort_by(|(a, _, ar, _), (b, _, br, _)| {
             (!*ar, a.updated_at_ms, &a.context_id).cmp(&(!*br, b.updated_at_ms, &b.context_id))
         });
         let mut remaining = statuses.len();
-        let now = crate::session::unix_epoch_ms();
-        for (status, path, retiring) in statuses {
+        for (status, path, retiring, _) in statuses {
             let expired =
                 now.saturating_sub(status.updated_at_ms) >= OUTBOUND_ARTIFACT_RETENTION_MS;
             if !retiring

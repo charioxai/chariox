@@ -285,7 +285,17 @@ mod tests {
     use crate::managed_context::owner_managed::*;
 
     fn write_owner_metadata(store: &ManagedContextOutboundOperationStore, context_id: &str) {
-        let ticket = super::super::tests::persisted_test_ticket(context_id);
+        write_owner_metadata_for_ticket(
+            store,
+            super::super::tests::persisted_test_ticket(context_id),
+        );
+    }
+
+    fn write_owner_metadata_for_ticket(
+        store: &ManagedContextOutboundOperationStore,
+        ticket: ManagedContextTransferTicket,
+    ) {
+        let context_id = ticket.context_plan.context_id().to_owned();
         let plan = ticket.context_plan.package_binding();
         let saved = PersistedOwnerTicket {
             account_id: "account".into(),
@@ -355,6 +365,143 @@ mod tests {
     }
 
     #[test]
+    fn r4_abandoned_retryable_operations_retire_after_recovery_state_expires() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-abandoned-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        // Retryable failures are never terminal receipts, so enough abandoned
+        // copies fill the metadata quota while no package or upload remains.
+        let ids = (0..MAX_OUTBOUND_OPERATIONS - 1)
+            .map(|index| format!("context-abandoned-{index:04}"))
+            .collect::<Vec<_>>();
+        for id in &ids {
+            let mut ticket = super::super::tests::persisted_test_ticket(id);
+            ticket.context_plan = ManagedKernelContextPlan::source_project_for_tests(
+                id,
+                "realm-1",
+                "source-kernel",
+                &"a".repeat(64),
+                &format!("project-{id}"),
+            );
+            let (_, permit) = store
+                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .unwrap();
+            write_owner_metadata_for_ticket(&store, ticket);
+            assert!(store.update(id, |status| {
+                status.phase = ManagedContextOutboundOperationPhase::Failed;
+                status.retryable = true;
+            }));
+            drop(permit);
+            store.finish(id);
+        }
+        // Before expiration this owner's metadata quota is actually full.
+        crate::config::write_private_file(&root.join(".operations/unknown.json"), b"{}").unwrap();
+        assert!(store
+            .start("context-before-expiration", "sha256:next")
+            .is_err());
+        // Only the oldest are past the recovery window; the last stays viable.
+        let (viable, expired) = ids.split_last().unwrap();
+        for id in expired {
+            let mut status = store.get(id).unwrap();
+            status.updated_at_ms = 1;
+            store.persist_status(&status).unwrap();
+        }
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        for id in expired {
+            assert!(reopened.get(id).is_none(), "{id} is no longer recoverable");
+            assert!(!root
+                .join(".operations")
+                .join(format!("{id}-owner.json"))
+                .exists());
+        }
+        assert!(
+            reopened.get(viable).is_some(),
+            "a viable retry is preserved"
+        );
+        let next = super::super::tests::persisted_test_ticket("context-after-reopen");
+        assert!(reopened
+            .start(
+                "context-after-reopen",
+                &next.context_plan.package_binding().plan_digest
+            )
+            .unwrap()
+            .1
+            .is_some());
+    }
+
+    #[test]
+    fn r4_retirement_preserves_active_operations_and_unexpired_recovery() {
+        // MP-08 / MP-11: neither age nor pressure retires live authority.
+        let root = std::env::temp_dir().join(format!(
+            "chariox-operation-live-{:032x}",
+            rand::random::<u128>()
+        ));
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let store = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        let active = "context-active-old";
+        let viable = "context-viable-old";
+        let mut active_permit = None;
+        for id in [active, viable] {
+            let ticket = super::super::tests::persisted_test_ticket(id);
+            let (_, permit) = store
+                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .unwrap();
+            write_owner_metadata(&store, id);
+            let mut status = store.get(id).unwrap();
+            status.updated_at_ms = 1;
+            if id == viable {
+                status.phase = ManagedContextOutboundOperationPhase::Failed;
+                status.retryable = true;
+                drop(permit);
+                store.finish(id);
+                let artifact_root = root.join(id);
+                create_private_directory(&artifact_root).unwrap();
+                let persisted = super::super::tests::persisted_test_artifact(
+                    &ticket,
+                    crate::session::unix_epoch_ms(),
+                    1,
+                );
+                crate::config::write_private_file(
+                    &artifact_root.join("state.json"),
+                    &serde_json::to_vec(&persisted).unwrap(),
+                )
+                .unwrap();
+                crate::config::write_private_file(&artifact_root.join("managed-context.pkg"), b"x")
+                    .unwrap();
+            } else {
+                active_permit = permit;
+            }
+            store.persist_status(&status).unwrap();
+            store.state.lock().unwrap().insert(id.into(), status);
+        }
+        store.reclaim_operation_metadata(None).unwrap();
+        assert!(
+            store.get(active).is_some(),
+            "a live old operation retains authority"
+        );
+        assert!(
+            store.get(viable).is_some(),
+            "a matching unexpired package retains retry authority"
+        );
+        drop(active_permit);
+        store.finish(active);
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
+        assert!(
+            reopened.get(active).is_none(),
+            "abandoned old operation has no recovery package"
+        );
+        assert!(
+            reopened.get(viable).is_some(),
+            "unexpired package still resumes after reopen"
+        );
+    }
+
+    #[test]
     fn mp08_mp11_metadata_retirement_preserves_unfinished_and_retryable_bindings() {
         let root = std::env::temp_dir().join(format!(
             "chariox-operation-expiry-{:032x}",
@@ -392,7 +539,12 @@ mod tests {
             let mut status = store.get(id).unwrap();
             status.phase = phase;
             status.retryable = retryable;
-            status.updated_at_ms = 1;
+            status.updated_at_ms =
+                if retryable || phase == ManagedContextOutboundOperationPhase::Preparing {
+                    crate::session::unix_epoch_ms()
+                } else {
+                    1
+                };
             store.persist_status(&status).unwrap();
             drop(permit);
             store.finish(id);
