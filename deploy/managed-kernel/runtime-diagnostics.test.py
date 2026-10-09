@@ -141,4 +141,85 @@ esac
         source=pathlib.Path(__file__).with_name('upgrade-image.sh').read_text()
         self.assertIn('atomic-text "$1" "$transaction_root/phase" || return $?\n  record_diagnostic_phase "$1"',source)
         self.assertIn('transaction_active=1\nrecord_diagnostic_phase prepared\n\nif ! systemctl stop',source)
+    def test_mp07_partial_observer_write_can_retry_and_ship_later_records(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            guest, observer = pathlib.Path(a), pathlib.Path(b)
+            for event in ('heartbeat_sent', 'update_downloaded'):
+                diag.event(guest, event)
+            original = diag.os.fdopen
+            class PartialWrite:
+                def __init__(self, stream): self.stream = stream
+                def __enter__(self): return self
+                def __exit__(self, *args): return self.stream.__exit__(*args)
+                def fileno(self): return self.stream.fileno()
+                def write(self, data):
+                    os.write(self.fileno(), data[:len(data) // 2])
+                    raise OSError('injected storage exhaustion before complete payload')
+            def opened(descriptor, mode):
+                stream = original(descriptor, mode)
+                return PartialWrite(stream) if mode == 'wb' else stream
+            acknowledged = set()
+            post = lambda raw: {'sha256': diag.accept(observer, raw)}
+            with patch.object(diag.os, 'fdopen', side_effect=opened):
+                with self.assertRaises(OSError):
+                    diag.ship(guest, 'https://observer.example/path1-diagnostics/round-20261009', acknowledged, post)
+            self.assertEqual(acknowledged, set())
+            result = diag.ship(guest, 'https://observer.example/path1-diagnostics/round-20261009', acknowledged, post)
+            self.assertEqual(result['records'], 2)
+            self.assertEqual(len(list(observer.glob('*.json'))), 2)
+            self.assertEqual(list(observer.glob('*.tmp')), [])
+
+    def test_mp07_observer_crash_before_publication_can_retry_and_ship_later_records(self):
+        import subprocess, sys
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            guest, observer = pathlib.Path(a), pathlib.Path(b)
+            for event in ('heartbeat_sent', 'update_downloaded'):
+                diag.event(guest, event)
+            raw = next(diag.records(guest))
+            crash = '''import importlib.util, os, pathlib, sys
+spec = importlib.util.spec_from_file_location('diagnostics', sys.argv[1])
+diag = importlib.util.module_from_spec(spec); spec.loader.exec_module(diag)
+original = diag.os.fdopen
+class InterruptedWrite:
+    def __init__(self, stream): self.stream = stream
+    def __enter__(self): return self
+    def __exit__(self, *args): return self.stream.__exit__(*args)
+    def fileno(self): return self.stream.fileno()
+    def write(self, data):
+        os.write(self.fileno(), data[:len(data) // 2]); os.fsync(self.fileno())
+        os._exit(73)
+def opened(descriptor, mode):
+    stream = original(descriptor, mode)
+    return InterruptedWrite(stream) if mode == 'wb' else stream
+diag.os.fdopen = opened
+diag.accept(pathlib.Path(sys.argv[2]), sys.argv[3].encode())
+'''
+            result = subprocess.run([sys.executable, '-I', '-c', crash, str(spec.origin), str(observer), raw.decode()], capture_output=True)
+            self.assertEqual(result.returncode, 73)
+            acknowledged = set()
+            shipped = diag.ship(guest, 'https://observer.example/path1-diagnostics/round-20261009', acknowledged,
+                                lambda value: {'sha256': diag.accept(observer, value)})
+            self.assertEqual(shipped['records'], 2)
+            self.assertEqual(len(acknowledged), 2)
+            for receipt in observer.glob('*.json'):
+                self.assertEqual(receipt.stat().st_nlink, 1)
+                self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+
+    def test_mp11_existing_observer_corruption_and_links_still_fail_closed(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            observer, outside = pathlib.Path(a), pathlib.Path(b) / 'record'
+            raw = diag.canonical({'schema': 1, 'atMs': 1, 'pid': 20, 'event': 'heartbeat_sent'})
+            receipt = observer / (hashlib.sha256(raw).hexdigest() + '.json')
+            receipt.write_bytes(raw[:5]); receipt.chmod(0o600)
+            with self.assertRaises(ValueError): diag.accept(observer, raw)
+            self.assertEqual(receipt.read_bytes(), raw[:5])
+            receipt.unlink(); outside.write_bytes(raw); outside.chmod(0o600)
+            receipt.symlink_to(outside)
+            with self.assertRaises(OSError): diag.accept(observer, raw)
+            receipt.unlink(); os.link(outside, receipt)
+            with self.assertRaises(ValueError): diag.accept(observer, raw)
+            self.assertEqual(outside.read_bytes(), raw)
+
 if __name__=='__main__':unittest.main()

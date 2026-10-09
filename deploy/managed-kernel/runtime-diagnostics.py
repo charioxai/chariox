@@ -6,6 +6,7 @@ their SHA256. This is observation, never an update/liveness authority. No tokens
 credentials, prompts, provider output, general log files or config are read.
 """
 import argparse
+import fcntl
 import hashlib
 import http.server
 import json
@@ -13,6 +14,7 @@ import os
 import pathlib
 import re
 import stat
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -58,24 +60,35 @@ def accept(directory, raw):
     data = canonical(json.loads(raw))
     digest = hashlib.sha256(data).hexdigest()
     path = directory / (digest + '.json')
-    if not path.exists() and sum(1 for _ in directory.glob('*.json')) >= 10000:
-        raise ValueError('MP-09 observer record quota exceeded')
+    lock = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(descriptor, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner or stream.read(MAX_RECORD + 1) != data:
-                raise ValueError('MP-11 observer collision')
-            # A prior interrupted writer must not turn unflushed data into an acknowledgement.
-            os.fsync(stream.fileno())
-    else:
-        with os.fdopen(descriptor, 'wb') as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    sync_directory(directory)
+        # Serialize quota/validation/publication across cooperating receivers.
+        # A process crash releases the directory lock without a stale lock file.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            if sum(1 for _ in directory.glob('*.json')) >= 10000:
+                raise ValueError('MP-09 observer record quota exceeded')
+            descriptor, temporary = tempfile.mkstemp(prefix='.' + digest + '.', suffix='.tmp', dir=directory)
+            try:
+                with os.fdopen(descriptor, 'wb') as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                # Incomplete writes and abandoned staging files never become receipts.
+                os.replace(temporary, path)
+            finally:
+                pathlib.Path(temporary).unlink(missing_ok=True)
+        else:
+            with os.fdopen(descriptor, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner or stream.read(MAX_RECORD + 1) != data:
+                    raise ValueError('MP-11 observer collision')
+                os.fsync(stream.fileno())
+        os.fsync(lock)
+    finally:
+        os.close(lock)
     return digest
 
 
