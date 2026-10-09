@@ -637,3 +637,223 @@ async fn vault_claude_fixture() -> Fixture {
     .unwrap();
     f
 }
+
+// MP-08/MP-10/MP-11 R947-2: worker acknowledgement waits for native tools/list.
+#[tokio::test]
+async fn leased_sudo_waits_for_deferred_catalog_refresh() {
+    for (busy, refreshing, interrupted) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let f = fixture_with_options(None, true);
+        let leased = {
+            let mut app = f.app.lock().await;
+            let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease("home", "room", "agent", false, "local")
+                .unwrap();
+            crate::app::RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent_from_base_directory(
+                    f.run.working_directory().unwrap(),
+                    &lease.id,
+                    "managed-dev-stub",
+                    "default",
+                    Some("controlled-cancel-idle".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        let request = crate::provider::LaunchProviderRequest::new(
+            &leased.backing_session_id,
+            "opencode",
+            "sudo-native-fixture",
+            "default",
+            "default",
+        )
+        .with_agent_id(&leased.backing_agent_id)
+        .with_client_interface(ProviderClientInterface::NativeTui);
+        let request = f
+            .state
+            .prepare_provider_launch_request_with_vault(request, "leased native fixture")
+            .await
+            .unwrap();
+        let mut run = RuntimeProviderRun::new(
+            "leased-native-fixture",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "metadata-only".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: Some(f.run.working_directory().unwrap().to_owned()),
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        f.state
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        f.state.owned.provider_run_projection.update(run.clone());
+        let changes = f
+            .state
+            .owned
+            .provider_run_projection
+            .catalog_changes()
+            .clone();
+        let mut watch = changes.subscribe(run.id()).unwrap();
+        let lane = (!refreshing).then(|| {
+            f.state
+                .owned
+                .provider_store
+                .run_operation_lanes()
+                .try_acquire(run.id())
+                .unwrap()
+        });
+        let refresh = refreshing.then(|| changes.begin_refresh(run.id()).unwrap());
+        let initial = watch.current().desired;
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&leased.backing_session_id)
+            .unwrap();
+        if busy {
+            let attachment = {
+                let mut app = f.app.lock().await;
+                crate::app::KernelSessionService::new(&mut app)
+                    .attach(crate::attachment::AttachRequest::new(
+                        session.id(),
+                        "leased-busy-fixture",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ))
+                    .unwrap()
+            };
+            f.state
+                .owned
+                .submit_local_prepared_prompt_with_queue_policy(
+                    &crate::app::KernelPreparedPromptSubmission {
+                        session_id: session.id().into(),
+                        prompt: PromptQueueItem::new(
+                            "busy-before-leased-refresh",
+                            attachment.id(),
+                            &leased.backing_agent_id,
+                            "ordinary",
+                            PromptStatus::Queued,
+                        ),
+                        force_queue: false,
+                        refresh_projection: true,
+                    },
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let state = f.state.clone();
+        let id = leased.id.clone();
+        let mut task = tokio::spawn(async move {
+            state
+                .update_relay_leased_sudo(
+                    &id,
+                    "sudo-home-prompt",
+                    crate::transport::relay_peer::LeasedSudoGrant {
+                        entry_id: "leased-window".into(),
+                        revision: 0,
+                        remaining_ms: 60_000,
+                        initial: true,
+                    },
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !task.is_finished(),
+            "worker acknowledged sudo before the deferred catalog refreshed"
+        );
+        assert_eq!(watch.current().desired, initial);
+        if interrupted {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            let state = f.state.clone();
+            let id = leased.id.clone();
+            task = tokio::spawn(async move {
+                state
+                    .update_relay_leased_sudo(
+                        &id,
+                        "sudo-home-prompt",
+                        crate::transport::relay_peer::LeasedSudoGrant {
+                            entry_id: "leased-window".into(),
+                            revision: 1,
+                            remaining_ms: 60_000,
+                            initial: false,
+                        },
+                    )
+                    .await
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                !task.is_finished(),
+                "same-entry renewal skipped the interrupted refresh"
+            );
+            assert_eq!(watch.current().desired, initial);
+        }
+        if busy {
+            f.state
+                .owned
+                .prompt_state_owner
+                .cancel_active_prompt_only(&session, &leased.backing_agent_id)
+                .unwrap();
+        }
+        drop(lane);
+        drop(refresh);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while watch.current().desired == initial {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !task.is_finished(),
+            "catalog invalidation alone is not readiness"
+        );
+        changes.observed(run.id(), changes.revision(run.id()).unwrap());
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            f.state
+                .owned
+                .provider_store
+                .get_run_for_agent(session.id(), &leased.backing_agent_id)
+                .unwrap()
+                .id(),
+            run.id()
+        );
+        f.state
+            .update_relay_leased_sudo(
+                &leased.id,
+                "sudo-home-prompt",
+                crate::transport::relay_peer::LeasedSudoGrant {
+                    entry_id: "leased-window".into(),
+                    revision: u64::from(interrupted),
+                    remaining_ms: 0,
+                    initial: false,
+                },
+            )
+            .await
+            .unwrap();
+    }
+}

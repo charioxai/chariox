@@ -18,6 +18,7 @@ pub(crate) struct WorkerSudoGrant {
     entry_id: String,
     revision: u64,
     deadline: Instant,
+    catalog_ready: bool,
 }
 
 impl KernelRuntimeState {
@@ -43,7 +44,7 @@ impl KernelRuntimeState {
                     })
             })
             .await?;
-        let fresh = {
+        let (entry, refresh) = {
             let mut grants = self
                 .owned
                 .leased_sudo_grants
@@ -56,7 +57,7 @@ impl KernelRuntimeState {
                 {
                     grants.remove(&agent);
                 }
-                false
+                return Ok(());
             } else {
                 let current = grants.get(&agent);
                 if current
@@ -68,6 +69,8 @@ impl KernelRuntimeState {
                 if fresh && !grant.initial {
                     return Err(error(LEASED_SUDO_LOST));
                 }
+                let catalog_ready = current.is_some_and(|g| !fresh && g.catalog_ready);
+                let entry = grant.entry_id.clone();
                 grants.insert(
                     agent.clone(),
                     WorkerSudoGrant {
@@ -76,9 +79,10 @@ impl KernelRuntimeState {
                         entry_id: grant.entry_id,
                         revision: grant.revision,
                         deadline: Instant::now() + Duration::from_millis(grant.remaining_ms),
+                        catalog_ready,
                     },
                 );
-                fresh
+                (entry, !catalog_ready)
             }
         };
         let warm = self
@@ -88,34 +92,60 @@ impl KernelRuntimeState {
             .is_some_and(|run| {
                 crate::provider::provider_runtime_catalog_requires_reload(run.provider())
             });
-        if fresh && warm {
+        if refresh && warm {
             use super::super::provider_reload::{ProviderReloadOutcome, ProviderReloadReason};
-            let outcome = self
-                .reload_agent_provider_if_idle_for_reason(
-                    &session,
-                    &agent,
-                    &ProviderReloadReason::RuntimeToolCatalog,
-                )
-                .await?;
-            if matches!(outcome, ProviderReloadOutcome::Reloaded) {
-                let ready = tokio::time::timeout(Duration::from_secs(30), async {
-                    while !self
-                        .owned
-                        .provider_store
-                        .get_run_for_agent(&session, &agent)
-                        .is_some_and(|run| {
-                            run.state() == crate::provider::ProviderRunState::Running
-                        })
-                    {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+            // MP-08/MP-10/MP-11 R947-2: Deferred is not a catalog receipt.
+            // An interrupted/failed refresh stays unready, including on the
+            // next update of the same entry. Only this confirmed attempt arms it.
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if !self.worker_sudo_grant_open(&agent) {
+                        return Err(error("worker sudo window ended during catalog refresh"));
                     }
-                })
-                .await;
-                if ready.is_err() {
-                    return Err(error("worker provider did not reload for the sudo window"));
+                    let outcome = self
+                        .reload_agent_provider_if_idle_for_reason(
+                            &session,
+                            &agent,
+                            &ProviderReloadReason::RuntimeToolCatalog,
+                        )
+                        .await?;
+                    if matches!(outcome, ProviderReloadOutcome::Deferred) {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    if matches!(outcome, ProviderReloadOutcome::Reloaded) {
+                        while !self
+                            .owned
+                            .provider_store
+                            .get_run_for_agent(&session, &agent)
+                            .is_some_and(|run| {
+                                run.state() == crate::provider::ProviderRunState::Running
+                            })
+                        {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+                    return Ok(());
                 }
-            }
+            })
+            .await
+            .map_err(|_| {
+                error("worker provider catalog did not become ready for the sudo window")
+            })??;
         }
+        let mut grants = self
+            .owned
+            .leased_sudo_grants
+            .lock()
+            .expect("leased sudo grants poisoned");
+        let grant = grants
+            .get_mut(&agent)
+            .filter(|grant| grant.entry_id == entry)
+            .ok_or_else(|| error("worker sudo window ended during catalog refresh"))?;
+        if Instant::now() >= grant.deadline {
+            return Err(error("worker sudo window ended during catalog refresh"));
+        }
+        grant.catalog_ready = true;
         Ok(())
     }
 
@@ -146,7 +176,8 @@ impl KernelRuntimeState {
                 .expect("leased sudo grants poisoned")
                 .get(agent)
                 .is_some_and(|grant| {
-                    Instant::now() < grant.deadline
+                    grant.catalog_ready
+                        && Instant::now() < grant.deadline
                         && grant.leased_agent_id == context.leased_agent_id
                         && context.home_prompt_id.as_deref() == Some(&grant.home_prompt_id)
                 })
