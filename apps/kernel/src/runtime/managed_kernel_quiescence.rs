@@ -577,7 +577,7 @@ mod tests {
         let release = client
             .signed_release_ack(&challenge(), ManagedKernelQuiescenceOutcome::KeepRunning, 1)
             .expect("release ack should sign");
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 488);
         assert_eq!(
             serde_json::to_string(&release).expect("release payload should serialize"),
             r#"{"accountId":"account-1","action":"auto_stop_quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"signature":"sha256:d2a9120425277132c10100e4c96ab3ee8172ae79ff82f8296ca6cae8c99502ec","stopOperationId":"stop-operation-1"}"#,

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
@@ -13,6 +14,19 @@ function terminalCatalog() {
     nodes: [],
   }
 }
+
+test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
+  const pending = new Promise<never>(() => {})
+  const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: () => pending,
+    getProviderCatalog: () => pending,
+    getProviderCommandCatalogs: () => pending,
+    getTerminalCommandCatalog: () => pending,
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(result, "blocked")
+  if (result !== "blocked") assert.equal(result.binding, null)
+})
 
 test("bootstrapSession returns waiting-room bootstrap when no session should attach", async () => {
   const catalog = fallbackProviderCatalog()
@@ -47,8 +61,8 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
 
   assert.equal(bootstrap.binding, null)
   assert.deepEqual(bootstrap.sessions, [])
-  assert.equal(bootstrap.providerCatalog, catalog)
-  assert.deepEqual(bootstrap.providerCommandCatalogs, fallbackProviderCommandCatalogs())
+  assert.equal(await bootstrap.deferred?.providerCatalog, catalog)
+  assert.deepEqual(await bootstrap.deferred?.providerCommandCatalogs, fallbackProviderCommandCatalogs())
 })
 
 test("bootstrapSession seeds provider/model/effort from the kernel config.toml default when unset", async () => {
@@ -60,7 +74,7 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     effort: "",
   }
 
-  await bootstrapSession(
+  const bootstrap = await bootstrapSession(
     {} as never,
     options,
     "/workspace",
@@ -89,9 +103,10 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     },
   )
 
-  assert.equal(options.provider, "codex")
-  assert.equal(options.model, "gpt-5.1")
-  assert.equal(options.effort, "high")
+  assert.deepEqual(await bootstrap.deferred?.waitingRoomDefaults, { provider: "codex", model: "gpt-5.1", effort: "high" })
+  assert.equal(options.provider, undefined)
+  assert.equal(options.model, "default")
+  assert.equal(options.effort, "")
 })
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {
@@ -638,3 +653,65 @@ function outlineAgent(
     next_cursor: nextCursor,
   }
 }
+
+
+test("MP-08/MP-11 delayed defaults survive fallback projection during focus navigation", async () => {
+  let release!: (value: {provider: string; model: string; effort: string}) => void
+  const configured = new Promise<{provider: string; model: string; effort: string}>(resolve => { release = resolve })
+  const options: CliOptions = {clientId: "cli", model: "default", effort: "", accountProfile: "default"}
+  const boot = bootstrapWaitingRoom({} as never, options, {}, {
+    getConfiguredProviderLaunchDefaults: () => configured,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  // Reconciliation writes projected fallback values without a user-choice revision.
+  options.provider = "opencode"
+  options.model = "opencode/gpt-5.4"
+  options.effort = "medium"
+  release({provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, {provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+})
+
+test("MP-08/MP-11 configured defaults hydrate while provider metadata is still pending", async () => {
+  let releaseCatalog!: (value: ReturnType<typeof fallbackProviderCatalog>) => void
+  const catalog = new Promise<ReturnType<typeof fallbackProviderCatalog>>(resolve => { releaseCatalog = resolve })
+  const boot = bootstrapWaitingRoom({} as never, {clientId: "cli", model: "default", effort: "", accountProfile: "default"}, {}, {
+    getConfiguredProviderLaunchDefaults: async () => ({provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"}),
+    getProviderCatalog: () => catalog,
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let hydrated: unknown = null
+  void boot.deferred?.waitingRoomDefaults?.then(value => { hydrated = value })
+  await new Promise(resolve => setImmediate(resolve))
+  const beforeMetadata = hydrated
+  releaseCatalog(fallbackProviderCatalog())
+  await boot.deferred?.providerCatalog
+  assert.deepEqual(beforeMetadata, {provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"})
+})
+
+
+test("MP-08/MP-11 defaults recover after the first live report when relay routing drops", async () => {
+  const { LocalIpcError } = await import("./ipc.js")
+  let report!: (event: { event: string }) => void
+  let disposed = 0, reads = 0
+  const client = { onKernelEvent: (handler: typeof report) => { report = handler; return () => { disposed += 1 } } }
+  const boot = bootstrapWaitingRoom(client as never, { clientId: "cli", model: "default", effort: "", accountProfile: "default" }, {}, {
+    getConfiguredProviderLaunchDefaults: async () => {
+      if (++reads === 1) throw new LocalIpcError("read configured defaults", "target daemon disconnected from relay", "target_disconnected", true)
+      return { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" }
+    },
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let outcome = "pending"
+  void boot.deferred?.waitingRoomDefaults?.then(() => { outcome = "ready" }, () => { outcome = "failed" })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(outcome, "pending")
+  report({ event: "waiting_room_rows_changed" })
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" })
+  assert.equal(reads, 2)
+  assert.equal(disposed, 1)
+})

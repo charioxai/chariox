@@ -119,6 +119,7 @@ export function createCliAppProcessRuntimeComposition(
     setStatusLine: deps.setStatusLine,
     updateSessionChrome: deps.updateSessionChrome,
     appendNotice: deps.appendNotice,
+    applyWaitingRoomTransportClosed: deps.applyWaitingRoomTransportClosed,
     working: deps.working,
     supportsKernelEventStream: deps.supportsKernelEventStream,
     recoverProviderRun: deps.recoverProviderRun,

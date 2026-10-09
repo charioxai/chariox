@@ -214,6 +214,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     attachment_id: initialBinding?.attachment.id ?? null,
     client_id: options.clientId,
   })
+  onCleanup(client.onRelaySubscriptionDiagnostic(diagnostic => {
+    appLogger?.debug("relay subscription diagnostic", diagnostic)
+  }))
   const renderer = useRenderer()
   const secretInput = createCliSecretInput(renderer)
   onCleanup(secretInput.cancel)
@@ -390,7 +393,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     activateWaitingRoom, applyAccountSelection, applyModelSelection, applyModeSelection, applyPermissionSelection,
     applyProviderCatalogChanged, applyProviderSelection,
     applyRelayStatusChanged, applyRemoteMachinesChanged, applySlicesChanged, applyVariantSelection,
-    applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
+    applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
@@ -752,6 +755,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
   } = createCliPrimaryTranscriptComposition({
+    waitingRoomLaunchOwnershipRevision,
+    applyWaitingRoomBootstrapDefaults: reconcileWaitingRoom,
     client,
     bootstrap: props.bootstrap,
     renderer, appLogger, formatError,
@@ -851,7 +856,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptStopController.reset()
     },
     bumpHistoryLoadGeneration, reconcileWaitingRoom: reconcileWaitingRoomProjection,
-    refreshWaitingRoomData,
+    refreshWaitingRoomData, applyWaitingRoomTransportClosed,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
@@ -996,7 +1001,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setAttachmentState, kernelEventSubscriptionController, syncKernelEventSubscription, transitionToNoSession,
     queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
-    applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
+    applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
     applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),

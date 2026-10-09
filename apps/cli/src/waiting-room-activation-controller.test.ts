@@ -854,6 +854,17 @@ test("waiting room activation undoes target attachment before rolling back its c
   ])
 })
 
+test("ordinary session activation cannot launch from cached or pending inventory", async () => {
+  const harness = createHarness({
+    remoteState: { inventoryStatus: "loading" },
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: { provider: "opencode", model: "gpt-5.4", effort: "medium" } },
+  })
+  await harness.controller.activate()
+  assert(!harness.calls.some(call => call.startsWith("createSession")))
+  assert(harness.calls.some(call => call.includes("Waiting for selected kernel inventory")))
+})
+
 function createHarness(options: {
   kernelConnected?: boolean
   controlDecision: WaitingRoomControlActivationDecision

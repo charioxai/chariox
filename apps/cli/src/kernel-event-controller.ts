@@ -56,6 +56,8 @@ type KernelEventControllerDeps = {
   setDaemonDisconnected: (value: boolean) => void
   setStatusLine: (value: string) => void
   updateSessionChrome: () => void
+  isAttached: () => boolean
+  onWaitingRoomTransportClosed: () => void
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
   markAssistantMessageCompleted: (agentId: string | null | undefined) => void
@@ -280,8 +282,12 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setDaemonDisconnected(true)
     deps.setStatusLine("Lost connection to the Chariox kernel.")
     deps.updateSessionChrome()
+    if (!deps.isAttached()) {
+      deps.onWaitingRoomTransportClosed()
+      return
+    }
     const now = Date.now()
-    if (message !== lastTransportNoticeMessage || now - lastTransportNoticeAtMs > 10_000) {
+    if (deps.isAttached() && (message !== lastTransportNoticeMessage || now - lastTransportNoticeAtMs > 10_000)) {
       lastTransportNoticeMessage = message
       lastTransportNoticeAtMs = now
       deps.appendNotice(message, "warning")
@@ -293,7 +299,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setDaemonDisconnected(false)
     deps.setStatusLine(deps.connectedStatusLine)
     deps.updateSessionChrome()
-    if (lastTransportNoticeMessage !== null) {
+    if (deps.isAttached() && lastTransportNoticeMessage !== null) {
       deps.appendNotice("Reconnected to the Chariox kernel.")
     }
     lastTransportNoticeMessage = null

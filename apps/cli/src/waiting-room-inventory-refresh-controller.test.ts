@@ -365,7 +365,7 @@ test("waiting room inventory refresh reports failures", async () => {
 
   assert.equal(harness.inventoryStatus(), "error")
   assert.equal(harness.warnings().at(-1)?.message, "waiting room inventory refresh failed")
-  assert.equal(harness.reconcileCount(), 0)
+  assert.equal(harness.reconcileCount(), 1)
 })
 
 test("waiting room inventory refresh coalesces concurrent refreshes", async () => {
@@ -535,7 +535,7 @@ test("waiting room inventory relay and machine patches apply without fetching", 
   ])
 
   assert.equal(harness.inventoryCalls(), 0)
-  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.inventoryStatus(), "loading")
   assert.equal(harness.relayStatus()?.daemon_id, "kernel-1")
   assert.deepEqual(harness.remoteMachines().map((machine) => machine.machine_id), ["machine-2"])
   assert.equal(harness.reconcileCount(), 2)
@@ -562,8 +562,76 @@ test("waiting room inventory relay and machine patches apply without fetching", 
   assert.equal(disconnected.reconcileCount(), 0)
 })
 
+test("relay and machine directory events do not complete pending kernel reports", () => {
+  const harness = createHarness()
+  harness.controller.applyRelayStatusChanged(inventory("directory").relayStatus)
+  assert.equal(harness.inventoryStatus(), "loading")
+  harness.controller.applyRemoteMachinesChanged([])
+  assert.equal(harness.inventoryStatus(), "loading")
+})
+
+test("cached inventory restores machines and kernels before live reports", () => {
+  const cached = inventory("cached", {
+    remoteMachines: [{ machine_id: "cached-machine", display_name: "cached", trust_status: "approved", online: true, pending: false, kernel_count: 1 }],
+    remoteKernels: [kernel("cached-kernel", { machine_id: "cached-machine" })],
+  })
+  const harness = createHarness({ cachedInventories: [cached] })
+  assert.deepEqual(harness.remoteMachines().map(row => row.machine_id), ["cached-machine"])
+  assert.deepEqual(harness.remoteKernels().map(row => row.kernel_id), ["cached-kernel"])
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+})
+
+test("a brief directory omission retains machine and kernel rows", async () => {
+  const harness = createHarness({ snapshots: [inventory("live", {
+    remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }],
+    remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })],
+  }), inventory("missing")] })
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.remoteMachines().map(machine => machine.machine_id), ["remote"])
+  assert.deepEqual(harness.remoteKernels().map(kernel => kernel.kernel_id), ["remote-kernel"])
+})
+
+test("cached rows stay visible before the disconnected transport receives its first report", async () => {
+  const cached = inventory("cached", { remoteMachines: [{ machine_id: "cached-machine", display_name: "Cached", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("cached-kernel")] })
+  const harness = createHarness({ connected: false, cachedInventories: [cached] })
+  await harness.controller.refreshNow()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "cached-machine")
+  assert.equal(harness.remoteKernels()[0]?.kernel_id, "cached-kernel")
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "cached/refreshing")
+})
+
+test("a failed live refresh retains rows as reconnecting until the next report", async () => {
+  let calls = 0
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const harness = createHarness({ getInventory: async () => { if (calls++ > 0) throw new Error("kernel websocket closed (1005)"); return live } })
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "remote")
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "reconnecting")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, false)
+  assert.equal(harness.inventoryStatus(), "error")
+  assert.equal(harness.reconcileCount(), 2)
+})
+
+
+test("transport closure immediately marks retained inventory as reconnecting", async () => {
+  const live = inventory("live", { remoteMachines: [{ machine_id: "remote", display_name: "Remote", trust_status: "approved", pending: false, online: true, kernel_count: 1 }], remoteKernels: [kernel("remote-kernel", { machine_id: "remote" })] })
+  const harness = createHarness({ snapshots: [live] })
+  await harness.controller.refreshNow()
+  harness.controller.applyTransportClosed()
+  assert.equal(harness.remoteMachines()[0]?.machine_id, "remote")
+  assert.equal(harness.remoteMachines()[0]?.online, false)
+  assert.equal((harness.remoteMachines()[0] as RemoteMachineView & { displayFreshness?: string }).displayFreshness, "reconnecting")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, false)
+  assert.equal(harness.inventoryStatus(), "loading")
+  assert.equal(harness.reconcileCount(), 2)
+})
+
 function createHarness(options: {
   connected?: boolean
+  nowMs?: () => number
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
   getInventory?: () => Promise<WaitingRoomInventory>
@@ -596,6 +664,7 @@ function createHarness(options: {
 
   const controller = createWaitingRoomInventoryRefreshController({
     isKernelConnected: () => options.connected ?? true,
+    ...(options.nowMs ? { nowMs: options.nowMs } : {}),
     getInventoryStatus: () => inventoryStatus,
     setInventoryStatus: (status) => {
       inventoryStatus = status
@@ -701,7 +770,7 @@ function inventory(
   overrides: Partial<WaitingRoomInventory> = {},
 ): WaitingRoomInventory {
   return {
-    schemaVersion: 11,
+    schemaVersion: 13,
     inventoryVersion,
     structuralVersion: `structure-${inventoryVersion}`,
     activityRevision: `activity-${inventoryVersion}`,
@@ -766,3 +835,18 @@ function deferred<T>() {
   })
   return { promise, resolve, reject }
 }
+
+
+test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live version", async () => {
+  let now = 0
+  const live = inventory("constant", {kernelId: "kernel-a", sessions: [session("session-a")]})
+  const absent = inventory("cached-b", {kernelId: "kernel-b", sessions: [session("session-b")]})
+  const harness = createHarness({nowMs: () => now, cachedInventories: [live, absent], getInventory: async () => live})
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id).sort(), ["session-a", "session-b"])
+  now = 30_001
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+})

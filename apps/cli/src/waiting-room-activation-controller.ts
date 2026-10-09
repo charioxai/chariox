@@ -269,6 +269,10 @@ export function createWaitingRoomActivationController(
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
     const managedLaunch = Boolean(launch.managedEnvironment)
+    const inventoryStatus = deps.getRemoteState().inventoryStatus
+    if (!managedLaunch && (inventoryStatus === "loading" || inventoryStatus === "error")) {
+      throw new Error("Waiting for selected kernel inventory. Try again after it connects.")
+    }
     const prepared = launch.managedEnvironment
       ? await deps.prepareManagedSessionLaunch?.(launch)
       : {

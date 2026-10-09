@@ -72,6 +72,8 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       calls.push(`notice:${message}:${tone ?? "default"}`)
     },
     connectedStatusLine: "Connected to the Chariox kernel.",
+    isAttached: () => true,
+    onWaitingRoomTransportClosed: () => calls.push("waiting-room-disconnected"),
     markAssistantMessageCompleted: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
   }
@@ -525,4 +527,15 @@ test("visible external observed output carries kernel observation metadata into 
       passive_telemetry: false,
     },
   })
+})
+
+test("waiting-room transport notices preserve the inventory display", () => {
+  const { deps, notices, calls } = createDeps({ isAttached: () => false })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("kernel websocket closed (1005)")
+  controller.applyTransportResumed()
+  assert.deepEqual(notices, [])
+  assert(calls.includes("daemon-disconnected:true"))
+  assert(calls.includes("daemon-disconnected:false"))
+  assert(calls.includes("waiting-room-disconnected"))
 })

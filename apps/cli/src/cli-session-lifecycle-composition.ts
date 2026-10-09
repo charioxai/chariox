@@ -85,6 +85,7 @@ export type CliSessionLifecycleCompositionDeps = {
   bumpHistoryLoadGeneration: AnyFn
   reconcileWaitingRoom: AnyFn
   refreshWaitingRoomData: AnyFn
+  applyWaitingRoomTransportClosed: AnyFn
   requestRootRender: AnyFn
   clearPromptInput: AnyFn
   blurPromptInput: AnyFn
@@ -172,7 +173,11 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       })
       deps.setDaemonDisconnected(true)
       deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
-      deps.appendNotice(`Waiting room inventory subscription failed: ${deps.formatError(error)}`, "warning")
+      if (deps.isAttached()) {
+        deps.appendNotice(`Waiting room inventory subscription failed: ${deps.formatError(error)}`, "warning")
+      } else {
+        deps.applyWaitingRoomTransportClosed()
+      }
       deps.updateSessionChrome()
     },
     onSessionSubscriptionFailed: (sessionId, attachmentId, error) => {

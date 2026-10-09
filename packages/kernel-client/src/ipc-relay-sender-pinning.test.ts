@@ -225,6 +225,7 @@ for (const persistent of [false, true]) {
     const daemonB = createIdentity()
     const clientKeypair = createRelayKeypair()
     let subscribeCount = 0
+    const subscriptionIds: string[] = []
     const fixture = await createRelayFixture((socket, frame, connection) => {
       const daemon = connection === 1 ? daemonA : daemonB
       if (frame.kind === "client_connect") {
@@ -233,6 +234,7 @@ for (const persistent of [false, true]) {
       }
       if (frame.kind !== "client_subscribe" || !frame.client_public_key) return
       subscribeCount += 1
+      subscriptionIds.push(frame.subscription_id!)
       socket.send(clientResponseFrame(
         frame.request_id,
         daemon.encrypt(frame.client_public_key, "null"),
@@ -254,10 +256,18 @@ for (const persistent of [false, true]) {
       clientKeypair.privateKey.fill(0)
       await closeFixture(fixture.server, connectedClient)
     })
+    connectedClient.onRelaySubscriptionDiagnostic(() => { throw new Error("observer failed") })
+    const diagnostics: { event: string; subscriptionId: string }[] = []
+    connectedClient.onRelaySubscriptionDiagnostic(value => diagnostics.push(value))
     const nextConnectedEvent = createEventQueue(connectedClient)
 
     const firstEventPromise = withTimeout(nextConnectedEvent(), "first subscription event")
+    await Promise.all([
+      connectedClient.subscribeToKernelEvents("session-1", "attachment-1"),
+      connectedClient.subscribeToKernelEvents("session-1", "attachment-1"),
+    ])
     await connectedClient.subscribeToKernelEvents("session-1", "attachment-1")
+    assert.equal(subscribeCount, 1, "concurrent/live callers must reuse one binding")
     const firstEvent = await firstEventPromise
     assert.equal(firstEvent.notices[0]?.message, "daemon-a")
 
@@ -266,6 +276,10 @@ for (const persistent of [false, true]) {
     const reconnectedEvent = await reconnectedEventPromise
     assert.equal(reconnectedEvent.notices[0]?.message, "daemon-b")
     assert.equal(subscribeCount, 2)
+    assert.equal(new Set(subscriptionIds).size, 2, "MP-08/MP-11 each encrypted binding needs a distinct relay id")
+    assert.deepEqual(diagnostics.map(value => value.event), ["binding_sent", "event_decrypted", "binding_sent", "event_decrypt_failed", "event_decrypted"])
+    assert.deepEqual(Object.keys(diagnostics[0]!).sort(), ["event", "subscriptionId"])
+    assert.equal(diagnostics[2]?.subscriptionId, subscriptionIds[1])
     assert.equal(fixture.connectionCount(), 2)
   })
 }

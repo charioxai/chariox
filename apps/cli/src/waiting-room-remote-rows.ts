@@ -10,12 +10,18 @@ import {
   remoteKernelReadinessCounts,
 } from "@chariox/kernel-client/shell-remote-format"
 
+export function waitingRoomInventoryPending(remote: WaitingRoomRemoteState, hasCachedSessions = false): boolean {
+  return remote.inventoryStatus === "loading" || (remote.inventoryStatus === "error"
+    && !hasCachedSessions && !(remote.machines?.length) && !waitingRoomRemoteKernels(remote).length
+    && !(remote.projects?.length))
+}
+
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,
   remote: WaitingRoomRemoteState,
   titleWidth: number,
 ): WaitingRoomRow[] {
-  const inventoryLoading = remote.inventoryStatus === "loading"
+  const inventoryLoading = waitingRoomInventoryPending(remote)
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const relay = remote.relay ?? null
   const machines = remote.machines ?? []
@@ -125,7 +131,7 @@ export function waitingRoomRemoteRows(
   for (const [index, machine] of machines.entries()) {
     const label = waitingRoomRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "no providers"
-    const status = machine.online === false ? "offline" : machine.pending ? "pending" : "approved"
+    const status = machine.displayFreshness ?? (machine.online === false ? "offline" : machine.pending ? "pending" : "approved")
     const machineKernels = kernels.filter((kernel) => kernel.machine_id === machine.machine_id)
     const readinessSummary = waitingRoomMachineReadinessSummary(machine, machineKernels)
     const next = waitingRoomRemoteMachineNextAction(machine, machineKernels)
@@ -155,7 +161,7 @@ export function waitingRoomRemoteRows(
       const label = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
       const machine = kernel.machine_alias ?? kernel.machine_id
       const providers = (kernel.available_providers ?? []).join(",") || "no providers"
-      const status = remoteKernelReadiness(kernel)
+      const status = kernel.displayFreshness ?? remoteKernelReadiness(kernel)
       const next = waitingRoomRemoteKernelNextAction(kernel)
       rows.push({
         id: `remote-kernel:${kernel.kernel_id}`,
@@ -181,18 +187,18 @@ export function waitingRoomRemoteKernels(remote: WaitingRoomRemoteState) {
 }
 
 export function waitingRoomRemoteMachineCanDelete(machine: WaitingRoomRemoteMachine) {
-  return machine.online === false
+  return !machine.displayFreshness && (machine.online === false
     || machine.pending === true
     || machine.trust_status === "forgotten"
-    || machine.kernel_count === 0
+    || machine.kernel_count === 0)
 }
 
 export function waitingRoomRemoteKernelIsAttachable(kernel: WaitingRoomRemoteKernel) {
-  return remoteKernelReadiness(kernel) === "ready"
+  return !kernel.displayFreshness && remoteKernelReadiness(kernel) === "ready"
 }
 
 export function waitingRoomRemoteKernelCanDelete(kernel: WaitingRoomRemoteKernel) {
-  return kernel.accepting_remote_leases === false
+  return !kernel.displayFreshness && kernel.accepting_remote_leases === false
     && (kernel.leased_agent_count ?? 0) === 0
     && (kernel.local_session_count ?? 0) === 0
 }

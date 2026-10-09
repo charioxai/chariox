@@ -1,3 +1,4 @@
+import { createWaitingRoomBootstrapDefaultsController } from "./waiting-room-bootstrap-defaults.js"
 import { onMount } from "solid-js"
 
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
@@ -58,6 +59,8 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workflowInspector: AnyFn
   workspaceShellEntries: AnyFn
   workspaceShellContext: AnyFn
+  waitingRoomLaunchOwnershipRevision?: AnyFn
+  applyWaitingRoomBootstrapDefaults?: AnyFn
   waitingRoomState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
@@ -302,8 +305,15 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
   const primeAttachedSessionBinding = attachedSessionPrimeController.prime
 
+  const bootstrapDefaultsController = createWaitingRoomBootstrapDefaultsController({
+    state: deps.waitingRoomState,
+    ownershipRevision: deps.waitingRoomLaunchOwnershipRevision ?? (() => 0),
+    isAttached: deps.isAttached,
+    apply: (state) => deps.applyWaitingRoomBootstrapDefaults?.(state),
+  })
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => deps.bootstrap.deferred,
+    applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,

@@ -1,3 +1,4 @@
+import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import type { CharioxLogger } from "./logging.js"
 import type { CharioxPreferences } from "./preferences.js"
 import type { TerminalCommandCatalog } from "@chariox/kernel-client/kernel-types"
@@ -21,7 +22,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 
-type BootstrapDeps = {
+export type BootstrapDeps = {
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
     provider?: string
@@ -84,6 +85,9 @@ export async function bootstrapSession(
   preferences: CharioxPreferences,
   deps: BootstrapDeps,
 ): Promise<BootstrapState> {
+  if (decideBootstrapAction(options, [], workspace, worktree).action === "none") {
+    return bootstrapWaitingRoom(client, options, preferences, deps)
+  }
   let createdSession = false
   let session: RuntimeSession | null = null
 

@@ -109,3 +109,26 @@ function fakeClient(name: string) {
     closeCount: () => closes,
   }
 }
+
+
+test("relay diagnostics follow a pivot, rollback and observer disposal", async () => {
+  const source = new LocalIpcClient("ws://127.0.0.1:1")
+  const target = new LocalIpcClient("ws://127.0.0.1:2")
+  const observers = new Map<LocalIpcClient, Set<(value: import("./ipc.js").RelaySubscriptionDiagnostic) => void>>()
+  for (const client of [source, target]) {
+    const handlers = new Set<(value: import("./ipc.js").RelaySubscriptionDiagnostic) => void>()
+    observers.set(client, handlers)
+    client.onRelaySubscriptionDiagnostic = handler => { handlers.add(handler); return () => { handlers.delete(handler) } }
+  }
+  const client = createMutableLocalIpcClient(source)
+  const records: string[] = []
+  const dispose = client.onRelaySubscriptionDiagnostic(value => records.push(value.subscriptionId))
+  const emit = (client: LocalIpcClient, subscriptionId: string) => observers.get(client)?.forEach(handler => handler({ event: "binding_sent", subscriptionId }))
+  emit(source, "source-before")
+  const pivot = beginMutableLocalIpcClientPivot(client, target)
+  emit(source, "inactive-source"); emit(target, "target")
+  await pivot.rollback()
+  emit(target, "inactive-target"); emit(source, "source-after")
+  dispose(); emit(source, "disposed")
+  assert.deepEqual(records, ["source-before", "target", "source-after"])
+})

@@ -257,4 +257,6 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 472;
+/// Version 488 requires a distinct relay subscription identity for every fresh
+/// encrypted binding while retaining the logical session replay cursor (MP-08/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 488;
