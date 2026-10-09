@@ -16,6 +16,9 @@ export function sanitizeMirrorTree(source, values) {
     let target=node;
     while(target&&!['element','tile','mask'].includes(target.kind))target=byId.get(target.parent);
     if(!target?.box)return true;
+    // Generated text has no measured paint bounds. Preserve all its pixels
+    // through the existing compositor fallback instead of cropping the host.
+    if(contains(node.pseudo))return true;
     // An overflowing text run needs more than the containing element's crop.
     if(node.kind==='text'&&node.box&&(node.box.x<target.box.x-.5||node.box.y<target.box.y-.5||node.box.x+node.box.width>target.box.x+target.box.width+.5||node.box.y+node.box.height>target.box.y+target.box.height+.5))return true;
     tiles.add(target);
