@@ -47,9 +47,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   viewer's applied sequence. Epochs are snapshot sequences, not wall clocks.
   CDP pointer coordinates follow the emulated view scale (DPR1 on a scale-2
   window). Text/keys go to the live focus behind the shared text fence.
-- **Scroll** is viewer-owned: the sandbox scrolls natively; positions go to the
-  kernel as coalesced `scroll_to` and kernel echoes are ignored while the
-  viewer scrolls. Wheel over opaque regions still drives the kernel.
+- **Scroll** is shared (owner decision): the kernel tab has one position. A
+  viewer scrolls its own copy natively for frame rate and sends coalesced
+  `scroll_to`; the kernel applies it and every other viewer follows the
+  kernel's position (last writer wins). A viewer ignores kernel echoes only
+  while it is scrolling itself. Wheel over opaque regions drives the kernel.
+- **No tree hash.** Correctness comes from sequenced deltas, base checks,
+  resnapshot on a gap and independent client validation.
 - **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
   packet; the web client shows protected video and retries the mirror after
   30 s, doubling to 10 min.
