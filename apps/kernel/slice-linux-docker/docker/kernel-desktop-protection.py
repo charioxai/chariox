@@ -29,7 +29,9 @@ def scope(request):
 def answer(request, snapshot):
     tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'], request.get('values', []))
     digest = hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
-    usable = tree.get('available') and tree.get('complete') and not tree.get('protected')
+    # Native password widgets already paint dots. Preserve the desktop and
+    # apply only the saved-value rectangles supplied by the snapshot.
+    usable = tree.get('available') and tree.get('complete')
     # Fixed-label diagnostics only: why masks are absent, never page data.
     state = [int(bool(tree.get(key))) for key in ('available', 'complete', 'protected')] + [int(tree.get('browser_withheld', 0) or 0)]
     return {'digest': digest, 'masks': tree.get('masks', tree.get('uncovered', [])) if usable else None, 'state': state}

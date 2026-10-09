@@ -1,4 +1,4 @@
-"""MP-08/MP-11: desktop protection oracle answers masks only for complete, unprotected snapshots."""
+"""MP-08/MP-11: desktop protection oracle answers masks only for complete snapshots."""
 import importlib.util
 import unittest
 from pathlib import Path
@@ -15,10 +15,15 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(first['masks'], [[1, 2, 3, 4]])
         self.assertEqual(first['digest'], module.answer(REQUEST, lambda *args: dict(tree))['digest'])
 
-    def test_incomplete_unavailable_or_protected_snapshots_mask_everything(self):
-        for change in ({'complete': False}, {'available': False}, {'protected': True}):
+    def test_incomplete_or_unavailable_snapshots_mask_everything(self):
+        for change in ({'complete': False}, {'available': False}):
             tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], **change}
             self.assertIsNone(module.answer(REQUEST, lambda *args: tree)['masks'], change)
+
+    def test_native_password_dots_preserve_only_local_saved_value_masks(self):
+        for masks in ([], [[10, 20, 30, 40]]):
+            tree = {'available': True, 'complete': True, 'protected': True, 'masks': masks}
+            self.assertEqual(module.answer(REQUEST, lambda *args: tree)['masks'], masks)
 
     def test_any_snapshot_change_changes_the_digest(self):
         tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], 'nodes': [{'name': 'a'}]}
