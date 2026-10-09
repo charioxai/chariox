@@ -121,6 +121,32 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         let mut results = detection.skips.clone();
+        // Shared projection discloses automatic code-folder submission and true opt-ins.
+        results.extend(environment.folders.iter().map(|folder| {
+            let automatic = detection.code_folders.contains(&folder.folder_id);
+            EnvironmentItemResult {
+                requirement_id: format!("detect:folder:{}", folder.folder_id),
+                status: EnvironmentObservationStatus::NeedsYourInput,
+                reason_code: if automatic {
+                    "code_manifest"
+                } else {
+                    "no_code_manifest"
+                }
+                .into(),
+                safe_summary: if automatic {
+                    format!(
+                        "{} · provider metadata sent automatically (code manifest)",
+                        folder.label
+                    )
+                } else {
+                    format!(
+                        "{} · deterministic detection; model requires opt-in",
+                        folder.label
+                    )
+                },
+                receipt_ids: vec![],
+            }
+        }));
         if model_folders.is_empty() {
             results.push(EnvironmentItemResult {
                 requirement_id: "detect:model".into(),

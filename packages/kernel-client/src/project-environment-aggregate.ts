@@ -86,3 +86,10 @@ export function projectEnvironmentLines(environment: ProjectEnvironment): string
     ])]) : ["  No requirements · Not checked"]),
   ]), ...(skips.length > 4 ? ["Skipped evidence", ...skips] : [])]
 }
+
+// MP-08 / MP-10 / MP-11: disclosure comes from the kernel, never inferred from labels.
+export function environmentFolderModelDisclosure(environment: ProjectEnvironment, folderId: string): "automatic" | "optional" | "unknown" {
+  const operation = environment.operations.filter(operation => operation.kind === "detect").at(-1)
+  const result = operation?.per_item_results.find(result => result.requirement_id === `detect:folder:${folderId}`)
+  return result?.reason_code === "code_manifest" ? "automatic" : result?.reason_code === "no_code_manifest" ? "optional" : "unknown"
+}
