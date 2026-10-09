@@ -12,7 +12,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { PortableEncoder } from './kernel-browser-display.mjs';
 import { launchChromium } from './browser-protection-fixture.mjs';
-import { measureBrowserProtection } from './browser-protection-regions.mjs';
+import * as regions from './browser-protection-regions.mjs';
+const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
@@ -55,6 +56,19 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ // MP-08/MP-11: the host's screencast-triggered captures run outside the kernel's Vault
+ // input barrier; one landing between recording and the completed value must not retire it.
+ test(`MP-08/MP-11 DPR${dpr}: a capture during an in-flight fill keeps the field tracked`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate})=>{
+   const node_ref=await ref('#plain');
+   policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});
+   const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef:node_ref,browserGeneration:browser.browserGeneration,action:{kind:'fill'}},value,1);
+   browser.fillTargets.set(`${targetId}:${node_ref}`,target);
+   assert.equal((await collect()).length,1,'MP-11 an in-flight fill stays covered');
+   await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
+   regions.finishBrowserFill?.(connection,target);
+   assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
+ }));
+
  test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
    connection.browserInstanceId='MP11-public-artifact-fixture';
    const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};

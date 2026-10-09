@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
 const retired = new WeakMap();
+// Fills between recording and completion: covered while plain, never retired.
+const filling = new WeakMap();
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
@@ -43,8 +45,11 @@ export async function recordBrowserFill(connection, options, value, revision) {
   const target={kind:'browser',target_id:targetId,document_id:options.trackingDocumentId??documentId,node_ref:options.trackingNodeRef??nodeRef,
     frame_id:frame.id,frame_document_id:frame.loaderId,browser_generation:browserGeneration,
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
-  retired.get(connection)?.delete(fillKey(target));return target;
+  retired.get(connection)?.delete(fillKey(target));
+  if(!filling.has(connection))filling.set(connection,new Set());
+  filling.get(connection).add(fillKey(target));return target;
 }
+export function finishBrowserFill(connection,target) {filling.get(connection)?.delete(fillKey(target));}
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
   const {object}=await connection.send('DOM.resolveNode',{backendNodeId,executionContextId},entry.sessionId);
@@ -100,7 +105,8 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
         const state=await fieldState(connection,entry,{frameId},backendNodeId);
-        if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
+        const inFlight=filling.get(connection)?.has(key)&&state.exists&&state.editable;
+        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value)))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
