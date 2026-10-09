@@ -4,7 +4,7 @@ export const mirrorObserverExpression = initial => `(${installMirrorObserver.toS
 function installMirrorObserver(initialStyles = {}) {
   if (globalThis.__charioxMirror) return true;
   const ids = new WeakMap();let observed = new WeakSet();
-  let serial = 0, live = new Map(), revision = 0, maskedNodes=new WeakSet();
+  let serial = 0, live = new Map(), revision = 0, maskedNodes=new WeakSet(), filledNodes=new WeakSet();
   const observer = new MutationObserver(() => { revision++; });
   const watch = root => {
     if (observed.has(root)) return;
@@ -78,8 +78,9 @@ function installMirrorObserver(initialStyles = {}) {
       else {
         const tag=node.localName;
         record.tag=tags.has(tag)?tag:'div'; record.box=box(node);
-        const overlaps=opaqueRegions.some(r=>record.box.width>0 && record.box.height>0 && record.box.x<r[0]+r[2] && record.box.x+record.box.width>r[0] && record.box.y<r[1]+r[3] && record.box.y+record.box.height>r[1]);
-        if(overlaps && (tag==='input'||tag==='textarea'||node.isContentEditable)) {
+        // MP-08/MP-11: CDP binds exact filled nodes across same-renderer frames.
+        // Local CSS boxes never overlap root device-pixel rectangles here.
+        if(filledNodes.has(node) && (tag==='input'||tag==='textarea'||node.isContentEditable)) {
           record.kind='mask'; record.tag=tags.has(tag)?tag:'div'; record.style={...safeStyle(node,null,false),width:`${record.box.width}px`,height:`${record.box.height}px`,background:'black',color:'transparent','border-color':'black'};
           return done(record);
         }
@@ -256,5 +257,7 @@ function installMirrorObserver(initialStyles = {}) {
     if(!Array.isArray(keys)||keys.length>12000)throw new Error('mirror geometry bounds');
     return keys.map(key=>{const node=live.get(key);if(!node?.isConnected||node.nodeType!==3||maskedNodes.has(node))throw new Error('mirror unavailable text geometry');const range=node.ownerDocument.createRange();range.selectNodeContents(node);return {id:key,rects:[...range.getClientRects()].map(r=>({x:r.x,y:r.y,width:r.width,height:r.height}))};});
   };
-  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,coordinateTarget,activeTarget,textRuns});return true;
+  const resetFillTargets=()=>{filledNodes=new WeakSet();return true;};
+  const addFillTarget=node=>{filledNodes.add(node);return true;};
+  globalThis.__charioxMirror=Object.freeze({read,locate,focus,select,validate,coordinateTarget,activeTarget,textRuns,resetFillTargets,addFillTarget});return true;
 }
