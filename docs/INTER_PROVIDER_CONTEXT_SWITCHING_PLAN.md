@@ -18,6 +18,8 @@ MP-08 / MP-10: the dispatcher prepares a native prompt’s hidden context before
 
 Fork targets and turn substitutes start outside the agent's own conversation and keep an explicit one-shot handoff, consumed when the provider accepts the turn.
 
+MP-08 / MP-10: ready leased worker turns use the shared runtime dispatcher, so provider and account changes carry the conversation before submission. The worker admits the turn under the app lock and dispatches after releasing it.
+
 Stored user history, prompt queues, and terminal echoes remain the original user text.
 
 ## Handoff contents

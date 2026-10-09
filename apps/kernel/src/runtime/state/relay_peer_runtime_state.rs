@@ -831,12 +831,23 @@ impl KernelRuntimeState {
         let finish_leased_agent_id = leased_agent_id.clone();
         let finish_home_prompt_id = home_prompt_id.clone();
         let finish_provider_run_id = provider_run_id.clone();
-        let outcome = self
+        let (run, outcome, dispatch) = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app)
-                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+                    .finish_prepared_leased_prompt_submission_holding_dispatch(
+                        prepared,
+                        provider_run_id,
+                    )
             })
             .await?;
+        if let Some(dispatch) = dispatch {
+            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                return self
+                    .fail_prompt_dispatch(dispatch, error)
+                    .await
+                    .map(|_| (run, outcome));
+            }
+        }
         if let Some(home_prompt_id) = finish_home_prompt_id.as_deref().filter(|_| new_receipt) {
             self.update_relay_leased_prompt_admission_receipt(
                 &finish_leased_agent_id,
@@ -846,7 +857,7 @@ impl KernelRuntimeState {
             )
             .await?;
         }
-        Ok(outcome)
+        Ok((run, outcome))
     }
 
     #[allow(clippy::too_many_arguments)]
