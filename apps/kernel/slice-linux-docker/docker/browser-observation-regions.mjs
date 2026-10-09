@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: trusted CDP layout, re-located before/after every frame.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { withBrowserFrames } from './browser-controller-frames.mjs';
-import { redactObservation } from './browser-controller-snapshot.mjs';
+import { redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 import { fileURLToPath } from 'node:url';
 
 function quadRegion(quad) {
@@ -83,8 +83,8 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           }
         }
       }
-      // Raw page strings are checked before any truncation. Also mask opaque
-      // media (canvas/SVG/images/video) that can render copied secrets without DOM text.
+      // Raw page strings and rendered layout text are checked before any truncation. Also
+      // mask opaque media (canvas/SVG/images/video) that can render copied secrets without DOM text.
       if (values.length) {
         snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
         const strings = snapshot.strings ?? [];
@@ -92,12 +92,13 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           const nodes = document.nodes ?? {}, layout = document.layout ?? {};
           const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
           const echoed = index => typeof strings[index] === 'string' && redactObservation(strings[index], values) !== strings[index];
+          const rendered = renderedTextEchoes(strings, document, values);
           for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
             const index = layout.nodeIndex[i];
             const name = strings[nodes.nodeName?.[index]]?.toLowerCase();
             const attributes = nodes.attributes?.[index] ?? [];
             const opaque = ['canvas', 'svg', 'img', 'video', 'iframe', 'frame'].includes(name);
-            if (opaque || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
+            if (opaque || rendered.has(i) || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
               const region = layout.bounds?.[i];
               if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error('unknown echo region');
               if (region[2] > 0 && region[3] > 0) regions.push([origin[0] + region[0] - viewport.pageX, origin[1] + region[1] - viewport.pageY, region[2], region[3]]);

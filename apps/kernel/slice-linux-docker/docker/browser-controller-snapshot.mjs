@@ -100,6 +100,32 @@ export function redactObservation(value, protectedValues) {
   return scrub(value);
 }
 
+// MP-08/MP-11: layout entries of one DOMSnapshot document whose rendered text
+// echoes a protected value. CSS-generated content (::before, ::after,
+// ::marker, ::first-letter, counters) has no DOM value, so text is joined per
+// element in visual order; snapshots list ::after before text children.
+// Unreadable layout text fails closed.
+export function renderedTextEchoes(strings, document, protectedValues) {
+  const echoes = new Set(), groups = new Map();
+  if (!protectedValues.length) return echoes;
+  const nodes = document.nodes ?? {}, layout = document.layout ?? {};
+  for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
+    const piece = layout.text?.[k];
+    if (piece === -1) continue;
+    if (typeof strings[piece] !== "string") throw new Error("MP-11: unreadable layout text");
+    const node = layout.nodeIndex[k], name = strings[nodes.nodeName?.[node]] ?? "";
+    const key = nodes.nodeType?.[node] === 3 || name.startsWith("::") ? nodes.parentIndex?.[node] : node;
+    const group = groups.get(key) ?? { head: "", tail: "", entries: [] };
+    group[name === "::after" ? "tail" : "head"] += strings[piece];
+    group.entries.push(k);
+    groups.set(key, group);
+  }
+  for (const { head, tail, entries } of groups.values()) {
+    if (redactObservation(head + tail, protectedValues) !== head + tail) entries.forEach((k) => echoes.add(k));
+  }
+  return echoes;
+}
+
 function snapshotLimits(rawLimits) {
   return {
     maxNodes: positiveBound(rawLimits.maxNodes, DEFAULT_MAX_NODES),
