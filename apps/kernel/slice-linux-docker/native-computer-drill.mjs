@@ -62,8 +62,20 @@ try {
   if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-public-editor.png'),Buffer.from(screenshot.data_base64,'base64'));
   const ocr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation,query:'Hello'},{});
   assert(ocr.targets.length>0);
-  const masked=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},{values:['synthetic-private-value']});
-  assert.equal(masked.text,'[protected]');assert.deepEqual(masked.targets,[]);
+  // Owner 2026-10-09: a registered Vault value never blacks out the desktop; the
+  // value shown as accessible text is masked by its text box, public text stays.
+  const secret='synthetic-private-value',vault={values:[secret],targets:[],unknown:false};
+  await command({kind:'key',key:'ctrl+End'});await command({kind:'text',text:' '+secret});await delay(300);
+  const vaultShot=await native.request({op:'screenshot',surface_id:binding.surface_id,generation:binding.generation},vault);
+  assert.equal(vaultShot.protected,false,'MP-11 a Vault value does not black out the desktop');
+  const pixels=path.join(root,'vault.png');await writeFile(pixels,Buffer.from(vaultShot.data_base64,'base64'));
+  if(process.env.CULINUX_CAPTURE_ROOT)await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'native-vault-value-box.png'),Buffer.from(vaultShot.data_base64,'base64'));
+  const read=spawnSync('tesseract',[pixels,'stdout'],{env:binding.environment,encoding:'utf8'}).stdout??'';
+  assert.match(read,/Hello/,'public editor text stays visible under a Vault policy');
+  assert(!read.includes('synthetic-private')&&!read.includes('private-value'),'MP-11 the registered value box is masked in the pixels');
+  const vaultOcr=await native.request({op:'ocr',surface_id:binding.surface_id,generation:binding.generation},vault);
+  assert(!vaultOcr.text.includes(secret)&&/Hello/.test(vaultOcr.text));
+  await command({kind:'key',key:'ctrl+a'});await command({kind:'text',text:publicText});await delay(200);
   // MP-11 #904 review 1: a fresh desktop has no CLIPBOARD owner, and a mapped
   // window without accessibility (masked, like the kernel browser) does not
   // change what a paste inserts. Agent clicks, keys, text and actions proceed.
@@ -127,5 +139,5 @@ try {
   const released=spawnSync('/usr/bin/python3',['-c',"from Xlib import display;d=display.Display();keys=d.query_keymap();assert not keys[114//8] & (1 << (114%8));d.close()"],{env:binding.environment});
   assert.equal(released.status,0,'cancelled bounded key released before next actor');
   assert.equal(wakes.length,applied);
-  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','registry-mask','capture-wake','proved-native-app-clipboard','unknown-xclip-refused','agent-input-admitted-with-empty-or-public-clipboard-and-masked-window','agent-paste-of-proved-public-clipboard','native-Paste-click-key-mnemonic-text-and-action-refused','no-canary-in-capture-OCR','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
+  console.log(JSON.stringify({items:['MP-08','MP-11'],result:'PASS',text_sha256:createHash('sha256').update(publicText).digest('hex'),checks:['Unicode-editor-save','physical-down-up','bounded-hold','protected-PNG','real-OCR-target','vault-value-box-mask-public-text-visible','capture-wake','proved-native-app-clipboard','unknown-xclip-refused','agent-input-admitted-with-empty-or-public-clipboard-and-masked-window','agent-paste-of-proved-public-clipboard','native-Paste-click-key-mnemonic-text-and-action-refused','no-canary-in-capture-OCR','cancelled-hold-key-released'],source:process.env.CULINUX_SOURCE,limits:'Native adapter only; no provider MCP receipt, viewer stream, IME preedit, Web/TUI or MP-10 acceptance'}));
 }finally{await cleanup();}

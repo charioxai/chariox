@@ -31,8 +31,9 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
   assert.deepEqual(await run({ ensureConnection: async () => { throw new Error('closed'); } }), [null]);
-  // Vault policy masks the whole desktop: no browser measurement is consulted.
-  assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [null]);
+  // Owner 2026-10-09: Vault values never black out the desktop; browser windows
+  // keep their per-field/value masks from the same measured protection.
+  assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
   // A window AT-SPI has not yet bound is retried, and the count stays private.
   const withheld=[1,0],bound={...binding,browser:()=>browser([[],[],[],[]])};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async()=>({data_base64:'',browser_withheld:withheld.shift()})});
@@ -116,4 +117,20 @@ test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-own
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   assert.deepEqual(calls.map(request=>request.op),Array(6).fill('input'));
   assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});
+
+// MP-08 / MP-11 (owner 2026-10-09): registered Vault values are masked best effort
+// where they appear as accessible text and are redacted from OCR and clipboard text.
+test('MP-08 / MP-11 Vault values never black out the desktop and are redacted from OCR and clipboard text', async () => {
+  const sent=[];
+  const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'}};
+  const bound={...binding,ownedProcesses:async()=>[]};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
+  const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
+  for(const op of ['screenshot','ocr','clipboard_read'])await adapter.request({op,surface_id:'surface',generation:'generation'},policy).then(result=>replies[op].result=result);
+  assert(sent.every(request=>request.mask===false&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'helper gets the values for best-effort boxes, never a whole-desktop mask');
+  assert.equal(replies.ocr.result.text,'header [redacted] footer');
+  assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
+  assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
+  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy),e=>e.code==='user_domain_sensitive_requires_focus','agent input stays refused under a registry');
 });
