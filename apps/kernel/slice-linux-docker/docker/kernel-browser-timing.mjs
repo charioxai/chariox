@@ -33,6 +33,17 @@ export function displayTiming(root) {
     if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING!=='1'||typeof diagnostic!=='string'||diagnostic.length>4096)return;
     appendFileSync(path.join(root,'display-hardware.jsonl'),JSON.stringify({diagnostic})+'\n',{mode:0o600});
   };
+  // MP-08/MP-10: per-input/per-frame join records (fixed stage, finite
+  // numbers only) so input -> dispatch -> readback -> frame can be matched.
+  timing.event = (stage, fields) => {
+    if(process.env.CHARIOX_BROWSER_DISPLAY_TIMING!=='1')return;
+    const values=Object.fromEntries(Object.entries(fields).filter(([,v])=>Number.isFinite(v)));
+    const ended=timestamp(),started=values.at??ended;delete values.at;
+    const line=JSON.stringify({stage,started_ms:started,ended_ms:ended,duration_ms:ended-started,...values})+'\n';
+    if(bytes+line.length>65536||pending.length>=256)flush();
+    pending.push(line);bytes+=line.length;
+    if(!timer){timer=setTimeout(flush,16);timer.unref();}
+  };
   timing.flush=flush;
   return timing;
 }

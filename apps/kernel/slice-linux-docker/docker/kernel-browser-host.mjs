@@ -33,6 +33,7 @@ export function scheduleHostRequest(request) {
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
@@ -505,6 +506,7 @@ export class KernelBrowserHost {
         if (dispatched) return;
         dispatched = true;
         this.inputChangedAt.set(tab.tab_id, performance.now());
+        this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
