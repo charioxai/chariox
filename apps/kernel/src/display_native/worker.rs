@@ -80,7 +80,7 @@ struct Pointer {
 fn admit_default() -> bool {
     true
 }
-const RASTER_SLOTS: usize = 6;
+const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
