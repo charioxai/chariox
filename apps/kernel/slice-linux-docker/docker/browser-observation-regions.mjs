@@ -1,13 +1,27 @@
 // MP-08/MP-10/MP-11: trusted CDP layout, re-located before/after every frame.
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { withBrowserFrames } from './browser-controller-frames.mjs';
-import { redactObservation } from './browser-controller-snapshot.mjs';
+import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 import { fileURLToPath } from 'node:url';
 
 function quadRegion(quad) {
   if (!Array.isArray(quad) || quad.length !== 8 || !quad.every(Number.isFinite)) throw new Error('unknown region');
   const xs = quad.filter((_, i) => i % 2 === 0), ys = quad.filter((_, i) => i % 2 === 1);
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
+}
+
+const desktop = (origin, [x, y, width, height]) => [origin[0] + x, origin[1] + y, width, height];
+// Where a frame owner's document renders: its content origin, or its whole
+// border box when a transform cannot map local layout. Hidden owners: null.
+async function ownerPlacement(connection, sessionId, backendNodeId, [x, y]) {
+  if (!Number.isSafeInteger(backendNodeId)) throw new Error('unknown frame owner');
+  let model;
+  try { ({ model } = await connection.send('DOM.getBoxModel', { backendNodeId }, sessionId)); }
+  catch (error) { if (/Could not compute box model/.test(error?.message ?? '')) return null; throw error; }
+  const [bx, by, bw, bh] = quadRegion(model.border), [cx, cy] = quadRegion(model.content);
+  const [x1, y1, x2, y2, , , x4, y4] = model.border, near = (a, b) => Math.abs(a - b) < 0.5;
+  const plain = near(bw, model.width) && near(bh, model.height) && near(y1, y2) && near(x1, x4) && x1 < x2 && y1 < y4;
+  return plain ? { origin: [x + cx, y + cy] } : { whole: [x + bx, y + by, bw, bh] };
 }
 
 export async function locateBrowserRegions(targets, browser, values = [], { contentTarget = null, contentScale = 1 } = {}) {
@@ -70,7 +84,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate
           // value-bearing inputs using raw, trusted layout; never retry insertion.
-          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
+          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
           const document = snapshot.documents?.[0], strings = snapshot.strings ?? [];
           const nodes = document?.nodes ?? {}, layout = document?.layout ?? {};
           const input = nodes.inputValue ?? {};
@@ -83,24 +97,61 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           }
         }
       }
-      // Raw page strings are checked before any truncation. Also mask opaque
-      // media (canvas/SVG/images/video) that can render copied secrets without DOM text.
+      // Raw page strings and rendered layout text are checked before any
+      // truncation. MP-11 (owner 2026-10-08): every frame is scanned in its own
+      // session and only the echoing text, attributes and input values are masked;
+      // media is not masked whole. A frame that cannot be mapped or inspected is (fail closed).
       if (values.length) {
-        snapshot ??= await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [], includeDOMRects: true }, sessionId);
-        const strings = snapshot.strings ?? [];
-        for (const document of snapshot.documents ?? []) {
-          const nodes = document.nodes ?? {}, layout = document.layout ?? {};
-          const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
+        const owned = new Set(), placed = new Map();
+        const place = frame => {
+          if (!frame.parent) return { origin: [0, 0] };
+          if (!placed.has(frame)) placed.set(frame, (async () => {
+            const parent = await place(frame.parent);
+            const owner = await connection.send('DOM.getFrameOwner', { frameId: frame.frame.id }, frame.parent.sessionId);
+            owned.add(frame.parent.sessionId + ' ' + owner.backendNodeId);
+            return parent?.origin ? ownerPlacement(connection, frame.parent.sessionId, owner.backendNodeId, parent.origin) : parent;
+          })());
+          return placed.get(frame);
+        };
+        const placements = [];
+        for (const frame of frames) placements.push(await place(frame));
+        for (const [n, frame] of frames.entries()) {
+          const placement = placements[n];
+          if (placement?.whole) regions.push(desktop(origin, placement.whole));
+          if (!placement?.origin) continue;
+          const frameSnapshot = frame.sessionId === sessionId && snapshot ? snapshot
+            : await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, frame.sessionId);
+          if (frame.sessionId === sessionId) snapshot = frameSnapshot;
+          const strings = frameSnapshot.strings ?? [], documents = frameSnapshot.documents ?? [];
           const echoed = index => typeof strings[index] === 'string' && redactObservation(strings[index], values) !== strings[index];
-          for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
-            const index = layout.nodeIndex[i];
-            const name = strings[nodes.nodeName?.[index]]?.toLowerCase();
-            const attributes = nodes.attributes?.[index] ?? [];
-            const opaque = ['canvas', 'svg', 'img', 'video', 'iframe', 'frame'].includes(name);
-            if (opaque || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
-              const region = layout.bounds?.[i];
-              if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error('unknown echo region');
-              if (region[2] > 0 && region[3] > 0) regions.push([origin[0] + region[0] - viewport.pageX, origin[1] + region[1] - viewport.pageY, region[2], region[3]]);
+          // In-process child documents report layout in their own coordinates.
+          const owners = new Map();
+          for (const document of documents) {
+            const content = document.nodes?.contentDocumentIndex ?? {};
+            for (let i = 0; i < (content.index?.length ?? 0); i++) owners.set(content.value[i], document.nodes.backendNodeId?.[content.index[i]]);
+          }
+          for (const [d, document] of documents.entries()) {
+            const at = d === 0 ? placement : await ownerPlacement(connection, frame.sessionId, owners.get(d), placement.origin);
+            if (at?.whole) regions.push(desktop(origin, at.whole));
+            if (!at?.origin) continue;
+            const nodes = document.nodes ?? {}, layout = document.layout ?? {};
+            const inputValues = new Map((nodes.inputValue?.index ?? []).map((index, i) => [index, nodes.inputValue.value[i]]));
+            const frameOwners = new Set((nodes.contentDocumentIndex?.index ?? []));
+            const overflow = { regions: [], unmeasured: new Set() };
+            const rendered = renderedTextEchoes(strings, document, values, overflow);
+            regions.push(...overflow.regions.map(([x,y,w,h]) => desktop(origin,
+              [at.origin[0]+x-(document.scrollOffsetX??0),at.origin[1]+y-(document.scrollOffsetY??0),w,h])));
+            for (let i = 0; i < (layout.nodeIndex?.length ?? 0); i++) {
+              const index = layout.nodeIndex[i];
+              if (overflow.unmeasured.has(i)) continue; // Covered by its clipping ancestor.
+              const name = strings[nodes.nodeName?.[index]]?.toLowerCase();
+              const attributes = nodes.attributes?.[index] ?? [];
+              const uninspected = ['iframe', 'frame'].includes(name) && !frameOwners.has(index) && !owned.has(frame.sessionId + ' ' + nodes.backendNodeId?.[index]);
+              if (uninspected || rendered.has(i) || echoed(nodes.nodeValue?.[index]) || echoed(inputValues.get(index)) || attributes.some(echoed)) {
+                const region = layout.bounds?.[i];
+                if (!Array.isArray(region) || region.length !== 4 || !region.every(Number.isFinite)) throw new Error('unknown echo region');
+                if (region[2] > 0 && region[3] > 0) regions.push(desktop(origin, [at.origin[0] + region[0] - (document.scrollOffsetX ?? 0), at.origin[1] + region[1] - (document.scrollOffsetY ?? 0), region[2], region[3]]));
+              }
             }
           }
         }

@@ -13,11 +13,31 @@ export const VAULT_VALUE = 'disposable-vault-echo-7d1c';
 const M = 'background:#ff00ff', C = 'background:#00ffff';
 const page = body => `<!doctype html><meta charset=utf-8><body style="margin:0;font:14px sans-serif">${body}</body>`;
 // Query flags: novault (no Vault echo text), nomarkers (secret fields only).
+// Mirrored/rotated frames paint their password field away from its layout x.
+// Vault value without a DOM echo: drawn into a canvas, rendered as an
+// adopted-stylesheet ::before + nested inline text + ::after (both scripts
+// remove themselves), and split across sibling spans. Reordered: lines that
+// show the value although DOM order never spells it (coordinator rule
+// 2026-10-09), separated so that no two lines spell it either.
+export const REORDERED = ['reverse', 'css', 'grid', 'absolute', 'bidi', 'rtl', 'hidden'];
+function reorderHtml() {
+  const a = VAULT_VALUE.slice(0, 17), b = VAULT_VALUE.slice(17);
+  return `<div style="position:absolute;left:300px;top:418px;z-index:2;background:#fff;color:#ff00ff;font:bold 14px sans-serif;line-height:20px">${[
+    `<div style="display:flex;flex-direction:row-reverse;justify-content:flex-end"><span>${b}</span><span>${a}</span></div>`,
+    `<div style="display:flex"><span style="order:1">${b}</span><span>${a}</span></div>`,
+    `<div style="display:grid;grid-template-columns:max-content max-content"><span style="grid-column:2">${b}</span><span style="grid-area:1/1">${a}</span></div>`,
+    `<div><span style="position:relative;display:inline-block"><span style="position:absolute;left:100%;white-space:nowrap">${b}</span>${a}</span></div>`,
+    `<div><bdo dir=rtl>${[...VAULT_VALUE].reverse().join('')}</bdo></div>`,
+    `<div dir=rtl style="text-align:left"><span dir=ltr>${b}</span><span dir=ltr>${a}</span></div>`,
+    `<div>${a}<span style="font-size:0">XYZ</span>${b}</div>`,
+  ].map((line, i) => line.replace('<div', `<div id=order-${REORDERED[i]}`)).join('<div style="color:#000;font-size:6px;line-height:6px">.</div>')}</div>`;
+}
 export function fixtureHtml(url, cross) {
   const markers = !url.includes('nomarkers');
   switch (url.split('?')[0]) {
     case '/captcha': return page(`<div style="${C};width:300px;height:74px"><span style="display:inline-block;width:24px;height:24px;margin:24px;border:2px solid #555;background:#fff"></span></div>`);
     case '/login': return page(`<div style="${C};height:30px"></div><input type=password value=hunter2 style="${M};border:0;margin:10px;width:150px;height:24px">`);
+    case '/field': return page(`<input type=password value=hunter2 style="${M};border:0;margin:10px;width:150px;height:24px">`);
     case '/whole': return page(`<div style="${M};width:100%;height:100vh"></div>`);
     case '/echo': return page(`<div style="${C};height:30px"></div><p style="color:#ff00ff;font:bold 18px sans-serif;margin:4px">token ${VAULT_VALUE}</p>`);
     case '/nested': return page(`<iframe src="${cross}/login" style="border:0;margin:6px;width:220px;height:90px"></iframe>`);
@@ -33,15 +53,38 @@ export function fixtureHtml(url, cross) {
       <iframe id=same src="/same" style="position:absolute;left:760px;top:170px;width:160px;height:100px;border:0"></iframe>
       <iframe id=nested src="${cross}/nested" style="position:absolute;left:20px;top:280px;width:260px;height:110px;border:0"></iframe>
       <iframe id=scaled src="${cross}/login" style="position:absolute;left:320px;top:280px;width:200px;height:80px;border:0;transform:scale(.5);transform-origin:0 0"></iframe>
+      <iframe id=mirrored src="${cross}/field" style="position:absolute;left:320px;top:330px;width:200px;height:80px;border:0;transform:scaleX(-1)"></iframe>
+      <iframe id=rotated src="/field" style="position:absolute;left:420px;top:70px;width:200px;height:90px;border:0;transform:rotate(180deg)"></iframe>
+      <canvas id=media width=60 height=40 style="position:absolute;left:880px;top:280px;z-index:1"></canvas>
       ${url.includes('novault') ? '' : `<p id=echo style="color:#ff00ff;font:bold 18px sans-serif;position:absolute;left:560px;top:280px;margin:0">token ${VAULT_VALUE}</p>`}
       ${url.includes('novault') ? '' : `<iframe id=echoframe src="${cross}/echo" style="position:absolute;left:560px;top:350px;width:300px;height:60px;border:0"></iframe>`}
+      ${url.includes('novault') ? '' : `<canvas id=drawn width=340 height=30 style="position:absolute;left:640px;top:80px"></canvas>
+        <script>{ const c = document.getElementById('drawn').getContext('2d'); c.fillStyle = '#ff00ff'; c.font = 'bold 24px sans-serif';
+          c.fillText(${JSON.stringify(VAULT_VALUE)}, 0, 24); document.currentScript.remove(); }</script>
+        <div id=generated style="position:absolute;left:640px;top:122px;color:#ff00ff;font:bold 18px sans-serif"><span>${VAULT_VALUE.slice(16, 18)}<b>${VAULT_VALUE.slice(18, 21)}</b></span></div>
+        <div id=siblings style="position:absolute;left:640px;top:148px;color:#ff00ff;font:bold 14px sans-serif"><span>${VAULT_VALUE.slice(0, 11)}</span><span>${VAULT_VALUE.slice(11)}</span></div>
+        ${reorderHtml()}
+        <script>{ const sheet = new CSSStyleSheet();
+          sheet.replaceSync('#generated::before { content: ${JSON.stringify(VAULT_VALUE.slice(0, 16))} } #generated::after { content: ${JSON.stringify(VAULT_VALUE.slice(21))} }');
+          document.adoptedStyleSheets = [sheet]; document.currentScript.remove(); }</script>`}
       <div id=host style="position:absolute;left:560px;top:320px"></div>
       <input id=fixed type=password style="${M};position:fixed;right:10px;bottom:10px;width:90px;height:22px;border:0">
       <article style="${C};position:absolute;left:20px;top:420px;width:880px;height:1600px">Ordinary article text.</article>
       <script>document.getElementById('host').attachShadow({mode:'closed'}).innerHTML='<input type=password style="${M};width:110px;height:22px;border:0">';
+        { const c = document.getElementById('media').getContext('2d'); c.fillStyle = '#00ffff'; c.fillRect(0, 0, 60, 40); }
         document.getElementById('same').onload = e => e.target.contentWindow.scrollTo(0, 360);</script>`);
   }
 }
+
+// Unit snapshots: Chromium's computed values of RENDER_ORDER_STYLES for a plain block.
+export const DEFAULT_RENDER_STYLE = {
+  display: 'block', position: 'static', float: 'none', order: '0', 'flex-direction': 'row', 'flex-wrap': 'nowrap', 'grid-auto-flow': 'row',
+  'grid-row-start': 'auto', 'grid-row-end': 'auto', 'grid-column-start': 'auto', 'grid-column-end': 'auto', '-webkit-box-direction': 'normal',
+  '-webkit-box-ordinal-group': '1', 'caption-side': 'top', direction: 'ltr', 'unicode-bidi': 'normal',
+  top: 'auto', right: 'auto', bottom: 'auto', left: 'auto', 'margin-top': '0px', 'margin-right': '0px', 'margin-bottom': '0px', 'margin-left': '0px',
+  transform: 'none', translate: 'none', rotate: 'none', scale: 'none', 'offset-path': 'none', 'overflow-x': 'visible', 'overflow-y': 'visible',
+  clip: 'auto', 'clip-path': 'none', visibility: 'visible', opacity: '1', '-webkit-text-fill-color': 'rgb(0, 0, 0)', 'font-size': '16px',
+};
 
 export async function serveFixture() {
   const server = createServer((request, response) => {
@@ -80,10 +123,11 @@ export async function openFixture(browser, url) {
   const { sessionId } = await browser.resolvePageTarget(target.targetId);
   await connection.send('Page.navigate', { url }, sessionId);
   for (let i = 0; i < 100; i++) {
-    const expected = 5 + !url.includes('nomarkers') + !url.includes('novault');
+    const expected = 7 + !url.includes('nomarkers') + !url.includes('novault');
     const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: `document.readyState === 'complete' && [...document.querySelectorAll('iframe')].length === ${expected}` }, sessionId);
+    // Isolated frame targets: the two same-site frames are in-process; nested adds one.
     const frames = (await connection.send('Target.getTargets')).targetInfos.filter(info => info.type === 'iframe').length;
-    if (result.value && frames >= expected) break;
+    if (result.value && frames >= expected - 1) break;
     await delay(50);
   }
   await delay(300);

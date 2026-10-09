@@ -4,10 +4,11 @@
 // origin, desktop capture at the AT-SPI document origin proven by
 // browser-desktop-protection.py. Page JavaScript never participates.
 import { createHash } from 'node:crypto';
-import { redactObservation } from './browser-controller-snapshot.mjs';
+import { RENDER_ORDER_STYLES, redactObservation, renderedTextEchoes } from './browser-controller-snapshot.mjs';
 
 const MAX_FRAMES = 64, MAX_REGIONS = 4096, MAX_PAGES = 32, FRAME_TIMEOUT_MS = 500;
 const MARKERS = ['data-chariox-secret', 'data-chariox-observation-protected', 'data-observation-protected'];
+const OPAQUE_MEDIA = new Set(['canvas', 'svg', 'img', 'video']);
 const FRAME_OWNERS = new Set(['iframe', 'frame']);
 const PLUGINS = new Set(['object', 'embed']);
 
@@ -28,24 +29,34 @@ const outward = ([x, y, w, h]) => {
   return [left, top, Math.ceil(x + w) - left, Math.ceil(y + h) - top];
 };
 
-// Device-pixel boxes. A frame owner maps child coordinates by translation only
-// when its border box is untransformed: an axis-aligned quad with the layout
-// size. Otherwise the child cannot be placed: its whole owner box is protected.
+// A frame owner maps child coordinates by translation only when its border
+// quad (TL, TR, BR, BL) is its layout box moved: directed edges of the layout
+// size (no mirror or rotation), no skew. Layout sizes are whole CSS pixels.
+export function translatedQuad(q, width, height) {
+  if (!Array.isArray(q) || q.length !== 8 || !q.every(Number.isFinite)) return false;
+  const near = (a, b, tolerance = 0.01) => Math.abs(a - b) < tolerance;
+  return near(q[2] - q[0], width, 0.5) && near(q[7] - q[1], height, 0.5) &&
+    near(q[3], q[1]) && near(q[4], q[2]) && near(q[5], q[7]) && near(q[6], q[0]);
+}
+
+// Device-pixel boxes. A child that cannot be placed by translation (plain
+// false) is withheld: its whole owner box is protected.
 async function nodeBox(connection, sessionId, backendNodeId, dpr) {
   const { model } = await connection.send('DOM.getBoxModel', { backendNodeId }, sessionId);
   const border = quadRect(model?.border), content = quadRect(model?.content);
-  const q = model.border;
-  const aligned = q[1] === q[3] && q[5] === q[7] && q[0] === q[6] && q[2] === q[4];
-  const plain = aligned && Math.abs(border[2] - model.width) < 0.5 && Math.abs(border[3] - model.height) < 0.5;
-  return { border: scaled(border, dpr), content: scaled(content, dpr), plain };
+  return { border: scaled(border, dpr), content: scaled(content, dpr), plain: translatedQuad(model.border, model.width, model.height) };
 }
 
 // Pure: protected layout rectangles of one DOMSnapshot document, in device
 // pixels of that document's viewport. Protection is inherited by descendants
 // (display:contents, overflow, shadow content); markers, password/OTP/payment
-// fields, policy target nodes and Vault value echoes are protected. Frame and
-// plugin owners are returned for mapping or withholding (owner decision
-// 2026-10-08: media and inspectable frames are not masked whole).
+// fields, policy target nodes and Vault value echoes (DOM strings and rendered
+// layout text, which alone holds CSS-generated content) are protected. While
+// Vault values are registered, opaque media are protected too: a page can draw
+// a value into them and delete every DOM echo; so are containers whose visual
+// order may differ from DOM order (renderedTextEchoes). Frame and plugin owners are
+// returned for mapping or withholding (owner decision 2026-10-08: inspectable
+// frames, and media without Vault values, are not masked whole).
 export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
   const document = snapshot.documents[index], strings = snapshot.strings ?? [];
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
@@ -65,18 +76,21 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
       own = MARKERS.includes(key) || (key === 'autocomplete' && /password|one-time-code|cc-/i.test(value)) ||
         (name === 'input' && key === 'type' && value.toLowerCase() === 'password') || echoed(attributes[a + 1]);
     }
+    if (values.length && OPAQUE_MEDIA.has(name)) own = true;
     const up = parent[i] ?? -1;
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;
   }
-  const regions = [], owners = [];
+  const regions = [], owners = [], overflow = { regions: [], unmeasured: new Set() }, rendered = renderedTextEchoes(strings, document, values, overflow);
   const scroll = [document.scrollOffsetX ?? 0, document.scrollOffsetY ?? 0];
   if (!scroll.every(Number.isFinite)) throw new Error('MP-11: unknown document scroll');
+  regions.push(...overflow.regions.map(([x,y,w,h]) => [x-scroll[0],y-scroll[1],w,h]));
   for (let k = 0; k < (layout.nodeIndex?.length ?? 0); k++) {
     const i = layout.nodeIndex[k], bounds = layout.bounds?.[k];
+    if (overflow.unmeasured.has(k)) continue; // Covered by the local clipping ancestor.
     if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) throw new Error('MP-11: unknown layout region');
     const rect = [bounds[0] - scroll[0], bounds[1] - scroll[1], bounds[2], bounds[3]];
-    if (marked[i]) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
+    if (marked[i] || rendered.has(k)) { if (rect[2] > 0 && rect[3] > 0) regions.push(rect); continue; }
     const name = text(nodes.nodeName[i]).toLowerCase();
     if (FRAME_OWNERS.has(name) || PLUGINS.has(name)) {
       owners.push({ backendNodeId: nodes.backendNodeId[i], rect, contentDocument: contentDocument.get(i), ...(PLUGINS.has(name) ? { plugin: true } : {}) });
@@ -119,7 +133,7 @@ async function isolatedFrames(connection, top, frameIds) {
 }
 
 async function sessionRegions(connection, entry, dpr, origin, clip, policy, targetNodes, regions, children, withheld) {
-  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, entry.sessionId);
+  const snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: policy.values.length ? RENDER_ORDER_STYLES : [] }, entry.sessionId);
   const pending = [{ index: 0, origin, clip }];
   const ownersBySession = new Map(children.map(child => [child.ownerBackendNodeId, child]));
   while (pending.length) {
@@ -133,7 +147,7 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
       let box = null;
       try { box = await nodeBox(connection, entry.sessionId, owner.backendNodeId, dpr); } catch {}
       // Plugin/PDF content has no inspectable document.
-      const reason = owner.plugin ? 'plugin' : !box?.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
+      const reason = owner.plugin ? 'plugin' : !box ? 'frame_failed' : !box.plain ? 'transformed_frame' : owner.contentDocument === undefined && !isolated ? 'uninspected_frame' : null;
       if (reason) { if (place(owner.rect)) withheld.push(reason); continue; }
       const childOrigin = [origin[0] + box.content[0], origin[1] + box.content[1]];
       const childClip = intersect([childOrigin[0], childOrigin[1], box.content[2], box.content[3]], doc.clip);
@@ -144,6 +158,8 @@ async function sessionRegions(connection, entry, dpr, origin, clip, policy, targ
   }
 }
 
+// CDP's errors for a node without a layout box (hidden, detached).
+const NOT_RENDERED = /Could not compute box model|No node found for given backend id/;
 const SECRET_FIELDS = 'input[type=password i],[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],[autocomplete*=password i],[autocomplete*=one-time-code i],[autocomplete*=cc- i]';
 async function search(connection, sessionId, query) {
   const { searchId, resultCount } = await connection.send('DOM.performSearch', { query }, sessionId);
@@ -156,22 +172,27 @@ async function search(connection, sessionId, query) {
 // Without Vault values or targets, one selector search (it pierces shadow
 // roots, closed ones included, and in-process frame documents) finds the
 // secret fields and frame owners, instead of a whole-page DOMSnapshot. A
-// marker protects its descendants, which this path cannot bound: false lets
-// the caller measure the session from a DOMSnapshot instead.
+// marker protects its descendants, and a failed box lookup does not prove
+// absent layout, which this path cannot bound: false lets the caller measure
+// the session from a DOMSnapshot instead.
 async function searchedRegions(connection, entry, dpr, regions, children, withheld) {
   const { sessionId, origin, clip } = entry;
   await connection.send('DOM.getDocument', { depth: 0 }, sessionId);
   const describe = async nodeId => (await connection.send('DOM.describeNode', { nodeId }, sessionId)).node;
   const secrets = await Promise.all((await search(connection, sessionId, SECRET_FIELDS)).map(describe));
   if (secrets.some(node => node.localName !== 'input')) return false;
-  const owners = await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe));
+  // In-process frame documents were searched; other owners need their box.
+  const owners = (await Promise.all((await search(connection, sessionId, 'iframe,frame,object,embed')).map(describe)))
+    .filter(node => !(FRAME_OWNERS.has(node.localName) && node.contentDocument));
+  let secretBoxes, ownerBoxes;
+  try {
+    [secretBoxes, ownerBoxes] = await Promise.all([secrets, owners].map(nodes => Promise.all(nodes.map(node => nodeBox(connection, sessionId, node.backendNodeId, dpr)))));
+  } catch { return false; }
   const place = rect => { const placed = intersect([rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]], clip); if (placed) regions.push(placed); return placed; };
-  const box = async node => { try { return await nodeBox(connection, sessionId, node.backendNodeId, dpr); } catch { return null; } }; // No layout: no pixels.
   const isolated = new Map(children.map(child => [child.ownerBackendNodeId, child]));
-  for (const node of secrets) { const found = await box(node); if (found) place(found.border); }
-  for (const node of owners) {
-    const found = await box(node), child = isolated.get(node.backendNodeId);
-    if (!found || (FRAME_OWNERS.has(node.localName) && node.contentDocument)) continue; // In-process documents were searched.
+  secretBoxes.forEach(found => place(found.border));
+  for (const [i, node] of owners.entries()) {
+    const found = ownerBoxes[i], child = isolated.get(node.backendNodeId);
     if (!child || !found.plain) { // Plugin, uninspected or transformed frame.
       if (place(found.border)) withheld.push(PLUGINS.has(node.localName) ? 'plugin' : child ? 'transformed_frame' : 'uninspected_frame');
       continue;
@@ -195,16 +216,17 @@ function policyTargets(policy, targetId, prefix, documentId) {
 }
 
 // One visible page: device-pixel regions relative to its content viewport.
-// Returns null for a hidden page (no pixels). Throws when the top document
+// Returns null for a hidden page (no pixels) unless the caller renders hidden
+// pages itself (CDP screenshots: `hidden`). Throws when the top document
 // cannot be bound; an uninspectable child frame protects its owner box.
-export async function measurePageProtection(connection, sessionId, targetId, policy) {
+export async function measurePageProtection(connection, sessionId, targetId, policy, { hidden = false } = {}) {
   const top = await frameTree(connection, sessionId);
   const { executionContextId } = await connection.send('Page.createIsolatedWorld', { frameId: top.frame.id, worldName: 'chariox-protection-regions' }, sessionId);
   const { result } = await connection.send('Runtime.evaluate', { contextId: executionContextId, returnByValue: true,
     expression: '[document.visibilityState, devicePixelRatio, innerWidth, innerHeight]' }, sessionId);
   const [visibility, dpr, innerWidth, innerHeight] = result?.value ?? [];
-  if (visibility === 'hidden') return null;
-  if (visibility !== 'visible' || !(dpr > 0) || !(innerWidth > 0) || !(innerHeight > 0)) throw new Error('MP-11: unbound page');
+  if (visibility === 'hidden' && !hidden) return null;
+  if (!['visible', ...(hidden ? ['hidden'] : [])].includes(visibility) || !(dpr > 0) || !(innerWidth > 0) || !(innerHeight > 0)) throw new Error('MP-11: unbound page');
   // DevTools, settings/password pages and extensions render page or browser
   // data outside page markers: a visible one is never partially revealed.
   if (top.frame.url !== 'about:blank' && !/^(https?:|file:|chrome-error:)/.test(top.frame.url)) throw new Error('MP-11: browser-internal page');
