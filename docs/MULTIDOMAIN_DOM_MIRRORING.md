@@ -21,6 +21,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   `form`, `scroll`, `size`, `res`. Records travel as compact rows
   `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
   of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+  Deltas carry only changes: a child list that ends as it was sends nothing, a
+  form op travels only when the field's state changed, and a subtree the page
+  rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps
+  the viewer's nodes: the new page nodes take over the removed nodes' ids and
+  only `attr`/`text`/`res` differences travel. Masks, form fields, frames,
+  styles, opaque and custom elements are never morphed, and a morphed node
+  counts as a changed input target.
 - **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
   text (imports inlined; cross-origin sheets read through CDP and normalized
   by a constructed sheet); adoptedStyleSheets and open shadow roots are kept.
@@ -33,13 +40,24 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   credit outstanding (for example a credit replayed after a reconnect, which the
   kernel runs again) resets at once; the reset credit does not wait for credits
   in flight, and the kernel ends the long poll of every credit that arrived
-  before it. A credit's deadline counts from its arrival. Small packets
-  (< 2 KB) travel as JSON; larger bodies are gzipped after the Vault scrub;
-  resource and region bytes travel beside it (`resources`, `tiles`).
+  before it. A queued credit's wait starts when its predecessor is answered
+  (one heartbeat per wait instead of one per credit), at most three waits from
+  its arrival (below the client's 8 s request timeout). A body from 768 bytes
+  travels gzipped after the Vault scrub when that is smaller on the wire;
+  smaller packets (echoes) travel as JSON; resource and region bytes travel
+  beside it (`resources`, `tiles`).
 - **Resources** are only bytes the page itself loaded (data: URLs, the resource
   tree, or Chrome's cache without credentials for Resource Timing URLs), typed
   by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
   a `data:` image; the sandbox CSP is `img-src blob: data:; font-src blob:`.
+  Element images (`<img>` in the top document) travel only within one viewport
+  of the view, nearest first; the rest wait until the view comes near them.
+  While the view moves (a viewer `scroll_to` or a page scroll, and 300 ms
+  after), a near image above 8 KB travels as a preview: decoded in the
+  observer's world from the page's bytes, half its CSS size, WebP, wrapped in an
+  SVG of the original pixel size so the layout does not change. Its exact bytes
+  replace it under the same key once the view settles (settled pixels stay
+  exact). CSS images and frame resources keep the earlier order.
 - **Frames.** Same-origin frames are part of the document. Cross-origin frames
   are mirrored through their own CDP session/isolated world with the same
   observer (ids and resource keys rebased per frame slot); nested or
@@ -55,7 +73,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   viewer scrolls its own copy natively for frame rate and sends coalesced
   `scroll_to`; the kernel applies it and every other viewer follows the
   kernel's position (last writer wins). A viewer ignores kernel echoes only
-  while it is scrolling itself. Wheel over opaque regions drives the kernel.
+  while it is scrolling itself, and the kernel does not send a viewer its own
+  scroll position back. Wheel over opaque regions drives the kernel.
 - **No tree hash.** Correctness comes from sequenced deltas, base checks,
   resnapshot on a gap and independent client validation.
 - **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
