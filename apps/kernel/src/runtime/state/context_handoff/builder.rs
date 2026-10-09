@@ -529,6 +529,35 @@ mod tests {
     }
 
     #[test]
+    fn assistant_title_and_explanation_keep_their_line_boundary() {
+        let events = vec![
+            user_event(
+                1,
+                "session",
+                "agent",
+                "Propose a three-word audit title on its own line.",
+            ),
+            output_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                "proposal=Model Queue Continuity\nChecks native-session preservation.",
+            ),
+            user_event(3, "session", "agent", "Continue the audit."),
+            output_event(4, "session", "agent", "run-1", "Reviewed queue admission."),
+        ];
+        let handoff = build_agent_context_handoff(&events, MAX_HANDOFF_BYTES).unwrap();
+        assert!(
+            handoff
+                .contains("proposal=Model Queue Continuity\\nChecks native-session preservation."),
+            "{handoff}"
+        );
+        assert!(!handoff.contains("proposal=Model Queue Continuity Checks"));
+        assert!(handoff.len() <= MAX_HANDOFF_BYTES);
+    }
+
+    #[test]
     fn early_user_facts_survive_a_conversation_of_ordinary_turns() {
         let mut events = vec![
             user_event(
