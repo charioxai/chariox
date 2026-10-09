@@ -39,7 +39,7 @@ export class BrowserMirror2Renderer {
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
-  constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, private failure: (error: unknown) => void) {
+  constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
     this.frame = owner.createElement('iframe')
@@ -74,7 +74,9 @@ export class BrowserMirror2Renderer {
     this.sending = true
     try {
       for (let next = this.queue.shift(); next; next = this.queue.shift()) {
-        try { if (!this.disposed) await this.send(next.action, next.epoch) } catch (error) { this.failure(error) } finally { this.pendingInputs-- }
+        // A refused input (stale epoch, changed or protected target) is dropped:
+        // the kernel stays authoritative and packets keep flowing (plan 4.3).
+        try { if (!this.disposed) await this.send(next.action, next.epoch) } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
       }
     } finally { this.sending = false }
   }
@@ -399,15 +401,17 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 482')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
-  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false
+  // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
+  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity
   const buffered = new Map<number, Mirror2Packet>()
-  const renderer = new BrowserMirror2Renderer(container, (action, epoch) => request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }), handlers.failure)
+  const renderer = new BrowserMirror2Renderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   const drain = (): Promise<void> => chain = chain.then(async () => {
     for (let next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied); next; next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied)) {
       for (const seq of buffered.keys()) if (seq <= next.sequence) buffered.delete(seq)
       if (!next.fallback) await renderer.apply(next)
+      if (next.reset || next.ops?.length || next.resources.length || next.tiles.length) activeAt = performance.now()
       applied = next.sequence
       if (next.reset) wantReset = false
       handlers.packet?.(next)
@@ -429,7 +433,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       .finally(() => { inflight--; if (!closed) setTimeout(fill, 0) })
   }
   // Pipelined credits start once a snapshot is applied; a reset is a single credit.
-  const fill = (): void => { while (!closed && inflight < (wantReset || !applied ? 1 : credits)) credit() }
+  const fill = (): void => { while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit() }
   fill()
   return {
     renderer,

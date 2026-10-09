@@ -12,7 +12,7 @@ import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
 import { MirrorFrames, slotOf, localId } from './kernel-browser-mirror2-frames.mjs';
 
-const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 2 * 1024 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error { constructor() { super('MP-11: stale mirror input epoch'); } }
 
@@ -192,8 +192,10 @@ export class Mirror2 {
       source = await read();
       if (source.resync) { reset = true; source = await read(); }
       this.register(stream, source);
-      // The first packet carries DOM, CSS and fonts; images follow it.
-      resources = await this.materialize(world, stream, reset ? 'font' : null);
+      // The first packet carries DOM, CSS and fonts; images follow it. Resource
+      // bytes travel only in packets without DOM changes (and in bounded
+      // slices), so an echo never queues behind image bytes on the socket.
+      resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline) {
         await this.evaluate(world, `globalThis.__charioxMirror2.wait(${Math.max(1, Math.min(500, deadline - Date.now()))})`, true);
@@ -201,7 +203,7 @@ export class Mirror2 {
         const more = await read();
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
-        resources = await this.materialize(world, stream, null);
+        if (this.empty(stream, source)) resources = await this.materialize(world, stream, null);
       }
     } catch (error) {
       await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
