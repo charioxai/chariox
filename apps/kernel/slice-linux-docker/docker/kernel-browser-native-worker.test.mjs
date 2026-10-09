@@ -1,9 +1,31 @@
 // MP-08/MP-10/MP-11: native bridge retains authority/leases without pixels.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
+import {NativeWorkerControl,nativeExactReplyLimit} from './kernel-browser-native-worker.mjs';
+import {NativePipe} from './kernel-browser-native-pipe.mjs';
 import {PortableEncoder,DisplayStream} from './kernel-browser-display.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
+test('MP-08/MP-10/MP-11 Retina exact replies fit private IPC without enlarging raw or encode bounds',async()=>{
+ const writes=[],bridge=new NativeWorkerControl({stdin:{write(line){writes.push(JSON.parse(line))}}},()=>{});
+ const exact=bridge.request('exact',{serial:1});
+ // A full 2560x1600 random RGB repair carries ~16.4 MB of base64 WebP,
+ // above both the old 8 MiB reply cap and the raw raster framing cap.
+ const value={native_exact:true,width:2560,height:1600,native_repair:true,repair_tiles:[{data_base64:'A'.repeat(2560*1600*4)}]};
+ const bytes=Buffer.from(JSON.stringify(value)),id=writes[0].exact.id;
+ const header={reply:id,length:bytes.length},text=Buffer.from(JSON.stringify(header)),length=Buffer.alloc(4);length.writeUInt32BE(text.length);
+ const pipe=new NativePipe(h=>bridge.validate(h),(h,b)=>bridge.receive(h,b));
+ try {
+  for(const size of [0,NaN,1.5,nativeExactReplyLimit+1])assert.throws(()=>bridge.validate({reply:id,length:size}),/binding/);
+  assert.throws(()=>bridge.validate({reply:id+1,length:bytes.length}),/binding/);
+  for(const part of [length,text,bytes])pipe.push(part);
+  assert.deepEqual(await exact,value);
+  const encoded=bridge.request('encode',{serial:1});
+  assert.throws(()=>bridge.validate({reply:writes[1].encode.id,length:8*1024*1024+1}),/binding/);
+  bridge.close();await assert.rejects(encoded,/closed/);
+  const rawHeader=Buffer.from(JSON.stringify({length:2560*1600*4+1})),rawLength=Buffer.alloc(4);rawLength.writeUInt32BE(rawHeader.length);
+  assert.throws(()=>new NativePipe(()=>{},()=>{}).push(Buffer.concat([rawLength,rawHeader])),/frame/);
+ }finally{bridge.close();await exact.catch(()=>{})}
+});
 test('MP-11 native control binds every reply and settles pending work on death',async()=>{
  const writes=[],child={stdin:{write(line){writes.push(JSON.parse(line));}}};
  const bridge=new NativeWorkerControl(child,()=>{});

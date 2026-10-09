@@ -1,6 +1,10 @@
 // MP-08/MP-10/MP-11: control-only bridge to the kernel-owned native worker.
 // Frame pixels and compressed packets never pass through the motion bridge.
 const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error(message),{dispatched:false});
+// MP-08/MP-10/MP-11: two full native RGB rasters (PNG + WebP repair),
+// base64 and metadata at the admitted 2560x1600 geometry fit within32 MiB.
+// Only an outstanding exact request may use this private IPC ceiling.
+export const nativeExactReplyLimit=32*1024*1024;
 export class NativeWorkerControl {
  constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;}
  request(operation,values){
@@ -8,13 +12,13 @@ export class NativeWorkerControl {
   const id=++this.sequence;
   return new Promise((resolve,reject)=>{
    const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('MP-10: native control timeout'));},10000);
-   this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});
+   this.pending.set(id,{limit:operation==='exact'?nativeExactReplyLimit:8*1024*1024,resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});
    // A command that was never written is a definite refusal; any later loss
    // (timeout, closed worker, bad reply) leaves its dispatch uncertain.
    if(!this.notify({[operation]:{id,...values}},true)){this.pending.delete(id);clearTimeout(timer);reject(notSent());this.close();}
   });
  }
- validate(header){if(!Number.isSafeInteger(header.reply)||!this.pending.has(header.reply)||header.length>8*1024*1024)throw Error('MP-11: native reply binding');}
+ validate(header){const pending=this.pending.get(header.reply);if(!Number.isSafeInteger(header.reply)||!pending||!Number.isSafeInteger(header.length)||header.length<1||header.length>pending.limit)throw Error('MP-11: native reply binding');}
  receive(header,bytes){
   const waiter=this.pending.get(header.reply);this.pending.delete(header.reply);
   try{
