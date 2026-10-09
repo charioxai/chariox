@@ -120,13 +120,6 @@ impl CommandRouter {
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 boxed_handler(|| async move { terminal_command_catalog_response() })
             }
-            LocalDaemonRequest::RespondToHandoff(request) => boxed_handler(|| async move {
-                let outcome = self
-                    .runtime_state
-                    .respond_to_handoff(&command, request)
-                    .await?;
-                Ok(LocalDaemonResponse::HandoffResolved { outcome })
-            }),
             LocalDaemonRequest::RespondToInteraction(_) => boxed_handler(|| async move {
                 Err(DaemonError::LocalTransport {
                     operation: "dispatch normal or background",

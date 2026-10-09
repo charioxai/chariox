@@ -10,7 +10,8 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
     SessionActor::is_session_interactive_command(request)
         || matches!(
             request,
-            LocalDaemonRequest::GrantAgentExtension(_)
+            LocalDaemonRequest::RespondToHandoff(_)
+                | LocalDaemonRequest::GrantAgentExtension(_)
                 | LocalDaemonRequest::MoveAgentToRemote(_)
                 | LocalDaemonRequest::MoveAgentToLocal(_)
                 | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
@@ -51,6 +52,10 @@ pub(crate) async fn dispatch_interactive_command(
     }
 
     match request {
+        LocalDaemonRequest::RespondToHandoff(request) => {
+            let outcome = runtime_state.respond_to_handoff(&command, request).await?;
+            Ok(LocalDaemonResponse::HandoffResolved { outcome })
+        }
         request @ (LocalDaemonRequest::GrantAgentExtension(_)
         | LocalDaemonRequest::MoveAgentToRemote(_)
         | LocalDaemonRequest::MoveAgentToLocal(_)

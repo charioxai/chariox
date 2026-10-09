@@ -10,6 +10,14 @@ fn fixture_with_owner(
     cloud_owner: Option<&str>,
     session_owner: &str,
 ) -> (KernelRuntimeState, String) {
+    let (router, id) = router_fixture_with_owner(cloud_owner, session_owner);
+    (router.runtime_state().clone(), id)
+}
+
+fn router_fixture_with_owner(
+    cloud_owner: Option<&str>,
+    session_owner: &str,
+) -> (CommandRouter, String) {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     config.cloud_relay = cloud_owner.map(|owner| crate::config::PersistedCloudRelayProfile {
@@ -29,7 +37,7 @@ fn fixture_with_owner(
     let id = session.id().to_owned();
     app.sessions_mut().restore_session(session);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    (router.runtime_state().clone(), id)
+    (router, id)
 }
 fn handoff() -> RuntimeHandoff {
     RuntimeHandoff {
@@ -532,4 +540,40 @@ async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_answer_without_collab
         .owned
         .claim_handoff(&room, &id, "collaborator", |_| Ok(()))
         .is_ok());
+}
+
+// MP-08 / MP-10 / MP-11: exercise the actual transport priority router, which
+// rejected owner replies even though direct state tests passed.
+#[tokio::test(flavor = "current_thread")]
+async fn mp08_mp10_mp11_a07_owner_reply_reaches_interactive_router_once() {
+    use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+    use crate::runtime::command::{KernelCommand, KernelCommandPriority};
+    let (router, room) = router_fixture_with_owner(None, DEFAULT_LOCAL_USER_ID);
+    let state = router.runtime_state();
+    let h = handoff();
+    let id = register(state, &room, &h).await;
+    let request = LocalDaemonRequest::RespondToHandoff(RespondToHandoffRequest {
+        session_id: room.clone(),
+        interaction_id: id.clone(),
+        action: HandoffResponseAction::Cancel,
+    });
+    let command = KernelCommand::from_local_request("owner-reply", None, None, &request);
+    assert_eq!(command.priority, KernelCommandPriority::Interactive);
+    assert!(crate::runtime::interactive_command_dispatcher::is_interactive_command(&request));
+    let response = router
+        .dispatch(command, request.clone())
+        .await
+        .expect("owner reply must reach its handler");
+    assert!(
+        matches!(response, LocalDaemonResponse::HandoffResolved { outcome } if outcome.status == HandoffStatus::Cancelled)
+    );
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let replay = KernelCommand::from_local_request("owner-replay", None, None, &request);
+    assert!(router.dispatch(replay, request).await.is_err());
 }
