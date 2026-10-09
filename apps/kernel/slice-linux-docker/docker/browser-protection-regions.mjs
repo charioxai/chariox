@@ -64,10 +64,12 @@ async function fieldState(connection,entry,document,backendNodeId) {
   try {
     const {result,exceptionDetails}=await connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,
       functionDeclaration:`function(){ const editable=this.localName==='input'||this.localName==='textarea'||this.isContentEditable;
-        let filtered=false;
-        for(let element=this;element;element=element.parentElement??element.getRootNode().host)
-          filtered ||= element.ownerDocument.defaultView.getComputedStyle(element).filter!=='none';
-        return {exists:this.isConnected,editable,filtered,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+        let unprovedPaint=false;
+        for(let element=this;element;element=element.parentElement??element.getRootNode().host) {
+          const style=element.ownerDocument.defaultView.getComputedStyle(element);
+          unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
+        }
+        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
           textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
@@ -109,10 +111,12 @@ function contenteditableTextGeometry() {
     if(style.textShadow!=='none')throw Error('unproved filled text shadow');
     range.selectNodeContents(text.currentNode);
     for(const box of range.getClientRects()) {
-      // Filter ink is absent from Range bounds. Check the rendered text's
-      // entire descendant path; filter is composited, not inherited CSS.
-      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement)
-        if(this.ownerDocument.defaultView.getComputedStyle(element).filter!=='none')throw Error('unproved filled text filter');
+      // Filters and reflections paint outside Range bounds. Check the rendered
+      // text's entire descendant path; these effects are not inherited CSS.
+      for(let element=text.currentNode.parentElement;element!==this;element=element.parentElement) {
+        const paint=this.ownerDocument.defaultView.getComputedStyle(element);
+        if(paint.filter!=='none'||paint.webkitBoxReflect!=='none')throw Error('unproved filled text paint');
+      }
       const left=Math.max(clips[0],box.left),top=Math.max(clips[1],box.top),right=Math.min(clips[2],box.right),bottom=Math.min(clips[3],box.bottom);
       if(right>left&&bottom>top)rects.push([left,top,right-left,bottom-top]);
     }
@@ -167,7 +171,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       if(!parentFrame)throw Error('MP-11: fill frame paint unavailable');
       const owner=await connection.send('DOM.getFrameOwner',{frameId:frame.id},parent.sessionId);
       const state=await fieldState(connection,parent,{frameId:parentFrame.id},owner.backendNodeId);
-      if(!state.exists||state.filtered)throw Error('MP-11: fill frame filter coverage unavailable');
+      if(!state.exists||state.unprovedPaint)throw Error('MP-11: fill frame paint coverage unavailable');
       await assertFramePaint(parent,parentFrame);
       checkedFramePaint.add(frame.id);
     };
@@ -196,9 +200,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           return false;
         });
         if(!rendered)continue;
-        // Box and Range geometry cannot prove any non-none filter's ink.
+        // Box and Range geometry cannot prove filter or reflection ink.
         // Include composed ancestors and frame owners, for both field kinds.
-        if(state.filtered)throw Error('MP-11: fill filter coverage unavailable');
+        if(state.unprovedPaint)throw Error('MP-11: fill paint coverage unavailable');
         await assertFramePaint(entry,frame);
         // Native text controls have the same layout/paint distinction. Password
         // dots bypass this check; hidden controls retain tracking until reveal.
