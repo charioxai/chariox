@@ -4,6 +4,11 @@ use crate::session::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// MP-08/MP-11: a human actor's Desktop ownership lasts while one of its
+/// desktop video subscriptions is live; the host display lease is 60 s.
+pub(crate) const DESKTOP_VIEWER_LEASE: Duration = Duration::from_secs(60);
 
 pub(crate) struct KernelBrowserActors {
     generation: u64,
@@ -17,6 +22,8 @@ pub(crate) struct KernelBrowserActors {
     pointers: BTreeMap<String, EnvironmentPointer>,
     pointer_tabs: BTreeMap<String, String>,
     host_tabs: BTreeMap<String, String>,
+    /// Desktop video subscription -> (human actor, lease expiry).
+    desktop_viewers: BTreeMap<String, (String, Instant)>,
 }
 
 /// Internal display seam: the adapter must derive the user/actor from its caller.
@@ -42,6 +49,7 @@ impl Default for KernelBrowserActors {
             pointers: BTreeMap::new(),
             pointer_tabs: BTreeMap::new(),
             host_tabs: BTreeMap::new(),
+            desktop_viewers: BTreeMap::new(),
         }
     }
 }
@@ -158,6 +166,7 @@ impl KernelBrowserActors {
         actor: EnvironmentActor,
         params: &Value,
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
+        self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
         let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
@@ -323,6 +332,7 @@ impl KernelBrowserActors {
         generation: &str,
     ) -> Result<TakeoverOutcome, String> {
         self.desktop_current(surface, generation)?;
+        self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
         let effect = self
             .ledger
@@ -376,6 +386,7 @@ impl KernelBrowserActors {
             return Err("MD-3: stale browser generation".into());
         }
         let tab = self.tab(host_tab)?;
+        self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
         let effect = self
             .ledger
@@ -407,7 +418,64 @@ impl KernelBrowserActors {
             .release(actor_id, &InputTarget::BrowserTab(tab))
             .map_err(|_| "MD-3: only the input owner may release takeover".into())
     }
+    /// MP-08/MP-11: a human actor's desktop video subscription (lease start).
+    pub(crate) fn desktop_viewer(&mut self, actor_id: &str, subscription: &str, now: Instant) {
+        if self.desktop_viewers.len() < 256 || self.desktop_viewers.contains_key(subscription) {
+            self.desktop_viewers.insert(
+                subscription.into(),
+                (actor_id.into(), now + DESKTOP_VIEWER_LEASE),
+            );
+        }
+    }
+    /// Any display request on a tracked desktop subscription renews it.
+    pub(crate) fn renew_desktop_viewer(&mut self, subscription: &str, now: Instant) {
+        if let Some((_, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            *expiry = now + DESKTOP_VIEWER_LEASE;
+        }
+    }
+    /// An unsubscribed desktop video ends its lease now.
+    pub(crate) fn end_desktop_viewer(&mut self, subscription: &str, now: Instant) {
+        if let Some((_, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            *expiry = now;
+        }
+    }
+    /// MP-08/MP-11 (option b, 2026-10-09): relay clients have no gone
+    /// notification. When a human actor's last desktop video subscription
+    /// lapses or ends, its Desktop ownership retires (in-flight input is
+    /// cancelled first) so a fresh client is never refused by a stale owner.
+    pub(crate) fn retire_lapsed_desktop_viewers(&mut self, now: Instant) {
+        let lapsed = self
+            .desktop_viewers
+            .values()
+            .filter(|(_, expiry)| *expiry <= now)
+            .map(|(actor, _)| actor.clone())
+            .collect::<Vec<_>>();
+        self.desktop_viewers.retain(|_, (_, expiry)| *expiry > now);
+        for actor in lapsed {
+            if self
+                .desktop_viewers
+                .values()
+                .any(|(live, _)| live == &actor)
+                || !self.desktop_owner_is(&actor)
+            {
+                continue;
+            }
+            for action in self
+                .ledger
+                .actions()
+                .iter()
+                .filter(|action| action.actor_id == actor)
+            {
+                if let Some(cancellation) = self.active.get(&action.action_id) {
+                    cancellation.request_cancel();
+                }
+            }
+            let _ = self.ledger.release(&actor, &InputTarget::Desktop);
+        }
+    }
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
+        self.desktop_viewers
+            .retain(|_, (actor, _)| actor != actor_id);
         self.ledger.release_actor_input(actor_id);
         for action in self
             .ledger

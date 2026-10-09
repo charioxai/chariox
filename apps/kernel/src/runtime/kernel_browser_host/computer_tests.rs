@@ -107,3 +107,74 @@ fn mp11_browser_tab_takeover_also_fences_and_cancels_whole_desktop_input() {
     model.finish(&id, EnvironmentActionTerminal::Cancelled);
     assert!(model.begin(agent, &input).is_err());
 }
+// MP-08/MP-11 (coordinator option b, 2026-10-09): Desktop ownership of a
+// human actor lasts while one of its desktop video subscriptions is live.
+fn desktop_model() -> KernelBrowserActors {
+    let mut model = KernelBrowserActors::default();
+    model
+        .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"t","document_id":"d"}]}))
+        .unwrap();
+    model
+        .reconcile_desktop(&json!({"surface_id":"s","generation":"g"}))
+        .unwrap();
+    model
+}
+#[test]
+fn mp11_disconnect_without_release_retires_desktop_ownership_at_viewer_lease_expiry() {
+    use crate::runtime::kernel_browser_actors::DESKTOP_VIEWER_LEASE;
+    let mut model = desktop_model();
+    let old = EnvironmentActor::new("terminal:old", EnvironmentActorKind::Human, "Human");
+    let fresh = EnvironmentActor::new("terminal:new", EnvironmentActorKind::Human, "Human");
+    let input = json!({"op":"input","generation":1,"tab_id":"t"});
+    let start = std::time::Instant::now();
+    model.desktop_viewer("terminal:old", "view-old", start);
+    model.takeover_desktop(old, "s", "g").unwrap();
+    // The old web client vanished without a release (no relay gone event).
+    // While its lease lives, the fresh client's Browser input is refused.
+    assert!(model.begin(fresh.clone(), &input).is_err());
+    model.renew_desktop_viewer("view-old", start + DESKTOP_VIEWER_LEASE / 2);
+    model.retire_lapsed_desktop_viewers(start + DESKTOP_VIEWER_LEASE);
+    assert!(
+        model.desktop_owner_is("terminal:old"),
+        "a renewed lease keeps ownership"
+    );
+    model.retire_lapsed_desktop_viewers(start + DESKTOP_VIEWER_LEASE * 3 / 2);
+    assert!(
+        !model.desktop_owner_is("terminal:old"),
+        "the lapsed lease retires ownership"
+    );
+    let (action, _) = model.begin(fresh.clone(), &input).unwrap();
+    model.finish(&action, EnvironmentActionTerminal::Completed);
+    model.takeover_desktop(fresh, "s", "g").unwrap();
+    assert!(model.desktop_owner_is("terminal:new"));
+}
+#[test]
+fn mp11_fast_close_reopen_and_second_viewer_keep_desktop_ownership_correct() {
+    let mut model = desktop_model();
+    let old = EnvironmentActor::new("terminal:old", EnvironmentActorKind::Human, "Human");
+    let fresh = EnvironmentActor::new("terminal:new", EnvironmentActorKind::Human, "Human");
+    let now = std::time::Instant::now();
+    model.desktop_viewer("terminal:old", "panel", now);
+    model.desktop_viewer("terminal:old", "popout", now);
+    model.takeover_desktop(old.clone(), "s", "g").unwrap();
+    // One of two viewers closes: the other keeps the actor's ownership.
+    model.end_desktop_viewer("panel", now);
+    model.retire_lapsed_desktop_viewers(now);
+    assert!(model.desktop_owner_is("terminal:old"));
+    // Orderly close: the acknowledged release frees the desktop at once.
+    model.release_desktop("terminal:old", "s", "g").unwrap();
+    model.end_desktop_viewer("popout", now);
+    model.desktop_viewer("terminal:new", "reopened", now);
+    model.takeover_desktop(fresh, "s", "g").unwrap();
+    assert!(model.desktop_owner_is("terminal:new"));
+    // An unsubscribe without release (older viewer) retires on the next check.
+    let input = json!({"op":"input","generation":1,"tab_id":"t"});
+    assert!(
+        model.begin(old.clone(), &input).is_err(),
+        "the reopened owner holds the desktop"
+    );
+    model.end_desktop_viewer("reopened", now);
+    let (action, _) = model.begin(old, &input).unwrap();
+    model.finish(&action, EnvironmentActionTerminal::Completed);
+    assert!(!model.desktop_owner_is("terminal:new"));
+}

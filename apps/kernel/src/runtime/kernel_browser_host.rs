@@ -452,6 +452,24 @@ impl KernelBrowserHost {
         backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
+        // MP-08/MP-11: display requests on a desktop video subscription renew
+        // its viewer lease; an unsubscribe ends it (ownership then retires).
+        if method == "host.browser" {
+            let subscription = params["display_subscription_id"]
+                .as_str()
+                .or_else(|| params["subscription_id"].as_str());
+            if let Some(subscription) = subscription {
+                let now = std::time::Instant::now();
+                let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+                match params["op"].as_str() {
+                    Some("unsubscribe") => model.end_desktop_viewer(subscription, now),
+                    Some("screenshot" | "display_attach") => {
+                        model.renew_desktop_viewer(subscription, now)
+                    }
+                    _ => {}
+                }
+            }
+        }
         if method == "host.browser"
             && matches!(
                 params["op"].as_str(),
@@ -704,11 +722,10 @@ impl KernelBrowserHost {
             .release(actor_id, tab, generation)
     }
     pub(crate) fn actor_snapshot(&self, user: &str) -> Result<Value, String> {
-        Ok(self
-            .actor_model(user)?
-            .lock()
-            .map_err(|_| "MD-3: actor lock poisoned")?
-            .snapshot())
+        let model = self.actor_model(user)?;
+        let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        Ok(model.snapshot())
     }
 
     pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {
