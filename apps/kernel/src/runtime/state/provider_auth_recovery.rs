@@ -427,16 +427,33 @@ impl KernelRuntimeState {
             }
         }
         let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
-        let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
-            self,
-            &owner,
-            crate::local::StartProviderLoginRequest {
-                provider: run.adapter_key().into(),
-                account_profile: run.account_profile().into(),
-                method: None,
-            },
-        )
-        .await?;
+        let response = if automatic && run.adapter_key() == "claude" {
+            // MP-08/MP-10/MP-11: reconciliation can finish another run's repair.
+            // Recheck this run's rejected revision before starting new consent.
+            let Some(response) =
+                crate::runtime::provider_auth_control::start_claude_login_for_rejected_revision(
+                    self,
+                    &owner,
+                    run.account_profile(),
+                    run.account_credential_revision(),
+                )
+                .await?
+            else {
+                return Ok(true);
+            };
+            response
+        } else {
+            crate::runtime::provider_auth_control::execute_start_provider_login_request(
+                self,
+                &owner,
+                crate::local::StartProviderLoginRequest {
+                    provider: run.adapter_key().into(),
+                    account_profile: run.account_profile().into(),
+                    method: None,
+                },
+            )
+            .await?
+        };
         let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
             return Ok(false);
         };

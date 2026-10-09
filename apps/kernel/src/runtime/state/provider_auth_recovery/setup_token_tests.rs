@@ -5,15 +5,20 @@ use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn setup_token_two_active_agents_share_recovery_and_reload_replacement() {
-    setup_token_recovery_fixture(false).await;
+    setup_token_recovery_fixture("shared").await;
 }
 
 #[tokio::test]
 async fn setup_token_old_run_failure_preserves_completed_replacement() {
-    setup_token_recovery_fixture(true).await;
+    setup_token_recovery_fixture("completed").await;
 }
 
-async fn setup_token_recovery_fixture(stale_failure: bool) {
+#[tokio::test]
+async fn setup_token_old_run_failure_during_verification_reloads_replacement() {
+    setup_token_recovery_fixture("verifying").await;
+}
+
+async fn setup_token_recovery_fixture(mode: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -43,6 +48,10 @@ async fn setup_token_recovery_fixture(stale_failure: bool) {
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
+  if [ '{mode}' = verifying ]; then
+    touch '{root}/verifying'
+    while [ ! -f '{root}/release-verification' ]; do sleep 0.02; done
+  fi
   echo '{{"type":"result","is_error":false,"result":"OK"}}'; exit 0
 fi
 [ "$1" = setup-token ] || exit 90
@@ -131,7 +140,25 @@ printf '%s\n' '{replacement}'
             )
             .unwrap(),
         );
-        let mut started = app.start_provider_launch(request).unwrap();
+        let mut started = if mode == "verifying" {
+            // Exercise recovery with a provenance-bearing run on the base.
+            // Client activation's separate revision-loss regression is in
+            // app::provider_runtime::tests::launch.
+            let request = request.with_working_directory(root.clone());
+            let provider_credential_env = request.provider_credential_env.clone();
+            let run = app
+                .providers()
+                .start_run_provider_only(request)
+                .unwrap()
+                .into_run();
+            crate::app::StartedProviderLaunch {
+                run,
+                previous_active_run_id: None,
+                provider_credential_env,
+            }
+        } else {
+            app.start_provider_launch(request).unwrap()
+        };
         started.run = app.providers().mark_run_running(started.run.id()).unwrap();
         starts.push(started);
     }
@@ -140,10 +167,16 @@ printf '%s\n' '{replacement}'
     // This calls the same automatic recovery seam used by failed live runs,
     // with two different run/agent claims on one expired account.
     let mut recovered = Box::pin(async {
-        tokio::try_join!(
-            state.recover_provider_login(&starts[0].run, "provider-auth-recovery:one", None),
-            state.recover_provider_login(&starts[1].run, "provider-auth-recovery:two", None),
-        )
+        let first =
+            state.recover_provider_login(&starts[0].run, "provider-auth-recovery:one", None);
+        if mode == "verifying" {
+            first.await.map(|succeeded| (succeeded, true))
+        } else {
+            tokio::try_join!(
+                first,
+                state.recover_provider_login(&starts[1].run, "provider-auth-recovery:two", None)
+            )
+        }
     });
     let interaction = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -168,18 +201,58 @@ printf '%s\n' '{replacement}'
         )
         .await
         .unwrap();
+    if mode == "verifying" {
+        // Hold the first repair inside official-CLI verification, before the
+        // account commit. Admit a late failure through the actual launch seam.
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !root.join("verifying").exists() {
+                tokio::select! {
+                    outcome = &mut recovered => panic!("repair completed before the verification gate: {outcome:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        }).await.unwrap();
+        let rejected_revision = crate::provider::provider_account_credential_verification(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap()
+        .revision;
+        assert!(rejected_revision.is_some());
+        assert_eq!(
+            starts[1].run.account_credential_revision(),
+            rejected_revision,
+            "MP-08/MP-10/MP-11 late failure must belong to the registration still being repaired"
+        );
+        assert!(state
+            .try_provider_launch_auth_recovery(
+                &starts[1],
+                "API Error: 401 Invalid authentication credentials",
+            )
+            .await
+            .unwrap());
+        // Give the spawned recovery its turn while verification is gated.
+        // The replacement cannot commit until the gate below is released.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Admission observed the old revision. Its spawned login must now
+        // reconcile the verifying repair and recheck the committed revision.
+        std::fs::write(root.join("release-verification"), "release").unwrap();
+    }
     let outcome = tokio::time::timeout(Duration::from_secs(8), recovered)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(outcome, (true, true));
-    assert_eq!(
-        std::fs::read_to_string(root.join("logins"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
+    if mode != "verifying" {
+        assert_eq!(
+            std::fs::read_to_string(root.join("logins"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
     for started in &starts {
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
@@ -198,22 +271,69 @@ printf '%s\n' '{replacement}'
             .iter()
             .any(|(_, value)| value == replacement));
     }
-    assert!(state
-        .owned
-        .session_store
-        .get_session(session.id())
-        .unwrap()
-        .active_interactions()
-        .is_empty());
-    if stale_failure {
+    if mode != "verifying" {
         assert!(state
-            .try_provider_launch_auth_recovery(
-                &starts[1],
-                "API Error: 401 Invalid authentication credentials"
-            )
-            .await
-            .unwrap());
-        tokio::time::sleep(Duration::from_millis(300)).await;
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+    }
+    if mode != "shared" {
+        if mode == "completed" {
+            assert!(state
+                .try_provider_launch_auth_recovery(
+                    &starts[1],
+                    "API Error: 401 Invalid authentication credentials"
+                )
+                .await
+                .unwrap());
+        }
+        let settled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state
+                    .owned
+                    .provider_auth_recovery_runs
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let replacement_revision = crate::provider::provider_account_credential_verification(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap()
+        .revision;
+        let reloaded = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if state
+                    .owned
+                    .provider_store
+                    .get_latest_run_for_agent(
+                        session.id(),
+                        starts[1].run.agent_instance_id().unwrap(),
+                    )
+                    .is_some_and(|run| {
+                        run.id() != starts[1].run.id()
+                            && run.account_credential_revision() == replacement_revision
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
         let observed = state
             .owned
             .provider_account_profiles
@@ -224,6 +344,34 @@ printf '%s\n' '{replacement}'
             .unwrap()
             .lines()
             .count();
+        // Settle a redundant login on RED too, before checking the regression.
+        for interaction in state
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+        {
+            if interaction.provider_login().is_some() {
+                state
+                    .resolve_runtime_interaction(session.id(), interaction.id(), "cancel", None)
+                    .await
+                    .unwrap();
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !state
+                .owned
+                .provider_auth_recovery_runs
+                .lock()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
         app.lock().await.shutdown_cleanup().unwrap();
         for (name, value) in names.into_iter().zip(old) {
             if let Some(value) = value {
@@ -240,7 +388,15 @@ printf '%s\n' '{replacement}'
         );
         assert_eq!(
             logins, 1,
-            "sequential stale failure must reload without new OAuth consent"
+            "MP-08/MP-10/MP-11 stale failure must reload without new OAuth consent"
+        );
+        assert!(
+            settled,
+            "MP-08/MP-10/MP-11 recovery must finish without another authorization"
+        );
+        assert!(
+            reloaded,
+            "MP-08/MP-10/MP-11 recovery must launch a replacement with current provenance"
         );
         return;
     }
