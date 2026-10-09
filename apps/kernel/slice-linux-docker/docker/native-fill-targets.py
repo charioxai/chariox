@@ -3,6 +3,7 @@
 Records only object/window identities, value fingerprints and lengths. Never
 searches window text for echoes. XDG_RUNTIME_DIR belongs to this desktop epoch.
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -47,7 +48,27 @@ def field_value(node):
     return text.getText(0, text.characterCount)
 
 
-def begin(expected_window, value):
+def update(change):
+    path = store_path()
+    if path is None: return
+    fd = os.open(path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        write(change(read()))
+
+
+def open_display(display):
+    # Reuse PR5's owned-display connector; local slices use the normal X server.
+    helper = Path(__file__).with_name('native-x11.py')
+    if helper.exists():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('native_x11', helper)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        return module.open_display(display)
+    return display.Display()
+
+
+def begin(expected_window, value, connection=None):
     # The kernel already bound X11 focus; match the owning native application.
     try:
         import pyatspi
@@ -55,12 +76,14 @@ def begin(expected_window, value):
             from Xlib import X, display
         except ModuleNotFoundError:
             from selkies.Xlib import X, display
-        connection = display.Display()
+        owned_connection = connection is None
+        connection = connection or open_display(display)
         try:
             window = connection.create_resource_object('window', expected_window)
             pid = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
             pid = int(pid.value[0]) if pid is not None and len(pid.value) else None
-        finally: connection.close()
+        finally:
+            if owned_connection: connection.close()
         desktop = pyatspi.Registry.getDesktop(0)
         pending = [desktop.getChildAtIndex(i) for i in range(desktop.childCount)]
         candidates = []
@@ -74,9 +97,8 @@ def begin(expected_window, value):
         if len(candidates) != 1: return None
         node = candidates[0]
         target = {**identity(node), 'window': expected_window, 'pending': True,
-                  'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value)}
-        targets = [t for t in read() if (t['pid'],t['path']) != (target['pid'],target['path'])]
-        targets.append(target); write(targets)
+                  'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
+        update(lambda targets: [t for t in targets if (t['pid'],t['path']) != (target['pid'],target['path'])] + [target])
         return node, target
     except Exception: return None  # Native best effort: no desktop blackout.
 
@@ -95,10 +117,7 @@ def finish(record):
             target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
         target['length'] = node.queryText().characterCount
         target['pending'] = False
-        targets = read()
-        for index, item in enumerate(targets):
-            if (item['pid'],item['path']) == (target['pid'],target['path']): targets[index] = target
-        write(targets)
+        update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
     except Exception: pass
 
 
@@ -123,7 +142,7 @@ def regions():
         from Xlib import X, display
     except ModuleNotFoundError:
         from selkies.Xlib import X, display
-    connection = display.Display()
+    connection = open_display(display)
     desktop = pyatspi.Registry.getDesktop(0)
     retained, boxes = [], []
     try:
@@ -158,8 +177,13 @@ def regions():
                         if abs(ratio-2) < .02: scale = 2
                 x,y,w,h = [round(v*scale) for v in (bounds.x,bounds.y,bounds.width,bounds.height)]
                 pad = 2*scale
-                if w > 0 and h > 0: boxes.append([max(0,x-pad),max(0,y-pad),w+2*pad,h+2*pad])
+                screen = connection.screen()
+                left, top = max(0,x-pad), max(0,y-pad)
+                right, bottom = min(screen.width_in_pixels,x+w+pad), min(screen.height_in_pixels,y+h+pad)
+                if right > left and bottom > top: boxes.append([left,top,right-left,bottom-top])
             except Exception: continue  # Native best effort, never a window mask.
     finally: connection.close()
-    if retained != targets: write(retained)
+    if retained != targets:
+        removed = {t['registration'] for t in targets if t not in retained}
+        update(lambda current: [t for t in current if t['registration'] not in removed])
     return boxes
