@@ -597,6 +597,8 @@ pub(super) async fn handle_client_packet_route_envelope(
     Ok(ConnectionAction::Continue)
 }
 
+// MP-11: retain the typed peer admission/routing boundary without regrouping authority.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn route_daemon_peer_request(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<RelayRouteIndex>,

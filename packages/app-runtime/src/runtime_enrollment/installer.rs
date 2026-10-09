@@ -338,6 +338,8 @@ impl Roots {
         )
     }
 }
+// MP-11: normalize native statvfs widths across supported Unix platforms.
+#[allow(clippy::unnecessary_cast)]
 fn require_disk(dir: &Dir, bytes: u64) -> Result<()> {
     if bytes > MAX_BUNDLE {
         return Err(EnrollmentError::Limit);
