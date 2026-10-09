@@ -1086,8 +1086,19 @@ fn prepare_managed_context_package_with_environment(
         }
     };
     if plan.destination.is_some() {
-        if let ManagedContextPackageDevelopment::FromSource { archive_path, .. } = &development {
-            crate::managed_context::credential_free::validate_development_archive(archive_path)?;
+        if let (
+            ManagedContextPackageDevelopment::FromSource { archive_path, .. },
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) = (&development, &plan.development)
+        {
+            crate::managed_context::credential_free::validate_development_archive(
+                archive_path,
+                project_id,
+                Some(repositories),
+            )?;
         }
     }
     let development_archive_path = match &development {

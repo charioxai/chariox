@@ -10,6 +10,9 @@ mod text;
 pub(crate) use config::exportable_mcp;
 use shell::{credential_text, unsupported_shell};
 
+use super::development::{
+    extract_verified_development_archive, DevelopmentFileState, DevelopmentSourceRepositoryBinding,
+};
 use super::kernel::KernelContextPayload;
 use super::owner_managed::admission_error;
 use crate::error::DaemonError;
@@ -251,92 +254,65 @@ fn validate_bundle(
     Ok(())
 }
 
-pub(crate) fn validate_development_archive(path: &Path) -> Result<(), DaemonError> {
+pub(crate) fn validate_development_archive(
+    path: &Path,
+    expected_project_id: &str,
+    expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
+) -> Result<(), DaemonError> {
     let root = scan_root(path.parent().ok_or_else(refused)?)?;
-    let input = File::open(path).map_err(|_| refused())?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(input));
+    let artifacts = root.0.join("artifacts");
+    // MP-08 / MP-11: decode with the importer itself so every accepted gzip
+    // member, declared artifact and limit is enforced before any scan.
+    let manifest = extract_verified_development_archive(
+        path,
+        expected_project_id,
+        expected_source_repositories,
+        &artifacts,
+    )
+    .map_err(|_| refused())?;
+    // MP-11: sealed Project environment values could contain source secrets.
+    // The owner-managed mode transfers code/setup metadata, never this layer.
+    if manifest.project_environment.is_some() {
+        return Err(refused());
+    }
     let mut budget = 0u64;
     let mut bundles = Vec::new();
-    let mut manifest_seen = false;
     let mut object_paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (index, entry) in archive.entries().map_err(|_| refused())?.enumerate() {
-        if index > 100_000 {
-            return Err(refused());
+    for repository in manifest.repositories {
+        for overlay in repository.overlay {
+            validate_bytes(&overlay.path, b"")?;
+            for state in [overlay.index, overlay.worktree] {
+                if let DevelopmentFileState::File { object_path, .. } = state {
+                    object_paths
+                        .entry(object_path)
+                        .or_default()
+                        .insert(overlay.path.clone());
+                }
+            }
         }
-        let mut entry = entry.map_err(|_| refused())?;
-        let name = entry
-            .path()
-            .map_err(|_| refused())?
-            .to_string_lossy()
-            .into_owned();
-        // The canonical exporter writes the manifest first. Refuse unknown
-        // ordering rather than classify content-addressed overlays without it.
-        if index == 0 && name != "manifest.json" {
-            return Err(refused());
+        if let Some(origin) = repository.origin_url {
+            validate_bytes("origin-url", origin.as_bytes())?;
         }
-        let size = entry.size();
-        budget = budget.saturating_add(size);
-        if budget > MAX_SCAN || !entry.header().entry_type().is_file() {
-            return Err(refused());
+        if !repository.bundle_path.is_empty() {
+            bundles.push(artifacts.join(repository.bundle_path));
         }
-        if name.ends_with("/repository.bundle") {
-            let bundle = root.0.join(format!("bundle-{index}"));
-            let mut file = File::create(&bundle).map_err(|_| refused())?;
-            std::io::copy(&mut entry, &mut file).map_err(|_| refused())?;
-            bundles.push(bundle);
-            continue;
-        }
-        if size > MAX_FILE {
-            return Err(refused());
-        }
+    }
+    for (object, paths) in object_paths {
         let mut bytes = Vec::new();
-        entry
+        File::open(artifacts.join(object))
+            .map_err(|_| refused())?
             .take(MAX_FILE + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| refused())?;
-        if name == "manifest.json" {
-            if manifest_seen {
-                return Err(refused());
-            }
-            manifest_seen = true;
-            let manifest: super::development::DevelopmentContextManifest =
-                serde_json::from_slice(&bytes).map_err(|_| refused())?;
-            // MP-11: sealed Project environment values could contain source secrets.
-            // The owner-managed mode transfers code/setup metadata, never this layer.
-            if manifest.project_environment.is_some() {
-                return Err(refused());
-            }
-            for repository in manifest.repositories {
-                for overlay in repository.overlay {
-                    validate_bytes(&overlay.path, b"")?;
-                    for state in [overlay.index, overlay.worktree] {
-                        if let super::development::DevelopmentFileState::File {
-                            object_path, ..
-                        } = state
-                        {
-                            object_paths
-                                .entry(object_path)
-                                .or_default()
-                                .insert(overlay.path.clone());
-                        }
-                    }
-                }
-                if let Some(origin) = repository.origin_url {
-                    validate_bytes("origin-url", origin.as_bytes())?;
-                }
-            }
-        } else if let Some(paths) = object_paths.get(&name) {
-            // The same object can serve multiple logical files; inspect every
-            // role, including both index and worktree overlay references.
-            for path in paths {
-                validate_bytes(path, &bytes)?;
-            }
-        } else {
-            validate_bytes(&name, &bytes)?;
+        budget = budget.saturating_add(bytes.len() as u64);
+        if bytes.len() as u64 > MAX_FILE || budget > MAX_SCAN {
+            return Err(refused());
         }
-    }
-    if !manifest_seen {
-        return Err(refused());
+        // The same object can serve multiple logical files; inspect every
+        // role, including both index and worktree overlay references.
+        for path in paths {
+            validate_bytes(&path, &bytes)?;
+        }
     }
     for (index, bundle) in bundles.iter().enumerate() {
         validate_bundle(&root.0, bundle, index, &mut budget)?;

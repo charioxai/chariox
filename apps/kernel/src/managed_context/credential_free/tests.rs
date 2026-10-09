@@ -331,7 +331,7 @@ impl InlineShellFixture {
             archive_path: self.root.join("development.tar.gz"),
         })
         .unwrap();
-        let error = validate_development_archive(&development.archive_path)
+        let error = validate_development_archive(&development.archive_path, "project", None)
             .expect_err("source must inspect every historical filename of a shared blob");
         assert!(error.to_string().contains("credential-free context"));
     }
@@ -349,8 +349,59 @@ impl InlineShellFixture {
         accepted: bool,
         extra_ref: Option<(&str, bool, bool)>,
     ) {
+        self.assert_target_archive(accepted, &self.export_archive(extra_ref));
+    }
+
+    // MP-11: a correctly hashed archive whose gzip stream ends after the
+    // manifest member; the declared artifacts follow in a second member.
+    fn two_member_archive(
+        &self,
+    ) -> crate::managed_context::development::DevelopmentContextExportResult {
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let mut development = self.export_archive(None);
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+            File::open(&development.archive_path).unwrap(),
+        ));
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut split = 0;
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o600);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, &name, bytes.as_slice())
+                .unwrap();
+            if name == "manifest.json" {
+                split = builder.get_ref().len();
+            }
+        }
+        let tar = builder.into_inner().unwrap();
+        let mut file = File::create(&development.archive_path).unwrap();
+        for member in [&tar[..split], &tar[split..]] {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(member).unwrap();
+            file.write_all(&encoder.finish().unwrap()).unwrap();
+        }
+        drop(file);
+        let bytes = fs::read(&development.archive_path).unwrap();
+        development.archive_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        development.archive_size_bytes = bytes.len() as u64;
+        development
+    }
+
+    fn assert_target_archive(
+        &self,
+        accepted: bool,
+        development: &crate::managed_context::development::DevelopmentContextExportResult,
+    ) {
         use crate::managed_context::{development::*, owner_managed::*, package::*};
-        let development = self.export_archive(extra_ref);
         let binding = ManagedContextPackageBinding {
             plan: ManagedContextPlanBinding {
                 destination: Some(OwnerManagedDestination::OwnerManagedMachine {
@@ -386,8 +437,8 @@ impl InlineShellFixture {
             target_kernel_id: binding.target_kernel_id.clone(),
             target_key_thumbprint: binding.target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path: development.archive_path,
-                archive_sha256: development.archive_sha256,
+                archive_path: development.archive_path.clone(),
+                archive_sha256: development.archive_sha256.clone(),
             },
             kernel_context: ManagedContextPackageKernel::Empty,
             provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -523,7 +574,7 @@ fn mp08_mp11_owner_package_refuses_credentials_in_git_history() {
         },
     )
     .unwrap();
-    assert!(validate_development_archive(&archive.archive_path).is_err());
+    assert!(validate_development_archive(&archive.archive_path, "project", None).is_err());
     assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
         .unwrap()
         .file_name()
@@ -774,7 +825,7 @@ fn r2_source_scans_secret_objects_under_extra_bundle_refs() {
         let fixture = InlineShellFixture::file("README.txt", b"ordinary project\n", false);
         let archive = fixture.export_archive(Some((reference, true, hidden)));
         assert!(
-            validate_development_archive(&archive.archive_path).is_err(),
+            validate_development_archive(&archive.archive_path, "project", None).is_err(),
             "all imported pack objects must be inspected"
         );
     }
@@ -814,4 +865,22 @@ fn r2_development_import_refuses_even_benign_extra_bundle_refs() {
         assert!(error.to_string().contains("unexpected refs"));
         assert!(!destination.exists());
     }
+}
+
+#[test]
+fn r3_guard_scans_every_gzip_member_the_importer_accepts() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let fixture = InlineShellFixture::new("API_KEY=synthetic-canary\n", false);
+    let archive = fixture.two_member_archive();
+    assert!(
+        validate_development_archive(&archive.archive_path, "project", None).is_err(),
+        "source must inspect the second gzip member"
+    );
+    fixture.assert_target_archive(false, &archive);
+    // Multi-member archives stay importable; refusal is content-driven.
+    let ordinary = InlineShellFixture::new("echo ordinary\n", false);
+    let archive = ordinary.two_member_archive();
+    validate_development_archive(&archive.archive_path, "project", None).unwrap();
+    ordinary.assert_target_archive(true, &archive);
 }

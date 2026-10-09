@@ -417,6 +417,8 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     .unwrap();
     crate::managed_context::credential_free::validate_development_archive(
         &development.archive_path,
+        "owner-project",
+        None,
     )
     .unwrap();
     let snapshot = export_kernel_context_without_credentials(KernelContextExportRequest {

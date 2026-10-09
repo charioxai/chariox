@@ -698,10 +698,21 @@ pub(crate) fn apply_managed_context_package(
         expected_binding: request.expected_binding.clone(),
     })?;
     if request.expected_binding.plan.destination.is_some() {
-        if let ExtractedManagedContextDevelopment::FromSource { archive_path, .. } =
-            &extracted.development
-        {
-            super::credential_free::validate_development_archive(archive_path)?;
+        if let (
+            ExtractedManagedContextDevelopment::FromSource { archive_path, .. },
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) = (
+            &extracted.development,
+            &request.expected_binding.plan.development,
+        ) {
+            super::credential_free::validate_development_archive(
+                archive_path,
+                project_id,
+                Some(repositories),
+            )?;
         }
     }
     preflight_import_receipt_capacity(&request, &extracted)?;
