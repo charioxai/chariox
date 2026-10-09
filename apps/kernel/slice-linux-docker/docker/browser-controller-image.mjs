@@ -9,14 +9,15 @@ export async function captureProtectedBrowserImage({connection,sessionId,targetI
   return withBrowserFrames(connection,sessionId,targetId,documentId,async frames=>{
   const {captureProtectedPage}=await import('./kernel-browser-pixels.mjs');
   const browser={fillTargets:new Map(fillTargets.map((t,i)=>[i,t])),async resolvePageTarget(){return {connection,sessionId};}};
+  let redaction='none';
   const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},[...protectedValues],fillTargets,async()=>{
     const captured=await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true},sessionId);
     return captured.data;
-  },viewport.device_scale_factor);
+  },viewport.device_scale_factor,null,regions=>{redaction=regions.length?'fill_targets':'none';});
   const bytes=Buffer.from(data,'base64');
   if(bytes.length<24||bytes.readUInt32BE(16)!==viewport.css_width*viewport.device_scale_factor||bytes.readUInt32BE(20)!==viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the canonical viewport');
   await assertBrowserFramesUnchanged(connection,frames);
-  return {bytes,redaction:fillTargets.length?'fill_targets':'none'};
+  return {bytes,redaction};
   });
 }
 

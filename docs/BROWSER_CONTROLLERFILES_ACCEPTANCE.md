@@ -46,9 +46,14 @@ native `image` converter. Protection checks traverse all owned renderer sessions
 including nested isolated cross-origin iframes and local descendants, before and
 after the composited screenshot. Frame/document/parent identity changes reject
 the capture, and temporary isolated-frame sessions detach on every outcome.
-If protected values or a password input are present,
-the whole viewport is conservatively blacked out. This is not selective visual
-redaction. Downloads are withheld while protected values are registered.
+MP-08/MP-11 images use the recorded Vault fill targets: only a still-filled
+plain text field receives a pixel mask. Password dots remain visible, and
+show-password toggles are rechecked. Image metadata reports `fill_targets`
+only when pixels were masked, otherwise `none`. The kernel validates both
+values before publication and preserves the value in artifact identity metadata.
+`full_viewport` remains readable for older captures. These are values of the
+existing opaque artifact metadata; no typed daemon/relay shape changes.
+Downloads are withheld while protected values are registered.
 
 MP-08/MP-10/MP-11 isolated-password regression:
 `node --test apps/kernel/slice-linux-docker/docker/browser-controller-image-capture.test.mjs`
@@ -56,8 +61,11 @@ checks exact image/mask bytes, owned/foreign renderer boundaries and identity
 fences. The real Chromium controllerfiles drill forces site isolation and embeds
 a localhost password iframe in its 127.0.0.1 tab without any registered Vault
 value. It requires an actual iframe target absent from the top DOM snapshot,
-then compares the returned artifact with the full-viewport black PNG byte for
-byte. These focused checks do not establish provider/Web/TUI or Path-1 parity.
+then checks that unfilled password inputs alone do not mask the viewport.
+`browser-fill-target.browser-test.mjs` checks actual plain/password fill capture
+metadata and pixels at DPR 1/2. The Rust artifact regression validates and
+publishes both redaction states through the operational artifact store.
+These focused checks do not establish provider/Web/TUI or Path-1 parity.
 
 Passive capture retains actual CDP request/response metadata for the same
 Tab/document, including observed extra-info headers. It allowlists only Accept,
