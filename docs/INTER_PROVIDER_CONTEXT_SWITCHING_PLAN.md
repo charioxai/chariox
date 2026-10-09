@@ -14,6 +14,8 @@ A provider or account change cannot reuse the native session, which lives in the
 
 MP-08 / MP-10: the handoff goes out once per native session that needs the conversation, including a returning native session with intervening work. A native `/clear` that changes the session ID within the same kernel run receives the retained conversation again. After that native session receives it, later prompts to it skip it, including queued prompts and the next prompt after a failed first turn. Steering prompts join the turn that already carried it. A source answer recorded without a provider session ID still transfers. Workflow fresh-context runs and turn substitutes never receive it this way.
 
+MP-08 / MP-10: the dispatcher prepares a native prompt’s hidden context before its first PTY injection. The output pump retries an existing native injection; it does not start one without the dispatcher’s handoff or replace a native user draft.
+
 Fork targets and turn substitutes start outside the agent's own conversation and keep an explicit one-shot handoff, consumed when the provider accepts the turn.
 
 Stored user history, prompt queues, and terminal echoes remain the original user text.
