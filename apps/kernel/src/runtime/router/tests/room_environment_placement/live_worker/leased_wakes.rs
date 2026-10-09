@@ -1284,3 +1284,49 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         );
     }
 }
+
+// MP-08/MP-09/MP-10/MP-11: even an unused lease must retain the authenticated
+// caller needed to prove absence after restart and safely refresh its binding.
+#[test]
+fn mp10_a10_idle_leased_agent_admits_its_first_turn_after_worker_restart() {
+    run_test(idle_leased_agent_admits_its_first_turn_after_worker_restart);
+}
+
+async fn idle_leased_agent_admits_its_first_turn_after_worker_restart() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let leased = spawn_on_agent_worker(&mut fixture, &room).await;
+    let before = binding(&fixture, &leased).await;
+    assert!(before.active_worker_provider_run_id.is_none());
+    let worker = worker.restart(&fixture).await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &leased,
+        "MP-10 A10 first idle turn after restart",
+    )
+    .await;
+    let after = binding(&fixture, &leased).await;
+    let home_prompt = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent_snapshot(&room, &leased)
+        .unwrap()
+        .expect("the home retains the first turn")
+        .id()
+        .to_string();
+    let receipt = worker_receipt(&fixture, &leased, &home_prompt).await;
+    worker.stop().await;
+    fixture.stop().await;
+    assert_ne!(after.execution_lease_id, before.execution_lease_id);
+    assert!(
+        receipt.is_some(),
+        "the new worker holds the actual first-turn receipt"
+    );
+}
