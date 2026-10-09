@@ -51,9 +51,11 @@ export type UserDomainGrantEvent = {
 export function userDomainWindowBadge(access: UserDomainWindowAccess): string | null {
   return access.reachable_by_focused_agent ? null : `Your focused agent can't control this window — focus an agent on kernel ${access.kernel_name}`
 }
-export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string }
+export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
+export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
+export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
 export type KernelBrowserResult = {
-  generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[];
+  generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;
   kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;

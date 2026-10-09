@@ -5,7 +5,11 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod tabs;
+use tabs::BrowserTabActivity;
+
 pub(crate) struct KernelBrowserActors {
+    tab_activity: BrowserTabActivity,
     generation: u64,
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
@@ -28,6 +32,7 @@ pub(crate) struct KernelBrowserDocumentBinding {
 impl Default for KernelBrowserActors {
     fn default() -> Self {
         Self {
+            tab_activity: BrowserTabActivity::default(),
             generation: 0,
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
@@ -56,7 +61,9 @@ impl KernelBrowserActors {
             self.pointers.clear();
             self.pointer_tabs.clear();
             self.generation = generation;
+            self.tab_activity = BrowserTabActivity::default();
         }
+        self.tab_activity.retain(&state["tabs"]);
         let observations = tabs
             .iter()
             .map(|tab| {
@@ -217,13 +224,16 @@ impl KernelBrowserActors {
                 self.pointers.insert(
                     actor.actor_id.clone(),
                     EnvironmentPointer {
-                        actor_id: actor.actor_id,
+                        actor_id: actor.actor_id.clone(),
                         x: x as u32,
                         y: y as u32,
                         viewport_revision: 1,
                     },
                 );
             }
+        }
+        if let Some(tab) = params["tab_id"].as_str() {
+            self.tab_activity.acted(&actor, tab);
         }
         let cancellation = Arc::new(BrowserCancellation::default());
         self.active.insert(action_id.clone(), cancellation.clone());
@@ -294,6 +304,34 @@ impl KernelBrowserActors {
         self.pointer_tabs.remove(actor_id);
     }
 
+    pub(crate) fn reconcile_attributed(
+        &mut self,
+        state: &Value,
+        actor: &EnvironmentActor,
+    ) -> Result<(), String> {
+        let discovered = state["tabs"]
+            .as_array()
+            .map(|tabs| {
+                tabs.iter()
+                    .filter_map(|tab| {
+                        let id = tab["tab_id"].as_str()?;
+                        self.tab(id).is_err().then(|| id.to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.reconcile(state)?;
+        for tab in discovered {
+            self.opened_tab(actor.clone(), &tab);
+        }
+        Ok(())
+    }
+    pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
+        self.tab_activity.opened(actor, tab);
+    }
+    pub(crate) fn project_tabs(&self, state: &mut Value) {
+        self.tab_activity.project(state);
+    }
     pub(crate) fn snapshot(&self) -> Value {
         let translate = |target: &mut InputTarget| {
             if let InputTarget::BrowserTab(tab) = target {
@@ -316,7 +354,7 @@ impl KernelBrowserActors {
                 translate(target);
             }
         }
-        serde_json::json!({"generation":self.generation,"actors":self.actors.values().collect::<Vec<_>>(),
+        serde_json::json!({"agent_activity":self.tab_activity.activity(),"generation":self.generation,"actors":self.actors.values().collect::<Vec<_>>(),
             "pointers":self.pointers.values().collect::<Vec<_>>(),"pointer_tabs":self.pointer_tabs,"input_ownership":ownership,
             "pending_input_takeovers":pending,"actions":actions})
     }
@@ -431,5 +469,27 @@ mod tests {
             .snapshot()
             .to_string()
             .contains("synthetic-private-value"));
+    }
+}
+
+#[cfg(test)]
+mod visible_tab_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn mp08_agent_activity_is_visible_without_changing_input_ownership() {
+        let mut model = KernelBrowserActors::default();
+        model.reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"d","url":"https://developer.mozilla.org","title":"MDN"}]})).unwrap();
+        let agent = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Mara");
+        let (id, _) = model.begin(agent, &json!({"op":"input","tab_id":"host-a","generation":1,"input":{"kind":"text","text":"public search"}})).unwrap();
+        let state = model.snapshot();
+        assert_eq!(state["agent_activity"]["tab_id"], "host-a");
+        assert_eq!(state["agent_activity"]["actor"]["display_label"], "Mara");
+        assert_eq!(state["agent_activity"]["sequence"], 1);
+        model.finish(&id, EnvironmentActionTerminal::Completed);
+        let before = model.snapshot()["input_ownership"].clone();
+        let _view = model.snapshot();
+        assert_eq!(model.snapshot()["input_ownership"], before);
+        assert!(!model.snapshot().to_string().contains("public search"));
     }
 }

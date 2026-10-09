@@ -508,6 +508,7 @@ impl KernelRuntimeState {
         let mut admission = host
             .admit(&user, agent.id())
             .map_err(host_error)?
+            .with_agent_label(agent.alias().unwrap_or(agent.agent_ref()))
             .with_authority(move || {
                 let runs = authority
                     .owned

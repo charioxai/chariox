@@ -38,12 +38,20 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
     start: () => access.sync(),
     stop: () => { unsubscribeClient?.(); unsubscribe(); access.stop() },
     async handle(args: string[]): Promise<void> {
-      if (args.length && !(args.length === 1 && args[0] === "list") && !(args.length === 2 && args[0] === "revoke" && args[1])) {
-        throw new Error("Usage: /access [list | revoke <agent-id>|all]")
+      if (args.length && !(args.length === 1 && ["list", "tabs"].includes(args[0]!)) && !(args.length === 2 && args[0] === "revoke" && args[1])) {
+        throw new Error("Usage: /access [list | tabs | revoke <agent-id>|all]")
       }
       access.sync()
       // A command must get fresh authority, including when an earlier feed failed.
       const client = selectedClient()
+      if (args[0] === "tabs") {
+        const response = await client.send<{KernelBrowser?: {result?: {tabs?: import("@chariox/kernel-client/kernel-types").KernelBrowserTab[]}}; Error?: {message?: string}}>({KernelBrowser: {command: {op: "state"}}})
+        if (client !== selectedClient()) throw new Error("Kernel changed during tab command; refresh tabs.")
+        const tabs = response.KernelBrowser?.result?.tabs
+        if (!Array.isArray(tabs)) throw new Error(response.Error?.message ?? "Kernel browser tab inventory unavailable.")
+        deps.appendNotice(["Kernel browser tabs:", ...tabs.map(tab => `${tab.tab_id} · ${tab.title || "Untitled"} · ${tab.url} · opened by ${tab.opened_by?.display_label ?? "unknown"}`), ...(tabs.length ? [] : ["No current tabs."])].join("\n"))
+        return
+      }
       const response = await client.send<{ KernelBrowser?: { result?: import("@chariox/kernel-client/kernel-types").UserDomainGrantEvent }; Error?: { message?: string } }>({ KernelBrowser: { command: args[0] === "revoke"
         ? { op: "revoke_grants", agent_id: args[1] === "all" ? null : args[1] }
         : { op: "list_grants" } } })

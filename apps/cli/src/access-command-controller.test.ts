@@ -46,3 +46,19 @@ test("retained-use feed prints the shared notice once and stops after cleanup", 
   pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 4, notice: { ...notice, at_ms: 600 } } } }); await tick()
   assert.equal(lines.length, 1)
 })
+
+test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL without control", async () => {
+  const requests: any[] = [], lines: string[] = []
+  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 481, async send<T>(r: any) {
+    requests.push(r)
+    if (r.KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {})
+    if (r.KernelBrowser.command.op === "list_grants") return {KernelBrowser: {result: snapshot}} as T
+    return {KernelBrowser: {result: {generation: 1, tabs: [{tab_id: "agent-tab", url: "https://developer.mozilla.org", title: "MDN", opened_by: {kind: "agent", display_label: "Mara"}}, {tab_id: "human-tab", url: "https://en.wikipedia.org", title: "Wikipedia", opened_by: null}]}}} as T
+  }}, appendNotice: line => lines.push(line)})
+  try {
+    await controller.handle(["tabs"])
+    assert.match(lines.at(-1)!, /agent-tab.*MDN.*https:\/\/developer.mozilla.org.*Mara/)
+    assert.match(lines.at(-1)!, /human-tab.*Wikipedia.*https:\/\/en.wikipedia.org/)
+    assert(requests.every(r => ["state", "list_grants", "subscribe_grants"].includes(r.KernelBrowser.command.op)))
+  } finally {controller.stop()}
+})

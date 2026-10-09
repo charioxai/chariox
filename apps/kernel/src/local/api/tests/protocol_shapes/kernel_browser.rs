@@ -131,7 +131,11 @@ fn kernel_browser_protocol_443_request_snapshots() {
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
-    let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
+    let result = serde_json::from_str::<serde_json::Value>(include_str!(
+        "kernel-browser-agent-tabs-481.json"
+    ))
+    .unwrap()["KernelBrowser"]["result"]
+        .clone();
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
     };
@@ -202,5 +206,22 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "9df723cb7058e131e171fcc0856836b14b98fd8556da51962f11070d533cda51"
+    );
+}
+
+#[test]
+fn mp08_agent_tabs_pr937_protocol_481_snapshot_and_hash() {
+    // The combined PR937 bumps OSS main472 to the coordinator-allocated481.
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 481);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("kernel-browser-agent-tabs-481.json")).unwrap();
+    let response: LocalDaemonResponse = serde_json::from_value(snapshot.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), snapshot);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "cf8e119de5af3e428663bdd2795f6f75e68ac8aa2d3d76291f7c95795b259b55"
     );
 }

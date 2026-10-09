@@ -312,3 +312,30 @@ created. App trust, tool queue and detached approvals remain in the App runtime.
 MD-stack integration: the unreleased feature allocation is folded into local
 protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
 per-feature versions described during development above.
+
+## MP-08 / MP-10 / MP-11: agent tabs visible (PR 937 protocol 481)
+
+The combined unmerged PR 937 uses its coordinator allocation 481 (OSS main 472).
+Kernel browser state carries every admitted viewer's tab inventory, including
+agent-created tabs. Each tab has `opened_by` (actor ID, human/agent kind, display
+label; null for previously discovered tabs whose opener is unknown). Names come
+from the authenticated agent record. `agent_activity` identifies the latest
+admitted agent mutation with a generation-local monotonic sequence and tab ID.
+The same retained-grant scope bounds both inventory and activity metadata.
+Closing a tab retires its metadata; a browser generation change resets activity.
+
+The web tab strip projects this inventory and defaults to following agent
+activity. Follow-off retains the selected view and shows a notice. Selecting or
+following a tab attaches protected observation only: it never activates the
+native tab, takes over input, or changes grants. Watched surfaces reject input
+across mirror, video and image adapters, including queued gestures from retired
+control bindings. Vault capture protection remains on the shared kernel path.
+`/access tabs` lists the same inventory with opener, title and URL in the TUI.
+
+The owner decision of 2026-10-09 15:20 UTC adds acceptance scenario
+`apps-agent-model/TABS-VISIBLE`: official Codex opens and fills a real public
+form while hosted web viewers watch at DPR 1 and 2; screenshots show discovery
+and follow, follow-off shows notice, and watching preserves input ownership.
+Source checks are supplementary; hosted real-site, shaped-network and stability
+evidence is required before this row can pass. A separately published PR needs
+a fresh coordinator allocation rather than treating 481 as a new allocation.

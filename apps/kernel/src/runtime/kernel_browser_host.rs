@@ -44,6 +44,7 @@ pub(crate) enum KernelBrowserCapability {
 pub(crate) struct KernelBrowserAdmission {
     user: String,
     agent: Option<String>,
+    agent_label: Option<String>,
     epoch: Arc<BrowserCancellation>,
     cancellation: Arc<BrowserCancellation>,
     terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
@@ -63,6 +64,11 @@ impl KernelBrowserAdmission {
                 .terminal_lifetime
                 .as_ref()
                 .is_some_and(|lifetime| !lifetime.is_live())
+    }
+
+    pub(crate) fn with_agent_label(mut self, label: &str) -> Self {
+        self.agent_label = Some(label.into());
+        self
     }
 
     pub(crate) fn with_authority(
@@ -241,6 +247,7 @@ impl KernelBrowserHost {
         Ok(KernelBrowserAdmission {
             user: user.into(),
             agent: Some(agent.into()),
+            agent_label: Some(agent.into()),
             capability,
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
@@ -257,6 +264,7 @@ impl KernelBrowserHost {
         KernelBrowserAdmission {
             user: user.into(),
             agent: None,
+            agent_label: None,
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
             terminal_lifetime: Some(lifetime.clone()),
@@ -502,10 +510,24 @@ impl KernelBrowserHost {
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
         if let Ok(state) = &result {
-            model
-                .lock()
-                .map_err(|_| "MD-3: actor lock poisoned")?
-                .reconcile(state)?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            if mutation {
+                ledger.reconcile_attributed(state, &browser_actor(admission, &request_params))?;
+            } else {
+                ledger.reconcile(state)?;
+            }
+        }
+        if let Ok(payload) = &mut result {
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
+                return Err("MP-11: not_granted: browser authority revoked".into());
+            }
+            if request_params["op"] == "open" {
+                if let Some(tab) = payload["tab_id"].as_str() {
+                    ledger.opened_tab(browser_actor(admission, &request_params), tab);
+                }
+            }
+            ledger.project_tabs(payload);
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {
@@ -537,6 +559,17 @@ impl KernelBrowserHost {
                                     .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
                             })
                         });
+                    }
+                }
+                if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
+                    if state.access.focused(user) != Some(agent)
+                        && !state
+                            .access
+                            .grant(user, agent)?
+                            .resources
+                            .contains(&UserDomainResource::BrowserTab { tab_id: tab.into() })
+                    {
+                        payload["agent_activity"] = Value::Null;
                     }
                 }
                 let resource = request_params["tab_id"]
@@ -700,7 +733,9 @@ fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> 
         EnvironmentActor::new(
             format!("agent:{agent}"),
             EnvironmentActorKind::Agent,
-            "Agent",
+            admission
+                .and_then(|a| a.agent_label.as_deref())
+                .unwrap_or(agent),
         )
     } else {
         EnvironmentActor::new(
@@ -997,3 +1032,5 @@ mod actor_tests;
 mod native_input_tests;
 
 mod access;
+#[cfg(test)]
+mod tabs_tests;
