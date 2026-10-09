@@ -322,7 +322,7 @@ try {
  const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('settled-verification-'+attempt));
  receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,verification_attempts:settled.verification_attempts,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:settled.fidelity};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
- if(process.env.MD_SITE_LATENCY==='1')receipt.site_latency=await measureSiteLatency({page,pause,pair,samples:Number(process.env.MD_SITE_SAMPLES||40)});
+ if(process.env.MD_SITE_LATENCY==='1')receipt.site_latency=await measureSiteLatency({page,pause,pair,samples:Number(process.env.MD_SITE_SAMPLES||40),secondTab:process.env.MD_SECOND_TAB==='1'});
  else {
  if(process.env.MD_FRAMES==='1'){
   // MP-11: the isolated frame is visible and clickable; its protected field stays masked.

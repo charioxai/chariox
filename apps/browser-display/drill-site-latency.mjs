@@ -45,9 +45,16 @@ async function probe(page, input, roi, test, args) {
 const luminance = `let n=0;for(let i=0;i<pixels.length;i+=4)n+=(pixels[i]+pixels[i+1]+pixels[i+2])/3;const m=n/(pixels.length/4);return args.dark?m<100:m>180;`;
 const glyph = `let good=0,bad=0;for(const i of args.mask){good+=(pixels[i]-args.want[i])**2;bad+=(pixels[i]-args.other[i])**2;}return good<bad*.35;`;
 
-export async function measureSiteLatency({ page, pause, pair, samples = 40 }) {
+export async function measureSiteLatency({ page, pause, pair, samples = 40, secondTab = false }) {
   const result = { items: ['MP-08', 'MP-10'], qualification: 'local relay + netem; hosted-equivalent echo criteria; drawn_ms is the presenter draw, raf_ms the next animation frame', click_samples: [], type_samples: [] };
   await command(page, 'navigate', { url: ARTICLE }); await pause(10000);
+  // MP-08/MP-10/MP-11: a second (restored/agent) tab takes Chromium's
+  // foreground; the displayed tab must reclaim the native window, not drop
+  // to CDP capture.
+  if (secondTab) {
+    await page.evaluate(() => mdTransport.request({ KernelBrowser: { command: { op: 'open', url: 'https://www.wikipedia.org/' } } }));
+    await pause(8000); result.second_tab = true;
+  }
   result.article_view = await pair('site-article');
   // A fundraising banner can push the Appearance menu below the viewport;
   // close it as a reader would (its top-right close button at scroll zero).

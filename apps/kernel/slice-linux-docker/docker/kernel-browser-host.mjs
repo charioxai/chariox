@@ -19,6 +19,7 @@ import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mj
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
+import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { CompositorSource } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
@@ -64,6 +65,7 @@ export class KernelBrowserHost {
     this.scrolling = new Map();
     this.sampleLanes = new Map();
     this.compositors = new Map();
+    this.foreground = new WindowForeground();
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
@@ -109,7 +111,7 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
-    await this.closeCompositors();
+    await this.closeCompositors();this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -181,9 +183,15 @@ export class KernelBrowserHost {
       // MP-08/MP-10: a refused native start is retried after 5 s, not per credit.
       const retryAt=this.nativeRetryAt?.get(tab.tab_id);
       let source=retryAt?.document===tab.document_id&&performance.now()<retryAt.at?null:await selectNativeCapture({display:this.chromium.display,refused:reason=>this.nativeScope(reason),create:async()=>{
-        if(this.tabs.size!==1){this.nativeScope('tab_count');throw Error('native tab scope');}
+        // MP-08/MP-10/MP-11: one tab owns the window. A live native viewer on
+        // another tab keeps it; otherwise retire other native sources and claim
+        // the foreground before the source brings this tab to front.
+        const holder=this.foreground.tab;
+        if(holder&&holder!==tab.tab_id&&[...this.displays.values()].some(s=>s.tab_id===holder&&s.expires>Date.now())&&this.compositors.get(holder)?.source instanceof LinuxCapture){this.nativeScope('foreground_busy');throw Error('native foreground busy');}
+        for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
+        const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.tabs.size===1&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
@@ -242,7 +250,7 @@ export class KernelBrowserHost {
       tabs: [...this.tabs.values()].map(({ target_id, ...tab }) => tab), viewport }, this.protection.values);
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
-    await this.closeCompositors();
+    await this.closeCompositors();this.foreground.reset();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     assertNotCancelled(signal);
@@ -474,7 +482,7 @@ export class KernelBrowserHost {
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
-      await this.closeCompositors(tab.tab_id);
+      await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
