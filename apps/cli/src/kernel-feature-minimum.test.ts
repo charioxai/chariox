@@ -52,3 +52,14 @@ test("standalone and reserved Project Environment operations require protocol 47
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 471))
   }
 })
+
+test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
+  for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
+    { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 435), /Local-kernel access needs protocol ≥470/)
+    assert.throws(() => requireKernelFeatureProtocol(request, 451), /protocol ≥470/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 470))
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
+})
