@@ -85,6 +85,8 @@ function installMirrorObserver(initialStyles = {}) {
           return done(record);
         }
         record.style=safeStyle(node,null,true,record.box);
+        // MP-08/MP-11: show password dots through pixels, never form metadata.
+        if(tag==='input'&&node.type==='password'){record.kind='tile';record.reason='native_control';return done(record);}
         // MP-08/MP-10: viewport first. Offscreen simple flow blocks retain their
         // layout but hydrate descendants on the following bounded credit.
         // Exact filled-field protection precedes deferral; user scrolling affects
