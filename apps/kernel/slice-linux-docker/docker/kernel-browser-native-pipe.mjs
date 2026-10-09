@@ -1,4 +1,5 @@
 // MD-DISPLAY-02/04: one allocation/copy per raw frame, never quadratic concat.
+import {nativeExactReplyLimit} from './kernel-browser-native-worker.mjs';
 export class NativePipe {
  constructor(validate,frame){this.validate=validate;this.frame=frame;this.buffer=Buffer.alloc(4);this.offset=0;this.stage='length';}
  push(bytes){
@@ -10,7 +11,8 @@ export class NativePipe {
     const size=this.buffer.readUInt32BE(0);if(size<1||size>8192)throw Error('MD-DISPLAY: native header bound');this.buffer=Buffer.alloc(size);this.stage='header';
    }else if(this.stage==='header'){
     const header=JSON.parse(this.buffer);this.validate(header);
-    if(!Number.isSafeInteger(header.length)||header.length<1||header.length>2560*1600*4)throw Error('MD-DISPLAY: native frame bound');
+    const limit=header.reply===undefined?2560*1600*4:nativeExactReplyLimit;
+    if(!Number.isSafeInteger(header.length)||header.length<1||header.length>limit)throw Error('MD-DISPLAY: native frame bound');
     this.header=header;this.buffer=Buffer.allocUnsafe(header.length);this.stage='pixels';
    }else{
     this.frame(this.header,this.buffer);this.header=null;this.buffer=Buffer.alloc(4);this.stage='length';
