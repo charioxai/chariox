@@ -1,8 +1,9 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 service (local protocol 482). One snapshot
+// MP-08/MP-10/MP-11: DOM mirror v2 service (local protocol 489). One snapshot
 // per document, then pushed deltas: each `mirror_next` credit with `wait_ms`
 // is answered when the page changes (credit-gated long poll, at most a few in
 // flight per viewer). Resources are hash-addressed and follow the packet.
 import { createHash } from 'node:crypto';
+import { createDeflateRaw, constants as zlib } from 'node:zlib';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { assertCurrentDocument, assertNotCancelled } from './browser-controller-actions.mjs';
@@ -12,6 +13,14 @@ import { losslessRegion } from './kernel-browser-display.mjs';
 import { MirrorFrames, slotOf, localId } from './kernel-browser-mirror2-frames.mjs';
 
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// Protocol 489: resource bytes travel in slices (base64 characters, a multiple
+// of 4) of at most a packet budget, smaller while the viewer is typing or
+// clicking so an echo never waits behind more than one slice on the socket.
+const INPUT_PACKET_BYTES = 64 * 1024, MIN_SLICE = 16 * 1024;
+// Protocol 489: a body from this size travels deflated in the subscription's
+// context (sync flush per packet, a fresh context per reset); smaller ones
+// (echoes) stay plain and outside the context.
+const DEFLATE_MIN_BYTES = 512;
 // MP-10 wheel bytes: element images within one viewport of the view travel;
 // while the view moves (and SETTLE_MS after) a large one travels as a preview,
 // then its exact bytes.
@@ -125,6 +134,7 @@ export class Mirror2 {
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   dispose(stream) {
+    stream.deflate?.close(); stream.deflate = null;
     const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
     for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
   }
@@ -212,7 +222,8 @@ export class Mirror2 {
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
-    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); }
+    // A slice in flight may be lost with the base: a partial resource restarts.
+    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent) entry.offset = 0; }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
@@ -282,9 +293,14 @@ export class Mirror2 {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
     const sequence = stream.issued + 1;
-    const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
-      sequence, base_sequence: reset ? null : stream.issued, reset, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1,
-      scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, resources, tiles };
+    // Protocol 489 compact delta: the binding, base (sequence - 1) and every
+    // header field equal to the base packet's are implied; empty lists omitted.
+    const header = { scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
+      sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
+      : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
+    if (resources.length) packet.resources = resources;
+    if (tiles.length) packet.tiles = tiles;
     if (fallback) packet.fallback = fallback;
     else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
     else packet.ops = [...source.ops, ...sheets];
@@ -296,25 +312,37 @@ export class Mirror2 {
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
     stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
-    stream.lastHeader = JSON.stringify([packet.scroll, packet.focused, packet.selection]); stream.sentScroll = packet.scroll;
+    stream.header = sent; stream.sentScroll = header.scroll;
     // A position the viewer did not set has reached it: echoes count again.
-    if (JSON.stringify(packet.scroll) !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
+    if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
+    const wire = await this.encode(stream, packet);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
-    return packet;
+    return wire;
+  }
+  // Protocol 489: the body (without media) deflates in the subscription's
+  // context, so repeated structure (typeahead rows, form ops) costs a few bytes.
+  // The kernel issues packets in order and the viewer inflates them in order;
+  // a reset packet starts a fresh context. A replayed credit gets these bytes.
+  async encode(stream, packet) {
+    const { resources, tiles, ...body } = packet, text = Buffer.from(JSON.stringify(body));
+    if (packet.reset) { stream.deflate?.close(); stream.deflate = null; }
+    if (text.length < DEFLATE_MIN_BYTES) return packet;
+    if (!stream.deflate) { const created = stream.deflate = createDeflateRaw({ level: 9, memLevel: 9 }); created.chunks = []; created.on('data', chunk => created.chunks.push(chunk)).on('error', () => {}); }
+    const deflate = stream.deflate;
+    try {
+      await new Promise((resolve, reject) => { deflate.once('error', reject); deflate.write(text); deflate.flush(zlib.Z_SYNC_FLUSH, () => { deflate.off('error', reject); resolve(); }); });
+    } catch (error) { deflate.close(); if (stream.deflate === deflate) stream.deflate = null; throw error; }
+    const compressed = Buffer.concat(deflate.chunks); deflate.chunks = [];
+    return { wire: 2, sequence: packet.sequence, ...(packet.reset ? { reset: true } : {}), encoding: 'deflate', packet_bytes: text.length, packet_base64: compressed.toString('base64'), ...(resources ? { resources } : {}), ...(tiles ? { tiles } : {}) };
   }
   // The viewer's own scroll position coming back is not news to that viewer.
   empty(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify([scroll, source.focused, source.selection]) === stream.lastHeader && !this.tilesDue(stream);
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && !this.tilesDue(stream);
   }
-  // A packet takes the next resource only within its byte budget. One larger
-  // than the whole budget travels alone, and only after a second without viewer
-  // input, so it never sits ahead of an echo on the socket.
-  fits(size, bytes, budget, stream) {
-    if (bytes + size <= budget) return true;
-    return bytes === 0 && budget >= RESOURCE_PACKET_BYTES && Date.now() - (stream?.inputAt ?? 0) >= QUIET_MS;
-  }
+  // A packet's resource budget; smaller within a second of viewer input.
+  packetBytes(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
   merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
   // Unattached foreign frames are opaque regions (masked captures only).
@@ -337,7 +365,7 @@ export class Mirror2 {
     const out = [];
     for (const [slot, world] of worlds) {
       const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (!kind || entry.kind === kind) && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
-      if (due.length) out.push(...await this.materializeWorld(world, due, slot, RESOURCE_PACKET_BYTES - out.reduce((n, r) => n + r.data_base64.length, 0), stream));
+      if (due.length) out.push(...await this.materializeWorld(world, due, slot, this.packetBytes(stream) - out.reduce((n, r) => n + r.data_base64.length, 0), stream));
     }
     return out;
   }
@@ -390,8 +418,12 @@ export class Mirror2 {
           continue;
         }
       }
-      if (!this.fits(entry.resource.data_base64.length, bytes, budget, stream)) continue;
-      entry.sent = true; bytes += entry.resource.data_base64.length; out.push(entry.resource);
+      // Within the budget whole; otherwise the next slice (offset/total in base64 characters).
+      const data = entry.resource.data_base64, offset = entry.offset ?? 0, room = budget - bytes;
+      let end = data.length;
+      if (end - offset > room) { if (room < MIN_SLICE) continue; end = offset + Math.floor(room / 4) * 4; }
+      bytes += end - offset; entry.offset = end; entry.sent = end === data.length;
+      out.push(!offset && entry.sent ? entry.resource : { ...entry.resource, data_base64: data.slice(offset, end), offset, total: data.length });
     }
     return out;
   }

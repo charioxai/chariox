@@ -17,6 +17,7 @@ impl KernelRuntimeState {
         }
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let next = matches!(command, KernelBrowserCommand::MirrorNext { .. });
+        let input = matches!(command, KernelBrowserCommand::MirrorInput { .. });
         let mut params = match command {
             KernelBrowserCommand::MirrorInput {
                 tab_id,
@@ -61,121 +62,34 @@ impl KernelRuntimeState {
         let result = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;
-        mirror_wire_result(next, result)
+        Ok(mirror_reply(input, result))
     }
 }
 
-/// Only v2 packets (`mirror_next` results) are compressed; subscribe/close
-/// replies keep their plain fields (`subscription_id`, `wire`). A small delta
-/// (an echo) travels plain: inflating it would only add a client task hop. A
-/// larger body (from 768 bytes: a typeahead list) travels gzip-compressed only
-/// when that is smaller on the wire.
-fn mirror_wire_result(next: bool, result: Value) -> Result<Value, DaemonError> {
-    if !next || result.get("wire").and_then(Value::as_u64) != Some(2) {
-        return Ok(result);
+/// MP-08/MP-10: protocol 489 answers an admitted mirror input with an
+/// acknowledgement only. The full browser state already reconciled the actor
+/// ledger below; the viewer sees the input's effect in the next packet. v2
+/// packets arrive already encoded by the controller (compact deltas, bodies
+/// deflated in the subscription's context) and pass through unchanged.
+fn mirror_reply(input: bool, result: Value) -> Value {
+    if input {
+        json!({"accepted": true})
+    } else {
+        result
     }
-    compress_mirror_packet(result)
-}
-
-/// MP-08/MP-10: a protocol 482 packet travels gzip-compressed after the Vault
-/// scrub (the relay has no permessage-deflate). Already-encoded resource and
-/// region bytes stay outside the compressed body.
-fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
-    use base64::Engine as _;
-    use std::io::Write as _;
-    let object = packet
-        .as_object_mut()
-        .ok_or_else(|| host_error("MP-11: invalid mirror packet".into()))?;
-    let resources = object.remove("resources").unwrap_or_else(|| json!([]));
-    let tiles = object.remove("tiles").unwrap_or_else(|| json!([]));
-    let body = serde_json::to_vec(&packet)
-        .map_err(|_| host_error("MP-11: invalid mirror packet".into()))?;
-    let mut compressed = None;
-    if body.len() >= 768 {
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-        encoder
-            .write_all(&body)
-            .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
-        let gzip = encoder
-            .finish()
-            .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;
-        if gzip.len().div_ceil(3) * 4 + 64 < body.len() {
-            compressed = Some(gzip);
-        }
-    }
-    let Some(compressed) = compressed else {
-        let object = packet.as_object_mut().expect("checked mirror packet object");
-        object.insert("resources".into(), resources);
-        object.insert("tiles".into(), tiles);
-        return Ok(packet);
-    };
-    Ok(json!({
-        "wire": 2,
-        "encoding": "gzip",
-        "packet_bytes": body.len(),
-        "packet_base64": base64::engine::general_purpose::STANDARD.encode(compressed),
-        "resources": resources,
-        "tiles": tiles,
-    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     #[test]
-    fn mirror_v2_subscribe_reply_stays_plain_and_only_packets_compress() {
-        // The first hosted run sent the subscribe reply gzipped: clients lost
-        // `subscription_id` and every later mirror request failed to decode.
-        let subscribed = json!({"subscription_id":"host-mirror-1","generation":1,"tab_id":"t","device_scale_factor":1,"wire":2});
-        assert_eq!(mirror_wire_result(false, subscribed.clone()).unwrap(), subscribed);
-        let packet = json!({"wire":2,"sequence":1,"ops":[{"op":"text","id":"n2","text":"a".repeat(4096)}],"resources":[],"tiles":[]});
-        assert_eq!(mirror_wire_result(true, packet).unwrap()["encoding"], "gzip");
-        let echo = json!({"wire":2,"sequence":2,"ops":[{"op":"form","id":"n9"}],"resources":[],"tiles":[]});
-        assert_eq!(mirror_wire_result(true, echo.clone()).unwrap(), echo);
-        // A keystroke-sized typeahead delta (1-2 KB of repetitive records) is
-        // smaller compressed; an incompressible body of that size stays plain.
-        let ops: Vec<Value> = (0..24).map(|i| json!({"op":"text","id":format!("n{}", 2700 + i),"text":format!("suggestion text {i}")})).collect();
-        let typeahead = json!({"wire":2,"sequence":3,"ops":ops,"resources":[{"key":"r1","data_base64":"AAAA"}],"tiles":[]});
-        assert!(serde_json::to_vec(&typeahead).unwrap().len() < 2048);
-        let wire = mirror_wire_result(true, typeahead.clone()).unwrap();
-        assert_eq!(wire["encoding"], "gzip");
-        assert_eq!(wire["resources"], typeahead["resources"]);
-        let mut state = 0x9e37_79b9u32;
-        let noise: String = (0..1400)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                char::from(b'!' + (state % 90) as u8)
-            })
-            .collect();
-        let random = json!({"wire":2,"sequence":4,"ops":[{"op":"text","id":"n2","text":noise}],"resources":[],"tiles":[]});
-        assert_eq!(mirror_wire_result(true, random.clone()).unwrap(), random);
-        let v1 = json!({"sequence":1,"nodes":[]});
-        assert_eq!(mirror_wire_result(true, v1.clone()).unwrap(), v1);
-    }
-
-    #[test]
-    fn mirror_v2_packet_compresses_body_and_keeps_media_outside() {
-        let packet = json!({"wire":2,"sequence":4,"ops":[{"op":"text","id":"n2","text":"a".repeat(4096)}],
-            "resources":[{"key":"r1","data_base64":"AAAA"}],"tiles":[]});
-        let wire = compress_mirror_packet(packet.clone()).unwrap();
-        assert_eq!(wire["encoding"], "gzip");
-        assert_eq!(wire["resources"], packet["resources"]);
-        use base64::Engine as _;
-        let compressed = base64::engine::general_purpose::STANDARD
-            .decode(wire["packet_base64"].as_str().unwrap())
-            .unwrap();
-        assert!(compressed.len() < 512, "MP-10: DOM text compresses");
-        let mut body = String::new();
-        flate2::read::GzDecoder::new(&compressed[..])
-            .read_to_string(&mut body)
-            .unwrap();
-        let body: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(body["ops"], packet["ops"]);
-        assert!(body.get("resources").is_none());
-        assert_eq!(wire["packet_bytes"].as_u64().unwrap() as usize, serde_json::to_vec(&body).unwrap().len());
+    fn mirror_input_reply_is_an_acknowledgement_and_packets_pass_through() {
+        // Protocol 482 answered every keystroke with the full browser state
+        // (~0.77 KB on the hosted wire); 489 acknowledges only.
+        let state = json!({"state":"running","generation":3,"tabs":[{"tab_id":"t","url":"https://www.wikipedia.org/","title":"Wikipedia"}]});
+        assert_eq!(mirror_reply(true, state), json!({"accepted": true}));
+        let packet = json!({"wire":2,"sequence":4,"encoding":"deflate","packet_bytes":900,"packet_base64":"AAAA"});
+        assert_eq!(mirror_reply(false, packet.clone()), packet);
     }
 }

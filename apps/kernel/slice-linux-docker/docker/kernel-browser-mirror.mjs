@@ -22,7 +22,7 @@ const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991
 export class MirrorService {
   constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
   invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){stream.policy=null;stream.resources.clear();continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
-  clear() {this.streams.clear();}
+  clear() {for(const stream of this.streams.values())stream.deflate?.close();this.streams.clear();}
   drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2)this.v2.dispose(stream);}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.drop(id);}

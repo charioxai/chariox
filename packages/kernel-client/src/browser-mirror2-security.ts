@@ -126,7 +126,12 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'text': if (typeof op.text !== 'string' || op.text.length > 16 * 1024 * 1024 || known(op.id) && known(op.id)!.kind !== 'text') fail('op'); break
     case 'css': validateMirror2Css(op.css); if (known(op.id) && known(op.id)!.tag !== 'style') fail('op'); break
     case 'adopted': if (!Array.isArray(op.sheets) || op.sheets.length > 256) fail('op'); op.sheets.forEach(validateMirror2Css); break
-    case 'form': if (typeof op.form?.value !== 'string' || op.form.value.length > 65536 || known(op.id)?.kind === 'mask') fail('op'); break
+    case 'form': { // protocol 489: only the changed properties
+      const form = op.form as Record<string, unknown>, selection = (v: unknown): boolean => v === null || Number.isInteger(v)
+      const checks: Record<string, (v: unknown) => boolean> = { value: v => typeof v === 'string' && v.length <= 65536, checked: v => typeof v === 'boolean', selected_index: v => Number.isInteger(v), selection_start: selection, selection_end: selection }
+      if (!form || typeof form !== 'object' || Array.isArray(form) || Object.entries(form).some(([name, value]) => !Object.hasOwn(checks, name) || !checks[name]!(value)) || known(op.id)?.kind === 'mask') fail('op')
+      break
+    }
     case 'scroll': case 'size': { const value = op.op === 'scroll' ? op.scroll : op.size; if (!Array.isArray(value) || value.length !== 2 || !finite(value)) fail('op'); break }
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     default: fail('op')
@@ -144,7 +149,9 @@ export function validateMirror2Packet(packet: Mirror2Packet, previous: ReadonlyM
     for (const record of packet.nodes!) fresh.set(record.id, record)
   }
   for (const op of packet.ops ?? []) { validateOp(op, known); if (op.op === 'children') for (const record of op.nodes) fresh.set(record.id, record) }
-  for (const resource of packet.resources) if (!/^r[0-9]{1,9}$/.test(resource.key) || !/^[a-f0-9]{64}$/.test(resource.resource_id) || !MIME.has(resource.mime_type) || typeof resource.data_base64 !== 'string' || resource.data_base64.length > 6 * 1024 * 1024) throw Error('MP-11: executable/oversized mirror resource')
+  // A slice: offset/total in base64 characters (4-aligned), the whole within the resource bound.
+  const slice = (r: typeof packet.resources[number]): boolean => r.offset === undefined && r.total === undefined || Number.isSafeInteger(r.offset) && Number.isSafeInteger(r.total) && r.offset! >= 0 && r.offset! % 4 === 0 && r.data_base64.length > 0 && r.offset! + r.data_base64.length <= r.total! && r.total! <= 6 * 1024 * 1024
+  for (const resource of packet.resources) if (!/^r[0-9]{1,9}$/.test(resource.key) || !/^[a-f0-9]{64}$/.test(resource.resource_id) || !MIME.has(resource.mime_type) || typeof resource.data_base64 !== 'string' || resource.data_base64.length > 6 * 1024 * 1024 || !slice(resource)) throw Error('MP-11: executable/oversized mirror resource')
   for (const tile of packet.tiles) if (!id.test(tile.node_id) || !finite([tile.x, tile.y, tile.width, tile.height]) || tile.width <= 0 || tile.height <= 0 || typeof tile.data_base64 !== 'string' || tile.data_base64.length > 8 * 1024 * 1024 || known(tile.node_id) && known(tile.node_id)!.kind !== 'tile') throw Error('MP-11: invalid mirror tile')
   if (packet.selection) { const s = packet.selection; if (!id.test(s.anchor_id) || !id.test(s.focus_id) || !Number.isInteger(s.anchor_offset) || !Number.isInteger(s.focus_offset) || s.anchor_offset < 0 || s.focus_offset < 0) fail('selection') }
 }

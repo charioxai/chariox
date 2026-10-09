@@ -1,4 +1,4 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 observer (local protocol 482). Installed only
+// MP-08/MP-10/MP-11: DOM mirror v2 observer (local protocol 489). Installed only
 // in the controller's isolated world. One full snapshot per document, then
 // MutationObserver deltas (rrweb's model): the page's own stylesheets and
 // attributes travel instead of a computed-style dump. Page code never sees
@@ -179,10 +179,15 @@ export function installMirror2(sanitizeMirrorCss) {
     const formValue = node => node.type === 'password' ? '\u2022'.repeat(Math.min(String(node.value ?? '').length, 65536)) : node.type === 'hidden' ? '' : String(node.value ?? '').slice(0, 65536);
     const formState = node => ({ value: formValue(node), checked: !!node.checked, selected_index: node.selectedIndex ?? -1, selection_start: node.selectionStart ?? null, selection_end: node.selectionEnd ?? null });
     // Last form state sent per field: a form op travels only when it changed (a
-    // focused field would otherwise answer every credit at once: a busy loop).
+    // focused field would otherwise answer every credit at once: a busy loop),
+    // and carries only the changed properties (protocol 489).
     let sentForms = new WeakMap();
-    const formRecord = node => { const form = formState(node); sentForms.set(node, JSON.stringify(form)); return form; };
-    const formOp = (node, id, ops) => { const form = formState(node), json = JSON.stringify(form); if (sentForms.get(node) === json) return; sentForms.set(node, json); ops.push({ op: 'form', id, form }); };
+    const formRecord = node => { const form = formState(node); sentForms.set(node, form); return form; };
+    const formOp = (node, id, ops) => {
+      const form = formState(node), sent = sentForms.get(node), changed = Object.fromEntries(Object.entries(form).filter(([name, value]) => !sent || sent[name] !== value));
+      if (!Object.keys(changed).length) return;
+      sentForms.set(node, form); ops.push({ op: 'form', id, form: changed });
+    };
     // Adopted sheets have no mutation records: identity + rule count each drain,
     // and their rule text on the periodic full check (replaceSync, rule edits).
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;

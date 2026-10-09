@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { inflateRawSync, constants as zlib } from "node:zlib";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
@@ -31,8 +32,14 @@ async function mirrored(html, run, routes = {}) {
     await host.request({ op: "state" });
     const subscribe = async () => {
       const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
-      let applied = 0;
-      const next = async (wait_ms = 0, reset = false) => { const packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence; return packet; };
+      // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
+      let applied = 0, context = Buffer.alloc(0);
+      const next = async (wait_ms = 0, reset = false) => {
+        let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence;
+        if (packet.reset) context = Buffer.alloc(0);
+        if (packet.encoding === "deflate") { context = Buffer.concat([context, Buffer.from(packet.packet_base64, "base64")]); const out = inflateRawSync(context, { finishFlush: zlib.Z_SYNC_FLUSH }); packet = { ...JSON.parse(out.subarray(out.length - packet.packet_bytes)), resources: packet.resources ?? [], tiles: packet.tiles ?? [] }; }
+        return { ops: [], ...packet };
+      };
       const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
       return { next, input };
     };

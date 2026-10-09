@@ -9,7 +9,7 @@ The screen tiers are native App views, mirrored web pages, then protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
 
-## Protocol 482: DOM mirror v2 (current)
+## Protocol 489: DOM mirror v2 (current; introduced in 482, compact wire in 489)
 
 `mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
 remain for one protocol version (TUI/tests) and are superseded for web clients.
@@ -29,7 +29,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   form op travels only when the field's state changed, and a subtree the page
   rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps
   the viewer's nodes: the new page nodes take over the removed nodes' ids and
-  only `attr`/`text`/`res` differences travel. Masks, form fields, frames,
+  only `attr`/`text`/`res` differences travel. A `form` op carries only the
+  properties that changed (489). Masks, form fields, frames,
   styles, opaque and custom elements are never morphed, and a morphed node
   counts as a changed input target.
 - **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
@@ -46,10 +47,24 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   in flight, and the kernel ends the long poll of every credit that arrived
   before it. A queued credit's wait starts when its predecessor is answered
   (one heartbeat per wait instead of one per credit), at most three waits from
-  its arrival (below the client's 8 s request timeout). A body from 768 bytes
-  travels gzipped after the Vault scrub when that is smaller on the wire;
-  smaller packets (echoes) travel as JSON; resource and region bytes travel
-  beside it (`resources`, `tiles`).
+  its arrival (below the client's 8 s request timeout).
+- **Compact wire (489).** A reset packet carries the binding and header
+  (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`). A
+  delta carries `wire`, `sequence`, its ops, and only the header fields that
+  differ from its base (an explicit `null` replaces); its base is
+  `sequence - 1`, and the viewer restores the rest from its binding and the
+  base. Empty `resources`/`tiles` are omitted. The controller encodes the packet
+  (the Rust kernel passes it through): a body from 512 bytes travels as
+  `{encoding: "deflate", packet_bytes, packet_base64}`, raw deflate in the
+  subscription's context (one sync flush per packet; a reset packet starts a
+  fresh context), so repeated structure such as typeahead rows costs a few
+  bytes. The viewer inflates such bodies strictly in sequence order; a body it
+  cannot inflate asks for a reset. Smaller bodies (echoes) travel as JSON outside
+  the context. A credit replayed after a reconnect gets the same encoded bytes.
+  `mirror_input` answers `{"accepted": true}`: the kernel reconciles its actor
+  ledger with the full browser state, and the viewer sees the input's effect in
+  the next packet.
 - **Resources** are only bytes the page itself loaded (data: URLs, the resource
   tree, or Chrome's cache without credentials for Resource Timing URLs), typed
   by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
@@ -61,10 +76,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   observer's world from the page's bytes, half its CSS size, WebP, wrapped in an
   SVG of the original pixel size so the layout does not change. Its exact bytes
   replace it under the same key once the view settles (settled pixels stay
-  exact). CSS images and frame resources keep the earlier order. A packet takes
-  the next resource only within its 256 KB budget; a larger resource travels
-  alone, and only after a second without viewer input (splitting it needs a
-  protocol change).
+  exact). CSS images and frame resources keep the earlier order. A packet's
+  resource budget is 256 KB of base64, or 64 KB within a second of viewer input,
+  so an echo waits behind at most one such packet. A resource larger than the
+  room left travels in slices (489): `offset`/`total` in base64 characters
+  (4-aligned), in order, under the whole resource's `resource_id`; the viewer
+  verifies the digest of the reassembled bytes. A reset restarts a resource
+  still in slices (its slices may have been lost with the base).
 - **Frames.** Same-origin frames are part of the document. Cross-origin frames
   are mirrored through their own CDP session/isolated world with the same
   observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM

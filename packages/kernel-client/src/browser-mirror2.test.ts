@@ -1,9 +1,9 @@
-// MP-08/MP-10/MP-11: protocol 482 mirror v2 — fail closed before DOM construction.
+// MP-08/MP-10/MP-11: protocol 489 mirror v2 — fail closed before DOM construction.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { gzipSync } from 'node:zlib'
+import { createDeflateRaw, constants as zlib } from 'node:zlib'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
-import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
+import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
 const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirror2Packet => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence: 1, base_sequence: null, reset: true, root: nodes[0]!.id, nodes, ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1, ...extra })
@@ -25,7 +25,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 482)
+  assert.equal(browserMirror2MinimumProtocolVersion, 489)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -47,17 +47,33 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   assert.throws(() => validateMirror2Packet(delta([{ op: 'children', id: 'n2', children: ['n7'], nodes: [{ id: 'n7', parent: 'n8', kind: 'text', text: 'x' }] }]), previous), /unsafe mirror tree/)
   assert.throws(() => validateMirror2Packet(delta([{ op: 'form', id: 'n3', form: { value: 'x', checked: false, selected_index: -1, selection_start: null, selection_end: null } }]), previous), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'text/html', data_base64: '' }] }, previous), /executable/)
+  // Protocol 489: a form op carries only changed, typed properties.
+  validateMirror2Packet(delta([{ op: 'form', id: 'n2', form: { value: 'ab', selection_start: 2, selection_end: 2 } }]), previous)
+  for (const form of [{ value: 1 }, { checked: 'yes' }, { selection_start: 1.5 }, { innerHTML: '<b>' }, null])
+    assert.throws(() => validateMirror2Packet(delta([{ op: 'form', id: 'n2', form } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/, JSON.stringify(form))
+  // Slices: 4-aligned offsets inside a bounded whole.
+  const slice = (offset: unknown, total: unknown, data = 'AAAA') => ({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total }] } as Mirror2Packet)
+  validateMirror2Packet(slice(0, 8), previous); validateMirror2Packet(slice(4, 8), previous)
+  for (const [offset, total, data] of [[2, 8], [8, 8], [0, 7 * 1024 * 1024], [0, undefined], [0, 8, '']] as Array<[unknown, unknown, string?]>) assert.throws(() => validateMirror2Packet(slice(offset, total, data), previous), /executable/, `${offset}/${total}`)
 })
 
-test('MP-10: gzip packet bodies inflate exactly and refuse lying sizes', async () => {
-  const packet = base(tree(element('p', {}, {})))
-  const { resources, tiles, ...body } = packet
-  const json = Buffer.from(JSON.stringify(body))
-  const wire = { wire: 2 as const, encoding: 'gzip', packet_bytes: json.length, packet_base64: gzipSync(json).toString('base64'), resources, tiles }
-  assert.deepEqual(await inflateMirror2Packet(wire), packet)
-  await assert.rejects(inflateMirror2Packet({ ...wire, packet_bytes: json.length - 1 }), /mirror packet bounds/)
-  await assert.rejects(inflateMirror2Packet({ ...wire, packet_bytes: json.length + 1 }), /mirror packet bounds/)
-  await assert.rejects(inflateMirror2Packet({ ...wire, encoding: 'br' }), /mirror packet bounds/)
+// The kernel's encoder: one raw deflate context per subscription, sync flush per packet.
+const kernelContext = () => {
+  const deflate = createDeflateRaw({ level: 9, memLevel: 9 }), chunks: Buffer[] = []
+  deflate.on('data', chunk => chunks.push(chunk))
+  return { close: () => deflate.close(), encode: (text: string) => new Promise<{ packet_base64: string; packet_bytes: number }>(resolve => { deflate.write(Buffer.from(text)); deflate.flush(zlib.Z_SYNC_FLUSH, () => resolve({ packet_base64: Buffer.concat(chunks.splice(0)).toString('base64'), packet_bytes: Buffer.byteLength(text) })) }) }
+}
+test('MP-10: context-deflated bodies inflate in order; a repeat costs a few bytes; lying sizes are refused', async () => {
+  const kernel = kernelContext(), inflater = new Mirror2Inflater()
+  const rows = JSON.stringify({ wire: 2, sequence: 2, ops: [{ op: 'children', id: 'n9', children: ['n10'], nodes: Array.from({ length: 6 }, (_, i) => [1, 1, 'a', { class: 'suggestion-link', href: '#' }, { title: `Suggestion ${i}` }]) }] })
+  const first = await kernel.encode(rows), again = await kernel.encode(rows.replace('"sequence":2', '"sequence":3'))
+  assert.equal(await inflater.inflate(first.packet_base64, first.packet_bytes), rows)
+  assert.equal(await inflater.inflate(again.packet_base64, again.packet_bytes), rows.replace('"sequence":2', '"sequence":3'))
+  assert.ok(again.packet_base64.length < first.packet_base64.length / 3, `MP-10: a repeated typeahead body is cheap in the context (${again.packet_base64.length} vs ${first.packet_base64.length})`)
+  const lying = await kernel.encode(rows)
+  await assert.rejects(inflater.inflate(lying.packet_base64, lying.packet_bytes - 1), /mirror packet bounds/)
+  await assert.rejects(new Mirror2Inflater().inflate(first.packet_base64, 1), /mirror packet bounds/)
+  inflater.close(); kernel.close()
 })
 
 test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and refuse malformed rows', () => {
@@ -92,12 +108,14 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
 const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
   const applied: number[] = [], failures: unknown[] = []
   let failNext = false
-  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = false; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence) } })
+  const packets: Mirror2Packet[] = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = false; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 482, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
-  return { applied, failures, requests, failOnce: () => { failNext = true }, start: () => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer }) }
+  const transport = { protocolVersion: 489, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, start: () => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer }) }
 }
-const packet = (sequence: number, reset: boolean, base: number | null) => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: base, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], ...(reset ? { root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { ops: [] }) })
+// Protocol 489: a reset carries the binding and header; a delta only what changed.
+const packet = (sequence: number, reset: boolean, _base?: number | null) => reset ? { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { wire: 2, sequence, ops: [] }
 const until = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10)) }
 
 test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
@@ -133,4 +151,38 @@ test('MP-10: removing an inline style forgets it, so a later resource cannot res
   assert.deepEqual(renderer.styled.get('n5#style')?.keys, ['r1'])
   renderer.op({ op: 'attr', id: 'n5', name: 'style', value: null }, [])
   assert.equal(renderer.styled.has('n5#style'), false); assert.equal(node.attributes.has('style'), false)
+})
+
+test('MP-08/MP-10: compact deltas inherit binding and header from their base; deflated bodies inflate in sequence order; late copies are not gaps', async () => {
+  const kernel = kernelContext()
+  const reset = { ...packet(1, true), scroll: [0, 40], focused: 'n2' }
+  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
+  const wires: unknown[] = []
+  for (const body of bodies) { const text = JSON.stringify(body); wires.push(text.length >= 512 ? { wire: 2, sequence: body.sequence, ...(body.sequence === 1 ? { reset: true } : {}), encoding: 'deflate', ...await kernel.encode(text) } : body) }
+  kernel.close()
+  let next = 0
+  // Replies arrive out of order (3 before 2) and one late copy repeats.
+  const order = [0, 2, 1, 1, 3]
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : next < order.length ? wires[order[next++]!] : new Promise(() => {}))
+  const mirror = await f.start()
+  await until(() => f.applied.length >= 4)
+  await mirror.close()
+  assert.deepEqual(f.applied, [1, 2, 3, 4]); assert.deepEqual(f.failures, [])
+  const [, second, third, fourth] = f.packets
+  assert.deepEqual([second!.subscription_id, second!.tab_id, second!.document_id, second!.base_sequence, second!.reset, second!.scroll, second!.focused], ['s', 't', 'd', 1, false, [0, 40], 'n2'])
+  assert.equal(third!.focused, null, 'an explicit null replaces the base value'); assert.equal(fourth!.focused, null); assert.deepEqual(fourth!.resources, [])
+})
+
+test('MP-10: resource slices reassemble in order; a reset restarts them', () => {
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { assemble(r: Record<string, unknown>): Record<string, unknown> | null; slices: Map<string, unknown> }
+  const slice = (offset: number, data: string) => ({ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total: 12 })
+  assert.equal(renderer.assemble(slice(0, 'AAAA')), null)
+  assert.equal(renderer.assemble(slice(4, 'BBBB')), null)
+  assert.deepEqual(renderer.assemble(slice(8, 'CCCC')), { key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: 'AAAABBBBCCCC' })
+  assert.equal(renderer.slices.size, 0)
+  assert.equal(renderer.assemble(slice(0, 'AAAA')), null)
+  assert.throws(() => renderer.assemble(slice(8, 'CCCC')), /slice out of order/)
+  const whole = { key: 'r2', resource_id: 'b'.repeat(64), mime_type: 'image/png', data_base64: 'AAAA' }
+  assert.equal(renderer.assemble(whole), whole)
 })

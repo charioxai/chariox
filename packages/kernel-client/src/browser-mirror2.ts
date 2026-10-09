@@ -1,11 +1,11 @@
-// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 482). The page's own
+// MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 489). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
-import type { Mirror2Action, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile } from './browser-mirror2-types.js'
+import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 482
+export const browserMirror2MinimumProtocolVersion = 489
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[] } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
@@ -26,6 +26,7 @@ export class BrowserMirror2Renderer {
   private records = new Map<string, Mirror2Record>()
   private ids = new WeakMap<Node, string>()
   private resources = new Map<string, string>()
+  private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
   private bound = new Set<Document>()
@@ -145,6 +146,16 @@ export class BrowserMirror2Renderer {
     // SVG stays an image: data: URLs have an opaque origin if ever opened top-level.
     this.resources.set(resource.key, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })))
   }
+  // Slices of one resource arrive in order; the digest covers the whole.
+  private assemble(resource: Mirror2Resource): Mirror2Resource | null {
+    if (resource.total === undefined) return resource
+    const partial = resource.offset === 0 ? { ...resource, data_base64: '' } : this.slices.get(resource.key)
+    if (!partial || partial.data_base64.length !== resource.offset || partial.resource_id !== resource.resource_id || partial.mime_type !== resource.mime_type || partial.total !== resource.total) throw Error('MP-08: mirror resource slice out of order')
+    partial.data_base64 += resource.data_base64
+    if (partial.data_base64.length < resource.total) { this.slices.set(resource.key, partial); return null }
+    this.slices.delete(resource.key)
+    return { key: resource.key, resource_id: resource.resource_id, mime_type: resource.mime_type, data_base64: partial.data_base64 }
+  }
   private restyle(entry: Styled): void {
     if (entry.kind === 'css') entry.node.textContent = this.substitute(entry.raw)
     else if (entry.kind === 'attr') entry.node.setAttribute('style', this.substitute(entry.raw))
@@ -196,7 +207,7 @@ export class BrowserMirror2Renderer {
     else if (element.namespaceURI === NS.svg) { if (url) element.setAttribute('href', url); else element.removeAttribute('href') }
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
   }
-  private form(element: Element, form: NonNullable<Mirror2Record['form']>): void {
+  private form(element: Element, form: Mirror2Form): void {
     const field = element as HTMLInputElement
     if (field.value !== form.value) field.value = form.value
     if ('checked' in field && field.type !== undefined) field.checked = form.checked
@@ -269,17 +280,20 @@ export class BrowserMirror2Renderer {
     if (!wire.reset && (wire.base_sequence !== this.sequence || wire.document_id !== this.documentId)) throw Error('MP-11: mirror lost base')
     const packet = resolveMirror2Sheets(wire, this.sheets)
     validateMirror2Packet(packet, this.records)
-    // Resource keys are per document; a new document starts an empty map.
+    // Resource keys are per document; a new document starts an empty map. A
+    // reset restarts resources still in slices (the kernel sends them again).
     if (packet.reset && packet.document_id !== this.documentId) { for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear() }
-    for (const resource of packet.resources) await this.addResource(resource)
+    if (packet.reset) this.slices.clear()
+    const complete: Mirror2Resource[] = []
+    for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
     if (this.disposed || !this.doc) throw Error('MP-08: mirror closed during validation')
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
       if (packet.reset) this.reset(packet, scrolls)
       for (const op of packet.ops ?? []) this.op(op, scrolls)
-      for (const resource of packet.resources) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
-      for (const resource of packet.resources) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
+      for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
+      for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
       for (const tile of packet.tiles) this.tile(tile)
       // The viewer owns scroll while it scrolls; the kernel's position applies on reset or when settled.
       if (packet.reset || !this.scrolling()) {
@@ -356,7 +370,7 @@ export class BrowserMirror2Renderer {
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
       case 'css': { this.records.get(op.id)!.css = op.css; this.setStyled(op.id, { kind: 'css', raw: op.css, node: node as Element, keys: [] }); break }
       case 'adopted': this.setStyled(op.id, { kind: 'adopted', raw: op.sheets as string[], node: node as Document | ShadowRoot, keys: [] }); break
-      case 'form': this.records.get(op.id)!.form = op.form; this.form(node as Element, op.form); break
+      case 'form': { const record = this.records.get(op.id)!, form = record.form = { value: '', checked: false, selected_index: -1, selection_start: null, selection_end: null, ...record.form, ...op.form }; this.form(node as Element, form); break }
       case 'scroll': scrolls.push([node as Element, op.scroll[0], op.scroll[1]]); break
       case 'size': { const style = (node as HTMLElement).style; style.setProperty('width', `${op.size[0]}px`, 'important'); style.setProperty('height', `${op.size[1]}px`, 'important'); this.records.get(op.id)!.size = op.size; break }
       case 'res': this.image(op.id, node as Element, op.res); break
@@ -377,22 +391,26 @@ export class BrowserMirror2Renderer {
     this.disposed = true; this.doc = null
     for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.resources.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
   }
 }
 
 export interface Mirror2Transport { protocolVersion: number; request(request: unknown): Promise<unknown> }
-// The kernel gzips the scrubbed packet body (no relay compression); encoded
-// resource/region bytes travel beside it. Inflation is bounded before parsing.
-export async function inflateMirror2Packet(wire: { encoding?: string; packet_base64?: string; packet_bytes?: number; resources?: unknown; tiles?: unknown } & Partial<Mirror2Packet>): Promise<Mirror2Packet> {
-  if (wire.encoding === undefined) return wire as Mirror2Packet
-  if (wire.encoding !== 'gzip' || typeof wire.packet_base64 !== 'string' || !Number.isSafeInteger(wire.packet_bytes) || wire.packet_bytes! < 2 || wire.packet_bytes! > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
-  const reader = new Blob([bytesOf(wire.packet_base64) as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream('gzip')).getReader()
-  const body = new Uint8Array(wire.packet_bytes!); let at = 0
-  try { for (;;) { const { done, value } = await reader.read(); if (done) break; if (value.length > body.length - at) throw Error('MP-11: mirror packet bounds'); body.set(value, at); at += value.length } } finally { await reader.cancel().catch(() => {}) }
-  if (at !== body.length) throw Error('MP-11: mirror packet bounds')
-  const packet = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)) as Mirror2Packet
-  return { ...packet, resources: wire.resources as Mirror2Resource[], tiles: wire.tiles as Mirror2Tile[] }
+// Protocol 489: the kernel deflates packet bodies in the subscription's
+// context (sync flush per packet, a fresh context per reset), so the viewer
+// inflates them strictly in sequence order. Inflation is bounded before parsing.
+export class Mirror2Inflater {
+  private writer: WritableStreamDefaultWriter<BufferSource>
+  private reader: ReadableStreamDefaultReader<Uint8Array>
+  constructor() { const stream = new DecompressionStream('deflate-raw'); this.writer = stream.writable.getWriter(); this.reader = stream.readable.getReader() }
+  async inflate(base64: unknown, size: unknown): Promise<string> {
+    if (typeof base64 !== 'string' || !Number.isSafeInteger(size) || (size as number) < 2 || (size as number) > 256 * 1024 * 1024) throw Error('MP-11: mirror packet bounds')
+    void this.writer.write(bytesOf(base64) as Uint8Array<ArrayBuffer>).catch(() => {})
+    const body = new Uint8Array(size as number); let at = 0
+    while (at < body.length) { const { done, value } = await this.reader.read(); if (done || value.length > body.length - at) throw Error('MP-11: mirror packet bounds'); body.set(value, at); at += value.length }
+    return new TextDecoder('utf-8', { fatal: true }).decode(body)
+  }
+  close(): void { void this.writer.abort().catch(() => {}); void this.reader.cancel().catch(() => {}) }
 }
 type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
 const GAP_MS = 500
@@ -403,21 +421,45 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 482')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 489')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0
-  const buffered = new Map<number, Mirror2Packet>()
+  const buffered = new Map<number, Mirror2WirePacket>()
+  // In sequence order: inflate in the context, then restore what a compact delta implies.
+  let inflater: Mirror2Inflater | null = null, base: Mirror2Packet | null = null
+  const expand = async (wire: Mirror2WirePacket): Promise<Mirror2Packet> => {
+    if (wire.reset) { inflater?.close(); inflater = null }
+    let body: Mirror2WirePacket = wire
+    if (wire.encoding !== undefined) {
+      if (wire.encoding !== 'deflate') throw Error('MP-11: mirror packet bounds')
+      const text = await (inflater ??= new Mirror2Inflater()).inflate(wire.packet_base64, wire.packet_bytes)
+      body = JSON.parse(text) as Mirror2WirePacket
+      if (body.sequence !== wire.sequence || Boolean(body.reset) !== Boolean(wire.reset)) throw Error('MP-11: foreign mirror packet')
+    }
+    const media = { resources: wire.resources ?? [], tiles: wire.tiles ?? [] }
+    if (wire.reset) {
+      const packet = decodeMirror2Packet({ ...body, ...media } as Mirror2Packet)
+      if (packet.subscription_id !== subscription_id || packet.tab_id !== binding.tab_id || packet.generation !== binding.generation) throw Error('MP-11: foreign mirror packet')
+      return packet
+    }
+    if (!base) throw Error('MP-08: mirror lost base')
+    const header = (name: 'scroll' | 'focused' | 'selection') => Object.hasOwn(body, name) ? body[name] : base![name]
+    return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection') } as Mirror2Packet)
+  }
   const renderer = createRenderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own
   // caller (which asks for a reset); later packets still drain.
   const drain = (): Promise<void> => { const run = chain.then(async () => {
-    for (let next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied); next; next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied)) {
-      for (const seq of buffered.keys()) if (seq <= next.sequence) buffered.delete(seq)
+    for (let wire = [...buffered.values()].find(p => p.reset || p.sequence === applied + 1); wire; wire = [...buffered.values()].find(p => p.reset || p.sequence === applied + 1)) {
+      for (const seq of buffered.keys()) if (seq <= wire.sequence) buffered.delete(seq)
+      const next = await expand(wire)
       if (!next.fallback) await renderer.apply(next)
+      base = next
       if (next.reset || next.ops?.length || next.resources.length || next.tiles.length) activeAt = performance.now()
       applied = next.sequence
       if (next.reset) wantReset = false
@@ -437,15 +479,17 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     if (reset) resetOutstanding = true
     inflight++
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs })
-      .then(inflateMirror2Packet).then(decodeMirror2Packet).then(async (packet: Mirror2Packet) => {
-        if (packet.subscription_id !== subscription_id || packet.tab_id !== binding.tab_id || packet.generation !== binding.generation || packet.wire !== 2) throw Error('MP-11: foreign mirror packet')
+      .then(async (packet: Mirror2WirePacket) => {
+        if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
         failures = 0; failingSince = 0
-        buffered.set(packet.sequence, packet); await drain()
+        // A replayed or late copy of an applied packet is not a gap.
+        if (packet.sequence > applied) buffered.set(packet.sequence, packet)
+        await drain()
       })
       .catch(error => {
         if (reset) resetOutstanding = false; wantReset = true; failures++; failingSince ||= performance.now()
-        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > FAILING_MS)) { closed = true; renderer.close(); handlers.failure(error) }
+        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > FAILING_MS)) { closed = true; inflater?.close(); renderer.close(); handlers.failure(error) }
       })
       .finally(() => { inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
@@ -458,7 +502,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   fill()
   return {
     renderer,
-    async close() { if (closed) return; closed = true; renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}) },
+    async close() { if (closed) return; closed = true; inflater?.close(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}) },
     takeover: () => request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation }),
     release: () => request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation }),
   }

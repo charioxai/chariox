@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -121,33 +122,62 @@ test('MP-10: queued credits wait one period each after their predecessor (one he
   assert.ok(Date.now() - started >= 290);
 });
 
-test('MP-10: a resource packet stays within its byte budget; a larger resource travels alone and not during input', async () => {
+test('MP-10: resources travel in 4-aligned slices within the packet budget (64 KB during input, 256 KB when quiet) and reassemble exactly', async () => {
   const png = size => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(size - 8, 7)]);
   const bodies = { 'https://x/a.png': png(150_000), 'https://x/b.png': png(150_000), 'https://x/big.png': png(400_000) };
-  const world = { connection: { send: async (method, params) => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: Object.keys(bodies).map(url => ({ url })) } } : { base64Encoded: true, content: bodies[params.url].toString('base64') } }, sessionId: 's', ref: 'm' };
+  const world = { connection: { send: async (method, params) => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: Object.keys(bodies).map(url => ({ url })) } } : { base64Encoded: true, content: bodies[params.url].toString('base64') } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
   const mirror = new Mirror2({ host: {} });
   mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [], all: [] } : expression.includes('loadedCount') ? 3 : ['r1', 'r2', 'r3'];
   const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: Date.now() };
   mirror.register(stream, { resources: [{ key: 'r1', url: 'https://x/a.png', kind: 'image' }, { key: 'r2', url: 'https://x/b.png', kind: 'image' }, { key: 'r3', url: 'https://x/big.png', kind: 'image' }] });
-  const packets = [];
-  for (let i = 0; i < 3; i++) packets.push((await mirror.materialize(world, stream, null)).map(r => [r.key, r.data_base64.length]));
-  assert.ok(packets.every(p => p.reduce((n, [, b]) => n + b, 0) <= 256 * 1024 || p.length === 1), JSON.stringify(packets));
-  assert.deepEqual(packets.flat().map(([key]) => key).sort(), ['r1', 'r2'], 'MP-10: the oversized resource waits while the viewer is active');
-  stream.inputAt = Date.now() - 2000;
-  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r3'], 'MP-10: alone once the viewer is quiet');
+  const packets = [], whole = new Map();
+  for (let i = 0; i < 40 && [...stream.resources.values()].some(entry => !entry.sent); i++) {
+    if (i === 3) stream.inputAt = Date.now() - 2000;
+    const packet = await mirror.materialize(world, stream, null);
+    packets.push({ input: i < 3, bytes: packet.reduce((n, r) => n + r.data_base64.length, 0) });
+    for (const r of packet) {
+      if (r.total === undefined) { whole.set(r.key, r.data_base64); continue; }
+      assert.equal(r.offset % 4, 0); assert.equal(r.offset, (whole.get(r.key) ?? '').length, 'slices arrive in order');
+      whole.set(r.key, (whole.get(r.key) ?? '') + r.data_base64);
+    }
+  }
+  assert.ok(packets.filter(p => p.input).every(p => p.bytes <= 64 * 1024 && p.bytes > 0), JSON.stringify(packets));
+  assert.ok(packets.every(p => p.bytes <= 256 * 1024), JSON.stringify(packets));
+  for (const [key, url] of [['r1', 'https://x/a.png'], ['r2', 'https://x/b.png'], ['r3', 'https://x/big.png']]) assert.equal(whole.get(key), bodies[url].toString('base64'), key);
 });
 
-test('MP-10: a large near image fetched during input still gets its preview once the view moves', async () => {
+test('MP-10: while the view moves a large near image travels as a preview, even mid-slices; its exact slices continue once settled', async () => {
   const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(400_000 - 8, 7)]);
-  const world = { connection: { send: async method => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: [{ url: 'https://x/big.png' }] } } : { base64Encoded: true, content: png.toString('base64') } }, sessionId: 's', ref: 'm' };
+  const world = { connection: { send: async method => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: [{ url: 'https://x/big.png' }] } } : { base64Encoded: true, content: png.toString('base64') } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
   const mirror = new Mirror2({ host: {} });
   mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [['r1', 250, 300]], all: ['r1'] } : expression.includes('loadedCount') ? 1 : expression.includes('preview(') ? '<svg xmlns="http://www.w3.org/2000/svg"/>' : ['r1'];
-  // Typing (recent input, view still): the oversized exact bytes wait, already fetched.
-  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: Date.now() };
+  // Typing (recent input, view still): the first exact slice travels.
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: Date.now(), issued: 0 };
   mirror.register(stream, { resources: [{ key: 'r1', url: 'https://x/big.png', kind: 'image' }] });
-  assert.deepEqual(await mirror.materialize(world, stream, null), []);
-  stream.movedAt = Date.now();
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type, r.offset]), [['r1', 'image/png', 0]]);
+  stream.movedAt = Date.now(); stream.issued++;
   assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type]), [['r1', 'image/svg+xml']], 'MP-10: preview while moving');
-  stream.movedAt = stream.inputAt = Date.now() - 2000;
-  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type]), [['r1', 'image/png']], 'MP-10: exact bytes once quiet');
+  stream.issued++;
+  assert.deepEqual(await mirror.materialize(world, stream, null), [], 'MP-10: no exact bytes while moving');
+  stream.movedAt = stream.inputAt = Date.now() - 2000; stream.issued++;
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => [r.key, r.mime_type, r.offset > 0]), [['r1', 'image/png', true]], 'MP-10: exact slices continue once quiet');
+});
+
+test('MP-10: protocol 489 bodies from 512 bytes deflate in the subscription context; echoes stay plain; a reset starts a fresh context', async () => {
+  const mirror = new Mirror2({ host: {} }), stream = {}, rows = Array.from({ length: 8 }, (_, i) => [1, 1, 'a', { class: 'suggestion-link', href: '#' }, { title: `Suggestion ${i}` }]);
+  const echo = { wire: 2, sequence: 2, ops: [{ op: 'form', id: 'n9', form: { value: 'a', selection_start: 1, selection_end: 1 } }] };
+  assert.deepEqual(await mirror.encode(stream, echo), echo, 'MP-10: an echo travels plain, outside the context');
+  const big = sequence => ({ wire: 2, sequence, ops: [{ op: 'children', id: 'n9', children: ['n10'], nodes: rows }], resources: [{ key: 'r1', data_base64: 'AAAA' }] });
+  const first = await mirror.encode(stream, big(3)), second = await mirror.encode(stream, big(4));
+  assert.deepEqual(Object.keys(first), ['wire', 'sequence', 'encoding', 'packet_bytes', 'packet_base64', 'resources']);
+  assert.deepEqual(first.resources, [{ key: 'r1', data_base64: 'AAAA' }]);
+  assert.ok(second.packet_base64.length < first.packet_base64.length / 3, `${second.packet_base64.length} vs ${first.packet_base64.length}`);
+  // The viewer's in-order inflation of the concatenated flushes reproduces each body.
+  const inflated = inflateRawSync(Buffer.concat([Buffer.from(first.packet_base64, 'base64'), Buffer.from(second.packet_base64, 'base64')]), { finishFlush: zlib.Z_SYNC_FLUSH }).toString();
+  const { resources: _r, ...body3 } = big(3), { resources: _s, ...body4 } = big(4);
+  assert.equal(inflated, JSON.stringify(body3) + JSON.stringify(body4));
+  const reset = await mirror.encode(stream, { ...big(5), reset: true, subscription_id: 's' });
+  assert.equal(reset.reset, true);
+  assert.equal(inflateRawSync(Buffer.from(reset.packet_base64, 'base64'), { finishFlush: zlib.Z_SYNC_FLUSH }).toString(), JSON.stringify({ wire: 2, sequence: 5, ops: big(5).ops, reset: true, subscription_id: 's' }), 'MP-10: a reset packet inflates on its own');
+  mirror.dispose({ ...stream, frames: new Map() }); stream.deflate?.close();
 });

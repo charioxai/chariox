@@ -1,12 +1,12 @@
-//! MP-08/MP-10/MP-11: protocol 447/482 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 447/489 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
     KernelBrowserRequest,
 };
 #[test]
-fn browser_mirror_protocol_482_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 482);
+fn browser_mirror_protocol_489_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 489);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         96
@@ -113,7 +113,7 @@ fn browser_mirror_protocol_482_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-482.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-489.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
