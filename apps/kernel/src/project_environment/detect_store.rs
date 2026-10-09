@@ -17,6 +17,13 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
     ) -> Result<Option<EnvironmentDetectionCache>, DaemonError> {
+        // Private proposal caches are disposable across corruption and schema rollback.
+        Ok(self.read_detection(project).ok().flatten())
+    }
+    fn read_detection(
+        &self,
+        project: &str,
+    ) -> Result<Option<EnvironmentDetectionCache>, DaemonError> {
         let path = self.path(project).with_extension("detect.json");
         let mut options = std::fs::OpenOptions::new();
         options.read(true);

@@ -418,3 +418,6 @@ mod review_2;
 
 #[path = "detect_review_3_tests.rs"]
 mod review_3;
+
+#[path = "detect_review_4_tests.rs"]
+mod review_4;
