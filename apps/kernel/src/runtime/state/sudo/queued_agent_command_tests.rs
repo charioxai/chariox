@@ -41,7 +41,7 @@ async fn queued_sudo_agent_cold_submit_rechecks_after_waiting_for_app_lock() {
     assert_queued_prompt(false, true, true, true).await;
 }
 
-fn replace_turn(f: &Fixture, window: &KernelSudoTurn) {
+pub(super) fn replace_turn(f: &Fixture, window: &KernelSudoTurn) {
     let session = f
         .state
         .owned

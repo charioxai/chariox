@@ -116,8 +116,8 @@ impl KernelRuntimeState {
         self.sudo_for_run(run.id())
     }
 
-    /// Lists the sudo tool for the whole live window, so waits and wakes do
-    /// not churn the provider catalog; each call still needs a bound turn.
+    /// MP-08/MP-11: test wait probe; catalog discovery persists without a window.
+    #[cfg(test)]
     pub(crate) fn sudo_window_open_for_auth_token(&self, token: &str) -> bool {
         let runs = self
             .owned

@@ -31,6 +31,8 @@ mod queued_command_tests;
 #[cfg(test)]
 mod relaunch_tests;
 #[cfg(test)]
+mod remote_command_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod window_tests;

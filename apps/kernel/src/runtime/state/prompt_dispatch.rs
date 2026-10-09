@@ -834,7 +834,7 @@ impl KernelRuntimeState {
         &self,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<(), DaemonError> {
-        self.authorize_current_forwarded_binding()?;
+        self.authorize_current_external_command()?;
         match authority {
             Some((id, request)) => self.authorize_external_request(id, request).map(|_| ()),
             None => Ok(()),
