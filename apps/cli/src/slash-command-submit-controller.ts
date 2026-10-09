@@ -11,6 +11,7 @@ type SlashCommand<K extends ParsedSlashCommand["kind"]> = Extract<ParsedSlashCom
 export type SlashCommandSubmitControllerDeps = {
   isAttached: () => boolean
   getSessionId: () => string
+  getPromptText?: () => string
   recordPromptAreaHistoryEntry: (sessionId: string, rawPrompt: string) => void
   clearPromptText: () => void
   setPromptHistoryIndex: (index: number | null) => void
@@ -90,7 +91,8 @@ export function createSlashCommandSubmitController(
     }
   }
 
-  const clearHandledCommandUi = (command: ParsedSlashCommand) => {
+  const clearHandledCommandUi = (command: ParsedSlashCommand, submittedPrompt: string) => {
+    if (deps.getPromptText && deps.getPromptText() !== submittedPrompt) return
     deps.clearPromptText()
     deps.setPromptHistoryIndex(null)
     deps.setPromptHistoryDraft(null)
@@ -112,18 +114,18 @@ export function createSlashCommandSubmitController(
       if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {
           if (await deps.handleSharedShellCommand(rawPrompt)) {
-            clearHandledCommandUi(slashCommand)
+            clearHandledCommandUi(slashCommand, rawPrompt)
             return slashCommand
           }
         } catch (error) {
           reportCommandError("shared shell command failed", trimmed, error)
-          clearHandledCommandUi(slashCommand)
+          clearHandledCommandUi(slashCommand, rawPrompt)
           return slashCommand
         }
       }
       const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
       if (clearBeforeHandler) {
-        clearHandledCommandUi(slashCommand)
+        clearHandledCommandUi(slashCommand, rawPrompt)
       }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
@@ -194,7 +196,7 @@ export function createSlashCommandSubmitController(
         return null
       }
       if (!clearBeforeHandler) {
-        clearHandledCommandUi(handledCommand)
+        clearHandledCommandUi(handledCommand, rawPrompt)
       }
       return handledCommand
     },
