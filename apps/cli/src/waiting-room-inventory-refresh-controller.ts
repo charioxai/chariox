@@ -105,7 +105,10 @@ export function createWaitingRoomInventoryRefreshController(
     const kernels = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteKernels).map(row => [row.kernel_id, row])).values()]
     options.setRemoteMachines(retainedMachines.restore(machines).map(row => ({ ...row, online: false })))
     options.setRemoteKernels(retainedKernels.restore(kernels).map(row => ({ ...row, accepting_remote_leases: false })))
-    options.setProjects?.([...new Map(snapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
+    const workspaceSnapshots = snapshots.filter(snapshot => options.shouldApplyWorkspaceInventory?.(snapshot) !== false)
+    if (workspaceSnapshots.length || !snapshots.length) {
+      options.setProjects?.([...new Map(workspaceSnapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
+    }
   }
   if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
 
