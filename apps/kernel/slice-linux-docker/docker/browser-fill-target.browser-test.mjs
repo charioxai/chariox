@@ -17,11 +17,12 @@ const { measureBrowserProtection, recordBrowserFill } = regions;
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
-async function videoPixels(png,dpr,label,required=false) {
+async function videoPixels(png,dpr,label,required=false,masks=[]) {
   if(!required&&process.env.CHARIOX_FILL_VIDEO!=='1')return null;
   const encoder=new PortableEncoder();
   try {
-    const packet=await encoder.encode(png,8000000,true,'avc1.420033');
+    const packet=await encoder.encode(png,8000000,true,'avc1.420033',masks);
+    if(packet.dropped===true)return null; // MP-11: refused lossy output keeps the exact masked image.
     const data=typeof packet==='string'?packet:packet.data_base64,codec=typeof packet==='string'?'vp9':'h264';
     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.${codec}`),Buffer.from(data,'base64'));
     return await new Promise((resolve,reject)=>{
@@ -63,7 +64,7 @@ async function setup(dpr, run) {
     const policy={unknown:false,values:[value],targets:[]};
     const fill=async(selector)=>{const node_ref=await ref(selector);const result=await browser.performAction({target_id:targetId,document_id:documentId,node_ref,action:{kind:'fill',text:value,expected_document_url:url}});policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});return result;};
     const collect=async()=> (await measureBrowserProtection(browser,policy)).pages[0].regions;
-    const capture=async label=>{const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr);if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.png`),Buffer.from(data,'base64'));const decoded=decodePng(data,dpr);decoded.video=await videoPixels(data,dpr,label);return decoded;};
+    const capture=async label=>{let masks=[];const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr,null,regions=>{masks=regions.map(([x,y,width,height])=>({x,y,width,height}))});if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.png`),Buffer.from(data,'base64'));const decoded=decodePng(data,dpr);decoded.video=await videoPixels(data,dpr,label,false,masks);return decoded;};
     await run({browser,connection,sessionId,targetId,documentId,evaluate,ref,policy,fill,collect,capture,url,dpr});
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
@@ -130,9 +131,11 @@ for(const dpr of [1,2]) {
          assert.equal((await mirror()).nodes.filter(n=>n.kind==='mask').length,1);
          const y=selector==='#plain'?90:310,i=((y*dpr)*revealed.width+100*dpr)*4;
          assert.deepEqual([...revealed.pixels.subarray(i,i+3)],[0,0,0]);
-         const protectedPng=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},context.policy.values,context.policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr);
-         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true);
-         assert([...revealedVideo.subarray(i,i+3)].every(channel=>channel<5),'MP-11 revealed field stays covered in decoded production video');
+         let masks=[];const protectedPng=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},context.policy.values,context.policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data,dpr,null,regions=>{masks=regions.map(([x,y,width,height])=>({x,y,width,height}))});
+         const revealedVideo=await videoPixels(protectedPng,dpr,`revealed-${selector.slice(1)}-${ancestor}`,true,masks);
+         // MP-11: lossy black follows the unchanged encoder RGB32 guard;
+         // exact image/repair pixels above still require literal black.
+         assert(revealedVideo===null||[...revealedVideo.subarray(i,i+3)].every(channel=>channel<=32),'MP-11 revealed field stays covered in decoded production video');
        }
        await evaluate(`document.querySelector(${JSON.stringify(selector)}).${selector==='#editor'?'textContent':'value'}=''`);assert.deepEqual(await collect(),[]);
      }
@@ -176,15 +179,21 @@ for(const dpr of [1,2]) {
  }));
  // MP-08/MP-11: the host's screencast-triggered captures run outside the kernel's Vault
  // input barrier; one landing between recording and the completed value must not retire it.
- test(`MP-08/MP-11 DPR${dpr}: a capture during an in-flight fill keeps the field tracked`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate})=>{
+ test(`MP-08/MP-11 DPR${dpr}: a capture during an in-flight fill keeps the field tracked`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate,capture})=>{
+   await connection.send('Page.startScreencast',{format:'png',everyNthFrame:1},sessionId);
    const node_ref=await ref('#plain');
    policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});
    const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef:node_ref,browserGeneration:browser.browserGeneration,action:{kind:'fill'}},value,1);
    browser.fillTargets.set(`${targetId}:${node_ref}`,target);
-   assert.equal((await collect()).length,1,'MP-11 an in-flight fill stays covered');
+   assert.equal((await collect()).length,1,'MP-11 background metadata on an existing screencast keeps the paused fill covered');
+   await capture('pending-fill');
    await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
    regions.finishBrowserFill?.(connection,target);
    assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
+   const frame=await capture('completed-fill');const i=((90*dpr)*frame.width+100*dpr)*4;
+   assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
+   if(frame.video)assert([...frame.video.subarray(i,i+3)].every(channel=>channel<=32),'MP-11 completed fill video is guarded');
+   await connection.send('Page.stopScreencast',{},sessionId);
  }));
 
  test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
