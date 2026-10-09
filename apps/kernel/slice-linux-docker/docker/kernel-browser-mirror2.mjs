@@ -5,7 +5,6 @@
 import { createHash } from 'node:crypto';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
 import { assertCurrentDocument, assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
@@ -143,12 +142,15 @@ export class Mirror2 {
     return marked;
   }
   // Registered Vault targets are marked by node identity in the observer's world.
-  async protectTargets(world, tab, policy) {
+  // Fields the kernel filled from the Vault, by node identity: top-level refs
+  // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
+  async protectTargets(world, tab, policy, prefix = '') {
     await this.evaluate(world, 'globalThis.__charioxMirror2.resetTargets()');
     for (const target of policy.targets) {
-      if (target.kind !== 'browser' || target.target_id !== tab.target_id || target.document_id && target.document_id !== tab.document_id) continue;
-      const match = /^backend:([1-9][0-9]*)$/.exec(target.node_ref ?? '');
-      if (!match) continue; // frame-prefixed targets live in opaque frames; region pixels are masked at capture.
+      if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
+      if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;
+      const match = /^backend:([1-9][0-9]*)$/.exec(target.node_ref.slice(prefix.length));
+      if (!match) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId: Number(match[1]), executionContextId: world.contextId }, world.sessionId);
         const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function(){return globalThis.__charioxMirror2.protect.call(this)}', returnByValue: true }, world.sessionId);
@@ -183,7 +185,6 @@ export class Mirror2 {
     const world = await this.world(tab), policy = this.host.protection;
     stream.world = world;
     mark('world');
-    const variants = observationProtectedVariants(policy.values);
     const after = command.after_sequence;
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
@@ -198,26 +199,26 @@ export class Mirror2 {
       if (reset) {
         await this.protectTargets(world, tab, policy);
         await this.markClosedHosts(world);
-        const snap = await this.evaluate(world, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
+        const snap = await this.evaluate(world, 'globalThis.__charioxMirror2.snapshot()');
         if (snap.resync) return snap;
         // Cross-origin frames: child DOM under the owner, or an opaque region.
-        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), variants, policy, tab);
+        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.opaque(snap.nodes, frames.opaque);
         return { ...snap, nodes: [...snap.nodes, ...frames.records], ops: frames.ops, resources: [...snap.resources, ...(frames.resources ?? [])] };
       }
-      return processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`));
+      return processDelta(await this.evaluate(world, 'globalThis.__charioxMirror2.drain()'));
     };
     const processDelta = async delta => {
       if (delta.resync) return delta;
       const ops = [], resources = [...delta.resources];
       for (const op of delta.ops) {
         if (op.op === 'children') {
-          const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), variants, policy, tab);
+          const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
           this.opaque(op.nodes, frames.opaque);
           ops.push({ ...op, nodes: [...op.nodes, ...frames.records] }, ...frames.ops); resources.push(...(frames.resources ?? []));
         } else ops.push(op);
       }
-      const children = await this.frames.drain(stream, variants);
+      const children = await this.frames.drain(stream, policy, tab);
       return { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources] };
     };
     let resources = [];
@@ -231,7 +232,7 @@ export class Mirror2 {
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
-        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, deadline - Date.now()))},${JSON.stringify({ variants })})`, true));
+        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, deadline - Date.now()))})`, true));
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);

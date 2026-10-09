@@ -75,12 +75,15 @@ export class MirrorFrames {
   }
   // Attach every foreign frame named in this packet's records; others become
   // opaque regions. Returns rebased child snapshot records (document under owner).
-  async attach(world, stream, foreignIds, variants, policy, tab) {
+  // Child snapshot with the frame's Vault fill targets protected by identity.
+  async snapshot(child, loaderId, policy, tab) {
+    await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
+    return this.mirror.evaluate(child, 'globalThis.__charioxMirror2.snapshot()');
+  }
+  async attach(world, stream, foreignIds, policy, tab) {
     const out = { records: [], ops: [], opaque: [] };
     if (!foreignIds.length) return out;
-    // Vault targets inside child frames are only protected by region pixels.
-    const frameTargets = policy.targets.some(t => t.kind === 'browser' && t.target_id === tab.target_id && /^frame:/.test(t.node_ref ?? ''));
-    const owners = frameTargets ? new Map() : await this.owners(world);
+    const owners = await this.owners(world);
     for (const id of foreignIds) {
       const frame = owners.get(id);
       if (!frame || stream.frames.size >= MAX_FRAMES) { this.failed('unowned', `${owners.size} owners`); out.opaque.push(id); continue; }
@@ -88,7 +91,7 @@ export class MirrorFrames {
         const slot = ++stream.frameSlot;
         const child = await this.world(world, frame);
         const loaderId = await this.loaderId(child);
-        const snap = await this.mirror.evaluate(child, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
+        const snap = await this.snapshot(child, loaderId, policy, tab);
         const entry = { slot, owner: id, child, loaderId };
         stream.frames.set(id, entry); stream.frameSlots.set(slot, entry);
         const records = snap.nodes.map(r => rebaseRecord(r, slot));
@@ -101,13 +104,13 @@ export class MirrorFrames {
     return out;
   }
   // Deltas of attached children; a navigated child is re-snapshotted under its owner.
-  async drain(stream, variants) {
+  async drain(stream, policy, tab) {
     const out = { ops: [], resources: [] };
     for (const [owner, entry] of stream.frames) {
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
-        const delta = await this.mirror.evaluate(entry.child, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`);
+        const delta = await this.mirror.evaluate(entry.child, 'globalThis.__charioxMirror2.drain()');
         if (delta.resync) throw new Error('resync');
         out.ops.push(...delta.ops.map(op => rebaseOp(op, entry.slot)));
         out.resources.push(...delta.resources.map(d => ({ ...d, key: rebaseKey(d.key, entry.slot), slot: entry.slot })));
@@ -117,9 +120,9 @@ export class MirrorFrames {
         try {
           const owners = await this.owners(this.mirror.parentWorld(stream));
           const frame = owners.get(owner); if (!frame) continue;
-          const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame);
-          const snap = await this.mirror.evaluate(child, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
-          const next = { slot, owner, child, loaderId: await this.loaderId(child) };
+          const slot = ++stream.frameSlot, child = await this.world(this.mirror.parentWorld(stream), frame), loaderId = await this.loaderId(child);
+          const snap = await this.snapshot(child, loaderId, policy, tab);
+          const next = { slot, owner, child, loaderId };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner };
           out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records });

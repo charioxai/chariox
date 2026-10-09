@@ -62,13 +62,18 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   packet; the web client shows protected video and retries the mirror after
   30 s, doubling to 10 min.
 
-MP-11 rules for v2 (confirmed by Miguel 2026-10-09): Vault variants in text
-(including split across nodes), attributes, form values and CSS text; protected
-markers, password/OTP/payment fields and registered Vault target nodes are
-masks with their subtree withheld; fonts always ship; images ship unless the
-element is protected or its URL carries a variant; every url() spelling is a
-kernel resource key or `none`; the client validates every packet independently
-(unknown record keys, forbidden tags/attributes, any fetching CSS refused).
+MP-11 rules for v2 (owner decision, Miguel 2026-10-09 11:30 UTC, replacing the
+earlier variant scanning): only the fields the kernel filled from the Vault are
+masked, by node identity (top-level `backend:N` and child-frame
+`frame:<id>:<loader>:backend:N` targets), and only while they are plain text
+fields (text-like input, textarea, contenteditable); the type is checked on
+every capture, so a show-password toggle becomes a mask. A password field
+renders as dots of the same length and its value never leaves, nor does a
+hidden input's. No page-text, attribute or CSS value scanning and no
+container, frame or media masks: cross-origin frames are mirrored. Fonts and
+images ship; every url() spelling is a kernel resource key or `none`; the
+client validates every packet independently (unknown record keys, forbidden
+tags/attributes, any fetching CSS refused).
 
 ## Contract and authority
 

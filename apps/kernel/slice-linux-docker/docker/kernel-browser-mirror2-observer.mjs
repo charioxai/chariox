@@ -8,7 +8,7 @@ export const mirror2ObserverExpression = () => `(${installMirror2.toString()})($
 // Pure CSS sanitizer, shared verbatim with the kernel (cross-origin sheets read
 // through CDP). Every url() becomes a kernel resource key or `none`; nothing
 // executable or network-addressable survives. Input must be CSSOM-serialized.
-export function sanitizeMirrorCss(text, base, resource, variants = []) {
+export function sanitizeMirrorCss(text, base, resource) {
   // Known namespace URIs are identifiers, never fetched; any other @namespace drops.
   const namespaces = new Set(['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML', 'http://www.w3.org/1999/xlink']);
   let out = text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
@@ -37,7 +37,6 @@ export function sanitizeMirrorCss(text, base, resource, variants = []) {
   // Residual spellings the rewrites cannot parse (an unterminated url( inside a
   // string, a bare @import) are neutralized; the client refuses any that remain.
   out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
-  for (const variant of variants) if (variant && out.includes(variant)) out = out.replaceAll(variant, '*'.repeat(Math.min(variant.length, 64)));
   return out;
 }
 
@@ -56,15 +55,18 @@ export function installMirror2(sanitizeMirrorCss) {
   // attr() of the page's own CSS references it (CSS is the only reader).
   const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
   const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time color hidden'.split(' '));
-  const MARKERS = '[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]';
-  let serial = 0, variants = [], targets = new WeakSet(), records = [], overflow = false, revision = 0;
+  // Owner rule (MP-11, 2026-10-09): mask only the fields the kernel filled from
+  // the Vault, and only while they are plain text fields (a password field shows
+  // dots; its value never leaves). No page-text, attribute or CSS value scanning.
+  const PLAIN = new Set('text search email url number tel'.split(' '));
+  let serial = 0, targets = new WeakSet(), records = [], overflow = false, revision = 0;
   const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map();
   const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
   // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
   // this world cannot read their content, so they are opaque regions.
   const closedHosts = new WeakSet();
   const urlKeys = new Map();
-  let newResources = [], pendingSheets = [], marked = new WeakSet(), lastSheetCheck = 0, cssAttrs = null;
+  let newResources = [], pendingSheets = [], lastSheetCheck = 0, cssAttrs = null;
   const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
   const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
   // New attribute names in CSS mean earlier records lack attributes: resnapshot.
@@ -73,12 +75,11 @@ export function installMirror2(sanitizeMirrorCss) {
   let waiters = [];
   const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
   const observer = new MutationObserver(list => { revision++; if (records.length + list.length > 100000) overflow = true; else for (const record of list) records.push(record); wake(); });
-  const tainted = value => typeof value === 'string' && variants.some(secret => value.includes(secret));
   const idOf = node => { let id = ids.get(node); if (!id) { id = `n${++serial}`; ids.set(node, id); } return id; };
   const mirrored = node => { const id = ids.get(node); return id && nodes.get(id) === node ? id : null; };
   const resource = (raw, base, kind) => {
     let url; try { url = new URL(raw, base); } catch { return null; }
-    if (!['http:', 'https:', 'data:'].includes(url.protocol) || tainted(url.href) || url.href.length > 4 * 1024 * 1024) return null;
+    if (!['http:', 'https:', 'data:'].includes(url.protocol) || url.href.length > 4 * 1024 * 1024) return null;
     if (url.protocol === 'data:' && !/^data:(image\/(png|jpeg|gif|webp|svg\+xml)|font\/|application\/(font|x-font)|application\/octet-stream)/i.test(url.href)) return null;
     const known = urlKeys.get(url.href); if (known) return known.key;
     if (urlKeys.size >= RESOURCE_BUDGET) return null;
@@ -95,12 +96,12 @@ export function installMirror2(sanitizeMirrorCss) {
     }
     return out;
   };
-  const css = (sheet, base) => sanitizeMirrorCss(sheetText(sheet, base), base, resource, variants);
-  const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource, variants);
+  const css = (sheet, base) => sanitizeMirrorCss(sheetText(sheet, base), base, resource);
+  const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
   const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
   const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
-  const secretElement = node => node.matches(MARKERS) || /password|one-time-code|cc-/i.test(node.autocomplete ?? '') || targets.has(node)
-    || tainted(node.value) || [...node.attributes].some(a => tainted(a.value));
+  const plainText = node => node.localName === 'input' ? PLAIN.has(node.type) : node.localName === 'textarea' || node.isContentEditable;
+  const secretElement = node => targets.has(node) && plainText(node);
   const listened = new WeakSet();
   const watch = (root, rootId) => {
     roots.set(rootId, root);
@@ -112,23 +113,6 @@ export function installMirror2(sanitizeMirrorCss) {
       listen('input', event => { dirty.form.add(event.target); wake(); }); listen('change', event => { dirty.form.add(event.target); wake(); });
       listen('focusin', wake); listen('selectionchange', wake);
       listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
-    }
-  };
-  // Text nodes carrying a registered value, including values split across nodes.
-  const markSecrets = () => {
-    marked = new WeakSet();
-    if (!variants.length) return;
-    const runs = []; let text = '';
-    const scan = (node, depth) => {
-      if (depth > DEPTH) return;
-      if (node.nodeType === 3) { runs.push([node, text.length]); text += node.data; return; }
-      for (const child of node.childNodes) scan(child, depth + 1);
-      if (node.shadowRoot) scan(node.shadowRoot, depth + 1);
-      if (node.localName === 'iframe') { let nested = null; try { nested = node.contentDocument; } catch {} if (nested) scan(nested, depth + 1); }
-    };
-    scan(document, 0);
-    for (const value of variants) for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
-      for (const [node, start] of runs) if (start < at + value.length && start + node.length > at) marked.add(node);
     }
   };
   let budget = { nodes: 0, bytes: 0 };
@@ -144,14 +128,14 @@ export function installMirror2(sanitizeMirrorCss) {
     const [, , width, height] = box(node);
     record.kind = 'tile'; record.reason = reason; record.size = [width, height];
     record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
-    const attrs = {}; for (const name of ['class', 'id', 'width', 'height']) { const value = node.getAttribute(name); if (value !== null && !tainted(value) && value.length <= 4096) attrs[name] = value; } record.attrs = attrs;
+    const attrs = {}; for (const name of ['class', 'id', 'width', 'height']) { const value = node.getAttribute(name); if (value !== null && value.length <= 4096) attrs[name] = value; } record.attrs = attrs;
   };
   const maskRecord = (node, record) => {
     const element = node.nodeType === 1;
     const [, , width, height] = element ? box(node) : textBox(node);
     record.kind = 'mask'; record.size = [width, height];
     record.tag = element && node.namespaceURI === HTML && /^[a-z][a-z0-9]*$/.test(node.localName) && !OPAQUE.has(node.localName) && !DROP.has(node.localName) && node.localName !== 'iframe' ? node.localName : 'span';
-    if (element) { const attrs = {}; for (const name of ['class', 'id']) { const value = node.getAttribute(name); if (value !== null && !tainted(value) && value.length <= 4096) attrs[name] = value; } record.attrs = attrs; record.display = getComputedStyle(node).display; }
+    if (element) { const attrs = {}; for (const name of ['class', 'id']) { const value = node.getAttribute(name); if (value !== null && value.length <= 4096) attrs[name] = value; } record.attrs = attrs; record.display = getComputedStyle(node).display; }
     else record.display = 'inline-block';
   };
   const attributes = (node, base) => {
@@ -161,6 +145,8 @@ export function installMirror2(sanitizeMirrorCss) {
       if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || lower.startsWith('on') || value.length > 65536) continue;
       if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
       if (DENY_ATTR.has(lower) || !keepAttr(html, lower)) continue;
+      // Password and hidden values never leave (form state carries dots / nothing).
+      if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
       // Presentation attributes may reference paint servers by fragment only.
       if (/url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) continue;
       if (/^\s*javascript:/i.test(value)) continue;
@@ -175,17 +161,19 @@ export function installMirror2(sanitizeMirrorCss) {
     if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
     return attrs;
   };
-  const formState = node => ({ value: String(node.value ?? '').slice(0, 65536), checked: !!node.checked, selected_index: node.selectedIndex ?? -1, selection_start: node.selectionStart ?? null, selection_end: node.selectionEnd ?? null });
+  // A password field renders dots of the same length; a hidden input is never shown.
+  const formValue = node => node.type === 'password' ? '\u2022'.repeat(Math.min(String(node.value ?? '').length, 65536)) : node.type === 'hidden' ? '' : String(node.value ?? '').slice(0, 65536);
+  const formState = node => ({ value: formValue(node), checked: !!node.checked, selected_index: node.selectedIndex ?? -1, selection_start: node.selectionStart ?? null, selection_end: node.selectionEnd ?? null });
   const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { sheets.push(css(sheet, root.baseURI ?? document.baseURI)); } catch { sheets.push(''); } } return sheets; };
   const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { try { return sheet.cssRules.length; } catch { return -1; } }).join(',');
   const sheetSignature = sheet => { try { return `${sheet.cssRules.length}:${sheet.disabled}`; } catch { return 'x'; } };
   const styleRecord = (node, record) => {
     record.tag = 'style'; record.attrs = {};
-    const media = node.getAttribute('media'); if (media && !tainted(media) && media.length <= 4096) record.attrs.media = media;
+    const media = node.getAttribute('media'); if (media && media.length <= 4096) record.attrs.media = media;
     const sheet = node.sheet; record.css = '';
     if (sheet) {
       if (sheet.disabled) record.attrs.media = 'not all';
-      try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href && !tainted(sheet.href)) pendingSheets.push({ id: record.id, url: sheet.href }); }
+      try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
     }
     styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css });
   };
@@ -197,8 +185,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const id = idOf(node), record = { id, parent, kind: 'element' };
     if (type === 3) {
       if (node.parentNode?.localName === 'style') return null;
-      if (marked.has(node)) { maskRecord(node, record); record.kind = 'mask'; }
-      else { record.kind = 'text'; record.text = node.data; }
+      record.kind = 'text'; record.text = node.data;
       spend(32 + (record.text?.length ?? 0)); out.push(record); remember(record, node); return id;
     }
     if (type === 9 || type === 11) {
@@ -258,18 +245,15 @@ export function installMirror2(sanitizeMirrorCss) {
     return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, revision };
   };
   const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
-  const configure = policy => { variants = Array.isArray(policy?.variants) ? policy.variants.filter(v => typeof v === 'string' && v) : []; };
   const resetTargets = () => { targets = new WeakSet(); return true; };
   // Full snapshot: forget every id. Resource keys stay stable per document.
-  const snapshot = (policy = {}) => {
-    configure(policy);
+  const snapshot = () => {
     observer.disconnect(); records = []; overflow = false;
     for (const key of Object.keys(dirty)) dirty[key].clear();
     for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
     nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
     pendingSheets = []; budget = { nodes: 0, bytes: 0 };
     newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
-    markSecrets();
     cssAttrs = null;
     const out = [], root = serialize(document, null, out);
     cssAttrs = new Set();
@@ -297,10 +281,7 @@ export function installMirror2(sanitizeMirrorCss) {
     kids.set(id, list);
     ops.push({ op: 'children', id, children: list, nodes: out.splice(0) });
   };
-  const drain = (policy = {}) => {
-    const before = variants.join('\u0000');
-    configure(policy);
-    if (variants.join('\u0000') !== before) return { resync: 'policy' };
+  const drain = () => {
     if (overflow) return { resync: 'overflow' };
     budget = { nodes: nodes.size, bytes: 0 };
     const batch = records; records = [];
@@ -315,10 +296,6 @@ export function installMirror2(sanitizeMirrorCss) {
       } else if (record.type === 'characterData') {
         if (target.parentNode?.localName === 'style') dirty.sheets.add(target.parentNode); else dirty.text.add(target);
       }
-    }
-    if (variants.length && (dirty.text.size || dirty.children.size)) {
-      markSecrets();
-      for (const [id, node] of nodes) if (node.nodeType === 3 && marked.has(node) !== (kindOf.get(id) === 'mask')) dirty.replace.add(node);
     }
     const ops = [], out = [];
     // Protection status and opaque-kind changes replace the node under a new id.
@@ -370,7 +347,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (sheet) { try { text = css(sheet, sheet.href ?? entry.node.baseURI); } catch { if (sheet.href && signature !== entry.signature) pendingSheets.push({ id, url: sheet.href }); text = entry.text; } if (sheet.disabled) media = 'not all'; }
         entry.signature = signature;
         if (text !== entry.text) { entry.text = text; ops.push({ op: 'css', id, css: text }); }
-        if (dirty.sheets.has(entry.node)) ops.push({ op: 'attr', id, name: 'media', value: media && !tainted(media) ? media : null });
+        if (dirty.sheets.has(entry.node)) ops.push({ op: 'attr', id, name: 'media', value: media || null });
       }
     }
     for (const [id, root] of roots) {
@@ -464,7 +441,7 @@ export function installMirror2(sanitizeMirrorCss) {
     if (a.nodeType !== 3 || b.nodeType !== 3 || a.ownerDocument !== b.ownerDocument || !Number.isInteger(request.anchor_offset) || !Number.isInteger(request.focus_offset) || request.anchor_offset < 0 || request.anchor_offset > a.length || request.focus_offset < 0 || request.focus_offset > b.length) throw new Error('mirror2 invalid selection');
     const range = a.ownerDocument.createRange(), pa = a.ownerDocument.createRange(), pb = a.ownerDocument.createRange(); pa.setStart(a, request.anchor_offset); pa.collapse(true); pb.setStart(b, request.focus_offset); pb.collapse(true);
     if (pa.compareBoundaryPoints(Range.START_TO_START, pb) > 0) { range.setStart(b, request.focus_offset); range.setEnd(a, request.anchor_offset); } else { range.setStart(a, request.anchor_offset); range.setEnd(b, request.focus_offset); }
-    for (const [id, node] of nodes) if (node.ownerDocument === a.ownerDocument && (kindOf.get(id) === 'mask' || node.nodeType === 1 && node.matches(MARKERS) || variants.some(v => (node.nodeValue ?? node.value ?? '').includes(v))) && range.intersectsNode(node)) throw new Error('mirror2 selection intersects protected content');
+    for (const [id, node] of nodes) if (node.ownerDocument === a.ownerDocument && kindOf.get(id) === 'mask' && range.intersectsNode(node)) throw new Error('mirror2 selection intersects protected content');
     a.ownerDocument.getSelection().setBaseAndExtent(a, request.anchor_offset, b, request.focus_offset); return true;
   };
   // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer.
@@ -515,13 +492,13 @@ export function installMirror2(sanitizeMirrorCss) {
   // capture-phase listener or MutationObserver callback, so an echo does not
   // wait for the page's own handlers to finish their task. A change flagged
   // between drains (input event, scroll, load) resolves immediately.
-  const waitDrain = (ms, policy) => new Promise((resolve, reject) => {
+  const waitDrain = ms => new Promise((resolve, reject) => {
     let settled = false;
-    const finish = () => { if (settled) return; settled = true; try { resolve(drain(policy)); } catch (error) { reject(error); } };
+    const finish = () => { if (settled) return; settled = true; try { resolve(drain()); } catch (error) { reject(error); } };
     if (changed()) return finish();
     waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
   });
-  const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource, variants);
+  const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
   // URLs this document actually fetched (Resource Timing): the kernel reads
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };

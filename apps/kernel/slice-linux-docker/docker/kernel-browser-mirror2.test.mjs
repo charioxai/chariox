@@ -48,11 +48,14 @@ test('MP-11: unparseable url( and @import spellings inside strings are neutraliz
   assert.ok(out.includes('url("mr:r1")'), out);
 });
 
-test('MP-11: executable CSS is invalidated and Vault values never leave in CSS text', () => {
+// Owner rule (2026-10-09): no value scanning in page CSS; only Vault-filled
+// plain text fields are masked (by node identity, in the observer).
+test('MP-11: executable CSS is invalidated; page CSS text is not value-scanned', () => {
   const { resource } = keys();
-  const out = sanitizeMirrorCss('@import url(a.css);\n.c{background:url(javascript:alert(1))}.d::before{content:"javascript:x"}\n.a{width:expression(alert(1));behavior:url(x.htc);-moz-binding:url(b.xml);} .b::after{content:"hunter2-SECRET"}\n@namespace svg url(http://www.w3.org/2000/svg);\n@namespace x url(https://evil.example/);',
-    'https://site.example/', resource, ['hunter2-SECRET']);
-  assert.ok(!/@import|expression\s*\(|javascript:|-moz-binding|(^|[;{\s])behavior\s*:|hunter2-SECRET|evil/i.test(out), out);
+  const out = sanitizeMirrorCss('@import url(a.css);\n.c{background:url(javascript:alert(1))}.d::before{content:"javascript:x"}\n.a{width:expression(alert(1));behavior:url(x.htc);-moz-binding:url(b.xml);} .b::after{content:"page-text"}\n@namespace svg url(http://www.w3.org/2000/svg);\n@namespace x url(https://evil.example/);',
+    'https://site.example/', resource);
+  assert.ok(!/@import|expression\s*\(|javascript:|-moz-binding|(^|[;{\s])behavior\s*:|evil/i.test(out), out);
+  assert.ok(out.includes('content:"page-text"'), out);
   assert.ok(out.includes('@namespace svg "http://www.w3.org/2000/svg";'));
   assert.ok(onlyKernelUrls(out), out);
 });

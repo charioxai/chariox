@@ -112,8 +112,10 @@ if (process.argv[2] !== 'child') {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const viewerUrl = `http://127.0.0.1:${server.address().port}/`;
   // MP-11 protection fixture (served locally; the frame origin differs -> out-of-process frame).
-  const SECRET = 'SECRET-VALUE-123';
-  const frameServer = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><body><p>frame ${SECRET}</p><input value="${SECRET}"><p>frame ordinary</p></body>`); });
+  // Owner rule (2026-10-09): only fields the kernel filled from the Vault are
+  // masked, while they are plain text fields; page text echoes stay visible.
+  const SECRET = 'SECRET-VALUE-123', FILLED = 'FILLED-VALUE-789', FILLEDPW = 'FILLEDPW-456', FRAMEFILL = 'FRAMEFILL-321';
+  const frameServer = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><body><p>frame ${SECRET}</p><input id="framefill" value="${FRAMEFILL}"><p>frame ordinary</p></body>`); });
   await new Promise(resolve => frameServer.listen(0, '127.0.0.1', resolve));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
   const fixtureServer = createServer((req, res) => {
@@ -122,13 +124,28 @@ if (process.argv[2] !== 'child') {
     res.setHeader('content-type', 'text/html');
     res.end(`<!doctype html><html><head><style>.css-secret::after{content:"${SECRET}"} .bg{width:20px;height:20px;background:url("/img.png?${SECRET}")}</style></head><body>
 <p id="plain">before ${SECRET} after</p><p id="split">SECRET-<b>VALUE</b>-123</p><p class="css-secret">css</p>
-<div title="x ${SECRET} y" id="attr">attr</div><input id="form" value="${SECRET}"><input type="password" value="hunter2pass">
+<div title="x ${SECRET} y" id="attr">attr</div><input id="filled" value="${FILLED}"><input id="filledpw" type="password" value="${FILLEDPW}"><input type="password" value="hunter2pass"><input type="hidden" value="hidden-token-555">
 <section data-chariox-secret>marked hidden text</section><img alt="${SECRET}" src="/img.png" width="10" height="10"><div class="bg"></div>
 <p id="b64">${Buffer.from(SECRET).toString('base64')}</p><p id="ordinary">ordinary visible text</p><p id="tainted-later">clean until tainted</p><x-host></x-host>
 <iframe src="http://localhost:${frameServer.address().port}/frame" style="width:400px;height:120px"></iframe><p id="late"></p>
-<y-closed style="display:block;width:120px;height:30px"></y-closed><script>document.querySelector('y-closed').attachShadow({mode:'closed'}).innerHTML='<b>closed content</b>';document.querySelector('x-host').attachShadow({mode:'open'}).innerHTML='<span>shadow ${SECRET}</span>';setTimeout(()=>{document.querySelector('#late').textContent='late ${SECRET}';document.querySelector('#tainted-later').setAttribute('data-x','${SECRET}')},1500)</script></body></html>`);
+<y-closed style="display:block;width:120px;height:30px"></y-closed><script>document.querySelector('y-closed').attachShadow({mode:'closed'}).innerHTML='<b>closed content</b>';document.querySelector('x-host').attachShadow({mode:'open'}).innerHTML='<span>shadow ${SECRET}</span>';setTimeout(()=>{document.querySelector('#late').textContent='late ${SECRET}';document.querySelector('#tainted-later').setAttribute('data-x','${SECRET}')},1500);setTimeout(()=>{document.querySelector('#filledpw').type='text'},6000)</script></body></html>`);
   });
   await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
+  const fixtureTargets = async opened => {
+    await new Promise(r => setTimeout(r, 1500));
+    // Register against the loaded document (the kernel drops targets of another document).
+    let tab = host.tabs.get(opened.tab_id);
+    const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    for (let i = 0; i < 40; i++) { await host.request({ op: 'state', observed_by: 'lab' }); tab = host.tabs.get(opened.tab_id); const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId); if (frameTree.frame.loaderId === tab.document_id && !frameTree.frame.url.startsWith('about:')) break; await new Promise(r => setTimeout(r, 250)); }
+    const backend = async (session, selector) => { const { root } = await connection.send('DOM.getDocument', { depth: 0 }, session); const { nodeId } = await connection.send('DOM.querySelector', { nodeId: root.nodeId, selector }, session); return (await connection.send('DOM.describeNode', { nodeId }, session)).node.backendNodeId; };
+    const targets = [];
+    for (const selector of ['#filled', '#filledpw']) targets.push({ kind: 'browser', target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${await backend(sessionId, selector)}` });
+    const { targetInfos } = await connection.send('Target.getTargets');
+    const frame = targetInfos.find(t => t.type === 'iframe' && t.url.includes(`:${frameServer.address().port}/`)), frameSession = frame && host.browser.frameSession?.(frame.targetId, connection);
+    if (frameSession) { const { frameTree } = await connection.send('Page.getFrameTree', {}, frameSession); targets.push({ kind: 'browser', target_id: tab.target_id, document_id: tab.document_id, node_ref: `frame:${frameTree.frame.id}:${frameTree.frame.loaderId}:backend:${await backend(frameSession, '#framefill')}` }); }
+    await host.protect({ values: [SECRET, FILLED, FILLEDPW, FRAMEFILL], targets });
+    return targets.map(t => t.node_ref.replace(/[0-9A-F]{32}/g, 'X'));
+  };
   if (siteList.split(',').includes('protection-fixture')) labSites.push({ id: 'protection-fixture', url: `http://127.0.0.1:${fixtureServer.address().port}/` });
   for (const kind of ['canvas-small', 'canvas-large']) if (siteList.split(',').includes(kind)) labSites.push({ id: kind, url: `http://127.0.0.1:${fixtureServer.address().port}/${kind}` });
   const { observationProtectedVariants } = await import(path.join(root, 'controller/browser-controller-snapshot.mjs'));
@@ -182,8 +199,8 @@ if (process.argv[2] !== 'child') {
       const row = { site: site.id, url: site.url, dpr, wire }; results.push(row); wireLog.length = 0; wireJson.length = 0; currentCell = `${site.id}-dpr${dpr}`;
       let page, tabId, generation;
       try {
-        if (site.id === 'protection-fixture') await host.protect({ values: [SECRET], targets: [] });
         const opened = await host.request({ op: 'open', url: site.url, observed_by: 'lab' }); generation = opened.generation; tabId = opened.tab_id;
+        if (site.id === 'protection-fixture') row.fill_targets = await fixtureTargets(host.tabs.get(tabId));
         const state0 = await host.request({ op: 'state', observed_by: 'lab' }); let tab = host.tabs.get(tabId);
         // Fixed device metrics before the page settles (as the product subscribe does).
         const prepared = await host.request({ op: 'mirror_subscribe', tab_id: tabId, generation, device_scale_factor: dpr, wire: wire === 2 ? 2 : undefined, observed_by: 'lab' });
@@ -261,8 +278,9 @@ if (process.argv[2] !== 'child') {
         // Owner question: closed shadow roots on the site (trusted DOMSnapshot via the product snapshot op).
         try { const snap = (await host.request({ op: 'snapshot', tab_id: tabId, generation: host.generation, observed_by: 'lab' })).snapshot; row.shadow_roots = (snap.shadow_roots ?? []).reduce((m, r) => (m[r.shadow_root_type] = (m[r.shadow_root_type] ?? 0) + 1, m), {}); } catch (error) { row.shadow_roots = { error: String(error.message).slice(0, 120) }; }
         if (site.id === 'protection-fixture') {
-          const variants = observationProtectedVariants([SECRET]), wire = wireJson.join('\n');
-          row.protection = { packets: wireJson.length, leaked_variants: variants.filter(v => wire.includes(v)).length, password_leak: wire.includes('hunter2pass'), marked_leak: wire.includes('marked hidden text'),
+          const wire = wireJson.join('\n'), leak = value => observationProtectedVariants([value]).some(v => wire.includes(v));
+          row.protection = { packets: wireJson.length, filled_leak: leak(FILLED), filled_password_leak: leak(FILLEDPW), frame_filled_leak: leak(FRAMEFILL), password_leak: wire.includes('hunter2pass'), hidden_leak: wire.includes('hidden-token-555'),
+            echo_visible: await page.evaluate(s => document.querySelector('iframe').contentDocument.body.textContent.includes(s), SECRET), toggled_masked: await page.evaluate(() => !!document.querySelector('iframe').contentDocument.querySelector('input#filledpw[aria-label="Protected content"], [aria-label="Protected content"]#filledpw')),
             masks: await page.evaluate(() => document.querySelector('iframe').contentDocument.querySelectorAll('[aria-label="Protected content"]').length),
             ordinary_present: await page.evaluate(() => document.querySelector('iframe').contentDocument.body.textContent.includes('ordinary visible text')),
             frame_ordinary_present: await page.evaluate(() => [...document.querySelector('iframe').contentDocument.querySelectorAll('iframe')].some(f => f.contentDocument?.body?.textContent.includes('frame ordinary'))) };
