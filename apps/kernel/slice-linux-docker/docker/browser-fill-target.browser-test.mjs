@@ -70,7 +70,14 @@ async function setup(dpr, run) {
     const collect=async()=> (await measureBrowserProtection(browser,policy)).pages[0].regions;
     const capture=async label=>{const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr);if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.png`),Buffer.from(data,'base64'));const decoded=decodePng(data,dpr);decoded.video=await videoPixels(data,dpr,label);return decoded;};
     await run({browser,connection,sessionId,targetId,documentId,evaluate,ref,policy,fill,collect,capture,url,dpr});
-  } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+  } finally {
+    try {await chrome?.close();}
+    finally {
+      server.closeAllConnections();
+      try {await new Promise(r=>server.close(r));}
+      finally {await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+    }
+  }
 }
 for(const dpr of [1,2]) {
  test(`MP-08/MP-11 DPR${dpr}: visible page presents and fences the actual capture`,()=>setup(dpr,async({browser,policy,fill,capture})=>{

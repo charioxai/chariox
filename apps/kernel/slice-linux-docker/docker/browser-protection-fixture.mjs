@@ -23,7 +23,8 @@ export async function launchChromium({ executable, dpr = 1, headless = true, env
     await connection.send('Browser.close').catch(() => {});
     for (let i = 0; i < 50 && child.exitCode === null && child.signalCode === null; i++) await delay(20);
     if (child.exitCode === null && child.signalCode === null && Number.isSafeInteger(child.pid) && child.pid > 1) child.kill('SIGKILL');
-    await rm(profile, { recursive: true, force: true });
+    // Chromium helpers may finish writing briefly after the main process exits.
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } };
 }
 
