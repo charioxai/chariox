@@ -112,3 +112,59 @@ fn native_output_pump_does_not_skip_context_preparation() {
         "cancelled delivery must not send a deferred Enter"
     );
 }
+
+#[test]
+fn native_session_start_updates_identity_before_the_first_transcript_exists() {
+    let worktree = crate::test_support::TestWorktree::new("native-session-start-identity");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let context = worktree.path().join("context.txt");
+    let events = worktree.path().join("events.jsonl");
+    fs::write(&context, "").unwrap();
+    fs::write(&events, serde_json::json!({"hook_event_name":"SessionStart", "session_id":"new-native-session", "transcript_path": worktree.path().join("not-yet-created.jsonl").display().to_string()}).to_string()).unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(agent.id())
+    .with_resume_state(ProviderResumeState::from_claude_session_id(
+        "old-native-session",
+    ))
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "native-session-start-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-session-start-test".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                    context.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                    events.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let observed = app.providers.get_run(run.id()).unwrap();
+    assert_eq!(observed.provider_session_id(), Some("new-native-session"));
+}
