@@ -15,8 +15,24 @@ async function controls(page, ids) {
   // necessarily the viewer's): derive the scale from the root element.
   const snapshot = reply.KernelBrowser.result.snapshot, root = (snapshot.dom_nodes ?? []).find(n => n.node_name === 'HTML' && n.bounds?.width > 0);
   const dpr = root ? Math.max(1, Math.round(root.bounds.width / 1280)) : await page.evaluate(() => mdStream.binding.device_scale_factor);
-  return Object.fromEntries((snapshot.dom_nodes ?? []).filter(n => ids.includes(n.attributes?.id) && n.bounds?.width > 0)
-    .map(n => [n.attributes.id, Object.fromEntries(Object.entries(n.bounds).map(([k, v]) => [k, v / dpr]))]));
+  const css = n => Object.fromEntries(Object.entries(n.bounds).map(([k, v]) => [k, v / dpr]));
+  const nodes = (snapshot.dom_nodes ?? []).filter(n => n.bounds?.width > 0 && n.bounds.height > 0);
+  const found = Object.fromEntries(nodes.filter(n => ids.includes(n.attributes?.id)).map(n => [n.attributes.id, css(n)]));
+  // Wikipedia's fundraising banner and its own close button, if shown.
+  const banner = nodes.find(n => n.attributes?.id === 'centralNotice');
+  const close = banner && nodes.find(n => n.node_name === 'BUTTON' && /(^|\s)(frb-close|cn-closeButton)(\s|$)/.test(n.attributes?.class ?? ''));
+  if (banner) found.banner = css(banner);
+  if (close) found.banner_close = css(close);
+  return found;
+}
+const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+// Why the theme controls cannot be clicked as a reader would, or null.
+function themeBlocker(theme, ids) {
+  const targets = ids.map(id => theme[id]);
+  if (targets.some(t => !t)) return 'controls_absent';
+  if (targets.some(t => t.y < 0 || t.y + t.height > 790)) return 'controls_outside_viewport';
+  if (theme.banner && targets.some(t => overlaps(t, theme.banner))) return 'controls_covered_by_banner';
+  return null;
 }
 const centre = b => ({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) });
 
@@ -59,17 +75,20 @@ export async function measureSiteLatency({ page, pause, pair, samples = 40, seco
     await pause(8000); result.second_tab = true;
   }
   result.article_view = await pair('site-article');
-  // A fundraising banner can push the Appearance menu below the viewport;
-  // close it as a reader would (its top-right close button at scroll zero).
+  // A fundraising banner can cover the Appearance menu or push it below the
+  // viewport; close it as a reader would, with its own close button.
   const ids = ['skin-client-pref-skin-theme-value-day', 'skin-client-pref-skin-theme-value-night'];
   let theme = await controls(page, ids);
-  if (theme[ids[1]]?.y > 700) {
-    result.banner = { before: theme[ids[1]] ?? null };
-    await page.evaluate(() => mdStream.input({ kind: 'click', x: 1214, y: 97 })); await pause(3000);
-    theme = await controls(page, ids); result.banner.after = theme[ids[1]] ?? null; result.banner_view = await pair('site-article-closed');
+  result.banner_dismissals = [];
+  for (let n = 0; n < 3 && themeBlocker(theme, ids) && theme.banner_close; n++) {
+    result.banner_dismissals.push({ reason: themeBlocker(theme, ids), banner: theme.banner, close: theme.banner_close });
+    await page.evaluate(input => mdStream.input(input), { kind: 'click', ...centre(theme.banner_close) }); await pause(3000);
+    theme = await controls(page, ids);
   }
+  if (result.banner_dismissals.length) result.banner_view = await pair('site-article-closed');
+  const blocker = themeBlocker(theme, ids);
+  if (blocker) throw Error('MP-10: Wikipedia theme controls not clickable: ' + blocker);
   const day = theme[ids[0]], night = theme[ids[1]];
-  if (!day || !night || night.y + night.height > 790) throw Error('MP-10: Wikipedia theme controls absent from the viewport');
   const roi = { x: 2, y: 100, width: 10, height: 10 };
   await probe(page, { kind: 'click', ...centre(day) }, roi, luminance, { dark: false }).catch(() => null);
   for (let n = 0; n < samples; n++) {
