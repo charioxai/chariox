@@ -1930,7 +1930,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -2054,7 +2054,7 @@ mod multidomain_union_tests {
     fn md_notes_room_observation_protocol_74_snapshot_and_hash() {
         use sha2::{Digest, Sha256};
         assert_eq!(super::RELAY_PEER_PROTOCOL_VERSION, 92);
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
         let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1","quote":{"exact":"quote","prefix":"before","suffix":"after"}}});
         let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null,"anchoring":null}}});
         let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();

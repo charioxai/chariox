@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn mp08_project_environment_manifest_shape_requires_protocol_371() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let request = LocalDaemonRequest::GetProjectEnvironmentManifest(
         crate::local::GetProjectEnvironmentManifestRequest {
             project_id: "project-1".into(),
@@ -31,7 +31,7 @@ fn mp08_project_environment_manifest_shape_requires_protocol_371() {
 fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let manifest = ProjectEnvironmentManifest {
         schema_version: 1,
         project_id: "project-1".into(),
@@ -77,7 +77,7 @@ fn mp08_manifest_fields_are_bound_to_protocol_371_snapshot() {
 fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let review = ProjectEnvironmentReview {
         schema_version: 1,
         project_name: "App".into(),
@@ -152,7 +152,7 @@ fn mp08_mp10_mp11_review_and_interactive_export_shapes_require_protocol_371() {
 #[test]
 fn mp08_mp10_mp11_adjustment_shape_requires_protocol_372() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let request = LocalDaemonRequest::AdjustProjectEnvironment(
         crate::local::AdjustProjectEnvironmentRequest {
             session_id: "session-1".into(),
@@ -177,7 +177,7 @@ fn mp08_mp10_mp11_adjustment_shape_requires_protocol_372() {
 #[test]
 fn mp08_mp10_mp11_worker_environment_query_requires_protocol_373() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let request = LocalDaemonRequest::GetProjectEnvironmentManifest(
         crate::local::GetProjectEnvironmentManifestRequest {
             project_id: "project-1".into(),
@@ -200,7 +200,7 @@ fn mp08_mp10_mp11_worker_environment_query_requires_protocol_373() {
 #[test]
 fn mp08_mp10_mp11_slice_source_export_shape_requires_protocol_373() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let value: serde_json::Value = serde_json::from_str(r#"{"CreateSlice":{"source_slice_ref":"first","name":"second","backend":"local_docker","os":"linux","display_mode":"headless"}}"#).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
     let roundtrip = serde_json::to_value(request).unwrap();

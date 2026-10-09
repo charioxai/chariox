@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
 
 test("key-bound CLI client-token request carries only the public thumbprint", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 461)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 472)
   assert.deepEqual(
     issueCloudRelayClientTokenRequest("home", "cli-1", "session-1", "public-thumbprint"),
     {

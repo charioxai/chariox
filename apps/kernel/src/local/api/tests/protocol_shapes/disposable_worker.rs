@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn home_bound_disposable_control_shapes_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 461);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let selection = serde_json::json!({"allocationId":"worker-1","homeKernelId":"home-1","homeRelayRealmId":"realm-1"});
     let mut shapes = vec![serde_json::json!({"CreateDisposableWorker":{
         "clientRequestId":"request-1","homeKernelId":"home-1","homeRelayRealmId":"realm-1",
