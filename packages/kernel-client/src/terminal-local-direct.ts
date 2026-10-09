@@ -1,7 +1,6 @@
 // MP-08/MP-11 protocol 473: a carrier of the existing encrypted terminal
 // protocol. Discovery permits attempts; relay-bound grants and key proofs admit.
 import WebSocket from "ws"
-import { TerminalRelayIdentity } from "./terminal-relay-identity.js"
 import type { EncryptedRelayPayload, RelayTarget } from "./kernel-transport-frames.js"
 import type { RelayClientIdentity } from "./relay-crypto.js"
 import { buildRelayConnectFrame } from "./relay-transport.js"
@@ -16,7 +15,6 @@ type LeaseDiagnostic = { cause: "lease_response_refused" | "lease_transport_fail
 const endpointPattern = /^ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/v1\/browser$/
 
 export class TerminalLocalDirect {
-  private readonly identityKeeper: TerminalRelayIdentity
   private readonly leases = new Set<Lease>()
   private timer: NodeJS.Timeout | null = null
   private retry: NodeJS.Timeout | null = null
@@ -27,22 +25,16 @@ export class TerminalLocalDirect {
   private readonly sockets = new WeakSet<WebSocket>()
 
   constructor(private readonly input: {
-    relayUrl: string; token: string; target: RelayTarget; identity: RelayClientIdentity
-    eligible(): boolean; retryCarrier(): void; onTokenRefreshed?(token: string): void
+    // The client's current relay identity; the shared relay renewal keeps it fresh.
+    relayUrl: string; token(): string; target: RelayTarget; identity: RelayClientIdentity
+    eligible(): boolean; retryCarrier(): void
     onDiagnostic?(diagnostic: LeaseDiagnostic): void
-  }) {
-    this.identityKeeper = new TerminalRelayIdentity({ token: input.token, relayUrl: input.relayUrl,
-      kernelId: input.target.daemon_id ?? "", thumbprint: input.identity.publicKeyThumbprint,
-      eligible: input.eligible, request: async (key, body) => (await this.authorize([body], key))[0]!,
-      onToken: token => input.onTokenRefreshed?.(token),
-    })
-  }
+  }) {}
 
   isLocal(socket: WebSocket | null): boolean { return socket !== null && this.sockets.has(socket) }
 
   async open(expectedKey: string): Promise<WebSocket | null> {
     if (this.closed || !this.input.eligible() || Date.now() < this.cooldownUntil) return null
-    this.identityKeeper.start(expectedKey)
     const epoch = this.epoch
     try {
       const [body] = await this.authorize([{ local_terminal_connect: {} }], expectedKey)
@@ -68,7 +60,7 @@ export class TerminalLocalDirect {
   }
 
   close(): void {
-    this.identityKeeper.close(); this.closed = true; this.epoch++
+    this.closed = true; this.epoch++
     clearTimeout(this.timer!); clearTimeout(this.retry!)
     this.timer = null; this.retry = null
     for (const socket of this.pending) socket.terminate()
@@ -145,7 +137,7 @@ export class TerminalLocalDirect {
         return
       }
       reject(Error("unexpected terminal relay frame"))
-    }, socket => socket.send(JSON.stringify(buildRelayConnectFrame(this.identityKeeper.token(), target))))
+    }, socket => socket.send(JSON.stringify(buildRelayConnectFrame(this.input.token(), target))))
   }
 
   private prove(grant: Grant, expectedKey: string): Promise<WebSocket> {

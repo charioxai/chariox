@@ -372,8 +372,7 @@ export class LocalIpcClient {
       }
       : null
     this.terminalLocalDirect = this.relayAuthToken && this.relayTarget && this.relayIdentity
-      ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: this.relayAuthToken, target: this.relayTarget,
-        onTokenRefreshed: token => { this.relayAuthToken = token },
+      ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: () => this.relayAuthToken!, target: this.relayTarget,
         onDiagnostic: diagnostic => this.reportTransportDiagnostic("control", diagnostic.cause, diagnostic),
         identity: this.relayIdentity, eligible: () => this.localDirectEligible(this.relayTarget!),
         retryCarrier: () => {
@@ -1073,7 +1072,8 @@ export class LocalIpcClient {
       const connecting = this.getWebSocketConnectPromise(lane)
       if (connecting) await connecting
       const socket = this.getWebSocket(lane)
-      if (socket?.readyState === WebSocket.OPEN) await reauthenticateRelaySocket(socket, this.relayAuthToken!, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
+      // A direct carrier is authorized by its relay-renewed lease, not this grant.
+      if (socket?.readyState === WebSocket.OPEN && !this.terminalLocalDirect?.isLocal(socket)) await reauthenticateRelaySocket(socket, this.relayAuthToken!, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
     }))
     return next.exp * 1000
   }
