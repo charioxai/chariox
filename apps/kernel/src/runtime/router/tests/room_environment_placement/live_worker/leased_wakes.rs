@@ -265,12 +265,99 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     fixture.stop().await;
     assert_eq!(events.len(), 1, "one completion event: {events:?}");
     assert_eq!(events[0].kind, "source_completed", "{events:?}");
+    assert_eq!(
+        events[0].payload["public_answer"]["excerpt"], "MP-10 A10 delegated answer",
+        "MP-08/MP-10/MP-11 R947: completion carries the worker's actual answer"
+    );
     assert!(
         child_tasks.iter().all(|task| task
             .provider_run_id
             .as_deref()
             .is_some_and(|run| run.starts_with("leased:"))),
         "home task binds the exact projected worker run: {child_tasks:?}"
+    );
+}
+
+// MP-08/MP-10/MP-11 R947: requested replies use the same public answer projection.
+#[test]
+fn mp10_a10_leased_requested_reply_carries_worker_answer() {
+    run_test(leased_requested_reply_carries_worker_answer);
+}
+
+async fn leased_requested_reply_carries_worker_answer() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let room = fixture.rooms[0].clone();
+    let (child, _) = spawn_leased(&mut fixture, &room).await;
+    let parent = local_agent(&fixture, &room, &child).await;
+    let store = store(&fixture).await;
+    let task = delegator_waiting_on(&store, &room, &parent, "unused-source");
+    let mut request = ledger::occurrence(
+        &room,
+        &child,
+        &parent,
+        "r947-answer-request",
+        "message",
+        json!({"message":"return the verified worker result"}),
+    );
+    request.reply_requested = true;
+    let Outcome::Event(request) = store
+        .agent_lifecycle(Operation::Send {
+            task,
+            prompt: "a10-delegator-turn".into(),
+            event: request,
+        })
+        .unwrap()
+    else {
+        panic!("requested reply admitted")
+    };
+    fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &child)
+        .await
+        .unwrap();
+    leased_run(&fixture, &room, &child).await;
+    fixture
+        .home
+        .runtime_state
+        .record_leased_answer_for_test(&room, &child, "MP-10 A10 requested reply answer")
+        .unwrap();
+    let remote = binding(&fixture, &child).await;
+    let (backing_session, _) =
+        crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
+            .leased_agent_backing(&remote.leased_agent_id)
+            .unwrap();
+    dispatch_json(
+        &fixture.worker,
+        json!({"CompletePrompt":{"session_id":backing_session}}),
+    )
+    .await
+    .unwrap();
+    let logical = format!("agent-event-{child}-{}", request.sequence);
+    let replies = eventually("the correlated requested reply", || {
+        let events: Vec<_> = store
+            .agent_inbox(&room, &parent, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.source_id == logical)
+            .collect();
+        (!events.is_empty()).then_some(events)
+    })
+    .await;
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].kind, "source_completed");
+    assert_eq!(
+        replies[0].payload["public_answer"]["excerpt"],
+        "MP-10 A10 requested reply answer"
     );
 }
 
