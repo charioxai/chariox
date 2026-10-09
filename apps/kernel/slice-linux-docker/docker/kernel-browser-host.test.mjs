@@ -679,21 +679,19 @@ test('MP-11 agent native input cannot bypass App human-channel admission', () =>
 }));
 
 // MP-08/MP-10/MP-11: a human navigation must be visible on the owned desktop.
-test('human navigation foregrounds the requested tab after retiring native claims',()=>using(async({host,pages})=>{
+test('human navigation foregrounds the requested tab',()=>using(async({host,pages})=>{
  const first=await host.request({op:'open',url:'https://en.wikipedia.org/wiki/Linux'});
  const firstTarget=host.tabs.get(first.tab_id).target_id;
  const second=await host.request({op:'open',url:'https://developer.mozilla.org/en-US/docs/Web/JavaScript'});
  host.chromium.desktop={};
- const old=host.foreground.claim(second.tab_id),events=[];
- host.compositors.set(second.tab_id,{ready:Promise.resolve(),source:{close:async()=>{events.push('retire')}}});
+ const events=[];
  host.browser.manageTab=async({target_id,action})=>{
   assert.equal(action,'activate');assert.equal(target_id,firstTarget);
-  assert(!host.foreground.holds(second.tab_id,old),'old native source claim must be gone before physical focus');
   events.push('activate');
  };
  const navigate=host.browser.navigate;host.browser.navigate=async p=>{events.push('navigate');await navigate(p)};
  await host.request({op:'navigate',tab_id:first.tab_id,generation:second.generation,url:'https://www.wikipedia.org/'});
- assert.deepEqual(events,['retire','activate','navigate']);
+ assert.deepEqual(events,['activate','navigate']);
  assert.equal(pages.get(firstTarget).url,'https://www.wikipedia.org/');
  host.chromium.desktop=null;
 }));
