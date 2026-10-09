@@ -62,7 +62,8 @@ class Label(Node):
     def queryText(self):
         if not self.readable: raise NotImplementedError
         return types.SimpleNamespace(characterCount=len(self.text), getText=lambda start, end: self.text[start:end],
-            getRangeExtents=lambda start, end, coords: types.SimpleNamespace(x=10+7*start, y=20, width=7*(end-start), height=14))
+            # pyatspi.Text returns a four-item list, unlike Component extents.
+            getRangeExtents=lambda start, end, coords: [10+7*start,20,7*(end-start),14])
 
 
 class TraversalTest(unittest.TestCase):
@@ -123,6 +124,20 @@ class TraversalTest(unittest.TestCase):
         self.foreground()
         tree=self.snapshot([Node('Office','application',[Node('Writer','frame')])])
         self.assertEqual(tree['active_window'],{'pid':200,'started':'1','path':[0]})
+
+    def test_mp08_mp11_scaled_native_frame_maps_value_masks_to_x11_pixels(self):
+        self.foreground()
+        text=Label('v-secret',name='Plain text')
+        text.queryText=lambda:types.SimpleNamespace(characterCount=8,getText=lambda *args:'v-secret',
+            getRangeExtents=lambda *args:[55,65,56,14])
+        frame=Node('Writer','frame',[text]);frame.rect=types.SimpleNamespace(x=50,y=40,width=150,height=100)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[frame])])
+        tree=self.driver.snapshot([{'pid':200,'started':'1'}],values=['v-secret'])
+        self.assertEqual(tree['uncovered'],[])
+        self.assertEqual(tree['nodes'][-1]['bounds'],[10,20,56,14])
+        self.assertEqual(tree['masks'],[[109,129,114,30]])
+        self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[100,80,300,240],[100,80,300,240]))
+        self.assertIsNone(self.driver.native_frame_scale([50,40,150,100],[150,120,450,300],[150,120,450,300]))
 
     def test_mp11_foreign_foreground_does_not_select_owned_frame(self):
         self.foreground(pid=999)

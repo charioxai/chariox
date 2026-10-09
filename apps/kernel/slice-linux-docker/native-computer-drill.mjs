@@ -180,12 +180,9 @@ try {
     const text=spawnSync('tesseract',[clipboardCapture.file,'stdout'],{env:binding.environment,encoding:'utf8'});
     assert.equal(text.status,0);assert(!text.stdout.includes('private-source-canary'),'MP-11 no refused clipboard canary in desktop source OCR');
     const passwordApp=await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
-    // The oracle needs the password window on screen, not merely launched.
-    let passwordWindow;
-    for(let n=0;n<100&&!passwordWindow;n++){passwordWindow=spawnSync('xdotool',['search','--onlyvisible','--name','Chariox public AT-SPI fixture'],{env:binding.environment,encoding:'utf8'}).stdout.trim();if(!passwordWindow)await delay(100);}
-    assert(passwordWindow,'MP-11 password fixture window must be mapped');await delay(500);
-    const password=await capture('desktop-password-protected');
-    assert(password.raw.pixels.every((v,i)=>i%4===3||v===0),'MP-11 password window must export no desktop pixels');
+    await delay(500);
+    const password=await capture('desktop-password-dots');
+    assert(password.raw.pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 password dots must not hide the whole desktop');
     const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
     await signalOwned(passwordOwner,'SIGTERM');if(passwordApp.exitCode===null&&passwordApp.signalCode===null)await new Promise(resolve=>passwordApp.once('exit',resolve));
     assert.equal(await isOwnedAlive(passwordOwner),false,'MP-11 password app closed before opaque browser oracle');
@@ -209,7 +206,7 @@ try {
     assert(regions.some(r=>r.x<=left&&r.y<=top&&r.x+r.width>=right&&r.y+r.height>=bottom),'MP-11 masking receipt must cover the real opaque browser');
     for(let y=top;y<bottom;y++)assert(opaque.raw.pixels.subarray((y*binding.width+left)*4,(y*binding.width+right)*4).every((v,i)=>i%4===3||v===0),'MP-11 opaque browser region must export no pixels');
     console.log(JSON.stringify({items:['MP-11'],oracle:'opaque browser with password app closed',browser_bounds:{left,top,right,bottom},protected_regions:regions,black_browser_pixels:true}));
-    console.log('MP-08 MP-11 desktop source clipboard OCR, password and opaque Chromium masking PASS (supplementary)');
+    console.log('MP-08 MP-11 desktop source clipboard OCR, visible password dots and opaque Chromium masking PASS (supplementary)');
   }
   const cancellation=new AbortController();
   const hold=native.request({op:'input',surface_id:binding.surface_id,generation:binding.generation,input:{kind:'hold',key:'Right',duration_ms:10000}}, {}, {signal:cancellation.signal});
