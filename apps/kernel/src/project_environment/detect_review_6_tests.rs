@@ -49,8 +49,8 @@ fn review931_6_new_model_opt_in_is_not_hidden_by_ready_cache() {
 }
 
 #[test]
-fn review931_6_model_cache_preserves_legacy_rollback_file() {
-    let root = TestWorktree::new("envp02a-review6-rollback");
+fn review931_6_cache_without_model_coverage_loads_as_unmodeled() {
+    let root = TestWorktree::new("envp02a-review6-coverage");
     let store = ProjectEnvironmentStore::new(root.path());
     let project = crate::session::RuntimeProject::new(
         "project",
@@ -60,8 +60,8 @@ fn review931_6_model_cache_preserves_legacy_rollback_file() {
         crate::session::RuntimeProjectKind::Named,
     );
     store.snapshot(&project).unwrap();
-    let legacy = serde_json::json!({
-        "project_id":"project", "evidence_digest":"legacy", "proposals":[],
+    let cache = serde_json::json!({
+        "project_id":"project", "evidence_digest":"earlier", "proposals":[],
         "operation":{
             "operation_id":"detect","attempt":1,"local_project_id":"project","revision_digest":"revision",
             "target":{"machine_id":"machine","target_instance_generation":"kernel","slice_ref":null},
@@ -69,29 +69,13 @@ fn review931_6_model_cache_preserves_legacy_rollback_file() {
             "created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}
         }
     });
-    let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
-    let legacy_path = store.path("project").with_extension("detect.json");
-    std::fs::write(&legacy_path, &legacy_bytes).unwrap();
-    let mut cache = store.load_detection("project").unwrap().unwrap();
+    let path = store.path("project").with_extension("detect.json");
+    std::fs::write(&path, serde_json::to_vec(&cache).unwrap()).unwrap();
+    let loaded = store.load_detection("project").unwrap().unwrap();
     assert!(
-        cache.modeled_folders.is_empty(),
-        "upgrade treats old cache coverage as unknown"
+        loaded.modeled_folders.is_empty(),
+        "unknown model coverage reruns opted-in folders"
     );
-    cache
-        .modeled_folders
-        .insert("folder".into(), "digest".into());
-    store.save_detection(&cache).unwrap();
-    assert_eq!(
-        std::fs::read(&legacy_path).unwrap(),
-        legacy_bytes,
-        "published rollback reader retains its original schema"
-    );
-    assert_eq!(store.load_detection("project").unwrap(), Some(cache));
-    let model_path = store.path("project").with_extension("detect-model.json");
-    assert!(model_path.is_file());
     store.remove("project").unwrap();
-    assert!(
-        !legacy_path.exists() && !model_path.exists(),
-        "Project deletion removes both cache generations"
-    );
+    assert!(!path.exists());
 }

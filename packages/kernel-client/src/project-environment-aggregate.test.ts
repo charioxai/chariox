@@ -73,3 +73,14 @@ test("review931_7 evidence labels stay short and exclusions use structured ident
   assert.deepEqual(environmentDetectionSkips(environment), ["Excluded video"])
   assert.deepEqual(environmentDetectionMessages(environment), ["Skipped no required metadata"])
 })
+
+// MP-08 / MP-10 / MP-11: rendering memory cannot cross a selected kernel or grow without bound.
+test("Environment view memory is bounded and isolates kernel contexts", async () => {
+  const { createEnvironmentViewCache } = await import("./project-environment-view-cache.js")
+  const cache = createEnvironmentViewCache()
+  for (let n = 0; n < 9; n++) cache.remember("one", { schema_version: 1, local_project_id: `project-${n}` } as ProjectEnvironment)
+  assert.equal(cache.peek("one", "project-0"), null)
+  assert.equal(cache.peek("one", "project-8")?.local_project_id, "project-8")
+  assert.equal(cache.peek("two", "project-8"), null)
+  assert.equal(cache.peek("one", "project-8"), null, "switching back does not resurrect a prior kernel view")
+})

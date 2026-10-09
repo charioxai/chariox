@@ -77,3 +77,38 @@ test("P02b selected proposal shows its constraint and origin in the visible revi
  assert(controller.visibleLines().some(line=>line==="Version constraint: 19.0.0"))
  assert(controller.visibleLines().some(line=>line.includes("package.json")))
 })
+
+// MP-08 / MP-10 / MP-11: real shaped relay RED showed ~893ms on reopening.
+test("Environment reopens its last kernel view while a fresh Get is pending", async () => {
+  const environment: any = { schema_version: 1, local_project_id: "project", lineage: {}, folders: [], project_requirements: [], proposals: [], observations: [], operations: [], delivered_capabilities: { enabled_environment_operations: ["get"] } }
+  let count = 0, release: (value: unknown) => void = () => {}
+  const controller = createProjectEnvironmentReadController({ send: () => ++count === 1 ? Promise.resolve({ ProjectEnvironment: { environment } }) : new Promise(resolve => { release = resolve }), render() {}, pageSize: () => 30 })
+  await controller.open("project"); controller.close()
+  const pending = controller.open("project")
+  try {
+    assert(controller.visibleLines().some(line => line.includes("Project-wide")), "last kernel snapshot should render immediately")
+    assert(controller.visibleLines().some(line => line.includes("Refreshing")))
+    assert.equal(count, 2, "every open still requests a fresh kernel snapshot")
+  } finally { release({ ProjectEnvironment: { environment } }); await pending }
+})
+
+// MP-08 / MP-10 / MP-11: cached proposals are display-only until the current kernel read settles.
+test("P02b cached review waits for refresh and caches successful Save", async () => {
+  const environment: any = { schema_version: 1, local_project_id: "project", revision: 0, content_digest: "base", lineage: {}, folders: [], project_requirements: [], proposals: [{ proposal_id: "p", requirement: { requirement_id: "node", title: "Node", scope: { kind: "project" }, origins: [], spec: { kind: "software", identity: "node", version_constraint: "22", detect_only: true } } }], operations: [], delivered_capabilities: { enabled_environment_operations: ["get", "save"] } }
+  let gets = 0, saves = 0, release: (value: unknown) => void = () => {}
+  const controller = createProjectEnvironmentReadController({ send: async request => {
+    if ("SaveProjectEnvironmentRevision" in (request as any)) { saves++; return { ProjectEnvironmentSaved: { environment: { ...environment, revision: 1, proposals: [] } } } }
+    if (++gets === 1) return { ProjectEnvironment: { environment } }
+    return new Promise(resolve => { release = resolve })
+  }, render() {}, pageSize: () => 100 })
+  await controller.open("project"); controller.close()
+  const pending = controller.open("project")
+  try {
+    controller.handleKey({ name: "a" }); await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(saves, 0, "cached proposal must not authorize Save")
+  } finally { release({ ProjectEnvironment: { environment } }); await pending }
+  await controller.review("accept"); controller.close()
+  const reopened = controller.open("project")
+  try { assert(controller.visibleLines().some(line => line.includes("Revision 1")), "saved view replaces cached revision") }
+  finally { release({ ProjectEnvironment: { environment: { ...environment, revision: 1, proposals: [] } } }); await reopened }
+})

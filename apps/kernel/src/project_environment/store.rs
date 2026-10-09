@@ -310,18 +310,24 @@ impl std::fmt::Debug for ProjectEnvironmentLock {
 }
 impl ProjectEnvironmentStore {
     pub fn lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, false)
+        self.acquire_lock(project, false, "lock")
     }
     pub(crate) fn try_lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, true)
+        self.acquire_lock(project, true, "lock")
     }
-    /// Reads and Saves are short: they queue behind each other for a bounded time,
+    pub(super) fn identity_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "identity.lock")
+    }
+    /// Saves and mutation snapshots queue behind each other for a bounded time,
     /// while a longer Detect, export or adjustment holder reports busy.
     pub(crate) fn lock_briefly(
         &self,
         project: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
-        let file = self.lock_file(project)?;
+        let file = self.lock_file(project, "lock")?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             match fs2::FileExt::try_lock_exclusive(&file) {
@@ -349,8 +355,9 @@ impl ProjectEnvironmentStore {
         &self,
         project: &str,
         nonblocking: bool,
+        extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
-        let file = self.lock_file(project)?;
+        let file = self.lock_file(project, extension)?;
         if nonblocking {
             fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
                 environment_error("Project environment already has an active export or adjustment")
@@ -361,7 +368,7 @@ impl ProjectEnvironmentStore {
         }
         Ok(ProjectEnvironmentLock { _file: file })
     }
-    fn lock_file(&self, project: &str) -> Result<File, DaemonError> {
+    fn lock_file(&self, project: &str, extension: &str) -> Result<File, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
         #[cfg(unix)]
@@ -370,7 +377,7 @@ impl ProjectEnvironmentStore {
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| environment_error("secure environment directory failed"))?;
         }
-        let path = self.path(project).with_extension("lock");
+        let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]

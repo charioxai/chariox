@@ -18,8 +18,7 @@ impl KernelRuntimeState {
         let store = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         );
-        let _lock = store.lock_briefly_async(project.id()).await?;
-        let environment = store.snapshot_locked(&project)?;
+        let environment = store.snapshot(&project)?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 

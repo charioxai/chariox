@@ -12,7 +12,7 @@ fn review931_4_invalid_detection_cache_is_absent_and_replaceable() {
         crate::session::RuntimeProjectKind::Named,
     );
     let before = store.snapshot(&project).unwrap();
-    let cache_path = store.path("project").with_extension("detect-model.json");
+    let cache_path = store.path("project").with_extension("detect.json");
     for bytes in [b"invalid".as_slice(), br#"{"new_field":true}"#.as_slice()] {
         std::fs::write(&cache_path, bytes).unwrap();
         assert!(store.load_detection("project").unwrap().is_none());

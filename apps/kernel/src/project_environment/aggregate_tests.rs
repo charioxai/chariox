@@ -190,3 +190,83 @@ fn envp01_accounts_accept_only_canonical_official_provider_ids() {
         assert_eq!(serde_json::to_value(spec).unwrap()["provider"], provider);
     }
 }
+
+#[test]
+fn envp01_read_and_identity_extension_succeed_during_export_or_adjustment() {
+    let root = crate::test_support::TestWorktree::new("envp01-read-during-adjustment");
+    let mut project = RuntimeProject::new(
+        "project",
+        "owner",
+        "/plain/one",
+        "Plain",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    let adjustment = store.try_lock(project.id()).unwrap();
+    let first = store
+        .snapshot(&project)
+        .expect("read must not contend with export or interactive adjustment");
+    project.replace_workspace_ids(vec!["/plain/one".into(), "/plain/two".into()]);
+    let extended = store
+        .snapshot(&project)
+        .expect("folder identity extension must use a separate lock");
+    assert_eq!(first.lineage, extended.lineage);
+    assert_eq!(first.folders[0].folder_id, extended.folders[0].folder_id);
+    assert!(
+        store.try_lock(project.id()).is_err(),
+        "read must not release the adjustment's lock"
+    );
+    drop(adjustment);
+    assert!(
+        store.try_lock(project.id()).is_ok(),
+        "read must not retain an adjustment admission lock"
+    );
+}
+
+#[test]
+fn envp01_identity_serialization_never_blocks_adjustment_admission() {
+    let root = crate::test_support::TestWorktree::new("envp01-identity-admission");
+    let project = RuntimeProject::new(
+        "project",
+        "owner",
+        "/plain/one",
+        "Plain",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    let first = store.snapshot(&project).unwrap();
+    let identity_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(store.path(project.id()).with_extension("identity.lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&identity_file).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let reader_store = store.clone();
+    let reader_project = project.clone();
+    let reader = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = reader_store.snapshot(&reader_project);
+        done_tx.send(()).unwrap();
+        result
+    });
+    started_rx.recv().unwrap();
+    let completed_while_identity_locked = done_rx
+        .recv_timeout(std::time::Duration::from_millis(50))
+        .is_ok();
+    let adjustment = store.try_lock(project.id());
+    fs2::FileExt::unlock(&identity_file).unwrap();
+    let second = reader.join().unwrap().unwrap();
+    assert!(
+        !completed_while_identity_locked,
+        "the read must serialize on identity anchors"
+    );
+    assert!(
+        adjustment.is_ok(),
+        "a serialized read must leave adjustment admission available"
+    );
+    assert_eq!(first.lineage, second.lineage);
+}

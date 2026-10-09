@@ -21,7 +21,6 @@ impl ProjectEnvironmentStore {
         &self,
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
-        let _lock = self.lock_briefly(project.id())?;
         self.snapshot_locked(project)
     }
 
@@ -29,6 +28,7 @@ impl ProjectEnvironmentStore {
         &self,
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
+        let identity_lock = self.identity_lock(project.id())?;
         let path = self.path(project.id()).with_extension("identity.json");
         let mut options = OpenOptions::new();
         options.read(true);
@@ -114,6 +114,7 @@ impl ProjectEnvironmentStore {
             }
             result?;
         }
+        drop(identity_lock);
         let legacy = self.load(project.id())?;
         let mut snapshot = project_environment_snapshot(
             project,
