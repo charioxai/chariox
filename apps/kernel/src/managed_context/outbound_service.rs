@@ -295,7 +295,7 @@ impl ManagedContextOutboundOperationStore {
             crate::session::unix_epoch_ms(),
         )?;
         drop(guard);
-        store.reclaim_operation_metadata(None)?;
+        store.reclaim_operation_metadata_at_startup()?;
         Ok(store)
     }
 
@@ -428,16 +428,18 @@ impl ManagedContextOutboundOperationStore {
                 return Ok((existing.clone(), None));
             }
         }
-        let permit = self
-            .transfer_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                outbound_service_error(
+        let permit = match self.transfer_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(state);
+                drop(_guard);
+                self.reclaim_rejected_preparation(context_id)?;
+                return Err(outbound_service_error(
                     "managed-context transfer concurrency limit is reached",
                     true,
-                )
-            })?;
+                ));
+            }
+        };
         while state.len() >= MAX_OUTBOUND_OPERATIONS {
             let Some(oldest_terminal_id) = state
                 .values()

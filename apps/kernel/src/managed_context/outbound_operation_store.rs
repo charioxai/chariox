@@ -711,6 +711,101 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn r9_distinct_busy_owner_selections_reclaim_unadmitted_preparations() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owner-busy-distinct-{:032x}",
+            rand::random::<u128>()
+        ));
+        create_private_directory(&root).unwrap();
+        let _cleanup = ArtifactRootCleanup::new(root.clone());
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config_path = root.join("config.toml");
+        config.user_config.history.operational.path =
+            Some(root.join("history.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config = config.with_session_history_root(root.join("sessions"));
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            account_id: "account".into(),
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-test-enrollment".into()),
+            kernel_public_key_thumbprint: Some(public_key_thumbprint(&config.relay_public_key)),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let runtime = router.runtime_state();
+        let selection = OwnerManagedTransfer {
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "target-machine".into(),
+                kernel_id: "target-kernel".into(),
+                relay_public_key: config.relay_public_key.clone(),
+                key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+            },
+            context_selection: OwnerManagedContextSelection {
+                kernel_context: OwnerManagedKernelSelection::Empty,
+                development_setup: OwnerManagedDevelopmentSelection::Empty,
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        let held = (0..2)
+            .map(|index| {
+                store
+                    .start(&format!("context-held-{index}"), "sha256:held")
+                    .unwrap()
+                    .1
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let operations = root.join("outbound/.operations");
+        for index in 0..MAX_OUTBOUND_OPERATIONS * 2 {
+            let mut distinct = selection.clone();
+            distinct.target.machine_id = format!("busy-machine-{index}");
+            distinct.target.kernel_id = format!("busy-kernel-{index}");
+            let ticket = store
+                .prepare_owner_ticket(&config, &runtime, distinct)
+                .expect("distinct rejected selections must not fill durable capacity");
+            let plan = ticket.context_plan.package_binding();
+            let error = store
+                .start(&plan.context_id, &plan.plan_digest)
+                .unwrap_err();
+            assert!(error.to_string().contains("concurrency limit"));
+            assert!(store.get(&plan.context_id).is_none());
+        }
+        drop(held);
+        drop(store);
+        let reopened = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        assert_eq!(
+            fs::read_dir(&operations).unwrap().count(),
+            2,
+            "only admitted held statuses survive restart"
+        );
+        let ticket = reopened
+            .prepare_owner_ticket(&config, &runtime, selection)
+            .unwrap();
+        let plan = ticket.context_plan.package_binding();
+        let (_, permit) = reopened
+            .start(&plan.context_id, &plan.plan_digest)
+            .expect("fresh copy admitted after released slots and reopen");
+        assert!(permit.is_some());
+        drop(permit);
+        reopened.finish(&plan.context_id);
+        drop(router);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn mp08_mp11_source_owner_operation_status_and_binding_survive_restart() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
@@ -919,8 +1014,8 @@ mod tests {
             .prepare_owner_ticket(&config, &runtime, unavailable)
             .is_err());
         // MP-08/MP-11: a start refused before status admission (both transfer
-        // slots busy) reuses its prepared binding instead of orphaning one per
-        // retry; reopening retires a legacy status-less binding no index names.
+        // slots busy) retires its preparation; reopening also retires indexed
+        // unconsumed preparations left by a crash before admission.
         let held = (0..2)
             .map(|index| {
                 reopened
@@ -932,18 +1027,16 @@ mod tests {
             .collect::<Vec<_>>();
         let mut busy = selection.clone();
         busy.target.machine_id = "busy-target-machine".into();
-        let first = reopened
-            .prepare_owner_ticket(&config, &runtime, busy.clone())
-            .unwrap();
         for _ in 0..4 {
-            let plan = first.context_plan.package_binding();
+            let ticket = reopened
+                .prepare_owner_ticket(&config, &runtime, busy.clone())
+                .unwrap();
+            let plan = ticket.context_plan.package_binding();
             assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_err());
-            assert_eq!(
-                reopened
-                    .prepare_owner_ticket(&config, &runtime, busy.clone())
-                    .unwrap(),
-                first
-            );
+            assert!(!root
+                .join("outbound/.operations")
+                .join(format!("{}-owner.json", plan.context_id))
+                .exists());
         }
         drop(held);
         write_owner_metadata(&reopened, "context-orphan-a");
@@ -952,7 +1045,7 @@ mod tests {
         let reopened = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
         reopened.reclaim_operation_metadata(None).unwrap();
         assert!(!operations.join("context-orphan-a-owner.json").exists());
-        assert!(operations.join("context-orphan-b-owner.json").exists());
+        assert!(!operations.join("context-orphan-b-owner.json").exists());
         let names = fs::read_dir(&operations)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -970,7 +1063,10 @@ mod tests {
             indexes.count(),
             "one context binding per prepared owner plan"
         );
-        let plan = first.context_plan.package_binding();
+        let ticket = reopened
+            .prepare_owner_ticket(&config, &runtime, busy)
+            .unwrap();
+        let plan = ticket.context_plan.package_binding();
         assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_ok());
         drop(router);
         fs::remove_dir_all(root).unwrap();

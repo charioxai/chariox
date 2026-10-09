@@ -75,6 +75,23 @@ impl ManagedContextOutboundOperationStore {
         &self,
         protected_context: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.reclaim_operation_metadata_inner(protected_context, false, None)
+    }
+
+    pub(crate) fn reclaim_operation_metadata_at_startup(&self) -> Result<(), DaemonError> {
+        self.reclaim_operation_metadata_inner(None, true, None)
+    }
+
+    pub(crate) fn reclaim_rejected_preparation(&self, context_id: &str) -> Result<(), DaemonError> {
+        self.reclaim_operation_metadata_inner(None, false, Some(context_id))
+    }
+
+    fn reclaim_operation_metadata_inner(
+        &self,
+        protected_context: Option<&str>,
+        startup: bool,
+        rejected_context: Option<&str>,
+    ) -> Result<(), DaemonError> {
         let Some(parent) = self.status_parent() else {
             return Ok(());
         };
@@ -104,9 +121,9 @@ impl ManagedContextOutboundOperationStore {
         let mut statuses = Vec::new();
         let mut disk_unfinished = BTreeSet::new();
         let mut disk_counts = BTreeMap::<String, usize>::new();
-        let mut bindings: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
+        let mut bindings: BTreeMap<String, Vec<(PathBuf, String, bool)>> = BTreeMap::new();
         let mut indexed = BTreeSet::new();
-        let mut unconsumed = Vec::new();
+        let mut unconsumed = BTreeSet::new();
         for entry in entries {
             let path = entry.path();
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -148,16 +165,16 @@ impl ManagedContextOutboundOperationStore {
                     );
                 if index {
                     indexed.insert(plan.context_id.clone());
-                } else if name == format!("{}-owner.json", plan.context_id)
-                    && saved.consumption_attempted == Some(false)
-                {
-                    unconsumed.push((plan.context_id.clone(), path.clone()));
                 }
                 if index || name == format!("{}-owner.json", plan.context_id) {
-                    bindings
-                        .entry(plan.context_id)
-                        .or_default()
-                        .push((path, plan.plan_digest));
+                    if saved.consumption_attempted == Some(false) {
+                        unconsumed.insert(plan.context_id.clone());
+                    }
+                    bindings.entry(plan.context_id).or_default().push((
+                        path,
+                        plan.plan_digest,
+                        saved.consumption_attempted == Some(false),
+                    ));
                 }
             }
         }
@@ -166,21 +183,48 @@ impl ManagedContextOutboundOperationStore {
         // erased based on an older durable status.
         let mut state = self.state.lock().expect("operation retirement status lock");
         let active = self.active_context_ids();
-        // A binding whose plan index moved on and whose start never admitted a
-        // status was never consumed and can never be resumed; retire it.
-        for (context_id, path) in unconsumed {
-            if !indexed.contains(&context_id)
+        // MP-08/MP-11: no status means no operation was admitted. Retire an
+        // explicitly unconsumed preparation when its start was rejected, its
+        // index moved on, or startup has no in-flight preparation to preserve.
+        // Legacy/attempted bindings and admitted/recoverable statuses stay intact.
+        for context_id in unconsumed {
+            if (!indexed.contains(&context_id)
+                || startup
+                || rejected_context == Some(context_id.as_str()))
                 && !disk_counts.contains_key(&context_id)
+                && !path_entry_exists(&parent.join(format!("{context_id}.json")))?
+                && !path_entry_exists(&parent.join(format!(".retired-{context_id}.json")))?
+                && !path_entry_exists(
+                    &self
+                        .artifact_parent
+                        .as_deref()
+                        .expect("artifact parent")
+                        .join(&context_id),
+                )?
                 && !state.contains_key(&context_id)
                 && !active.contains(&context_id)
                 && protected_context != Some(context_id.as_str())
+                && bindings
+                    .get(&context_id)
+                    .is_some_and(|files| files.iter().all(|(_, _, unconsumed)| *unconsumed))
             {
-                fs::remove_file(path).map_err(|error| {
-                    outbound_service_io_error("retire orphaned owner binding", error)
-                })?;
-                sync_metadata_directory(&parent)?;
-                bindings.remove(&context_id);
-                entry_count = entry_count.saturating_sub(1);
+                let mut files = bindings.remove(&context_id).expect("unconsumed binding");
+                // Remove the index first; a crash leaves a reclaimable context
+                // binding. Also handle an index-only interrupted preparation.
+                files.sort_by_key(|(path, _, _)| {
+                    !path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("owner-")
+                });
+                for (path, _, _) in files {
+                    fs::remove_file(path).map_err(|error| {
+                        outbound_service_io_error("retire unadmitted owner binding", error)
+                    })?;
+                    sync_metadata_directory(&parent)?;
+                    entry_count = entry_count.saturating_sub(1);
+                }
             }
         }
         statuses.retain(|(status, _, retiring, eligible)| {
@@ -198,7 +242,7 @@ impl ManagedContextOutboundOperationStore {
                 && bindings.get(&status.context_id).is_none_or(|files| {
                     files
                         .iter()
-                        .all(|(_, digest)| digest == &status.plan_digest)
+                        .all(|(_, digest, _)| digest == &status.plan_digest)
                 })
         });
         statuses.sort_by(|(a, _, ar, _), (b, _, br, _)| {
@@ -232,7 +276,7 @@ impl ManagedContextOutboundOperationStore {
             }
             state.remove(&status.context_id);
             if let Some(files) = bindings.remove(&status.context_id) {
-                for (file, _) in files {
+                for (file, _, _) in files {
                     fs::remove_file(file).map_err(|error| {
                         outbound_service_io_error("retire owner operation metadata", error)
                     })?;
