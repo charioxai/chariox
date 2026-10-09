@@ -299,7 +299,7 @@ while IFS= read -r request; do
   *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
-  *'"op":"snapshot"'*) echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
+  *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
   *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
  esac
@@ -317,7 +317,10 @@ async fn login_room() -> Login {
 }
 
 async fn login_room_at(site: &str) -> Login {
-    let f = fixture();
+    login_room_with_fixture(fixture(), site).await
+}
+
+async fn login_room_with_fixture(f: Fixture, site: &str) -> Login {
     let root = crate::test_support::TestWorktree::new("a06-login-controller");
     let script = root.path().join("controller.sh");
     std::fs::write(&script, LOGIN_CONTROLLER.replace(SITE, site)).unwrap();
@@ -633,4 +636,106 @@ async fn a06_generation_storage_wait_rechecks_revoked_window() {
 async fn a06_generation_storage_wait_rechecks_expired_window() {
     crate::test_support::isolated_env_test!();
     queued_generation_loses_authority(true).await;
+}
+
+// MP-08/MP-10/MP-11 review #937: the open task is not the original fill turn.
+async fn queued_fill_loses_original_turn(continuation: bool) {
+    let login = login_room_with_fixture(super::tests::fixture_with_options(None, true), SITE).await;
+    let f = &login.f;
+    let window = super::window_tests::open(f, None).await;
+    assert!(
+        window.task_id.is_some(),
+        "fixture must retain durable owner work"
+    );
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&window.session_id)
+        .unwrap();
+    let mark_running = || {
+        let prompts = &f.state.owned.prompt_state_owner;
+        let active = prompts
+            .active_prompt_for_agent_snapshot(&session, &window.agent_id)
+            .unwrap();
+        let mut started = active.clone();
+        started.set_status(crate::session::PromptStatus::Running);
+        assert!(prompts.replace_active_prompt_if_matches(
+            &session,
+            &window.agent_id,
+            &active,
+            started
+        ));
+    };
+    mark_running();
+    unlock(f);
+    let handle = generate(f, "held-fill", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let guard = f.state.vault_observation_mutation_guard().await;
+    let pending = call(f, PASTE, paste_args(&handle));
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut pending)
+            .await
+            .is_err()
+    );
+    assert!(
+        login.root.path().join("snapshot-observed").exists(),
+        "fill must have discovered the page before waiting on the Vault lock"
+    );
+    assert_eq!(inserted(&login), None);
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &window.agent_id)
+        .unwrap();
+    f.state.sweep_sudo();
+    assert_eq!(
+        f.state.list_sudo_turns("local").len(),
+        1,
+        "durable work keeps the window open"
+    );
+    assert!(f.state.sudo_for_auth_token(TOKEN).is_err());
+    if continuation {
+        let next = super::window_tests::start_continuation(f, &window);
+        mark_running();
+        let current = f.state.sudo_for_auth_token(TOKEN).unwrap();
+        assert_eq!(current.provider_run_id.as_deref(), Some(f.run.id()));
+        assert_eq!(current.prompt_id.as_deref(), Some(next.as_str()));
+    }
+    drop(guard);
+    let result = pending.await;
+    let typed = inserted(&login).is_some();
+    // Settle the fixture even on the expected RED before asserting the seam.
+    if typed || result.is_ok() {
+        f.state.shutdown_cleanup().await.unwrap();
+        assert!(
+            !typed,
+            "queued fill typed after its original sudo turn ended"
+        );
+        panic!("ended original fill returned success");
+    }
+    if continuation {
+        assert_eq!(
+            call(f, PASTE, paste_args(&handle)).await.unwrap(),
+            json!({"inserted":true}),
+            "fresh continuation calls remain authorized"
+        );
+        assert!(inserted(&login).is_some());
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a06_queued_fill_refuses_ended_turn_with_open_task() {
+    crate::test_support::isolated_env_test!();
+    queued_fill_loses_original_turn(false).await;
+}
+
+#[tokio::test]
+async fn a06_queued_fill_refuses_later_continuation_in_same_run() {
+    crate::test_support::isolated_env_test!();
+    queued_fill_loses_original_turn(true).await;
 }

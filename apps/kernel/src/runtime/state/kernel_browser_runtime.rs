@@ -491,10 +491,10 @@ impl KernelRuntimeState {
         }
         let agent = self.user_domain_tool_agent(run).await?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        // MP-08/MP-10/MP-11 A06: a live sudo window authorizes a Vault fill into
-        // its retained grant without focus; ordinary agents still need focus.
-        let sudo_entry = if name == PASTE && !host.is_focused(&user, agent.id()) {
-            Some(self.sudo_for_auth_token(token).map_err(|_| host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()))?.entry_id)
+        // MP-08/MP-10/MP-11 A06: retain the exact sudo turn across waits.
+        // Its browser grant permits unfocused input only while that turn is current.
+        let sudo_turn = if name == PASTE && !host.is_focused(&user, agent.id()) {
+            Some(self.sudo_for_auth_token(token).map_err(|_| host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()))?)
         } else {
             None
         };
@@ -502,7 +502,7 @@ impl KernelRuntimeState {
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
         let sensitive = name == PASTE;
-        let authority_entry = sudo_entry.clone();
+        let authority_turn = sudo_turn.clone();
         let authority_owner = user.clone();
         let authority_agent = agent.id().to_string();
         let mut admission = host
@@ -519,15 +519,15 @@ impl KernelRuntimeState {
                 current.id() == run_id
                     && authority.kernel_browser_agent(current).is_some()
                     && (!sensitive
-                        || match &authority_entry {
-                            Some(entry) => authority.sudo_entry_live(entry),
+                        || match &authority_turn {
+                            Some(turn) => authority.sudo_turn_live(turn),
                             None => authority
                                 .owned
                                 .kernel_browser_host
                                 .is_focused(&authority_owner, &authority_agent),
                         })
             });
-        if sudo_entry.is_some() {
+        if sudo_turn.is_some() {
             admission = admission.elevated();
         }
         if name == SHARE {
@@ -543,7 +543,7 @@ impl KernelRuntimeState {
                     &agent,
                     arguments,
                     admission,
-                    sudo_entry.as_deref(),
+                    sudo_turn.as_ref(),
                 )
                 .await
                 .map_err(|error| {
