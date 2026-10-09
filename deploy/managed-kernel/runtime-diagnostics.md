@@ -38,7 +38,14 @@ wrap the real signed presence HTTP request; they never contain its body. Upgrade
 settlement, applied/failed evidence and Cloud response are recorded. The detached
 transaction records prepared before stopping the kernel, then stopped, activated,
 committed or rolled_back after the corresponding durable phase write. Download
-records bracket the complete download, not byte progress. Bind PID/timeline to
+records bracket the complete download, not byte progress. MP-07/MP-10: between
+stopped and activated, `activation_*_start` records identify entry into builder
+pin, home migration, receipt, override, App preparation, current-link, data-volume
+links, App storage, slice facade and facade validation steps. They are not
+completion receipts. `update_unexpected_exit` records entry into EXIT recovery
+before staged trust inputs are removed; it contains no status or error payload.
+A missing next marker narrows the interval only when collection completeness is
+established. Bind PID/timeline to
 the exact signed release, environment and machine in the campaign's independent
 product receipts; run one transition at a time.
 

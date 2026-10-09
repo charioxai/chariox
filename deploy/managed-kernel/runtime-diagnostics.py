@@ -23,7 +23,11 @@ EVENTS = frozenset(('prompt_dispatch provider_dispatch_start provider_dispatch_r
     'update_poll_failed update_unit_running update_recovery update_pending update_applied '
     'update_failed update_cloud_acknowledged update_download update_downloaded '
     'update_unit_starting update_unit_started prepared stopped activated committed '
-    'rolled_back observer_flush').split())
+    'rolled_back observer_flush update_unexpected_exit '
+    'activation_builder_pin_start activation_home_migration_start activation_receipt_start '
+    'activation_release_override_start activation_app_prepare_start activation_current_link_start '
+    'activation_data_volume_links_start activation_app_storage_start activation_slice_facade_start '
+    'activation_slice_facade_check_start').split())
 MAX_RECORD = 1024
 MAX_JOURNAL = 8 * 1024 * 1024
 

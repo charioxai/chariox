@@ -1,7 +1,7 @@
 // MP-04/MP-07/MP-08/MP-10/MP-11: offline native-release transaction qualification.
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { chmod, chown, readFile, readlink, rm, stat } from "node:fs/promises"
+import { chmod, chown, mkdir, readFile, readdir, readlink, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { test as nodeTest } from "node:test"
 // These tests qualify actual root ownership; other hosts report explicit skips.
@@ -89,6 +89,25 @@ test("MP-07/MP-10 unexpected exit after stopping restores the previous release b
   assert.equal(result.status, 23, result.stderr)
   await assertSettled(harness, "previous", "rolled_back", before)
   assert.ok((await serviceMutations(harness)).includes("start chariox-path1-managed-bootstrap.service"))
+})
+
+test("MP-07/MP-10 activation diagnostics identify steps and unexpected exits without payloads", async context => {
+  const steps = ["builder_pin", "home_migration", "receipt", "release_override", "app_prepare",
+    "current_link", "data_volume_links", "app_storage", "slice_facade", "slice_facade_check"]
+  for (const fail of [false, true]) {
+    const harness = await path1Harness(context)
+    const directory = join(harness.state, "public-diagnostics")
+    await mkdir(directory, { mode: 0o700 })
+    if (fail) await put(join(harness.state, "fail-after-stopped"), "fail once\n")
+    const result = harness.run({ ...harness.env, CHARIOX_RUNTIME_DIAGNOSTICS_DIR: directory })
+    assert.equal(result.status, fail ? 23 : 0, result.stderr)
+    const records = (await Promise.all((await readdir(directory)).map(async name =>
+      (await readFile(join(directory, name), "utf8")).trim().split("\n").map(line => JSON.parse(line))))).flat()
+    for (const record of records) assert.deepEqual(Object.keys(record).sort(), ["atMs", "event", "pid", "schema"])
+    const events = records.sort((a, b) => a.atMs - b.atMs).map(record => record.event)
+    assert.deepEqual(events, fail ? ["prepared", "update_unexpected_exit", "rolled_back"]
+      : ["prepared", "stopped", ...steps.map(step => `activation_${step}_start`), "activated", "committed"])
+  }
 })
 
 for (const [boundary, selected, phase] of [

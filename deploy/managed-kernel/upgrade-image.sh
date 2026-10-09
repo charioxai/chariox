@@ -98,6 +98,7 @@ finish() {
     && [ "$rolling_back" -eq 0 ]; then
     # Isolate helpers that use exit on an invalid authority. Preserve the
     # durable journal on failed recovery; never turn a failure into success.
+    record_diagnostic_phase update_unexpected_exit
     if ! (recover_transaction); then
       echo "managed kernel exit recovery remains pending" >&2
     fi
@@ -1144,6 +1145,7 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   exit 1
 fi
 write_phase stopped
+record_diagnostic_phase activation_builder_pin_start
 if ! activate_builder_pin "$transaction_root" target; then
   if rollback_transaction; then
     echo "managed builder pin activation failed; restored previous managed kernel release" >&2
@@ -1152,6 +1154,7 @@ if ! activate_builder_pin "$transaction_root" target; then
   fi
   exit 1
 fi
+record_diagnostic_phase activation_home_migration_start
 if ! resume_home_migration; then
   if rollback_transaction; then
     echo "managed kernel home migration failed; restored previous managed kernel release" >&2
@@ -1160,30 +1163,39 @@ if ! resume_home_migration; then
   fi
   exit 1
 fi
+record_diagnostic_phase activation_receipt_start
 if ! atomic_receipt "$transaction_root/target-receipt.json"; then
   activation_failed=1
 elif [ -f "$transaction_root/target-release-override.json" ]; then
+  record_diagnostic_phase activation_release_override_start
   atomic_release_override "$transaction_root/target-release-override.json" || activation_failed=1
 else
+  record_diagnostic_phase activation_release_override_start
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_app_prepare_start
   prepare_managed_app_release_switch "$published_release" || activation_failed=1
   if [ "${activation_failed:-0}" -eq 0 ]; then
+    record_diagnostic_phase activation_current_link_start
     atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
   fi
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_data_volume_links_start
   sync_path1_data_volume_unit_links || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_app_storage_start
   sync_managed_app_storage || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_slice_facade_start
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
     || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  record_diagnostic_phase activation_slice_facade_check_start
   verify_signed_slice_build_context_facade || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -ne 0 ]; then
