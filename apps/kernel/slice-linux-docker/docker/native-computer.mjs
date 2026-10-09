@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { fenceBrowserCapture } from './browser-protection-regions.mjs';
+import { redactObservation } from './browser-controller-snapshot.mjs';
 export function nativePasteChord(value) {
   const names=new Set(value.toLowerCase().split('+'));
   const has=values=>values.some(name=>names.has(name));
@@ -143,12 +144,15 @@ export class NativeComputer {
       } catch(error) {await this.reset();throw error;}
     }
     if(!['screenshot','ocr','clipboard_read'].includes(command.op)) throw new Error('MP-08: unsupported native observation');
-    // Non-browser Vault echo coverage is not yet proven: any registry
-    // protection masks the entire desktop, including OCR/clipboard.
-    const mask=Boolean(policy?.values?.length || policy?.targets?.length);
+    // Vault (Miguel 2026-10-09): never black out the desktop. Kernel-browser
+    // windows keep their CDP field/value masks; other windows mask a registered
+    // value only where AT-SPI exposes it as text (best effort). A clipboard
+    // read stays withheld while values or targets are registered.
+    const values=policy?.values??[];
+    const mask=command.op==='clipboard_read'&&Boolean(values.length || policy?.targets?.length);
     const browser_processes=await binding.browserProcesses?.();
     const processes=await binding.ownedProcesses?.()??[];
-    const observe=browser_protection=>this.execute({op:command.op,mask,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
+    const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
     // only for an unchanged, presented CDP measurement; otherwise whole windows.
     const browser=command.op==='clipboard_read'?null:binding.browser?.();
@@ -162,6 +166,6 @@ export class NativeComputer {
     }
     delete result.browser_withheld;
     if(signal?.aborted || this.binding()!==binding) throw new Error('MP-11: stale native observation');
-    return {...result,surface_id:binding.surface_id,generation:binding.generation};
+    return {...redactObservation(result,command.op==='ocr'?values:[]),surface_id:binding.surface_id,generation:binding.generation};
   }
 }

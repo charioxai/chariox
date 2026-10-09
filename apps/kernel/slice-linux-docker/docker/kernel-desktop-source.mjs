@@ -40,7 +40,9 @@ export class DesktopSource {
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
-      mask:this.policy.unknown||Boolean(this.policy.values.length||this.policy.targets.length),
+      // Vault (Miguel 2026-10-09): no desktop blackout; browser windows keep CDP
+      // field/value masks, other windows mask values AT-SPI exposes as text.
+      mask:this.policy.unknown,values:this.policy.values,
       processes:await this.binding.ownedProcesses(),browser_processes:await this.binding.browserProcesses()})+'\n');
     for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
     if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}

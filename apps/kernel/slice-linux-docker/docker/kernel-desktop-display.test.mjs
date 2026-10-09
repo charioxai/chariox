@@ -2,6 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
+import { DesktopSource } from './kernel-desktop-source.mjs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 const target={surface_id:'desktop-one',generation:'native-one',width:1280,height:800};
 function fixture(){
  let captures=0,closed=0;
@@ -53,4 +57,24 @@ test('MP-11 canceling one credit preserves producer lifetime, retiring policy cl
  await display.request(request,'a');assert.equal(valid(),true);
  await display.retireSource();assert.equal(closed,1);assert.equal(valid(),false);
  await display.close();
+});
+
+// Vault (Miguel 2026-10-09): registered values never black out the desktop
+// stream; they reach the capture helper for the best-effort AT-SPI text check.
+test('MP-08/MP-11 Vault values reach the desktop capture without a whole-desktop mask',async()=>{
+ const root=await mkdtemp(path.join(process.env.TMPDIR??tmpdir(),'desktop-source-'));
+ const helper=path.join(root,'helper.sh'),seen=path.join(root,'config.json'),saved=process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;
+ await writeFile(helper,`#!/bin/sh\nhead -n 1 > ${seen}\n`,{mode:0o700});
+ process.env.CHARIOX_BROWSER_DISPLAY_PYTHON=helper;
+ try{
+  for(const [policy,mask] of [[{values:['v-secret'],targets:[],unknown:false},false],[{values:[],targets:[],unknown:true},true]]){
+   const source=new DesktopSource({...target,environment:{},ownedProcesses:async()=>[],browserProcesses:async()=>[],browser:()=>null},policy);
+   await assert.rejects(source.start(),/unavailable/);
+   const config=JSON.parse(await readFile(seen,'utf8'));
+   assert.deepEqual([config.mask,config.values],[mask,policy.values]);
+  }
+ }finally{
+  if(saved===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;else process.env.CHARIOX_BROWSER_DISPLAY_PYTHON=saved;
+  await rm(root,{recursive:true,force:true});
+ }
 });

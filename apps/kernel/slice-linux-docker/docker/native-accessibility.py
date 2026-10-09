@@ -19,6 +19,7 @@ from types import SimpleNamespace
 # the 64-node / 3 KiB public projection. Exhaustion still masks captures.
 MAX_NODES=8192
 MAX_DEPTH=32
+MAX_TEXT=65536
 
 
 class NativeInputDenied(ValueError):
@@ -113,7 +114,28 @@ def subtract(rect, cover):
     return parts
 
 
-def snapshot(processes, browser_processes=None, browser_protection=None):
+def value_boxes(node, bounds, values):
+    """Vault (Miguel 2026-10-09): never black out native windows. Best effort:
+    a registered value is masked only where AT-SPI exposes it as text (its
+    character range) or only as a name (the node); unreadable text is not checked."""
+    variants={variant for value in values for variant in (value,value.lower(),value.upper()) if variant}
+    named=[bounds] if bounds and any(variant in (node.name or '') for variant in variants) else []
+    try:
+        text=node.queryText();content=text.getText(0,min(text.characterCount,MAX_TEXT))
+    except Exception:return named
+    boxes=[]
+    for variant in variants:
+        start=content.find(variant)
+        while start>=0:
+            try:
+                rect=text.getRangeExtents(start,start+len(variant),pyatspi.DESKTOP_COORDS)
+                if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
+            except Exception:pass
+            start=content.find(variant,start+1)
+    return boxes or named
+
+
+def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
     # Only the kernel's own Chromium tree was measured through CDP.
@@ -128,7 +150,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
             binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
             if 'chrome' in binary or 'chromium' in binary or 'firefox' in binary:browsers.add(pid)
         except OSError:pass
-    nodes=[];complete=True;protected=False;pending=deque();uncovered=[];masks=[]
+    nodes=[];complete=True;protected=False;pending=deque();uncovered=[];masks=[];found=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -144,6 +166,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
             rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
             bounds=[rect.x,rect.y,rect.width,rect.height]
         except NotImplementedError:pass
+        if values and not secret and 'showing' in states:found.extend(value_boxes(node,bounds,values))
         actions=[]
         if not secret:
             try:
@@ -256,6 +279,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None):
                     geometry=child.get_geometry()
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible);masks.append(visible)
+            masks.extend(part for part in (visible_rect(box,screen) for box in found) if part)
         finally:connection.close()
         # MP-11: browser pixels are placed by the CDP transform above; the
         # structured browser app stays withheld (titles, OTP/payment/private

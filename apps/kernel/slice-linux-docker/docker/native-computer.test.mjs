@@ -31,13 +31,30 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
   assert.deepEqual(await run({ ensureConnection: async () => { throw new Error('closed'); } }), [null]);
-  // Vault policy masks the whole desktop: no browser measurement is consulted.
-  assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [null]);
+  // Vault policy never blacks out the desktop: browser windows are measured with the values.
+  assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
   // A window AT-SPI has not yet bound is retried, and the count stays private.
   const withheld=[1,0],bound={...binding,browser:()=>browser([[],[],[],[]])};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async()=>({data_base64:'',browser_withheld:withheld.shift()})});
   assert.deepEqual(await adapter.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[],unknown:false}),{data_base64:'',surface_id:'surface',generation:'generation'});
   assert.deepEqual(withheld,[]);
+});
+// Vault (Miguel 2026-10-09): no desktop blackout; values reach the AT-SPI text
+// check, OCR text is redacted, and a clipboard read stays withheld.
+test('MP-08 / MP-11 Vault values never black out the desktop; OCR is redacted, clipboard withheld', async () => {
+  const sent=[];
+  const browser={ensureConnection:async()=>({send:async method=>{if(method!=='Target.getTargets')throw new Error('unexpected');return {targetInfos:[]};}})};
+  const bound={...binding,browser:()=>browser};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);
+    return request.op==='ocr'?{text:'token v-secret here'}:request.op==='clipboard_read'?{text:'[protected]'}:{data_base64:''};}});
+  const vault={values:['v-secret'],targets:[],unknown:false},at={surface_id:'surface',generation:'generation'};
+  await adapter.request({op:'screenshot',...at},vault);
+  assert.deepEqual([sent[0].mask,sent[0].values,sent[0].browser_protection],[false,['v-secret'],{pages:[]}]);
+  assert.equal((await adapter.request({op:'ocr',...at},vault)).text,'token [redacted] here');
+  await adapter.request({op:'clipboard_read',...at},vault);
+  assert.equal(sent.at(-1).mask,true);
+  await adapter.request({op:'clipboard_read',...at},{values:[],targets:[],unknown:false});
+  assert.equal(sent.at(-1).mask,false);
 });
 test('MP-08 immediate physical key and text are distinct and wake capture after each event', async () => {
   const sent=[],wakes=[];

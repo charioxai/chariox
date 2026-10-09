@@ -149,7 +149,7 @@ try:
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
         if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         protection_serial=config.get('protection_serial',0)
-        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
+        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
@@ -158,7 +158,7 @@ try:
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
         protected_regions=[]
         if desktop:
-            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'))
+            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
             if config.get('mask') or before!=after or not before.get('available') or not before.get('complete') or before.get('protected'):
                 protected_regions=[[0,0,width,height]]
             else:protected_regions=before.get('masks',before.get('uncovered',[]))

@@ -125,10 +125,11 @@ def main(request):
         return {'text':'[protected]' if value is None else value[0]}
     accessibility=load('native-accessibility')
     browser_protection=request.get('browser_protection')
-    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
+    values=request.get('values',[])
+    before=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     mask=request['mask'] or not before['available'] or not before['complete'] or before['protected']
     image=capture(mask,before.get('masks',before.get('uncovered',())))
-    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection)
+    after=accessibility.snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
     if before!=after:
         image.close()
         raise ValueError('native protection changed during capture')
