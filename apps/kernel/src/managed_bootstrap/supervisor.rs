@@ -18,13 +18,13 @@ use crate::error::DaemonError;
 
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
-#[cfg(test)]
-use super::{managed_provider_topology, state::BootstrapReceiptStatus};
 use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{
-    jittered, ManagedProviderTopology, PendingConfirmation,
-    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
+    jittered, ManagedProviderTopology, PendingConfirmation, MANAGED_PROVIDER_TOPOLOGY_ENV,
+    PATH1_KERNEL_SLICE_BROKER_ENVS, PATH1_SHARED_HOST_SELECTOR_ENVS,
 };
+#[cfg(test)]
+use super::{managed_provider_topology, state::BootstrapReceiptStatus};
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);

@@ -129,11 +129,13 @@ pub(crate) use provider_processes::{
     ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
-#[cfg(test)]
-pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
     LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
     RemoteLeaseRuntime,
+};
+#[cfg(test)]
+pub(crate) use remote_lease::{
+    LeasedAgentCleanupPhase, ProviderCleanupFailurePoint, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
