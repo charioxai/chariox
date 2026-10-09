@@ -186,3 +186,16 @@ test('MP-10: resource slices reassemble in order; a reset restarts them', () => 
   const whole = { key: 'r2', resource_id: 'b'.repeat(64), mime_type: 'image/png', data_base64: 'AAAA' }
   assert.equal(renderer.assemble(whole), whole)
 })
+
+test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); other navigation keys go to the kernel', () => {
+  const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const sent: unknown[] = []
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { bind(doc: unknown): void; documentId: string }
+  const handlers = new Map<string, (event: unknown) => void>()
+  renderer.bind({ addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn), getSelection: () => null })
+  renderer.documentId = 'd'
+  const press = (key: string) => { let prevented = false; handlers.get('keydown')!({ key, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault: () => { prevented = true } }); return prevented }
+  assert.equal(press('PageDown'), false); assert.equal(press('PageUp'), false)
+  assert.equal(press('Tab'), true)
+  assert.deepEqual(sent, [{ kind: 'key', key: 'Tab' }])
+})

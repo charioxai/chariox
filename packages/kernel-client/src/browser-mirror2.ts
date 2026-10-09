@@ -126,8 +126,9 @@ export class BrowserMirror2Renderer {
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey } = event as KeyboardEvent
       if (ctrlKey || metaKey || altKey) return
-      if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(key)) {
-        event.preventDefault(); if (key === 'PageUp' || key === 'PageDown') return
+      // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
+      if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
+        event.preventDefault()
         this.enqueue({ kind: 'key', key: key === 'Tab' && shiftKey ? 'Shift+Tab' : key })
       }
     })
