@@ -63,6 +63,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/linux-desktop-session.py"),
     ),
     (
+        "kernel-browser-mirror-sanitize.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs"),
+    ),
+    (
         "kernel-browser-mirror-styles.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-styles.mjs"),
     ),

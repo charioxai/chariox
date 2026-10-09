@@ -23,6 +23,36 @@ function fixture() {
   return {host,state,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
+test('MP-08/MP-11: registered and retired matching text uses visible tiles before hashing incremental bases',async()=>{
+ const {service,state,host}=fixture();host.protection.values=['fixture'];
+ state.snapshot.nodes[0].parent='n3';state.snapshot.nodes.unshift({id:'n3',parent:null,children:['n1'],kind:'element',tag:'html',box:{x:0,y:0,width:1280,height:800}});state.snapshot.root='n3';
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const first=await service.next(next(sub.subscription_id),'a');
+ assert.equal(first.nodes.find(n=>n.id==='n1').kind,'tile');
+ assert(!JSON.stringify(first.nodes).includes('fixture'),'MP-11 ordinary matching text never enters the structured wire tree');
+ assert.equal(first.tiles.length,1,'MP-08 ordinary matching pixels stay visible');
+ assert.equal(first.hash,mirrorHash({root:first.root,nodes:first.nodes,fonts:first.fonts,scroll:first.scroll,focused:first.focused,selection:first.selection}));
+ state.snapshot.nodes[2].text='ordinary';
+ const delta=await service.next(next(sub.subscription_id,first.sequence),'a');
+ assert(!delta.reset);assert.equal(delta.base_sequence,first.sequence);assert.equal(delta.nodes.find(n=>n.id==='n1').kind,'element');
+ const records=new Map(first.nodes.map(n=>[n.id,n]));for(const id of delta.removed)records.delete(id);for(const n of delta.nodes)records.set(n.id,n);
+ assert.equal(delta.hash,mirrorHash({root:delta.root,nodes:[records.get('n3'),records.get('n1'),records.get('n2')],fonts:delta.fonts,scroll:delta.scroll,focused:delta.focused,selection:delta.selection}));
+ state.snapshot.nodes[1].attributes={title:'fixture'};state.snapshot.nodes[1].pseudo={'::before':{text:'FIXTURE',style:{color:'black'}}};
+ const retired=await service.next(next(sub.subscription_id,delta.sequence),'a');
+ assert.equal(retired.nodes[0].kind,'tile');assert.equal(retired.nodes[0].attributes,undefined);assert.equal(retired.nodes[0].pseudo,undefined);
+ clearInterval(service.expiry);service.clear();
+});
+test('MP-08/MP-11: matching styles fonts and overflowing text use protected full compositor fallback',async()=>{
+ for(const seam of ['style','font','overflow']) {
+  const {service,state,host}=fixture();host.protection.values=['fixture'];
+  if(seam==='style')state.snapshot.nodes[0].style={'font-family':'fixture'};
+  if(seam==='font')state.snapshot.fonts=[{family:'fixture',resource:'missing'}];
+  if(seam==='overflow')state.snapshot.nodes[1].box={x:70,y:0,width:80,height:40};
+  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+  assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(!JSON.stringify(packet.nodes).includes('fixture'));assert.equal(packet.tiles.length,1);
+  clearInterval(service.expiry);service.clear();
+ }
+});
 test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
  for(const fallback of [false,true]) {
   const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');

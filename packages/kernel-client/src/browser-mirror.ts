@@ -135,7 +135,7 @@ export class BrowserMirrorRenderer {
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
-      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;if(!record.style?.position||record.style.position==='static')element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
       element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
