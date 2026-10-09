@@ -31,8 +31,8 @@ async function settle(child) {
   if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise(resolve => child.once('exit', resolve)); }
 }
 export class DesktopSource {
-  constructor(binding, policy, { native = nativeDesktopWorker() } = {}) {
-    this.binding=binding;this.policy=policy;this.native=native;this.listeners=new Set();this.closed=false;this.latest=null;this.held=null;
+  constructor(binding, policy, { native = nativeDesktopWorker(), timing = () => {} } = {}) {
+    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.held=null;
     // MP-08/MP-11: kernel-browser windows are revealed only under a stable,
     // presented CDP measurement that is re-verified after each frame's capture.
     this.gate=new ProtectionGate(async()=>{
@@ -118,6 +118,7 @@ export class DesktopSource {
     if(typeof digest!=='string'||masks!==null&&!validMasks(masks,this.binding.width,this.binding.height))throw Error('MP-11: desktop protection reply');
     // Wall-clock ms like the worker's captured_ms; receipt follows completion.
     const snapshot={scope,digest,masks,start,end:Date.now()+1},now=Date.now();
+    this.timing('desktop_protection_snapshot',start,now);
     this.history=[...(this.history??[]).filter(item=>item.end>now-2000).slice(-63),snapshot];
     return snapshot;
   }
@@ -135,9 +136,10 @@ export class DesktopSource {
       if(this.closed){raw.release();break;}
       const first=this.history.findLastIndex(item=>item.end<=raw.captured_ms),span=first<0?[]:this.history.slice(first);
       if(span.length<2||span.some((item,index)=>index&&item.start-span[index-1].end>UNOBSERVED_MS)){
-        raw.release();if(!this.next)this.worker.notify({refresh:true},true);continue;
+        this.timing('desktop_readback_dropped',raw.captured_ms);raw.release();if(!this.next)this.worker.notify({refresh:true},true);continue;
       }
       const stable=span.every(item=>item.scope===scope&&item.digest===span[0].digest);
+      this.timing(stable?'desktop_readback_bound':'desktop_readback_masked',raw.captured_ms);
       this.bind(raw,stable?span[0].masks:null,scope.serial);
     }}catch{this.next?.release();this.next=null;void this.close().catch(()=>{});}
     finally{this.protecting=false;}
@@ -170,8 +172,9 @@ export class DesktopSource {
       if(!this.held&&this.gate.protectionSerial!==0){await delay(8);continue;}
       // The latest frame captured before this measurement begins; frames
       // arriving meanwhile wait for the next one (no starvation while scrolling).
-      const held=this.held;this.held=null;
+      const held=this.held,started=Date.now();this.held=null;
       const {verified,changed}=await this.gate.step();
+      this.timing(held&&verified===held.serial?'desktop_gate_verified':'desktop_gate_step',started);
       if(held&&verified===held.serial)this.publish(held.sample);else held?.sample.raw.release?.();
       if(changed)await this.wake();
       // Unadopted (no browser, DevTools open, unbindable page): retry calmly.

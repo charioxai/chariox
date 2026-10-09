@@ -5,7 +5,7 @@ import { DisplayStream } from './kernel-browser-display.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 export class DesktopDisplay {
-  constructor(host,{createSource=async(binding,policy)=>new DesktopSource(binding,policy).start(),createProducer=(...args)=>new MotionEncoder(...args)}={}) {
+  constructor(host,{createSource=async(binding,policy)=>new DesktopSource(binding,policy,{timing:host.timing}).start(),createProducer=(...args)=>new MotionEncoder(...args)}={}) {
     this.host=host;this.createSource=createSource;this.createProducer=createProducer;this.source=null;this.sourcePending=null;this.sourceEpoch=0;
   }
   streams(){return [...this.host.displays.values()].filter(stream=>stream.source_kind==='desktop');}
