@@ -16,6 +16,7 @@ parser.add_argument('drill',choices=['linux-owned-desktop','native-computer','na
 parser.add_argument('--evidence',required=True)
 parser.add_argument('--desktop-capture',action='store_true',help='MP-08/MP-11: supplementary protected desktop source check')
 parser.add_argument('--native-prefix',help='MP-08: optional lane-owned public native dependencies')
+parser.add_argument('--native-worker',help='MP-08/MP-10: kernel ELF built with native-display; the desktop source then uses its XShm/x264 worker')
 args=parser.parse_args()
 source=Path(__file__).resolve().parent
 files=['native-x11.py','browser-desktop-protection.py','browser-protection-regions.mjs','kernel-browser-refusal.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','linux-owned-process.mjs','linux-desktop-session.py','native-computer.mjs','native-computer.py','native-clipboard.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py']
@@ -54,6 +55,12 @@ with tempfile.TemporaryDirectory(prefix='cn-',dir='/var/tmp') as temporary:
     environment['TMPDIR']=str(state)
     environment['CULINUX_CAPTURE_ROOT']=str(captures)
     if args.desktop_capture:environment['CULINUX_DESKTOP_CAPTURE']='1'
+    if args.native_worker:
+        packets=root/'packets';packets.mkdir(mode=0o700)
+        if os.getuid()==0:os.chown(packets,65534,65534)
+        environment['CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER']=str(Path(args.native_worker).resolve(strict=True))
+        environment['CHARIOX_BROWSER_DISPLAY_PACKET_ROOT']=str(packets)
+        manifest['native_worker_sha256']=hashlib.sha256(Path(args.native_worker).read_bytes()).hexdigest()
     if args.native_prefix:
         prefix=Path(args.native_prefix).resolve(strict=True)
         environment['CULINUX_NATIVE_PREFIX']=str(prefix)

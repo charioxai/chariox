@@ -66,6 +66,19 @@ try {
     desktopSource=await new DesktopSource(binding,{values:[],targets:[],unknown:false}).start();
     const raster=desktopSource.sample().raw,pixels=Buffer.from(raster.pixels);
     assert(pixels.some((v,i)=>i%4!==3&&v!==0),'MP-08 protected desktop must show proved public editor');
+    if(process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER){
+      // MP-08/MP-10 (#933 review 4): the kernel's own XShm/x264 worker serves the desktop.
+      assert.equal(typeof raster.nativeEncode,'function','MP-08 desktop source must use the kernel native worker');
+      const {PortableEncoder}=await import('./docker/kernel-browser-display.mjs');
+      const encoder=new PortableEncoder();
+      try{
+        const encoded=await encoder.encode(raster,4000000,true,'avc1.420033');
+        assert.equal(encoded.key,true,'MP-08 first native desktop frame is a key');
+        assert.match(encoded.packet?.name??'',/^[a-f0-9]{32}\.json$/,'MP-08 native packet bypasses Node');
+        assert.equal(encoder.backend,'x264');
+        console.log('MP-08 MP-10 native desktop x264 key frame '+encoded.packet.length+' bytes');
+      }finally{await encoder.close();}
+    }
     for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
     await writeFile(path.join(process.env.CULINUX_CAPTURE_ROOT,'desktop-public-editor.png'),Buffer.from(encodePng(raster.width,raster.height,pixels),'base64'));
     await desktopSource.close();
@@ -140,7 +153,8 @@ try {
     const {encodePng,displayMaskRegions}=await import('./docker/kernel-browser-pixels.mjs');
     const capture=async(name,policy={values:[],targets:[],unknown:false})=>{
       desktopSource=await new DesktopSource(binding,policy).start();
-      const raw=desktopSource.sample().raw,pixels=Buffer.from(raw.pixels);
+      // Native rasters are leases retired on close: keep the exported bytes.
+      const source=desktopSource.sample().raw,raw={pixels:Buffer.from(source.pixels),[displayMaskRegions]:source[displayMaskRegions],width:source.width,height:source.height},pixels=Buffer.from(raw.pixels);
       for(let i=0;i<pixels.length;i+=4){const blue=pixels[i];pixels[i]=pixels[i+2];pixels[i+2]=blue;pixels[i+3]=255;}
       const file=path.join(process.env.CULINUX_CAPTURE_ROOT,name+'.png');
       await writeFile(file,Buffer.from(encodePng(raw.width,raw.height,pixels),'base64'));
@@ -150,7 +164,10 @@ try {
     const text=spawnSync('tesseract',[clipboardCapture.file,'stdout'],{env:binding.environment,encoding:'utf8'});
     assert.equal(text.status,0);assert(!text.stdout.includes('private-source-canary'),'MP-11 no refused clipboard canary in desktop source OCR');
     const passwordApp=await desktop.launch('/usr/bin/python3',[new URL('./native-accessibility-fixture.py',import.meta.url).pathname,root],binding.environment);
-    await delay(500);
+    // The oracle needs the password window on screen, not merely launched.
+    let passwordWindow;
+    for(let n=0;n<100&&!passwordWindow;n++){passwordWindow=spawnSync('xdotool',['search','--onlyvisible','--name','Chariox public AT-SPI fixture'],{env:binding.environment,encoding:'utf8'}).stdout.trim();if(!passwordWindow)await delay(100);}
+    assert(passwordWindow,'MP-11 password fixture window must be mapped');await delay(500);
     const password=await capture('desktop-password-protected');
     assert(password.raw.pixels.every((v,i)=>i%4===3||v===0),'MP-11 password window must export no desktop pixels');
     const passwordOwner=desktop.children.find(record=>record.child===passwordApp).identity;
