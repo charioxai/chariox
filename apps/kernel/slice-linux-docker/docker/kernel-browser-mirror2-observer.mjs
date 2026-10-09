@@ -60,7 +60,7 @@ export function installMirror2(sanitizeMirrorCss) {
   // dots; its value never leaves). No page-text, attribute or CSS value scanning.
   const PLAIN = new Set('text search email url number tel'.split(' '));
   let serial = 0, targets = new WeakSet(), records = [], overflow = false, revision = 0;
-  const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map();
+  const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
   const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
   // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
   // this world cannot read their content, so they are opaque regions.
@@ -120,7 +120,7 @@ export function installMirror2(sanitizeMirrorCss) {
   const forget = id => {
     const node = nodes.get(id);
     for (const child of kids.get(id) ?? []) forget(child);
-    nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
+    nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
     if (node) ids.delete(node);
   };
   const remember = (record, node) => { nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
@@ -164,6 +164,11 @@ export function installMirror2(sanitizeMirrorCss) {
   // A password field renders dots of the same length; a hidden input is never shown.
   const formValue = node => node.type === 'password' ? '\u2022'.repeat(Math.min(String(node.value ?? '').length, 65536)) : node.type === 'hidden' ? '' : String(node.value ?? '').slice(0, 65536);
   const formState = node => ({ value: formValue(node), checked: !!node.checked, selected_index: node.selectedIndex ?? -1, selection_start: node.selectionStart ?? null, selection_end: node.selectionEnd ?? null });
+  // Last form state sent per field: a form op travels only when it changed (a
+  // focused field would otherwise answer every credit at once: a busy loop).
+  let sentForms = new WeakMap();
+  const formRecord = node => { const form = formState(node); sentForms.set(node, JSON.stringify(form)); return form; };
+  const formOp = (node, id, ops) => { const form = formState(node), json = JSON.stringify(form); if (sentForms.get(node) === json) return; sentForms.set(node, json); ops.push({ op: 'form', id, form }); };
   const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { sheets.push(css(sheet, root.baseURI ?? document.baseURI)); } catch { sheets.push(''); } } return sheets; };
   const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { try { return sheet.cssRules.length; } catch { return -1; } }).join(',');
   const sheetSignature = sheet => { try { return `${sheet.cssRules.length}:${sheet.disabled}`; } catch { return 'x'; } };
@@ -221,9 +226,9 @@ export function installMirror2(sanitizeMirrorCss) {
       serialize(nested, id, out, depth + 1);
       return id;
     }
-    if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) record.res = key; }
+    if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
     if (ns === SVG && tag === 'image') { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); const key = href && !href.startsWith('#') ? resource(href, base, 'image') : null; if (key) record.res = key; }
-    if (ns === HTML && (tag === 'input' || tag === 'textarea' || tag === 'select')) record.form = formState(node);
+    if (ns === HTML && (tag === 'input' || tag === 'textarea' || tag === 'select')) record.form = formRecord(node);
     if (node.scrollLeft || node.scrollTop) record.scroll = [node.scrollLeft, node.scrollTop];
     spend(64 + JSON.stringify(record.attrs).length);
     out.push(record); remember(record, node);
@@ -248,10 +253,10 @@ export function installMirror2(sanitizeMirrorCss) {
   const resetTargets = () => { targets = new WeakSet(); return true; };
   // Full snapshot: forget every id. Resource keys stay stable per document.
   const snapshot = () => {
-    observer.disconnect(); records = []; overflow = false;
+    observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap();
     for (const key of Object.keys(dirty)) dirty[key].clear();
     for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-    nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
+    nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
     pendingSheets = []; budget = { nodes: 0, bytes: 0 };
     newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
     cssAttrs = null;
@@ -262,23 +267,61 @@ export function installMirror2(sanitizeMirrorCss) {
     lastSheetCheck = performance.now();
     return { root, nodes: out, ...take(), ...header() };
   };
+  const imageOp = (node, id, ops) => { const key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null; if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
+  // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
+  // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
+  // node of the same kind takes over a removed node's id; only attribute, text
+  // and image differences travel. Special kinds (masks, form fields, frames,
+  // styles, opaque or custom elements, shadow hosts) are never morphed.
+  let rebound = [];
+  const morphable = node => node.nodeType === 3 ? node.parentNode?.localName !== 'style' : node.nodeType === 1 && !node.shadowRoot && !node.localName.includes('-') && !secretElement(node) && !closedHosts.has(node)
+    && (node.namespaceURI === HTML ? !DROP.has(node.localName) && !OPAQUE.has(node.localName) && !['style', 'link', 'iframe', 'input', 'textarea', 'select'].includes(node.localName) : node.namespaceURI === SVG && SVG_TAGS.has(node.localName) && !['style', 'image'].includes(node.localName));
+  const morph = (oldId, node, ops, depth) => {
+    const old = nodes.get(oldId), kind = kindOf.get(oldId);
+    if (!old || old.isConnected || depth > DEPTH || !morphable(node) || node.nodeType !== old.nodeType || (node.nodeType === 3 ? kind !== 'text' : kind !== 'element' || node.localName !== old.localName || node.namespaceURI !== old.namespaceURI || (kids.get(oldId) ?? []).some(child => kindOf.get(child) === 'shadow'))) return false;
+    rebound.push(oldId);
+    if (node.nodeType === 3) { if (node.data !== old.data) ops.push({ op: 'text', id: oldId, text: node.data }); }
+    else {
+      const before = attributes(old, old.baseURI), after = attributes(node, node.baseURI);
+      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name]) ops.push({ op: 'attr', id: oldId, name, value: after[name] ?? null });
+      if (node.localName === 'img') imageOp(node, oldId, ops);
+      if (node.scrollLeft || node.scrollTop) ops.push({ op: 'scroll', id: oldId, scroll: [node.scrollLeft, node.scrollTop] });
+    }
+    ids.delete(old); ids.set(node, oldId); nodes.set(oldId, node);
+    if (node.nodeType === 1) {
+      // Children pair by position; the rest serialize fresh / are forgotten.
+      const previous = kids.get(oldId) ?? [], list = [], out = [];
+      [...node.childNodes].forEach((child, i) => { const reuse = previous[i] !== undefined && morph(previous[i], child, ops, depth + 1) ? previous[i] : null; const childId = reuse ?? serialize(child, oldId, out, depth + 1); if (childId) list.push(childId); });
+      for (const child of previous) if (!list.includes(child) && parentOf.get(child) === oldId) forget(child);
+      kids.set(oldId, list);
+      if (out.length || list.length !== previous.length || list.some((child, i) => child !== previous[i])) ops.push({ op: 'children', id: oldId, children: list, nodes: out });
+    }
+    return true;
+  };
   const childList = (node, out, ops) => {
     const id = mirrored(node), list = [];
     if (!id) return;
     const children = node.nodeType === 9 ? [...node.childNodes].filter(child => child.nodeType === 1) : [...node.childNodes];
+    const previous = kids.get(id) ?? [];
+    // Removed (detached) children of this parent, in order: morph candidates.
+    const listed = new Set(children.map(child => mirrored(child)).filter(Boolean));
+    const spare = previous.filter(old => !listed.has(old) && parentOf.get(old) === id && !nodes.get(old)?.isConnected);
     for (const child of children) {
       const existing = mirrored(child);
       if (existing && parentOf.get(existing) !== id) { // moved: record under its new parent
         const old = kids.get(parentOf.get(existing)); if (old) old.splice(old.indexOf(existing), 1);
         parentOf.set(existing, id);
       }
-      const childId = existing ?? serialize(child, id, out, 1);
+      let childId = existing;
+      if (!childId && spare.length && morph(spare[0], child, ops, 1)) childId = spare.shift();
+      childId ??= serialize(child, id, out, 1);
       if (childId) list.push(childId);
     }
     if (node.nodeType === 1 && node.shadowRoot) { const shadow = mirrored(node.shadowRoot) ?? serialize(node.shadowRoot, id, out, 1); if (shadow) list.push(shadow); pendingHosts.delete(id); }
-    const previous = kids.get(id) ?? [];
     for (const old of previous) if (!list.includes(old) && parentOf.get(old) === id) forget(old);
     kids.set(id, list);
+    // A child list that ends as it was (a node added and removed) sends nothing.
+    if (!out.length && list.length === previous.length && list.every((child, i) => child === previous[i])) return;
     ops.push({ op: 'children', id, children: list, nodes: out.splice(0) });
   };
   const drain = () => {
@@ -297,7 +340,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (target.parentNode?.localName === 'style') dirty.sheets.add(target.parentNode); else dirty.text.add(target);
       }
     }
-    const ops = [], out = [];
+    const ops = [], out = []; rebound = [];
     // Protection status and opaque-kind changes replace the node under a new id.
     for (const [node, names] of dirty.attrs) {
       const id = mirrored(node); if (!id) { const mask = insideMask(node); if (mask) dirty.masks.add(mask); continue; }
@@ -306,7 +349,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if ((kind === 'mask') !== secretElement(node)) { dirty.replace.add(node); continue; }
       if (kind === 'mask' || kind === 'tile') { if (kind === 'tile') dirty.masks.add(node); continue; }
       if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
-      if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) { const key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null; ops.push({ op: 'res', id, res: key }); }
+      if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
       if (node.localName === 'input' && names.has('type')) { dirty.replace.add(node); continue; }
       const attrs = attributes(node, node.baseURI);
       for (const name of names) {
@@ -333,10 +376,10 @@ export function installMirror2(sanitizeMirrorCss) {
       childList(node, out, ops);
     }
     for (const node of dirty.masks) { const id = mirrored(node); if (id && node.isConnected) { const [, , width, height] = node.nodeType === 1 ? box(node) : textBox(node); ops.push({ op: 'size', id, size: [width, height] }); } }
-    for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && ['input', 'textarea', 'select'].includes(node.localName)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else ops.push({ op: 'form', id, form: formState(node) }); } }
+    for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && ['input', 'textarea', 'select'].includes(node.localName)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
     // Live focus may change a value without input events (programmatic writes).
     const active = document.activeElement, activeId = active && mirrored(active);
-    if (activeId && kindOf.get(activeId) === 'element' && ['input', 'textarea'].includes(active.localName) && !dirty.form.has(active)) ops.push({ op: 'form', id: activeId, form: formState(active) });
+    if (activeId && kindOf.get(activeId) === 'element' && ['input', 'textarea'].includes(active.localName) && !dirty.form.has(active)) formOp(active, activeId, ops);
     for (const node of dirty.scroll) { const id = node && mirrored(node); if (id && node !== document.documentElement && kindOf.get(id) === 'element') ops.push({ op: 'scroll', id, scroll: [node.scrollLeft, node.scrollTop] }); }
     // CSSOM edits (insertRule/replaceSync) produce no mutation record.
     const now = performance.now(), full = now - lastSheetCheck > 2000; if (full) lastSheetCheck = now;
@@ -358,7 +401,7 @@ export function installMirror2(sanitizeMirrorCss) {
     let grew = false;
     for (const op of ops) { if (op.op === 'css') grew = noteCss(op.css) || grew; else if (op.op === 'adopted') for (const text of op.sheets) grew = noteCss(text) || grew; else if (op.op === 'children') for (const record of op.nodes) { if (record.css) grew = noteCss(record.css) || grew; for (const text of record.adopted ?? []) grew = noteCss(text) || grew; } }
     if (grew) return { resync: 'css_attributes' };
-    return { ops, ...take(), ...header() };
+    return { ops, changed: rebound, ...take(), ...header() };
   };
   // Opaque regions visible now, in top-level viewport CSS pixels.
   const opaqueBoxes = () => {
@@ -503,6 +546,30 @@ export function installMirror2(sanitizeMirrorCss) {
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
   const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
-  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+  // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
+  // size; element images elsewhere wait until the view comes near them.
+  const nearImages = margin => {
+    const near = [], all = [];
+    for (const [id, key] of resOf) {
+      const node = nodes.get(id); if (!node?.isConnected) continue;
+      all.push(key);
+      const r = node.getBoundingClientRect(), view = node.ownerDocument.defaultView ?? window;
+      if (r.width > 0 && r.height > 0 && r.bottom > -margin && r.top < view.innerHeight + margin && r.right > 0 && r.left < view.innerWidth) near.push([key, Math.ceil(r.width), Math.ceil(r.height)]);
+    }
+    return { near, all };
+  };
+  // A low-detail stand-in for page image bytes while the view moves: decoded
+  // here (the bytes the page loaded), downscaled to half its CSS size, WebP; the
+  // SVG keeps the original pixel size so the mirrored layout does not change.
+  const preview = async (data, type, width, height) => {
+    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], { type }));
+    const W = bitmap.width, H = bitmap.height, scale = Math.min(1, Math.max(8, width / 2) / W, Math.max(8, height / 2) / H);
+    const canvas = new OffscreenCanvas(Math.max(1, Math.round(W * scale)), Math.max(1, Math.round(H * scale)));
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+    const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/webp', quality: 0.5 })).arrayBuffer());
+    let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
+  };
+  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   return true;
 }

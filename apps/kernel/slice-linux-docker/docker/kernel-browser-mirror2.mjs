@@ -12,6 +12,10 @@ import { losslessRegion } from './kernel-browser-display.mjs';
 import { MirrorFrames, slotOf, localId } from './kernel-browser-mirror2-frames.mjs';
 
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
+// MP-10 wheel bytes: element images within one viewport of the view travel;
+// while the view moves (and SETTLE_MS after) a large one travels as a preview,
+// then its exact bytes.
+const NEAR_PX = 800, SETTLE_MS = 300, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error { constructor() { super('MP-11: stale mirror input epoch'); } }
 
@@ -118,7 +122,7 @@ export class Mirror2 {
   }
   stream(stream) {
     this.host.timing?.(`mirror2_subscribe ${this.service.streams.size}`, timestamp());
-    Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0 });
+    Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0, movedAt: 0, ownScrolls: new Map() });
     return stream;
   }
   // Closed shadow roots (owner decision: opaque regions): a trusted DOMSnapshot
@@ -195,7 +199,7 @@ export class Mirror2 {
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
-    if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
+    if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
@@ -217,7 +221,9 @@ export class Mirror2 {
     const processDelta = async delta => {
       if (delta.resync) return delta;
       const ops = [], resources = [...delta.resources];
+      if (JSON.stringify(delta.scroll) !== stream.pageScroll) { stream.pageScroll = JSON.stringify(delta.scroll); stream.movedAt = Date.now(); }
       for (const op of delta.ops) {
+        if (op.op === 'scroll' && stream.ownScrolls.get(op.id) === JSON.stringify(op.scroll)) continue; // this viewer's own scroll
         if (op.op === 'children') {
           const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
           this.opaque(op.nodes, frames.opaque);
@@ -238,7 +244,8 @@ export class Mirror2 {
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry) {
-        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, deadline - Date.now()))})`, true));
+        const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
+        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
@@ -272,21 +279,28 @@ export class Mirror2 {
     if (fallback) packet.fallback = fallback;
     else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = sheets; }
     else packet.ops = [...source.ops, ...sheets];
-    for (const op of packet.ops ?? []) if (op.op === 'attr') stream.attrSequence.set(op.id, sequence);
+    // Morphed nodes (a new page node under a viewer id) count as changed targets.
+    for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);
     if (reset) stream.sheetRefs = new Set();
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
     stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
-    stream.lastHeader = JSON.stringify([packet.scroll, packet.focused, packet.selection]);
+    stream.lastHeader = JSON.stringify([packet.scroll, packet.focused, packet.selection]); stream.sentScroll = packet.scroll;
+    // A position the viewer did not set has reached it: echoes count again.
+    if (JSON.stringify(packet.scroll) !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
+    for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return packet;
   }
+  // The viewer's own scroll position coming back is not news to that viewer.
   empty(stream, source) {
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify([source.scroll, source.focused, source.selection]) === stream.lastHeader && !this.tilesDue(stream);
+    const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify([scroll, source.focused, source.selection]) === stream.lastHeader && !this.tilesDue(stream);
   }
-  merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])] }; }
+  refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
+  merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
   // Unattached foreign frames are opaque regions (masked captures only).
   opaque(records, ids) {
     for (const record of records) if (record.foreign) { delete record.foreign; if (ids.includes(record.id)) { record.kind = 'tile'; record.reason = 'cross_origin_frame'; } }
@@ -307,11 +321,20 @@ export class Mirror2 {
     const out = [];
     for (const [slot, world] of worlds) {
       const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (!kind || entry.kind === kind) && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
-      if (due.length) out.push(...await this.materializeWorld(world, due, slot, RESOURCE_PACKET_BYTES - out.reduce((n, r) => n + r.data_base64.length, 0)));
+      if (due.length) out.push(...await this.materializeWorld(world, due, slot, RESOURCE_PACKET_BYTES - out.reduce((n, r) => n + r.data_base64.length, 0), stream));
     }
     return out;
   }
-  async materializeWorld(world, due, slot, budget) {
+  async materializeWorld(world, due, slot, budget, stream) {
+    // Top-document element images: near the view first; the rest wait.
+    let near = null, moving = false;
+    if (!slot && stream) {
+      const view = await this.evaluate(world, `globalThis.__charioxMirror2.nearImages(${NEAR_PX})`);
+      near = new Map(view.near.map(([key, width, height]) => [key, [width, height]])); const elements = new Set(view.all);
+      due = due.filter(entry => !elements.has(entry.key) || near.has(entry.key)).sort((a, b) => near.has(b.key) - near.has(a.key));
+      moving = Date.now() - stream.movedAt < SETTLE_MS;
+    }
+    if (!due.length) return [];
     const loaded = new Set((await this.evaluate(world, 'globalThis.__charioxMirror2.loaded()')).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
     let tree = null;
     const frames = async () => {
@@ -335,6 +358,17 @@ export class Mirror2 {
         const mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind) : null;
         if (!mime_type) { entry.tries++; entry.state = entry.tries >= 3 ? 'failed' : 'waiting'; continue; }
         entry.state = 'ok'; entry.resource = { key: entry.key, resource_id: createHash('sha256').update(body).digest('hex'), mime_type, data_base64: body.toString('base64') };
+      }
+      const size = near?.get(entry.key);
+      if (size && moving && entry.resource.data_base64.length > PREVIEW_MIN_BASE64 && PREVIEW_TYPES.has(entry.resource.mime_type)) {
+        if (entry.previewed) continue; // exact bytes once the view settles
+        const svg = await this.evaluate(world, `globalThis.__charioxMirror2.preview(${JSON.stringify(entry.resource.data_base64)},${JSON.stringify(entry.resource.mime_type)},${size[0]},${size[1]})`, true).catch(() => null);
+        if (typeof svg === 'string') {
+          const data = Buffer.from(svg, 'utf8');
+          entry.previewed = true; bytes += data.length * 4 / 3;
+          out.push({ key: entry.key, resource_id: createHash('sha256').update(data).digest('hex'), mime_type: 'image/svg+xml', data_base64: data.toString('base64') });
+          continue;
+        }
       }
       entry.sent = true; bytes += entry.resource.data_base64.length; out.push(entry.resource);
     }
@@ -441,7 +475,11 @@ export class Mirror2 {
     if (action.kind === 'scroll_to') {
       if (action.node_id !== undefined && action.node_id !== null && !validId(action.node_id) || !Number.isFinite(action.x) || !Number.isFinite(action.y) || Math.abs(action.x) > 1e7 || Math.abs(action.y) > 1e7) throw new Error('MP-11: invalid mirror input');
       const entry = frameOf(action.node_id);
-      return { perform: async () => { if (entry) await inFrame(entry, `${m}.scrollTo(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`); else await call(`${m}.scrollTo(${JSON.stringify({ node_id: action.node_id ?? null, x: action.x, y: action.y })})`); } };
+      return { perform: async () => {
+        stream.movedAt = Date.now();
+        if (entry) await inFrame(entry, `${m}.scrollTo(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        else stream.ownScrolls.set(action.node_id ?? null, JSON.stringify(await call(`${m}.scrollTo(${JSON.stringify({ node_id: action.node_id ?? null, x: action.x, y: action.y })})`)));
+      } };
     }
     if (action.kind === 'focus') { const entry = frameOf(action.node_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); } }; }
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }

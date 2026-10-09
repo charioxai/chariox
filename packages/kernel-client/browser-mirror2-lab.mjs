@@ -47,7 +47,7 @@ if (process.argv[2] !== 'child') {
     await cp(playwright, path.join(root, 'node_modules/playwright-core'), { recursive: true, dereference: true });
     for (const name of ['home', 'evidence']) { await mkdir(path.join(root, name), { mode: 0o700 }); await chown(path.join(root, name), 65534, 65534); }
     const child = spawn(process.execPath, [path.join(root, 'run.mjs'), 'child', root, sites, dprs, wire], { uid: 65534, gid: 65534, cwd: root,
-      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '', MIRROR_LAB_REPLAY: process.env.MIRROR_LAB_REPLAY ?? '' },
+      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '', MIRROR_LAB_REPLAY: process.env.MIRROR_LAB_REPLAY ?? '', MIRROR_LAB_BYTES: process.env.MIRROR_LAB_BYTES ?? '' },
       stdio: ['ignore', 'pipe', 'pipe'] });
     let logs = ''; for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { process.stdout.write(chunk); logs += chunk; if (logs.length > 1 << 20) logs = logs.slice(-(1 << 20)); });
     code = await new Promise(resolve => child.once('exit', exit => resolve(exit ?? 1)));
@@ -76,6 +76,9 @@ if (process.argv[2] !== 'child') {
   const wire = Number(wireArg), evidence = path.join(root, 'evidence'), settle = Number(process.env.MIRROR_LAB_SETTLE_MS || 4000);
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
   const results = []; const wireLog = []; const inputLog = []; const wireJson = []; let currentCell = '', replayNext = false;
+  // Bytes the Rust kernel puts on the relay for this result (mirror_wire_result):
+  // plain below 2 KB, else gzip-9 body (base64) beside the encoded media.
+  const kernelWire = result => { const json = JSON.stringify(result); if (result?.wire !== 2 || json.length < 2048) return json.length; const { resources = [], tiles = [], ...body } = result; return Math.ceil(gzipSync(JSON.stringify(body), { level: 9 }).length * 4 / 3) + JSON.stringify(resources).length + JSON.stringify(tiles).length + 96; };
   const kernel = async request => {
     const command = request.KernelBrowser.command;
     let result;
@@ -91,7 +94,7 @@ if (process.argv[2] !== 'child') {
     const json = JSON.stringify({ KernelBrowser: { result } });
     if (command.op === 'mirror_next') wireJson.push(json);
     if (command.op === 'mirror_next' && process.env.MIRROR_LAB_DUMP === '1' && !wireLog.some(entry => entry.raw)) await writeFile(path.join(evidence, `${currentCell}-first-packet.json.gz`), gzipSync(json));
-    if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json, { level: 9 }).length, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
+    if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json, { level: 9 }).length, kernel_wire: kernelWire(result), resource_bytes: (result.resources ?? []).reduce((n, r) => n + r.data_base64.length, 0), ops_kinds: result.ops?.map(op => op.op).join(','), detail: process.env.MIRROR_LAB_BYTES === '1' && json.length < 6000 ? JSON.stringify(result.ops) : undefined, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
     return json;
   };
   const viewerPage = `<!doctype html><html><body style="margin:0"><div id="mirror"></div><script type="module">
@@ -194,6 +197,38 @@ if (process.argv[2] !== 'child') {
     out.failures = await page.evaluate(() => window.failures);
     return out;
   };
+  // Supplementary byte/CPU checks (MP-10 gates: wheel <= 50 KB/s, keystroke <= 2 KB, viewer idle <= 0.05 core).
+  const bytesChecks = async (page, site) => {
+    const out = {}, cdp = await page.context().newCDPSession(page); await cdp.send('Performance.enable');
+    const task = async () => (await cdp.send('Performance.getMetrics')).metrics.find(m => m.name === 'TaskDuration').value;
+    const sum = (from, to) => wireLog.filter(e => e.at >= from && e.at < to && e.kernel_wire).reduce((n, e) => n + e.kernel_wire, 0);
+    const idle = async seconds => { const t0 = Date.now(), c0 = await task(), n0 = wireLog.length; await new Promise(r => setTimeout(r, seconds * 1000)); const s = (Date.now() - t0) / 1000; return { seconds: s, viewer_cores: Math.round((await task() - c0) / s * 1000) / 1000, bytes_per_s: Math.round(sum(t0, Date.now()) / s), packets: wireLog.length - n0 }; };
+    out.idle = await idle(20);
+    if (site.id === 'wikipedia-article') {
+      const box = await page.evaluate(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.x + 640, y: r.y + 400 }; });
+      const t0 = Date.now(), c0 = await task();
+      await cdp.send('Input.synthesizeScrollGesture', { x: Math.round(box.x), y: Math.round(box.y), yDistance: -2400, speed: 1200, gestureSourceType: 'mouse' });
+      const t1 = Date.now(), c1 = await task();
+      const frameBox = await page.evaluate(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return { x: r.x, y: r.y, width: 1280, height: 800 }; });
+      const previews = () => page.evaluate(() => { const d = document.querySelector('iframe').contentDocument; return [...d.images].filter(i => { const r = i.getBoundingClientRect(); return r.bottom > 0 && r.top < 800 && r.width > 0; }).map(i => i.getAttribute('src')?.startsWith('data:image/svg+xml') ? 'preview' : i.getAttribute('src') ? 'exact' : 'none').reduce((m, k) => (m[k] = (m[k] ?? 0) + 1, m), {}); });
+      const atEnd = await previews(); await page.screenshot({ path: path.join(evidence, `${currentCell}-wheel-end.png`), clip: frameBox });
+      await new Promise(r => setTimeout(r, 1500)); const t2 = Date.now(); await new Promise(r => setTimeout(r, 4000)); const t3 = Date.now();
+      const settled = await previews(); await page.screenshot({ path: path.join(evidence, `${currentCell}-wheel-settled.png`), clip: frameBox });
+      out.wheel = { gesture_ms: t1 - t0, during_bytes_per_s: Math.round(sum(t0, t1) / ((t1 - t0) / 1000)), with_1500ms_bytes_per_s: Math.round(sum(t0, t2) / ((t2 - t0) / 1000)), after_bytes: sum(t2, t3), total_bytes: sum(t0, t3), viewer_cores: Math.round((c1 - c0) / ((t1 - t0) / 1000) * 1000) / 1000, images_at_end: atEnd, images_settled: settled,
+        packets: wireLog.filter(e => e.at >= t0 && e.at < t3).map(e => [e.at - t0, e.kernel_wire, e.resource_bytes, e.ops_kinds?.slice(0, 80)]) };
+    }
+    if (site.id === 'wikipedia-portal') {
+      const frame = page.frames().find(f => f !== page.mainFrame()), field = await frame.$('#searchInput');
+      if (field) {
+        await field.click(); await new Promise(r => setTimeout(r, 1500));
+        const keys = [];
+        for (const key of ['a', 'd', 'a', 'Backspace', 'l', 'o']) { const t0 = Date.now(); if (key.length === 1) await page.keyboard.insertText(key); else await page.keyboard.press(key); await new Promise(r => setTimeout(r, 1200)); keys.push({ key, bytes: sum(t0, Date.now()), packets: wireLog.filter(e => e.at >= t0 && e.at < Date.now()).map(e => [e.at - t0, e.kernel_wire, e.ops_kinds?.slice(0, 120), e.detail]) }); }
+        out.keys = keys;
+      }
+    }
+    await cdp.detach().catch(() => {});
+    return out;
+  };
   try {
     for (const dpr of dprList.split(',').map(Number)) for (const site of sites) {
       const row = { site: site.id, url: site.url, dpr, wire }; results.push(row); wireLog.length = 0; wireJson.length = 0; currentCell = `${site.id}-dpr${dpr}`;
@@ -260,6 +295,7 @@ if (process.argv[2] !== 'child') {
           row.delta_latency_ms = samples.sort((x, y) => x - y); row.delta_p50 = samples[4]; row.delta_p95 = samples[9];
         }
         if (wire === 2 && process.env.MIRROR_LAB_INPUT === '1') row.input = await inputChecks(page, tab, site);
+        if (wire === 2 && process.env.MIRROR_LAB_BYTES === '1') row.bytes = await bytesChecks(page, site);
         if (wire === 2 && process.env.MIRROR_LAB_REPLAY === '1') {
           // Idle page (one credit), one duplicated credit, then a page change: time until the viewer shows it.
           await new Promise(r => setTimeout(r, 4000)); replayNext = true; await new Promise(r => setTimeout(r, 3000));
@@ -299,7 +335,7 @@ if (process.argv[2] !== 'child') {
         await page?.context().close().catch(() => {});
         if (tabId) await host.request({ op: 'close', tab_id: tabId, generation: host.generation, observed_by: 'lab' }).catch(() => {});
         await writeFile(path.join(evidence, 'RESULTS.json'), JSON.stringify(results, null, 2));
-        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, shadow_roots: row.shadow_roots, regions: row.opaque_regions, first_ms: row.first_packet_ms, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
+        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, shadow_roots: row.shadow_roots, regions: row.opaque_regions, first_ms: row.first_packet_ms, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, bytes: row.bytes, error: row.error?.slice(0, 300) }));
       }
     }
   } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); fixtureServer.close(); frameServer.close(); }
