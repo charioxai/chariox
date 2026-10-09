@@ -89,7 +89,7 @@ for(const dpr of [1,2]) {
        assert.equal(result.status,0,'MP-11 actual compiled kernel boundary replay succeeds');
        assert.match(result.stdout,/1 passed/);wire=JSON.parse(await readFile(`${fixture}.wire.json`,'utf8'));
      }
-     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',process.env.CHARIOX_MIRROR_CLIENT_SOURCE??fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
      const code=await readFile(bundle,'utf8'),target=(await connection.send('Target.createTarget',{url})).targetId;
      try {
        const {sessionId:client}=await browser.resolvePageTarget(target);
