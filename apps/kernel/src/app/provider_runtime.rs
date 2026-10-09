@@ -490,7 +490,7 @@ impl DaemonApp {
         workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
-        let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
+        let provider_credential_env = request.provider_credential_env.take_values();
         let initial_run = self.providers.launch_run_detached(request)?;
         let run_id = initial_run.id().to_string();
         let launch_result = (|| {

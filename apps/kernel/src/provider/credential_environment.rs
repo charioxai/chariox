@@ -21,6 +21,14 @@ impl PartialEq for ProviderCredentialEnvironment {
 impl Eq for ProviderCredentialEnvironment {}
 
 impl ProviderCredentialEnvironment {
+    /// MP-08/MP-10/MP-11: separate launch secrets while retaining run provenance.
+    pub(crate) fn take_values(&mut self) -> Self {
+        Self {
+            values: std::mem::take(&mut self.values),
+            registration_revision: self.registration_revision,
+        }
+    }
+
     pub(crate) fn insert(&mut self, name: impl Into<String>, value: Zeroizing<String>) {
         self.values.insert(name.into(), value);
     }

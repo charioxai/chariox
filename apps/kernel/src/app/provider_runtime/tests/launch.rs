@@ -11,6 +11,88 @@ use crate::session::{
 };
 
 #[test]
+fn provider_activation_keeps_credential_revision_for_auth_recovery() {
+    crate::test_support::isolated_env_test!();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let worktree = crate::test_support::TestWorktree::new("credential-revision-activation");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(SessionAgentDefaults::new("dev-stub").with_model("sonnet")),
+        )
+        .unwrap();
+    let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+    credentials.insert(
+        "ACCOUNT_INPUT",
+        zeroize::Zeroizing::new("synthetic-credential".into()),
+    );
+    credentials.registration_revision = Some(41);
+    let started = app
+        .start_provider_launch(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id())
+                .with_provider_credential_env(credentials),
+        )
+        .unwrap();
+    let revision = started.run.account_credential_revision();
+    let projection = serde_json::to_string(&started.run).unwrap();
+    app.shutdown_cleanup().unwrap();
+    assert_eq!(
+        revision,
+        Some(41),
+        "MP-08/MP-10/MP-11 activation must retain the revision supplied to this run"
+    );
+    assert_eq!(
+        started.provider_credential_env.registration_revision,
+        Some(41)
+    );
+    assert!(started
+        .provider_credential_env
+        .iter()
+        .any(|(name, value)| name == "ACCOUNT_INPUT" && value == "synthetic-credential"));
+    assert!(!projection.contains("synthetic-credential"));
+    assert!(!projection.contains("account_credential_revision"));
+}
+
+#[test]
+fn detached_provider_activation_keeps_credential_revision_for_auth_recovery() {
+    crate::test_support::isolated_env_test!();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let worktree = crate::test_support::TestWorktree::new("detached-credential-revision");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request().with_agent_defaults(
+            SessionAgentDefaults::new("dev-stub").with_model("native-tui-idle"),
+        ))
+        .unwrap();
+    let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+    credentials.insert(
+        "ACCOUNT_INPUT",
+        zeroize::Zeroizing::new("synthetic-credential".into()),
+    );
+    credentials.registration_revision = Some(42);
+    let run = app
+        .launch_provider_detached(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent.id())
+            .with_provider_credential_env(credentials),
+        )
+        .unwrap();
+    app.shutdown_cleanup().unwrap();
+    assert_eq!(
+        run.account_credential_revision(),
+        Some(42),
+        "MP-08/MP-10/MP-11 detached activation must retain launch provenance"
+    );
+}
+
+#[test]
 fn prompt_auto_launch_uses_agent_owner_and_resume_state() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
