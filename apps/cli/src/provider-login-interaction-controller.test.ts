@@ -96,6 +96,17 @@ test("MP-08/MP-11 a lost login status ends with an explicit reason instead of si
   assert.match(h.notices[0]!, /sign-in failed — could not read the result from the kernel \(provider login was not found\); check \/provider status claude/)
 })
 
+test("MP-08/MP-11 retry and Vault phases keep the kernel's message and still follow the final login result", async () => {
+  for (const custom of [null, { id: "passphrase", label: "Vault passphrase", input_kind: "secret" as const, min_length: 1 }]) {
+    const h = harness([status("succeeded")])
+    const phase: RuntimeInteraction = { ...interaction, title: custom ? "Unlock Chariox Vault" : "Retry Claude authorization", custom_choice: custom }
+    assert.equal(h.controller.stripState(phase), null, "the authorization strip must not replace another kernel-owned phase, even with a retained URL")
+    await h.tick()
+    assert.match(h.notices[0]!, /Signed in to Claude as miguel@example.org · saved to disposable-claude/)
+    h.controller.dispose()
+  }
+})
+
 test("MP-08/MP-11 over SSH the link opens in the plain view, whose paste fills the code field", async () => {
   const h = harness([status("running")])
   await h.controller.openLink(interaction)

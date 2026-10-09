@@ -248,6 +248,22 @@ function loginActions(actions: string[]): NonNullable<FocusedInteractionChoiceCo
   }
 }
 
+test("MP-08/MP-11 kernel retry and Vault replies report continued sign-in, not an input acknowledgement or cancellation", async () => {
+  for (const vault of [false, true]) {
+    const login = loginInteractionFixture()
+    login.custom_choice = vault ? { id: "passphrase", label: "Vault passphrase", input_kind: "secret", min_length: 1 } : null
+    if (!vault) login.choices.push({ id: "retry", label: "Retry authorization", reply: "retry" })
+    const actions = { ...loginActions([]), stripState: () => null, codeSent: () => false }
+    const h = createHarness({ interaction: login, providerLogin: actions })
+    h.selectedIndexes.set(login.id, 1)
+    if (vault) h.customReplies.set(login.id, "synthetic-passphrase")
+    assert.equal(await h.controller.submitChoice(), true)
+    assert.equal(h.footerMessages().at(-1)?.message, "Sign-in continues; waiting for the kernel…")
+    await h.controller.submitChoice(0)
+    assert.equal(h.footerMessages().at(-1)?.message, "Cancelling the sign-in…")
+  }
+})
+
 function loginInteractionFixture(): RuntimeInteraction {
   return {
     id: "provider-auth-recovery:login-1", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",

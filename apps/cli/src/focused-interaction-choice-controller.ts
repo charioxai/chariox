@@ -93,11 +93,11 @@ export function createFocusedInteractionChoiceController(
     if (submitDecision.action === "unavailable") {
       return false
     }
-    const providerLogin = Boolean(deps.providerLogin?.stripState(interaction))
+    const providerLogin = Boolean(interaction.provider_login)
     if (submitDecision.action === "edit_custom") {
       deps.setCustomEditing(interaction.id, true)
       repaintInteractions()
-      if (providerLogin) deps.flashFooter("Paste the code from the provider's page first", "info")
+      if (deps.providerLogin?.stripState(interaction)) deps.flashFooter("Paste the code from the provider's page first", "info")
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
@@ -125,7 +125,9 @@ export function createFocusedInteractionChoiceController(
       }
       // A sent code is answered by the kernel's login status, not here.
       if (!(providerLogin && submitDecision.choiceId === interaction.custom_choice?.id && deps.providerLogin?.codeSent(interaction))) {
-        deps.flashFooter(providerLogin ? "Cancelling the sign-in…" : "interaction answered", "info")
+        deps.flashFooter(providerLogin
+          ? submitDecision.choiceId === "cancel" ? "Cancelling the sign-in…" : "Sign-in continues; waiting for the kernel…"
+          : "interaction answered", "info")
       }
       return true
     } catch (error) {

@@ -143,15 +143,18 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   const stripState = (interaction: RuntimeInteraction): ProviderLoginStripState | null => {
     const projection = interaction.provider_login
     if (!projection) return null
+    const ref = refOf(interaction)
+    if (ref) track(ref)
     const view = providerLoginView(
       projection,
       interaction.custom_choice?.id,
       deps.accountLabel(projection.login.provider, projection.login.account_profile),
     )
+    // Retry and Vault phases belong to the kernel. An old authorization URL
+    // must not hide their message, choices or passphrase field.
+    if (projection.login.login_kind === "terminal_setup_token" && !view.takesCode) return null
     // A code prompt shows its steps before the provider prints the link.
     if (!view.url && !view.takesCode) return null
-    const ref = refOf(interaction)
-    if (ref) track(ref)
     const login = ref ? tracked.get(ref.login_id) : undefined
     const startedAt = login?.status?.started_at_ms
     return {

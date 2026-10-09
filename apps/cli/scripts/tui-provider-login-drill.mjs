@@ -21,6 +21,9 @@ const cli = path.resolve(options.cli ?? 'apps/cli/dist/index.js')
 const evidence = path.resolve(options.output)
 const profile = options.profile ?? 'xterm'
 const fixture = options['fixture-claude'] === 'yes'
+const attach = Boolean(options['kernel-url'])
+assert.ok(!attach || !fixture, 'an existing kernel must never use the fixture success flow')
+assert.ok(!attach || options.account === 'disposable-claude', 'existing-kernel login drills target only disposable-claude')
 assert.ok(['xterm', 'terminal-app'].includes(profile), 'profile must be xterm or terminal-app')
 assert.ok(!evidence.startsWith(`${process.cwd()}/`), 'evidence must be outside the repository')
 assert.ok(process.env.TMPDIR && !process.env.TMPDIR.startsWith('/tmp'), 'TMPDIR must be on disk')
@@ -83,7 +86,6 @@ if (args[0] === 'setup-token') {
   env.CHARIOX_CLAUDE_BIN = bin
 }
 
-const attach = Boolean(options['kernel-url'])
 const label = attach ? options.account : `drill-${profile}-${process.pid}`
 const sessionAlias = attach ? `loginux-dry-${process.pid}` : label
 const steps = []
@@ -111,10 +113,14 @@ try {
     try { return Object.keys(await rpc.send({ RelayStatus: null }))[0] === 'RelayStatus' } catch { return false }
   }, 60_000, 'kernel')
   const profileId = attach
-    ? JSON.stringify(await rpc.send({ ListProviderAccountProfiles: { provider: 'claude' } }))
-      .match(new RegExp(`"profile_id":"([^"]+)"[^{}]*"label":"${label}"`))?.[1]
+    ? (await rpc.send({ ListProviderAccountProfiles: { provider: 'claude' } })).ProviderAccountProfilesListed.profiles
+      .find(item => item.label === label)?.profile_id
     : (await rpc.send({ CreateProviderAccountProfile: { provider: 'claude', label } })).ProviderAccountProfile.profile.profile_id
   assert.ok(profileId, `Claude profile ${label}`)
+  if (attach) {
+    const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
+    assert.notEqual(auth.ProviderAuthStatus.status.auth_state, 'authenticated', 'never re-login an authenticated account')
+  }
 
   frontend = Bun.serve({ hostname: '127.0.0.1', port: 0,
     fetch(request, server) {
@@ -277,7 +283,9 @@ try {
   }
   {
     const auth = await rpc.send({ GetProviderAuthStatus: { provider: 'claude', account_profile: profileId } })
-    record('no login was completed', auth.ProviderAuthStatus.status.auth_state !== 'authenticated', { authState: auth.ProviderAuthStatus.status.auth_state })
+    record(fixture ? 'only the synthetic fixture was authenticated' : 'no login was completed',
+      fixture ? auth.ProviderAuthStatus.status.auth_state === 'authenticated' : auth.ProviderAuthStatus.status.auth_state !== 'authenticated',
+      { authState: auth.ProviderAuthStatus.status.auth_state })
   }
   await rpc.send({ DeleteSession: { session_ref: sessionAlias, workspace_id: null } }).catch(() => {})
   await rpc.close()
