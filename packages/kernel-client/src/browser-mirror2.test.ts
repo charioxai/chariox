@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
-import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion } from './browser-mirror2.js'
+import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion, BrowserMirror2Renderer } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
 const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirror2Packet => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence: 1, base_sequence: null, reset: true, root: nodes[0]!.id, nodes, ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1, ...extra })
@@ -86,4 +86,15 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
   assert.throws(() => validateMirror2Packet(resolveMirror2Sheets({ ...base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: digest })), sheets: { [digest]: 'p{background:url(https://leak.test)}' } }, known), new Map()), /unsafe mirror CSS/)
   // A new snapshot epoch forgets earlier sheets.
   assert.throws(() => resolveMirror2Sheets(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: 'c'.repeat(24) })), known), /sheet reference/)
+})
+
+test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
+  const element = () => { const attributes = new Map<string, string>(); return { nodeType: 1, attributes, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name), addEventListener: () => {}, style: {} } }
+  const iframe = element(), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
+  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { dom: Map<string, unknown>; records: Map<string, Mirror2Record>; styled: Map<string, { keys: string[] }>; op(op: unknown, scrolls: unknown[]): void }
+  const node = element(); renderer.dom.set('n5', node); renderer.records.set('n5', { id: 'n5', parent: 'n2', kind: 'element', tag: 'div' })
+  renderer.op({ op: 'attr', id: 'n5', name: 'style', value: 'background:url("mr:r1")' }, [])
+  assert.deepEqual(renderer.styled.get('n5#style')?.keys, ['r1'])
+  renderer.op({ op: 'attr', id: 'n5', name: 'style', value: null }, [])
+  assert.equal(renderer.styled.has('n5#style'), false); assert.equal(node.attributes.has('style'), false)
 })

@@ -349,7 +349,7 @@ export class BrowserMirror2Renderer {
       case 'attr': {
         const element = node as Element; const record = this.records.get(op.id)!
         record.attrs ??= {}
-        if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.setStyled(op.id, null); element.removeAttribute(op.name) }
+        if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
         else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.value) }
         break
       }
