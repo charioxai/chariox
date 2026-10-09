@@ -5,6 +5,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
+// MP-08 / MP-10 / MP-11: these independent test kernels share the process's
+// two-job compiler admission. Isolate fixtures, retaining each revocation race.
+static WORKFLOW_COMPILER_CASES: Mutex<()> = Mutex::const_new(());
+
 #[tokio::test]
 async fn kernel_access_workflow_apply_rechecks_app_wait() {
     revoked_workflow(false, false).await;
@@ -26,6 +30,7 @@ async fn kernel_access_workflow_run_rechecks_compiler_wait() {
 }
 
 async fn revoked_workflow(run: bool, compiler_wait: bool) {
+    let _compiler_case = WORKFLOW_COMPILER_CASES.lock().await;
     let worktree = crate::test_support::TestWorktree::new("access-workflow-source");
     let root = crate::test_support::TestWorktree::new("access-workflow-state");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -181,6 +186,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 
 #[tokio::test]
 async fn kernel_access_artifact_registry_authorizes_all_local_sources() {
+    let _compiler_case = WORKFLOW_COMPILER_CASES.lock().await;
     let worktree = crate::test_support::TestWorktree::new("access-artifact-source");
     let root = crate::test_support::TestWorktree::new("access-artifact-state");
     let mut config = crate::config::DaemonConfig::for_tests();
