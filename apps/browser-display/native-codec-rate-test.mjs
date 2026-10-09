@@ -16,7 +16,7 @@ try{
  cc(...includes,'-Dcx_openh264_open=audited_openh264_open','-Dcx_openh264_rate=audited_openh264_rate',
     '-c',join(source,'codec.c'),'-o',join(root,'codec.o'));
  cc('-c',join(source,'openh264.c'),'-o',join(root,'openh264.o'));
- cc(harness,join(root,'codec.o'),join(root,'openh264.o'),...libraries,
+ cc(...includes,harness,join(root,'codec.o'),join(root,'openh264.o'),...libraries,
     '-Wl,-Bstatic','-lyuv','-Wl,-Bdynamic','-ldl','-lpthread','-lm','-o',join(root,'regression'));
  const env={...process.env,CHARIOX_BROWSER_DISPLAY_SOFTWARE:'1'};
  delete env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER;

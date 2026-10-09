@@ -470,7 +470,8 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
 /* MP-08/MP-10/MP-11: exact repair may omit only pixels proved already exact.
  * Colored video reconstruction is deliberately NEVER inferred from a native
  * RGB converter: desktop/GPU rounding can differ. Limited-range neutral
- * Y=16/235,U=V=128 is exact black/white for every advertised color matrix.
+ * Y=16 or Y>=235,U=V=128 clips to exact black/white for every advertised
+ * limited-range color matrix. The source must itself be black/white.
  * These x264 packets set full-range=false; absent range VUI has the H.264
  * limited-range default. Lossless overlays compare their original RGB snapshot byte-for-byte.
  * The caller must bind this decoder state to DELIVERED codec revision. */
@@ -494,7 +495,7 @@ void cx_codec_repair_bounds(struct Codec *c,const uint8_t *source,const uint8_t 
             const uint8_t *p=source+offset;int exact=0;
             if (!video&&overlay)exact=!memcmp(p,overlay+offset,3);
             else if (video&&luma&&p[0]==p[1]&&p[1]==p[2]&&(p[0]==0||p[0]==255)) {
-                exact=luma[dx]==(p[0]?235:16)&&cb[dx/2*step]==128&&cr[dx/2*step]==128;
+                exact=(p[0]?luma[dx]>=235:luma[dx]==16)&&cb[dx/2*step]==128&&cr[dx/2*step]==128;
             }
             if (!exact) {if (dx<left)left=dx;if (dy<top)top=dy;if (dx+1>right)right=dx+1;if (dy+1>bottom)bottom=dy+1;}
         }
