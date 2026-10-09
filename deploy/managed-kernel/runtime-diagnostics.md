@@ -14,7 +14,10 @@ supplementary evidence; this public endpoint is not guest authentication.
 MP-07/MP-10: prepare `/home/chariox/.chariox/runtime-diagnostics` with owner
 `chariox:chariox`, mode 0700. In the campaign image, enable
 `CHARIOX_RUNTIME_DIAGNOSTICS_DIR=/home/chariox/.chariox/runtime-diagnostics`
-through a systemd drop-in for the actual bootstrap unit before enrollment. The
+through the signed `enable-campaign-diagnostics.sh <exact-HTTPS-observer-url>`
+campaign-image installer after signed image installation and before enrollment.
+It refuses a running guest or existing campaign configuration and enables a
+separate, bounded shipping unit on first boot. The
 supervisor inherits it into the kernel; the kernel passes it as a literal
 systemd argument to its detached upgrade unit. Ordinary kernels may enable the
 same variable. With no variable, the kernel does no diagnostic I/O. Upgrade
