@@ -54,6 +54,8 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
+    if (this.chromium.desktop) this.chromium.desktop.browser = () => this.browser;
     this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
     this.nativeComputer = new NativeComputer({ placement: 'host',
       binding: () => this.chromium.desktop?.binding(),
