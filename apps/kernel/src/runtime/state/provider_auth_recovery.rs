@@ -30,7 +30,15 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+            let Ok(owner) = crate::account_profile::provider_account_authority_owner_for_profile(
+                &config,
+                &self.owned.provider_account_profiles,
+                agent.owner_user_id(),
+                agent.provider(),
+                agent.provider_account_profile(),
+            ) else {
+                continue;
+            };
             if let Ok(Some(message)) = self
                 .owned
                 .provider_account_profiles
@@ -88,7 +96,13 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
+            let owner = crate::account_profile::provider_account_authority_owner_for_profile(
+                &self.owned.config_projection.snapshot(),
+                &self.owned.provider_account_profiles,
+                run.owner_user_id(),
+                run.provider(),
+                run.account_profile(),
+            )?;
             if !crate::provider::renewal_failure::oauth_renewal_evidence(message)
                 && !self
                     .owned
@@ -378,7 +392,13 @@ impl KernelRuntimeState {
         {
             return Ok(false);
         }
-        let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
+        let owner = crate::account_profile::provider_account_authority_owner_for_profile(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            run.owner_user_id(),
+            run.provider(),
+            run.account_profile(),
+        )?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,
             &owner,

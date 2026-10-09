@@ -158,10 +158,13 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
+                crate::account_profile::provider_account_authority_owner_for_profile(
                     &config,
+                    &self.provider_account_profiles,
                     &request.owner_user_id,
-                );
+                    &request.provider,
+                    &request.account_profile,
+                )?;
             let profile = self.provider_account_profiles.get(
                 &account_owner_user_id,
                 &request.provider,
@@ -296,10 +299,13 @@ impl KernelRuntimeOwnedState {
         {
             let config = self.config_projection.snapshot();
             let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
+                crate::account_profile::provider_account_authority_owner_for_profile(
                     &config,
+                    &self.provider_account_profiles,
                     &request.owner_user_id,
-                );
+                    &request.provider,
+                    &request.account_profile,
+                )?;
             let provider_credential_env =
                 crate::provider::resolve_provider_account_credentials_for_launch(
                     &config,
@@ -325,10 +331,13 @@ impl KernelRuntimeOwnedState {
             return Ok(false);
         }
         let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
+            crate::account_profile::provider_account_authority_owner_for_profile(
                 &config,
+                &self.provider_account_profiles,
                 &request.owner_user_id,
-            );
+                &request.provider,
+                &request.account_profile,
+            )?;
         crate::provider::launch_uses_vault_credential(
             &self.provider_account_profiles,
             &account_owner_user_id,

@@ -19,9 +19,16 @@ use crate::error::DaemonError;
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
 
+#[path = "account_profile_authority.rs"]
+mod authority;
+pub(crate) use authority::provider_account_authority_owner_for_profile;
+
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+#[path = "account_profile_authority_tests.rs"]
+mod authority_tests;
 #[cfg(unix)]
 #[path = "account_profile_managed_fs.rs"]
 mod managed_fs;
@@ -1269,7 +1276,13 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
+        let owner_user_id = provider_account_authority_owner_for_profile(
+            config,
+            self,
+            agent.owner_user_id(),
+            provider,
+            agent.provider_account_profile(),
+        )?;
         self.require_authenticated(
             &owner_user_id,
             provider,

@@ -81,10 +81,13 @@ impl KernelRuntimeState {
             .map(|agent| agent.owner_user_id())
             .unwrap_or_else(|| session.owner_user_id());
         let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
+            crate::account_profile::provider_account_authority_owner_for_profile(
                 &config,
+                &self.owned.provider_account_profiles,
                 runtime_owner_user_id,
-            );
+                &request.provider,
+                &request.account_profile,
+            )?;
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             &request.provider,
@@ -129,10 +132,13 @@ impl KernelRuntimeState {
             .await?;
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
+            crate::account_profile::provider_account_authority_owner_for_profile(
                 &config,
+                &self.owned.provider_account_profiles,
                 run.owner_user_id(),
-            );
+                run.provider(),
+                run.account_profile(),
+            )?;
         crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
@@ -161,10 +167,13 @@ impl KernelRuntimeState {
 
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
+            crate::account_profile::provider_account_authority_owner_for_profile(
                 &config,
+                &self.owned.provider_account_profiles,
                 agent.owner_user_id(),
-            );
+                agent.provider(),
+                agent.provider_account_profile(),
+            )?;
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             agent.provider(),
