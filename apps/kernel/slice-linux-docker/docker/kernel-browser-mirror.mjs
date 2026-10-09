@@ -83,13 +83,23 @@ export class MirrorService {
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
     if(!Array.isArray(command.drift_nodes)||command.drift_nodes.length>64||command.drift_nodes.some(id=>!stream.previous?.nodes.some(n=>n.id===id&&n.kind==='element'))) throw new Error('MP-11: invalid drift report');
     for(const id of command.drift_nodes)stream.fallback.add(id);
-    // Registered Vault target geometry and plaintext/media echoes use the SAME
-    // trusted CDP locator as screenshots. A failed locator fences DOM output.
+    // MP-08/MP-11: use the screenshot collector's live field identity/type check.
+    // Bind nodes in the mirror world rather than comparing different coordinate spaces.
     const targets=policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
-    const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
+    await this.evaluate(world,'globalThis.__charioxMirror.resetFillTargets()');
+    if(targets.length||this.host.browser.fillTargets?.size)await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
+      // Foreign renderer descendants are compositor tiles, not mirrored nodes.
+      if(field.sessionId!==world.sessionId)return;
+      const {object}=await world.connection.send('DOM.resolveNode',{backendNodeId:field.backendNodeId,executionContextId:world.contextId},world.sessionId);
+      if(!object?.objectId)throw Error('MP-11: mirror fill target unavailable');
+      try {
+        const reply=await world.connection.send('Runtime.callFunctionOn',{objectId:object.objectId,returnByValue:true,functionDeclaration:'function(){return globalThis.__charioxMirror.addFillTarget(this)}'},world.sessionId);
+        if(reply.exceptionDetails||reply.result?.value!==true)throw Error('MP-11: mirror fill target unavailable');
+      }finally{await world.connection.send('Runtime.releaseObject',{objectId:object.objectId},world.sessionId).catch(()=>{});}
+    }});
     mark('regions');
     let source;stream.fullFallback=false;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify([])},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read([],[],${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
       // Synthetic tile IDs never authorize element input into the original page.
