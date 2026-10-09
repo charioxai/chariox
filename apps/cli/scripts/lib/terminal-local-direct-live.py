@@ -45,9 +45,10 @@ try:
  text=re.sub(r'\x1b\][^\x07]*(?:\x07|\x1b\\)','',text);text=re.sub(r'\x1bP.*?\x1b\\','',text,flags=re.S)
  # Render the final captured terminal cell grid, including cursor addressing.
  screen=[[' ']*144 for _ in range(45)];row=0;col=0;i=0
+ csi=re.compile(r'\x1b\[([0-9;?<>]*)([ -/]*)([@-~])')
  while i<len(text):
   if text[i:i+2]=='\x1b[':
-   m=re.match(r'\x1b\[([0-9;?<>]*)([ -/]*)([@-~])',text[i:])
+   m=csi.match(text,i)
    if m:
     a=[int(v or '0') for v in m[1].lstrip('?<>').split(';')];op=m[3];n=a[0] or 1
     if op in ('H','f'):row=max(0,min(44,n-1));col=max(0,min(143,(a[1] if len(a)>1 and a[1] else 1)-1))
