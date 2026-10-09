@@ -1,3 +1,4 @@
+import { signalNativeChild } from "./native-child-signals.js"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
@@ -205,12 +206,12 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       await new Promise<void>((resolve) => proxy!.server.close(() => resolve()))
     }
     if (openCodeServer && openCodeServer.exitCode == null) {
-      openCodeServer.kill("SIGTERM")
+      signalNativeChild(openCodeServer, "SIGTERM")
       await Promise.race([
         new Promise((resolve) => openCodeServer?.once("exit", resolve)),
         sleep(2_000),
       ])
-      if (openCodeServer.exitCode == null) openCodeServer.kill("SIGKILL")
+      if (openCodeServer.exitCode == null) signalNativeChild(openCodeServer, "SIGKILL")
     }
     await endpointBridge?.close()
     await client.close()
