@@ -398,17 +398,20 @@ type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 
 const GAP_MS = 500
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A gap or failed credit asks for a fresh snapshot.
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000 } = {}) {
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'>
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void }, { credits = 4, waitMs = 2000, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 482')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, gapSince = 0
   const buffered = new Map<number, Mirror2Packet>()
-  const renderer = new BrowserMirror2Renderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
+  const renderer = createRenderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
-  const drain = (): Promise<void> => chain = chain.then(async () => {
+  // Packets apply one at a time. A failed application rejects only its own
+  // caller (which asks for a reset); later packets still drain.
+  const drain = (): Promise<void> => { const run = chain.then(async () => {
     for (let next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied); next; next = [...buffered.values()].find(p => p.reset || p.base_sequence === applied)) {
       for (const seq of buffered.keys()) if (seq <= next.sequence) buffered.delete(seq)
       if (!next.fallback) await renderer.apply(next)
@@ -422,7 +425,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     // outlives that is permanent (a reply lost with a dropped socket): reset.
     if (!buffered.size) gapSince = 0
     else if (!gapSince) { const since = gapSince = performance.now(); setTimeout(() => { if (gapSince === since && buffered.size && !closed) { buffered.clear(); gapSince = 0; wantReset = true; fill() } }, GAP_MS) }
-  })
+  }); chain = run.catch(() => { buffered.clear(); gapSince = 0 }); return run }
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
     const reset = wantReset && !resetOutstanding

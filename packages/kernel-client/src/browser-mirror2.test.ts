@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
-import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion, BrowserMirror2Renderer } from './browser-mirror2.js'
+import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
 const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirror2Packet => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence: 1, base_sequence: null, reset: true, root: nodes[0]!.id, nodes, ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1, ...extra })
@@ -86,6 +86,28 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
   assert.throws(() => validateMirror2Packet(resolveMirror2Sheets({ ...base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: digest })), sheets: { [digest]: 'p{background:url(https://leak.test)}' } }, known), new Map()), /unsafe mirror CSS/)
   // A new snapshot epoch forgets earlier sheets.
   assert.throws(() => resolveMirror2Sheets(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'style', css_ref: 'c'.repeat(24) })), known), /sheet reference/)
+})
+
+// Viewer flow with a scripted kernel and a recording renderer (no DOM needed).
+const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
+  const applied: number[] = [], failures: unknown[] = []
+  let failNext = false
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = false; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence) } })
+  const requests: Array<Record<string, unknown>> = []
+  const transport = { protocolVersion: 482, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  return { applied, failures, requests, failOnce: () => { failNext = true }, start: () => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer }) }
+}
+const packet = (sequence: number, reset: boolean, base: number | null) => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: base, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], ...(reset ? { root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { ops: [] }) })
+const until = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10)) }
+
+test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
+  let sequence = 0
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : (sequence++, command.after_sequence === 0 ? packet(sequence, true, null) : packet(sequence, false, sequence - 1)))
+  f.failOnce(); const mirror = await f.start()
+  await until(() => f.applied.length >= 2)
+  await mirror.close()
+  assert.ok(f.applied.length >= 2, `MP-08: packets after the failed application still apply: ${f.applied}`)
+  assert.deepEqual(f.failures, [])
 })
 
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
