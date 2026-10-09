@@ -175,6 +175,20 @@ for(const dpr of [1,2]) {
    assert.equal(ink(nestedVideo,nestedFrame,bounds),0,'MP-11 child text is covered in decoded video');
    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`overflow-frame-image-dpr${dpr}.png`),Buffer.from(nestedImage.data_base64,'base64'));
  }));
+ test(`MP-08/MP-11 DPR${dpr}: visible editor overflow beneath a hidden ancestor stays protected`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,fill,evaluate})=>{
+   await evaluate("(()=>{const editor=document.querySelector('#editor'),wrapper=document.createElement('section');editor.before(wrapper);wrapper.append(editor);wrapper.style.visibility='hidden';Object.assign(editor.style,{visibility:'visible',width:'40px',height:'24px',whiteSpace:'nowrap',overflow:'visible',font:'20px monospace',color:'magenta',background:'white'})})()");
+   await fill('#editor');
+   const ink=frame=>{let count=0;for(let y=300*dpr;y<330*dpr;y++)for(let x=130*dpr;x<430*dpr;x++){const i=(y*1280*dpr+x)*4;if(frame[i]>120&&frame[i+1]<80&&frame[i+2]>120)count++;}return count;};
+   const raw=(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data;
+   assert(ink(decodePng(raw,dpr).pixels)>100,'MP-11 descendant visibility restores actual overflow glyphs');
+   connection.browserInstanceId='MP11-visible-descendant-fixture';
+   const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};
+   await browser.reconcile(request.viewport,{browserBarVisible:false});
+   const image=await browser.captureArtifact(request),frame=decodePng(image.data_base64,dpr),video=await videoPixels(image.data_base64,dpr,'visible-descendant',true);
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)for(const [label,data] of [['raw',raw],['protected',image.data_base64]])await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`visible-descendant-${label}-dpr${dpr}.png`),Buffer.from(data,'base64'));
+   assert.equal(ink(frame.pixels),0,'MP-11 image covers visible filled descendant text beyond its box');
+   assert.equal(ink(video),0,'MP-11 decoded production video covers visible filled descendant overflow');
+ }));
  // MP-08/MP-11: the host's screencast-triggered captures run outside the kernel's Vault
  // input barrier; one landing between recording and the completed value must not retire it.
  test(`MP-08/MP-11 DPR${dpr}: a capture during an in-flight fill keeps the field tracked`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,collect,evaluate})=>{
