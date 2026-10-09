@@ -260,6 +260,7 @@ try {
     const mark = output.length
     const oscCopies = (await copiedTexts()).length
     await press('\x1b[18~') // F7: legacy Terminal.app function key
+    await waitFor(async () => /\x1b\[\?100[0236]l/.test(output.slice(mark)) && await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select')), 5000)
     const mouseDisabled = /\x1b\[\?100[0236]l/.test(output.slice(mark))
     const hint = await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select, Cmd-C; Esc/F7: mouse on'))
     await capture('native-01-mouse-off')
@@ -282,10 +283,14 @@ try {
     await capture('native-02-copied')
     const restoreMark = output.length
     await press('\x1b') // lone Esc, including parser timeout
+    await waitFor(async () => /\x1b\[\?100[0236]h/.test(output.slice(restoreMark)) && !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select')), 5000)
     const escaped = !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
     const mouseRestored = /\x1b\[\?100[0236]h/.test(output.slice(restoreMark))
     await capture('native-03-escaped')
-    await press('\x1b[18~'); await press('\x1b[18~')
+    await press('\x1b[18~')
+    await waitFor(() => page.evaluate(() => terminalScreen().includes('Mouse off: drag-select')), 5000)
+    await press('\x1b[18~')
+    await waitFor(() => page.evaluate(() => !terminalScreen().includes('Mouse off: drag-select')), 5000)
     const toggledBack = !await page.evaluate(() => terminalScreen().includes('Mouse off: drag-select'))
     const noOscCopy = (await copiedTexts()).length === oscCopies
     const cell = { mouseDisabled, hint, nativeText, clipboardText, retained, escaped, mouseRestored, toggledBack, noOscCopy }
@@ -365,7 +370,8 @@ try {
     }
     await typeText('Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
     await press('\r')
-    await waitFor(async () => (await rowOf(marker)) !== null, 240_000)
+    await capture('a01b-prompt-sent')
+    await waitFor(async () => (await rowOf(marker)) !== null, 240_000).catch(async error => { await capture('a01c-response-timeout'); throw error })
     await sleep(4000)
     await capture('a02-response')
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
