@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub(super) struct BrowserTabActivity {
     openers: BTreeMap<String, EnvironmentActor>,
+    // MP-08: delayed discovery keeps the action's exact source document, not a
+    // browser-wide last actor. These records carry attribution only.
+    sources: BTreeMap<String, (String, EnvironmentActor)>,
     sequence: u64,
     activity: Option<Value>,
 }
@@ -14,6 +17,11 @@ impl BrowserTabActivity {
         if let Some(tabs) = tabs.as_array() {
             let live = |id: &str| tabs.iter().any(|tab| tab["tab_id"] == id);
             self.openers.retain(|id, _| live(id));
+            self.sources.retain(|id, (document, _)| {
+                tabs.iter().any(|tab| {
+                    tab["tab_id"] == id.as_str() && tab["document_id"] == document.as_str()
+                })
+            });
             if self
                 .activity
                 .as_ref()
@@ -23,6 +31,25 @@ impl BrowserTabActivity {
                 self.activity = None;
             }
         }
+    }
+    pub(super) fn remember_source(
+        &mut self,
+        state: &Value,
+        actor: &EnvironmentActor,
+        source: &str,
+    ) {
+        if let Some(document) = state["tabs"].as_array().and_then(|tabs| {
+            tabs.iter().find(|tab| tab["tab_id"] == source)?["document_id"].as_str()
+        }) {
+            self.sources
+                .insert(source.into(), (document.into(), actor.clone()));
+        }
+    }
+    pub(super) fn source_actor(&self, source: &str) -> Option<&EnvironmentActor> {
+        self.sources.get(source).map(|(_, actor)| actor)
+    }
+    pub(super) fn forget_source(&mut self, source: &str) {
+        self.sources.remove(source);
     }
     pub(super) fn opened(&mut self, actor: EnvironmentActor, tab: &str) {
         self.openers.insert(tab.into(), actor.clone());

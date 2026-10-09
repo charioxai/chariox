@@ -527,7 +527,7 @@ impl KernelBrowserHost {
                     &tab_openers,
                 )?;
             } else {
-                ledger.reconcile(state)?;
+                ledger.reconcile_inventory(state, &tab_openers)?;
             }
         }
         if let Ok(payload) = &mut result {

@@ -46,6 +46,13 @@ impl Default for KernelBrowserActors {
 }
 impl KernelBrowserActors {
     pub(crate) fn reconcile(&mut self, state: &Value) -> Result<(), String> {
+        self.reconcile_inventory(state, &state["_tab_openers"])
+    }
+    pub(crate) fn reconcile_inventory(
+        &mut self,
+        state: &Value,
+        openers: &Value,
+    ) -> Result<(), String> {
         let Some(generation) = state["generation"].as_u64() else {
             return Ok(());
         };
@@ -64,6 +71,20 @@ impl KernelBrowserActors {
             self.tab_activity = BrowserTabActivity::default();
         }
         self.tab_activity.retain(&state["tabs"]);
+        // MP-08: process delayed creation evidence before the tab becomes known.
+        // A read, attach, or another tab's mutation can be its first inventory.
+        let discovered = tabs
+            .iter()
+            .filter_map(|tab| {
+                let id = tab["tab_id"].as_str()?;
+                if self.tab(id).is_ok() {
+                    return None;
+                }
+                let source = openers[id].as_str()?;
+                let actor = self.tab_activity.source_actor(source)?;
+                Some((id.to_string(), actor.clone()))
+            })
+            .collect::<Vec<_>>();
         let observations = tabs
             .iter()
             .map(|tab| {
@@ -108,6 +129,9 @@ impl KernelBrowserActors {
             }));
         }
         self.host_tabs.retain(|tab, _| retained.contains(tab));
+        for (tab, actor) in discovered {
+            self.opened_tab(actor, &tab);
+        }
         Ok(())
     }
     fn tab(&self, host_tab: &str) -> Result<String, String> {
@@ -233,6 +257,7 @@ impl KernelBrowserActors {
             }
         }
         if let Some(tab) = params["tab_id"].as_str() {
+            self.tab_activity.forget_source(tab);
             self.tab_activity.acted(&actor, tab);
         }
         let cancellation = Arc::new(BrowserCancellation::default());
@@ -271,6 +296,7 @@ impl KernelBrowserActors {
                 cancellation.request_cancel();
             }
         }
+        self.tab_activity.forget_source(host_tab);
         Ok(effect.outcome)
     }
     pub(crate) fn release(
@@ -311,29 +337,12 @@ impl KernelBrowserActors {
         source_tab: Option<&str>,
         openers: &Value,
     ) -> Result<(), String> {
-        let same_generation = state["generation"].as_u64() == Some(self.generation);
-        let discovered = state["tabs"]
-            .as_array()
-            .map(|tabs| {
-                tabs.iter()
-                    .filter_map(|tab| {
-                        let id = tab["tab_id"].as_str()?;
-                        // MP-08: a coincident native tab is not evidence of this
-                        // actor's creation. Only Chromium's opener links it to
-                        // the mutated target; explicit open is handled separately.
-                        (same_generation
-                            && self.tab(id).is_err()
-                            && source_tab.is_some_and(|source| openers[id] == source))
-                        .then(|| id.to_string())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        self.reconcile(state)?;
-        for tab in discovered {
-            self.opened_tab(actor.clone(), &tab);
+        if state["generation"].as_u64() == Some(self.generation) {
+            if let Some(source) = source_tab {
+                self.tab_activity.remember_source(state, actor, source);
+            }
         }
-        Ok(())
+        self.reconcile_inventory(state, openers)
     }
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
@@ -485,6 +494,55 @@ mod tests {
 mod visible_tab_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn mp08_delayed_popup_evidence_expires_on_document_change_or_close() {
+        for changed in [true, false] {
+            let mut model = KernelBrowserActors::default();
+            let action_state =
+                json!({"generation":1,"tabs":[{"tab_id":"source","document_id":"doc"}]});
+            model.reconcile(&action_state).unwrap();
+            let actor = EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Mara");
+            model
+                .reconcile_attributed(&action_state, &actor, Some("source"), &Value::Null)
+                .unwrap();
+            let tabs = if changed {
+                json!([{"tab_id":"source","document_id":"new"}])
+            } else {
+                json!([])
+            };
+            model
+                .reconcile(&json!({"generation":1,"tabs":tabs}))
+                .unwrap();
+            let mut later = json!({"generation":1,"_tab_openers":{"popup":"source"},"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"popup","document_id":"popup"}]});
+            model.reconcile(&later).unwrap();
+            model.project_tabs(&mut later);
+            assert!(later["tabs"][1]["opened_by"].is_null());
+        }
+    }
+
+    #[test]
+    fn mp08_delayed_popup_uses_its_source_actor_after_another_tab_acts() {
+        let mut model = KernelBrowserActors::default();
+        let state = json!({"generation":1,"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"}]});
+        model.reconcile(&state).unwrap();
+        for (id, tab) in [("agent:a", "source"), ("agent:b", "other")] {
+            model
+                .reconcile_attributed(
+                    &state,
+                    &EnvironmentActor::new(id, EnvironmentActorKind::Agent, id),
+                    Some(tab),
+                    &Value::Null,
+                )
+                .unwrap();
+        }
+        let mut later = json!({"generation":1,"_tab_openers":{"popup":"source","other-popup":"other"},"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"other","document_id":"other"},{"tab_id":"popup","document_id":"popup"},{"tab_id":"other-popup","document_id":"other-popup"},{"tab_id":"native","document_id":"native"}]});
+        model.reconcile(&later).unwrap();
+        model.project_tabs(&mut later);
+        assert_eq!(later["tabs"][2]["opened_by"]["actor_id"], "agent:a");
+        assert_eq!(later["tabs"][3]["opened_by"]["actor_id"], "agent:b");
+        assert!(later["tabs"][4]["opened_by"].is_null());
+    }
+
     #[test]
     fn mp08_native_tab_during_agent_mutation_has_no_agent_opener() {
         let mut model = KernelBrowserActors::default();
