@@ -52,6 +52,7 @@ async function setup(dpr, run) {
 for(const dpr of [1,2]) {
  test(`MP-08/MP-11 DPR${dpr}: only Vault filled plain fields, password toggle, clear and navigation`,()=>setup(dpr,async({browser,fill,collect,capture,evaluate,policy,connection,sessionId})=>{
    assert.deepEqual(await collect(),[],'registration alone never masks password, media, frames or echoes');
+   await evaluate("document.querySelector('iframe').style.transform='perspective(500px) rotateY(35deg)'");
    await fill('#plain');
    let boxes=await collect();assert.equal(boxes.length,1);
    const frame=await capture('plain');const pixel=(x,y)=>[...frame.pixels.subarray(((y*dpr)*frame.width+x*dpr)*4,((y*dpr)*frame.width+x*dpr)*4+3)];

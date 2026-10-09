@@ -74,19 +74,21 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
+    const toViewport=async entry=>{
+      if(transforms.has(entry))return transforms.get(entry);
+      const up=await toViewport(entry.parent);
+      const owner=await connection.send('DOM.getFrameOwner',{frameId:entry.frame.id},entry.parent.sessionId);
+      const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.parent.sessionId);
+      const quad=model.content;rect(quad);
+      const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:entry.frame.id,worldName:'chariox-fill-viewport'},entry.sessionId);
+      const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,expression:'[innerWidth,innerHeight]'},entry.sessionId);
+      const [width,height]=result.value??[];
+      if(!(width>0&&height>0)||Math.abs(quad[0]+quad[4]-quad[2]-quad[6])>.1||Math.abs(quad[1]+quad[5]-quad[3]-quad[7])>.1)throw Error('MP-11: fill frame transform unavailable');
+      const map=([x,y])=>up([quad[0]+x*(quad[2]-quad[0])/width+y*(quad[6]-quad[0])/height,
+        quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
+      transforms.set(entry,map);return map;
+    };
     for(const entry of frames) {
-      if(entry.parent) {
-        const owner=await connection.send('DOM.getFrameOwner',{frameId:entry.frame.id},entry.parent.sessionId);
-        const {model}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.parent.sessionId);
-        const quad=model.content;rect(quad);
-        const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:entry.frame.id,worldName:'chariox-fill-viewport'},entry.sessionId);
-        const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,expression:'[innerWidth,innerHeight]'},entry.sessionId);
-        const [width,height]=result.value??[];
-        if(!(width>0&&height>0)||Math.abs(quad[0]+quad[4]-quad[2]-quad[6])>.1||Math.abs(quad[1]+quad[5]-quad[3]-quad[7])>.1)throw Error('MP-11: fill frame transform unavailable');
-        const up=transforms.get(entry.parent);
-        transforms.set(entry,([x,y])=>up([quad[0]+x*(quad[2]-quad[0])/width+y*(quad[6]-quad[0])/height,
-          quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]));
-      }
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
       if(!candidates.length)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
@@ -101,7 +103,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value))) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
-        const map=transforms.get(entry),quad=[];
+        const map=await toViewport(entry),quad=[];
         for(let i=0;i<8;i+=2)quad.push(...map(model.border.slice(i,i+2)));
         const [x,y,w,h]=rect(quad),s=metrics.dpr;
         if(w<=0||h<=0)continue;
