@@ -402,7 +402,10 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
-  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity
+  let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, activeAt = -Infinity, issued = 0
+  // Replies arrive in credit order: a gap with no older credit outstanding is
+  // permanent (e.g. a credit replayed after a reconnect ran twice in the kernel).
+  const outstanding = new Set<number>()
   const buffered = new Map<number, Mirror2Packet>()
   const renderer = new BrowserMirror2Renderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
@@ -423,14 +426,16 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     const reset = wantReset && !resetOutstanding
     if (reset) resetOutstanding = true
     inflight++
+    const order = ++issued; outstanding.add(order)
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs })
       .then(inflateMirror2Packet).then(decodeMirror2Packet).then(async (packet: Mirror2Packet) => {
         if (packet.subscription_id !== subscription_id || packet.tab_id !== binding.tab_id || packet.generation !== binding.generation || packet.wire !== 2) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
         buffered.set(packet.sequence, packet); await drain()
+        if (buffered.size && Math.min(...outstanding) === order) { buffered.clear(); wantReset = true }
       })
       .catch(error => { if (reset) resetOutstanding = false; wantReset = true; if (!closed && fatal(error)) { closed = true; renderer.close(); handlers.failure(error) } })
-      .finally(() => { inflight--; if (!closed) setTimeout(fill, 0) })
+      .finally(() => { outstanding.delete(order); inflight--; if (!closed) setTimeout(fill, 0) })
   }
   // Pipelined credits start once a snapshot is applied; a reset is a single credit.
   const fill = (): void => { while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit() }

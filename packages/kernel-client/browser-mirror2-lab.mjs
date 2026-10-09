@@ -47,7 +47,7 @@ if (process.argv[2] !== 'child') {
     await cp(playwright, path.join(root, 'node_modules/playwright-core'), { recursive: true, dereference: true });
     for (const name of ['home', 'evidence']) { await mkdir(path.join(root, name), { mode: 0o700 }); await chown(path.join(root, name), 65534, 65534); }
     const child = spawn(process.execPath, [path.join(root, 'run.mjs'), 'child', root, sites, dprs, wire], { uid: 65534, gid: 65534, cwd: root,
-      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '' },
+      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '', MIRROR_LAB_REPLAY: process.env.MIRROR_LAB_REPLAY ?? '' },
       stdio: ['ignore', 'pipe', 'pipe'] });
     let logs = ''; for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { process.stdout.write(chunk); logs += chunk; if (logs.length > 1 << 20) logs = logs.slice(-(1 << 20)); });
     code = await new Promise(resolve => child.once('exit', exit => resolve(exit ?? 1)));
@@ -75,7 +75,7 @@ if (process.argv[2] !== 'child') {
   };
   const wire = Number(wireArg), evidence = path.join(root, 'evidence'), settle = Number(process.env.MIRROR_LAB_SETTLE_MS || 4000);
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
-  const results = []; const wireLog = []; const inputLog = []; const wireJson = []; let currentCell = '';
+  const results = []; const wireLog = []; const inputLog = []; const wireJson = []; let currentCell = '', replayNext = false;
   const kernel = async request => {
     const command = request.KernelBrowser.command;
     let result;
@@ -85,6 +85,8 @@ if (process.argv[2] !== 'child') {
       : await host.request({ ...command, observed_by: 'lab' });
       if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, x: command.action.x, y: command.action.y, sequence: command.sequence, ok: true });
     } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, error: String(error?.message ?? error).slice(0, 200) }); throw error; }
+    // A credit replayed after a reconnect runs twice in the kernel; only the first reply reaches the viewer.
+    if (command.op === 'mirror_next' && replayNext) { replayNext = false; void host.request({ ...command, observed_by: 'lab' }).catch(() => {}); }
     if (command.op === 'mirror_next') await validate(result).catch(() => {});
     const json = JSON.stringify({ KernelBrowser: { result } });
     if (command.op === 'mirror_next') wireJson.push(json);
@@ -241,6 +243,14 @@ if (process.argv[2] !== 'child') {
           row.delta_latency_ms = samples.sort((x, y) => x - y); row.delta_p50 = samples[4]; row.delta_p95 = samples[9];
         }
         if (wire === 2 && process.env.MIRROR_LAB_INPUT === '1') row.input = await inputChecks(page, tab, site);
+        if (wire === 2 && process.env.MIRROR_LAB_REPLAY === '1') {
+          // Idle page (one credit), one duplicated credit, then a page change: time until the viewer shows it.
+          await new Promise(r => setTimeout(r, 4000)); replayNext = true; await new Promise(r => setTimeout(r, 3000));
+          const marker = `mirror-replay-${Date.now()}`, t0 = Date.now();
+          await main(tab, `(()=>{const p=document.createElement('p');p.textContent=${JSON.stringify(marker)};document.body.append(p);return true})()`);
+          const seen = await page.waitForFunction(m => document.querySelector('iframe')?.contentDocument?.body?.textContent.includes(m), marker, { timeout: 30000 }).then(() => true, () => false);
+          row.replay = { visible_ms: seen ? Date.now() - t0 : null, resets_after: wireLog.filter(e => e.reset && e.at >= t0 - 3000).length, failures: await page.evaluate(() => window.failures) };
+        }
         // Owner question: closed shadow roots on the site (trusted DOMSnapshot via the product snapshot op).
         try { const snap = (await host.request({ op: 'snapshot', tab_id: tabId, generation: host.generation, observed_by: 'lab' })).snapshot; row.shadow_roots = (snap.shadow_roots ?? []).reduce((m, r) => (m[r.shadow_root_type] = (m[r.shadow_root_type] ?? 0) + 1, m), {}); } catch (error) { row.shadow_roots = { error: String(error.message).slice(0, 120) }; }
         if (site.id === 'protection-fixture') {
