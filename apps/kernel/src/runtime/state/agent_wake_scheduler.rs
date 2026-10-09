@@ -26,39 +26,6 @@ pub(crate) struct AgentWakeMonitor {
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a03_projection_keeps_every_armed_wake_when_finished_history_is_bounded() {
-        let template: AgentWake = serde_json::from_value(serde_json::json!({
-            "id":"wake", "task_id":"task", "room_id":"room", "agent_id":"agent",
-            "registration_id":"registration", "kind":"timer", "label":"check-in",
-            "state":"scheduled", "created_at_ms":1, "verified_at_ms":1,
-            "next_due_ms":100_000, "interval_ms":null, "command":[], "match_text":null,
-            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
-            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
-            "last_delivery":null, "last_delivered_at_ms":null,
-            "last_acknowledged_at_ms":null, "alerted_sequence":null
-        }))
-        .unwrap();
-        // Several agents may each own up to 32 wakes in one Room.
-        let mut wakes = vec![template.clone(); 65];
-        let mut finished = template;
-        finished.state = "fired".into();
-        finished.last_fired_at_ms = Some(2);
-        wakes.extend(vec![finished; 100]);
-        let projected = visible_wakes(wakes, 3);
-        assert_eq!(
-            projected.iter().filter(|w| armed(w)).count(),
-            65,
-            "finished history must not evict pending wakes from any client"
-        );
-        assert_eq!(projected.iter().filter(|w| !armed(w)).count(), 64);
-    }
-}
-
 impl AgentWakeMonitor {
     pub(super) fn new() -> Self {
         Self {
@@ -401,5 +368,38 @@ impl KernelRuntimeState {
                 .terminal_stream
                 .notify_terminal_projection_change(room);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a03_projection_keeps_every_armed_wake_when_finished_history_is_bounded() {
+        let template: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":"wake", "task_id":"task", "room_id":"room", "agent_id":"agent",
+            "registration_id":"registration", "kind":"timer", "label":"check-in",
+            "state":"scheduled", "created_at_ms":1, "verified_at_ms":1,
+            "next_due_ms":100_000, "interval_ms":null, "command":[], "match_text":null,
+            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
+            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
+            "last_delivery":null, "last_delivered_at_ms":null,
+            "last_acknowledged_at_ms":null, "alerted_sequence":null
+        }))
+        .unwrap();
+        // Several agents may each own up to 32 wakes in one Room.
+        let mut wakes = vec![template.clone(); 65];
+        let mut finished = template;
+        finished.state = "fired".into();
+        finished.last_fired_at_ms = Some(2);
+        wakes.extend(vec![finished; 100]);
+        let projected = visible_wakes(wakes, 3);
+        assert_eq!(
+            projected.iter().filter(|w| armed(w)).count(),
+            65,
+            "finished history must not evict pending wakes from any client"
+        );
+        assert_eq!(projected.iter().filter(|w| !armed(w)).count(), 64);
     }
 }

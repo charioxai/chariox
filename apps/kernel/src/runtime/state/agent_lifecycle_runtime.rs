@@ -396,7 +396,7 @@ impl KernelRuntimeState {
             text,
             crate::session::PromptStatus::Queued,
         )
-        .with_durable_operation(&id, &format!("task:{}:{}", task.task_id, task.revision));
+        .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
         let prompt = match workflow {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
@@ -655,14 +655,13 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
             }
-            if task.state == ExecutionState::Blocked {
-                if self
+            if task.state == ExecutionState::Blocked
+                && self
                     .ensure_task_owner_interaction(task.clone())
                     .await
                     .is_err()
-                {
-                    tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
-                }
+            {
+                tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
             if rooms.insert(task.room_id.clone()) {
                 self.retract_stale_task_owner_interactions(&task.room_id, &tasks)

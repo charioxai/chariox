@@ -840,6 +840,7 @@ impl PromptAssemblyService {
         Ok(Self { registry })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(registry: PromptTemplateRegistry) -> Self {
         Self { registry }
     }

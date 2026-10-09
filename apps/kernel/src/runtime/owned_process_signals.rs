@@ -152,7 +152,7 @@ impl OwnedProcessSignals {
 #[cfg(unix)]
 fn send_signal(pid: i32) -> io::Result<()> {
     // Identity and complete group membership are checked immediately before this sole seam.
-    if matches!(pid, -1 | 0 | 1) {
+    if matches!(pid, -1..=1) {
         return Err(io::Error::other("reserved signal target"));
     }
     if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {

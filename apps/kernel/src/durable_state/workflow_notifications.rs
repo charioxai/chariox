@@ -17,6 +17,13 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::sync::mpsc;
 
+// MP-08/MP-10/MP-11: the shared notification inventory returned by this store.
+pub(crate) type WorkflowNotificationInventory = (
+    Vec<WorkflowNotificationSource>,
+    Vec<WorkflowNotificationSubscription>,
+    Vec<WorkflowNotificationDiagnostic>,
+);
+
 pub(crate) const MAX_OUTPUT_BYTES: usize =
     chariox_app_runtime::app_outbox::MAX_PAYLOAD_BYTES - 8192;
 pub(crate) const MAX_PROMPT_BYTES: usize = chariox_app_runtime::app_outbox::MAX_PROMPT_BYTES;
@@ -198,14 +205,7 @@ impl DurableKernelStateStore {
     pub(crate) fn notification_inventory(
         &self,
         owner: &str,
-    ) -> Result<
-        (
-            Vec<WorkflowNotificationSource>,
-            Vec<WorkflowNotificationSubscription>,
-            Vec<WorkflowNotificationDiagnostic>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<WorkflowNotificationInventory, DaemonError> {
         let db = self.lock_connection("workflow.notifications.inventory")?;
         let mut query = db.prepare("SELECT payload_json FROM workflow_notification_sources WHERE owner_id=?1 ORDER BY source_id LIMIT 1024").map_err(sql)?;
         let sources = query

@@ -155,7 +155,7 @@ pub(super) fn signal_session(pid: u32, birth: u64, signal: libc::c_int) -> bool 
                 complete = false;
             }
         }
-        return complete;
+        complete
     }
     #[cfg(not(target_os = "linux"))]
     false

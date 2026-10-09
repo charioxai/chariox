@@ -220,7 +220,7 @@ fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> R
 }
 /// One ordinary queue persistence path. Source adapters retain their receipt,
 /// ownership and CAS checks and call this inside the same writer transaction.
-pub(crate) fn write_queue_state_in(
+fn write_queue_state_in(
     tx: &Transaction<'_>,
     after: &crate::session::RuntimeSession,
     encoded: &DurableWorkflowSessionWrite,

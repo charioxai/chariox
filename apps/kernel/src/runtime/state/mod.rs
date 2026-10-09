@@ -82,6 +82,7 @@ mod kernel_access;
 mod sudo;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+#[cfg(test)]
 pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]

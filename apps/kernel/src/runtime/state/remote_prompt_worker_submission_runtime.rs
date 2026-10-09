@@ -291,6 +291,8 @@ pub(super) async fn query_remote_queued_steer_receipt(
     .await
 }
 
+// MP-08/MP-10/MP-11: keep the independent causal/placement inputs explicit at this boundary.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
     state: &KernelRuntimeState,
     agent_id: &str,

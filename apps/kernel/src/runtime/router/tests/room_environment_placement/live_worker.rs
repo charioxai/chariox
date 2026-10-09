@@ -149,6 +149,8 @@ impl LiveWorker {
         .await
     }
 
+    // MP-08/MP-10/MP-11: keep the independent causal/placement inputs explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn start_configured_with_home_vault_and_worker_id(
         private_relay: bool,
         browser_controller: bool,
