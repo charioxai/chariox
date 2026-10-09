@@ -21,14 +21,14 @@ function styled(params, snapshot, css = {}) {
 // generated: a DIV renders the value as ::before + nested SPAN text + ::after
 // (listed before the SPAN, as Chromium does); no DOM value holds it.
 // reversed: a row-reverse flex DIV shows SPAN 'only' after SPAN 'synthetic-'.
-function fixture({ stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false, windowHeight = 800, generated = false, reversed = false } = {}) {
+function fixture({ dpr = 1, stale = false, hidden = false, replaced = false, scrollbar = 0, noEcho = false, windowHeight = 800, generated = false, reversed = false } = {}) {
   const methods = [];
   return { methods, async resolvePageTarget() { return { sessionId: 'session', connection: { async send(method, params) {
     methods.push(method);
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'root', loaderId: stale ? 'other' : 'document' } } };
     if (method === 'Target.getTargets') return { targetInfos: [] };
     if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
-    if (method === 'Runtime.evaluate') return { result: { value: [hidden ? 'hidden' : 'visible', 1, 700] } };
+    if (method === 'Runtime.evaluate') return { result: { value: [hidden ? 'hidden' : 'visible', dpr, 700] } };
     if (method === 'Browser.getWindowForTarget') return { bounds: { left: 0, top: 0, width: 800, height: windowHeight, windowState: 'normal' } };
     if (method === 'Page.getLayoutMetrics') return { cssLayoutViewport: { clientWidth: 800, clientHeight: 700 - scrollbar, pageX: 0, pageY: 0 }, cssVisualViewport: { scale: 1 } };
     if (method === 'DOM.getBoxModel' && replaced) throw new Error('detached field');
@@ -200,4 +200,10 @@ test('MP-11 a transformed isolated owner masks its whole border box; a hidden ow
 test('MP-11 an iframe whose document is not reachable is masked whole (fail closed)', async () => {
   const regions = await locateBrowserRegions([echo], framed({ unlinked: true }), ['synthetic-only'], content);
   assert(regions.some(r => r.join() === [500, 50, 306, 206].join()), JSON.stringify(regions));
+});
+
+// MP-08/MP-11: getBoxModel uses CSS pixels; content screenshots use device pixels.
+test('MP-08/MP-11 registered field quads scale to DPR 2 content capture pixels', async () => {
+  const regions = await locateBrowserRegions([target], fixture({ dpr:2 }), [], { contentTarget:'target', contentScale:2 });
+  assert.deepEqual(regions, [[20,40,200,60]]);
 });
