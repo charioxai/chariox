@@ -191,6 +191,29 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
+        // MP-08/MP-10: a native startup abort can report a dispatch failure
+        // after the user's pause/stop committed. Acknowledge that settled
+        // interrupt just as the cancellation path does; retain resumable state.
+        let already_interrupted = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .is_ok_and(|run| {
+                matches!(
+                    run.status(),
+                    crate::session::WorkflowRunStatus::Paused
+                        | crate::session::WorkflowRunStatus::Stopped
+                )
+            });
+        if already_interrupted {
+            let released_claim = self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(released_claim);
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let workflow_run_before =
             self.workflow_run_before_prompt_failure(session_id, workflow_run_id)?;
@@ -345,7 +368,7 @@ mod tests {
     }
 
     async fn running_workflow_fixture(label: &str) -> WorkflowFailureFixture {
-        let worktree = TestWorktree(std::env::temp_dir().join(format!(
+        let worktree = TestWorktree(crate::test_support::test_workspace_root().join(format!(
             "chariox-workflow-{label}-{}-{:032x}",
             std::process::id(),
             rand::random::<u128>()
@@ -454,6 +477,75 @@ mod tests {
             claim_id,
             _worktree: worktree,
         }
+    }
+
+    // MP-08/MP-10: an abort during native provider startup can surface as a
+    // dispatch error after the user's workflow interrupt already committed.
+    #[tokio::test]
+    async fn paused_workflow_survives_late_provider_dispatch_failure() {
+        assert_interrupted_workflow_survives_dispatch_failure(true).await;
+    }
+
+    #[tokio::test]
+    async fn stopped_workflow_survives_late_provider_dispatch_failure() {
+        assert_interrupted_workflow_survives_dispatch_failure(false).await;
+    }
+
+    async fn assert_interrupted_workflow_survives_dispatch_failure(pause: bool) {
+        let fixture = running_workflow_fixture(if pause {
+            "paused-dispatch-failure"
+        } else {
+            "stopped-dispatch-failure"
+        })
+        .await;
+        {
+            let mut sessions = fixture.runtime.owned.session_store.write();
+            if pause {
+                sessions.pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            } else {
+                sessions.cancel_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+            }
+            .expect("user interrupt should commit");
+        }
+        fixture
+            .runtime
+            .owned
+            .workflow_fail_provider_prompt_without_queue_advance(
+                &fixture.session_id,
+                &fixture.prompt,
+                None,
+                "Provider prompt dispatch failed: prompt cancelled during provider startup",
+            )
+            .expect("late dispatch settlement should acknowledge the interrupt");
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("session should remain available");
+        let run = session
+            .workflow_run(&fixture.workflow_run_id)
+            .expect("interrupted workflow should remain available");
+        assert_eq!(
+            run.status(),
+            if pause {
+                crate::session::WorkflowRunStatus::Paused
+            } else {
+                crate::session::WorkflowRunStatus::Stopped
+            }
+        );
+        assert!(
+            run.failure_events().is_empty(),
+            "an intentional interrupt must not become a provider failure"
+        );
+        assert!(
+            !fixture
+                .runtime
+                .owned
+                .prompt_workspace_claims
+                .contains(&fixture.claim_id),
+            "settlement must release this run's workspace claim"
+        );
     }
 
     fn install_workflow_append_failure(
@@ -730,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_provider_failure_persists_terminal_run_state_for_restart() {
-        let worktree = TestWorktree(std::env::temp_dir().join(format!(
+        let worktree = TestWorktree(crate::test_support::test_workspace_root().join(format!(
             "chariox-workflow-failure-{}-{:032x}",
             std::process::id(),
             rand::random::<u128>()
