@@ -632,10 +632,12 @@ can carry one profile-wide notice suggesting Chrome or Firefox. Browser family
 controls wording only. First-visit Safari locality requires a trusted
 browser-machine association; this protocol does not currently provide one.
 
-Relay-addressed detached and native provider TUIs currently retain their
-ordinary authenticated relay carrier. Their long-lived relay token cannot mint
-or renew the short browser lease. Automatic direct terminal admission needs a
-short, key-bound terminal lease contract; local presence and a matching
+MP-08 / MP-11: from protocol 473, relay-addressed detached and native provider
+TUIs automatically attempt direct admission for fresh, id-addressed local
+targets through the short, key-bound terminal grant and renewal contract above.
+Older kernels, alias-only targets, and targets without fresh same-machine
+discovery retain the authenticated relay carrier. A long-lived terminal relay
+token cannot mint or renew a browser lease. Local presence and a matching
 `RelayStatus.daemon_id` over TCP must never substitute for kernel identity proof.
 The TUI Local/Relay projection uses fresh same-machine discovery metadata for
 display only; it does not authorize a transport change. There is no indicator
