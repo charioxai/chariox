@@ -70,6 +70,9 @@ impl KernelRuntimeState {
         request: crate::provider::LaunchProviderRequest,
         operation: &'static str,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let request = self
+            .resolve_provider_launch_account_authority(request)
+            .await?;
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
@@ -97,6 +100,9 @@ impl KernelRuntimeState {
             agent_id,
             Default::default(),
         );
+        let request = self
+            .resolve_provider_launch_account_authority(request)
+            .await?;
         self.ensure_provider_account_vault_unlocked_for_launch(&request, "reload provider run")
             .await
     }
@@ -127,11 +133,15 @@ impl KernelRuntimeState {
             .as_ref()
             .map(|agent| agent.owner_user_id())
             .unwrap_or_else(|| session.owner_user_id());
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                runtime_owner_user_id,
-            );
+        let account_owner_user_id = request
+            .provider_account_owner_user_id
+            .clone()
+            .unwrap_or_else(|| {
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &config,
+                    runtime_owner_user_id,
+                )
+            });
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             &request.provider,
@@ -171,15 +181,14 @@ impl KernelRuntimeState {
         if let Some(agent_id) = run.agent_instance_id() {
             request = request.with_agent_id(agent_id.to_string());
         }
+        let request = self
+            .resolve_provider_launch_account_authority(request)
+            .await?;
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;
         let config = self.owned.config_projection.snapshot();
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                run.owner_user_id(),
-            );
+        let account_owner_user_id = self.provider_account_owner_for_run(run).await?;
         crate::provider::resolve_provider_account_credentials(
             &config,
             &account_owner_user_id,
@@ -207,11 +216,11 @@ impl KernelRuntimeState {
         }
 
         let config = self.owned.config_projection.snapshot();
-        let account_owner_user_id =
-            crate::account_profile::provider_account_authority_owner_user_id(
-                &config,
-                agent.owner_user_id(),
-            );
+        let account_owner_user_id = self
+            .with_app_side_effect(|app| {
+                app.provider_account_owner_for_execution(session_id, Some(agent_id))
+            })
+            .await?;
         let profile = self.owned.provider_account_profiles.get(
             &account_owner_user_id,
             agent.provider(),
@@ -226,6 +235,9 @@ impl KernelRuntimeState {
         )
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_agent_id(agent.id().to_string());
+        let request = self
+            .resolve_provider_launch_account_authority(request)
+            .await?;
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;

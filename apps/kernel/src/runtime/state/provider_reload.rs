@@ -314,9 +314,13 @@ impl KernelRuntimeState {
                 ),
             );
             let launch_request = match unlocked {
-                Some(_) => self
-                    .owned
-                    .prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?,
+                Some(_) => {
+                    let launch_request = self
+                        .resolve_provider_launch_account_authority(launch_request)
+                        .await?;
+                    self.owned
+                        .prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?
+                }
                 None => {
                     self.prepare_provider_launch_request_with_vault(
                         launch_request,
