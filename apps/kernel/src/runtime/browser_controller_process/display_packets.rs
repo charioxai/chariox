@@ -62,7 +62,7 @@ impl DisplayPackets {
         let (prefix, files): (&str, &[&str]) = if name.starts_with("encoder-") {
             ("encoder-", &["raster"])
         } else if name.starts_with("raster-") {
-            ("raster-", &crate::display_native::RASTER_SLOT_NAMES)
+            ("raster-", &super::RASTER_SLOT_NAMES)
         } else {
             return;
         };

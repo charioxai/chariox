@@ -37,6 +37,10 @@ mod cancellation;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
 mod display_packets;
+/// MP-08/MP-10/MP-11: native capture slot files (`<pool>/<index>`). Defined
+/// here, outside the optional native worker, because crash cleanup runs in
+/// every Unix build; the worker allocates exactly these.
+pub(crate) const RASTER_SLOT_NAMES: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 mod lifecycle_cancellation;
 mod owned_process_group;
 mod pending_action;
