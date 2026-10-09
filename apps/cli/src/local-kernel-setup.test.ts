@@ -75,7 +75,8 @@ for (const installId of ["local", "second"]) {
       assert.ok(error instanceof Error && error.message.includes(explanation), "the final TUI failure must retain the recovery explanation")
       return true
     })
-    assert.ok(notices.join("").includes(explanation), "the TUI must receive Setup's recovery explanation")
+    assert.ok(notices.join("").replace(/\s+/g, " ").includes(explanation), "the TUI must receive Setup's recovery explanation")
+    assert.ok(notices.join("").split("\n").every(line => line.length <= 80), "waiting-room Cloud status must not clip the recovery steps")
     writeFileSync(join(bin, "chariox-setup"), '#!/usr/bin/env node\nprocess.stderr.write(Buffer.alloc(32769,120));setInterval(()=>{},1000)\n', { mode: 0o700 })
     const bounded: string[] = []
     await assert.rejects(startLocalKernelSetup(profile, message => bounded.push(message)), /Setup failed/)

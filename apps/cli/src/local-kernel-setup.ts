@@ -58,6 +58,10 @@ async function setupCommand(profile: RelayCloudProfile): Promise<{ executable: s
   }
   throw new Error("Chariox Setup is missing. Download the signed Chariox Setup installer from chariox.com.")
 }
+// MP-07/MP-08: Cloud status renders each notice line as one table row.
+function setupNotice(text: string): string {
+  return text.split(/\r?\n/).map(line => line.replace(/(.{1,76})\s+/g, "$1\n")).join("\n")
+}
 export async function startLocalKernelSetup(profile: RelayCloudProfile, notice?: (message: string) => void): Promise<void> {
   const { executable, args } = await setupCommand(profile)
   const env = { ...process.env }
@@ -75,7 +79,7 @@ export async function startLocalKernelSetup(profile: RelayCloudProfile, notice?:
       output?.on("data", (chunk: Buffer) => {
         total += chunk.length
         if (total > 32768) stop()
-        else { if (output === child.stderr) stderr += chunk.toString("utf8"); notice?.(chunk.toString("utf8")) }
+        else { if (output === child.stderr) stderr += chunk.toString("utf8"); notice?.(output === child.stderr ? setupNotice(chunk.toString("utf8")) : chunk.toString("utf8")) }
       })
     }
     const timer = setTimeout(stop, 900_000)
