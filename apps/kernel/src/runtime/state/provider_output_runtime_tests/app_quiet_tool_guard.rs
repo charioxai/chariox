@@ -160,7 +160,7 @@ async fn quiet_settlement_during_runtime_mcp(path: SettlementPath) {
                 .expect("retained prompt activity")
                 .last_output_at =
                 Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
-            let _released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
+            let released_projection = crate::app::RemoteLeaseRuntime::new(&mut app)
                 .drain_leased_runtime_projection(&leased.id, &run_id, true)
                 .expect("post-handler quiet projection");
             if matches!(path, SettlementPath::LeasedCompletionRecord) {
