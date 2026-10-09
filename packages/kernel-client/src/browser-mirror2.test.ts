@@ -110,6 +110,20 @@ test('MP-08/MP-10: a failed packet application does not stop later packets (the 
   assert.deepEqual(f.failures, [])
 })
 
+test('MP-08/MP-10: a retired subscription surfaces a failure; transient failures back off', async () => {
+  const retired = flow(async command => { if (command.op === 'mirror_subscribe') return { subscription_id: 's' }; if (command.op === 'mirror_close') return { closed: true }; throw Error('kernel_browser_failed: MP-11: stale or foreign mirror') })
+  const first = await retired.start()
+  await until(() => retired.failures.length > 0)
+  assert.equal(retired.failures.length, 1); await first.close()
+  const flaky = flow(async command => { if (command.op === 'mirror_subscribe') return { subscription_id: 's' }; if (command.op === 'mirror_close') return { closed: true }; throw Error('local_transport_error: timeout') })
+  const second = await flaky.start()
+  await new Promise(resolve => setTimeout(resolve, 1500))
+  const credits = flaky.requests.filter(command => command.op === 'mirror_next').length
+  await second.close()
+  assert.ok(credits <= 6, `MP-10: credits back off after failures (${credits} in 1.5 s)`)
+  assert.deepEqual(flaky.failures, [], 'MP-10: a short failure streak is not terminal')
+})
+
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
   const element = () => { const attributes = new Map<string, string>(); return { nodeType: 1, attributes, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name), addEventListener: () => {}, style: {} } }
   const iframe = element(), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
