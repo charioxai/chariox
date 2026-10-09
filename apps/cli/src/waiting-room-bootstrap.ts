@@ -6,12 +6,15 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 export function bootstrapWaitingRoom(client: LocalIpcClient, options: CliOptions, preferences: CharioxPreferences, deps: BootstrapDeps): BootstrapState {
+  const useConfiguredProvider = !options.provider
+  const useConfiguredModel = options.model === "default"
+  const useConfiguredEffort = !options.effort.trim()
   const defaults = Promise.resolve().then(async () => {
     const configured = await deps.getConfiguredProviderLaunchDefaults?.(client) ?? {}
     return {
-      ...(!options.provider && configured.provider ? { provider: configured.provider } : {}),
-      ...(options.model === "default" && configured.model ? { model: configured.model } : {}),
-      ...(!options.effort.trim() && configured.effort ? { effort: configured.effort } : {}),
+      ...(useConfiguredProvider && configured.provider ? { provider: configured.provider } : {}),
+      ...(useConfiguredModel && configured.model ? { model: configured.model } : {}),
+      ...(useConfiguredEffort && configured.effort ? { effort: configured.effort } : {}),
     }
   })
   const providerCatalog = defaults.then(() => deps.getProviderCatalog(client, deps.logger))

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
@@ -652,3 +653,22 @@ function outlineAgent(
     next_cursor: nextCursor,
   }
 }
+
+
+test("MP-08/MP-11 delayed defaults survive fallback projection during focus navigation", async () => {
+  let release!: (value: {provider: string; model: string; effort: string}) => void
+  const configured = new Promise<{provider: string; model: string; effort: string}>(resolve => { release = resolve })
+  const options: CliOptions = {clientId: "cli", model: "default", effort: "", accountProfile: "default"}
+  const boot = bootstrapWaitingRoom({} as never, options, {}, {
+    getConfiguredProviderLaunchDefaults: () => configured,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  // Reconciliation writes projected fallback values without a user-choice revision.
+  options.provider = "opencode"
+  options.model = "opencode/gpt-5.4"
+  options.effort = "medium"
+  release({provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, {provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+})
