@@ -68,6 +68,26 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ for (const field of ['plain', 'password']) {
+   test(`MP-08/MP-11 DPR${dpr}: canonical 1920x1080 image survives ${field} fill`, () => setup(dpr, async ({browser,connection,sessionId,targetId,documentId,fill}) => {
+     connection.browserInstanceId='MP11-canonical-artifact-fixture';
+     const viewport={css_width:1920,css_height:1080,device_scale_factor:dpr,desktop_pixel_width:1920*dpr,desktop_pixel_height:1080*dpr,revision:1,last_actor_id:null};
+     await browser.reconcile(viewport,{browserBarVisible:false});
+     const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport};
+     const before=Buffer.from((await browser.captureArtifact(request)).data_base64,'base64');
+     assert.equal(before.readUInt32BE(16),1920*dpr);
+     assert.equal(before.readUInt32BE(20),1080*dpr);
+     await fill(`#${field}`);
+     const image=await browser.captureArtifact(request);
+     const frame=decodePng(image.data_base64,dpr,{width:1920*dpr,height:1080*dpr});
+     assert.equal(frame.width,1920*dpr);assert.equal(frame.height,1080*dpr);
+     const top=field==='plain'?90:180,index=(top*dpr*frame.width+280*dpr)*4;
+     assert.deepEqual([...frame.pixels.subarray(index,index+4)],field==='plain'?[0,0,0,255]:[0,255,255,255]);
+     assert.equal(image.redaction,field==='plain'?'fill_targets':'none');
+     assert.deepEqual([...frame.pixels.subarray((1050*dpr*frame.width+1800*dpr)*4,(1050*dpr*frame.width+1800*dpr)*4+4)],[255,255,255,255]);
+     if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`canonical-${field}-dpr${dpr}.png`),Buffer.from(image.data_base64,'base64'));
+   }));
+ }
  test(`MP-08/MP-11 DPR${dpr}: registration fill retirement and incremental packets cross the kernel mirror boundary`,()=>setup(dpr,async context=>{
    const {browser,connection,sessionId,fill,evaluate,url}=context;
    await evaluate("Object.assign(document.querySelector('p').style,{position:'absolute',left:'80px',top:'400px',width:'420px',height:'40px',margin:'0',font:'20px monospace',color:'magenta'})");
