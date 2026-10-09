@@ -120,3 +120,19 @@ test('MP-10: queued credits wait one period each after their predecessor (one he
   assert.ok(waits[3] <= 10, `the fourth credit is bounded at 3 waits from its arrival: ${waits}`);
   assert.ok(Date.now() - started >= 290);
 });
+
+test('MP-10: a resource packet stays within its byte budget; a larger resource travels alone and not during input', async () => {
+  const png = size => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(size - 8, 7)]);
+  const bodies = { 'https://x/a.png': png(150_000), 'https://x/b.png': png(150_000), 'https://x/big.png': png(400_000) };
+  const world = { connection: { send: async (method, params) => method === 'Page.getResourceTree' ? { frameTree: { frame: { id: 'f' }, resources: Object.keys(bodies).map(url => ({ url })) } } : { base64Encoded: true, content: bodies[params.url].toString('base64') } }, sessionId: 's', ref: 'm' };
+  const mirror = new Mirror2({ host: {} });
+  mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [], all: [] } : expression.includes('loadedCount') ? 3 : ['r1', 'r2', 'r3'];
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: Date.now() };
+  mirror.register(stream, { resources: [{ key: 'r1', url: 'https://x/a.png', kind: 'image' }, { key: 'r2', url: 'https://x/b.png', kind: 'image' }, { key: 'r3', url: 'https://x/big.png', kind: 'image' }] });
+  const packets = [];
+  for (let i = 0; i < 3; i++) packets.push((await mirror.materialize(world, stream, null)).map(r => [r.key, r.data_base64.length]));
+  assert.ok(packets.every(p => p.reduce((n, [, b]) => n + b, 0) <= 256 * 1024 || p.length === 1), JSON.stringify(packets));
+  assert.deepEqual(packets.flat().map(([key]) => key).sort(), ['r1', 'r2'], 'MP-10: the oversized resource waits while the viewer is active');
+  stream.inputAt = Date.now() - 2000;
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r3'], 'MP-10: alone once the viewer is quiet');
+});

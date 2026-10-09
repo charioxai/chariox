@@ -15,7 +15,7 @@ const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4
 // MP-10 wheel bytes: element images within one viewport of the view travel;
 // while the view moves (and SETTLE_MS after) a large one travels as a preview,
 // then its exact bytes.
-const NEAR_PX = 800, SETTLE_MS = 300, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
+const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error { constructor() { super('MP-11: stale mirror input epoch'); } }
 
@@ -308,6 +308,13 @@ export class Mirror2 {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
     return !source.ops?.length && !source.sheets?.length && JSON.stringify([scroll, source.focused, source.selection]) === stream.lastHeader && !this.tilesDue(stream);
   }
+  // A packet takes the next resource only within its byte budget. One larger
+  // than the whole budget travels alone, and only after a second without viewer
+  // input, so it never sits ahead of an echo on the socket.
+  fits(size, bytes, budget, stream) {
+    if (bytes + size <= budget) return true;
+    return bytes === 0 && budget >= RESOURCE_PACKET_BYTES && Date.now() - (stream?.inputAt ?? 0) >= QUIET_MS;
+  }
   refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
   merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
   // Unattached foreign frames are opaque regions (masked captures only).
@@ -359,6 +366,7 @@ export class Mirror2 {
     const out = []; let bytes = 0;
     for (const entry of due) {
       if (bytes >= budget) break;
+      if (entry.state === 'ok' && !this.fits(entry.resource.data_base64.length, bytes, budget, stream)) continue;
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);
@@ -383,6 +391,7 @@ export class Mirror2 {
           continue;
         }
       }
+      if (!this.fits(entry.resource.data_base64.length, bytes, budget, stream)) continue;
       entry.sent = true; bytes += entry.resource.data_base64.length; out.push(entry.resource);
     }
     return out;
@@ -455,6 +464,7 @@ export class Mirror2 {
     if (action.kind === 'composition' && (!Number.isInteger(action.selection_start) || !Number.isInteger(action.selection_end) || action.selection_start < 0 || action.selection_end < action.selection_start || action.selection_end > action.text.length)) throw new Error('MP-11: invalid mirror input');
     // A target whose attributes changed after the viewer's view is refused (re-sync).
     for (const id of [action.node_id, action.anchor_id, action.focus_id]) if (id && (stream.attrSequence.get(id) ?? 0) > input.sequence) throw new Error('MP-11: changed mirror input target');
+    stream.inputAt = Date.now();
     const world = await this.world(tab, stream);
     const assertEpoch = () => { if (this.service.require(input.subscription_id, scope, generation) !== stream || stream.policy !== this.host.protection || stream.document_id !== tab.document_id || stream.fallback) throw new Error('MP-11: stale mirror protection policy or admitted input'); };
     const call = async expression => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertEpoch(); const value = await this.evaluate(world, expression); assertEpoch(); return value; };
