@@ -41,7 +41,7 @@ export function commandCenterExecutionCommand(item: CommandCenterItem): string |
  * description mentions the typed words.
  */
 export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, prompt: string): boolean {
-  if (item.kind !== "command") {
+  if (item.kind !== "command" && item.kind !== "group") {
     return false
   }
   const command = item.value.endsWith(" ") ? item.value : `${item.value} `
@@ -49,11 +49,11 @@ export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, 
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
-  if (item.kind !== "command") {
-    return false
-  }
   if (promptAddsArgumentsToCommandCenterItem(item, currentPrompt)) {
     return true
+  }
+  if (item.kind !== "command") {
+    return false
   }
   if (!item.value.endsWith(" ")) {
     return currentPrompt.trim() === item.value
