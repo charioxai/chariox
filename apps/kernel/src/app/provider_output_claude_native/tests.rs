@@ -1,6 +1,110 @@
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
+#[test]
+fn native_usage_maps_only_the_configured_cloud_owner_to_local_accounts() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("native-usage-owner");
+    let usage_file = root.path().join("usage.json");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let make_run = |runtime_owner: &str, profile_id: &str| {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "usage-session",
+            "claude",
+            "claude-headless",
+            profile_id,
+            "sonnet",
+        )
+        .with_owner_user_id(runtime_owner);
+        RuntimeProviderRun::new(
+            "usage-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "usage-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_USAGE_FILE".into(),
+                    usage_file.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    };
+    let mut observed = Vec::new();
+    for (runtime_owner, account_owner, used) in [
+        ("cloud-owner", "local", 22.0),
+        ("collaborator", "collaborator", 37.0),
+    ] {
+        let profile = app
+            .provider_account_profiles
+            .create_managed(account_owner, "claude", "native usage")
+            .unwrap();
+        let run = make_run(runtime_owner, &profile.profile_id);
+        fs::write(
+            &usage_file,
+            serde_json::json!({"rate_limits":{"five_hour":{"used_percentage":used}}}).to_string(),
+        )
+        .unwrap();
+        let outcome =
+            ProviderOutputClaudeNativeBridge::new(&mut app).process_claude_account_usage(&run);
+        let actual = app
+            .provider_account_profiles
+            .get(account_owner, "claude", &profile.profile_id)
+            .unwrap()
+            .usage
+            .meters
+            .first()
+            .and_then(|m| m.used_percent);
+        observed.push((
+            runtime_owner,
+            outcome.map_err(|e| e.to_string()),
+            actual,
+            used,
+            profile.profile_id,
+        ));
+    }
+    // A collaborator using the local profile id must not mutate its usage.
+    let run = make_run("collaborator", &observed[0].4);
+    fs::write(
+        &usage_file,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":99}}}"#,
+    )
+    .unwrap();
+    let rejected = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_claude_account_usage(&run)
+        .is_err();
+    let local_after = app
+        .provider_account_profiles
+        .get("local", "claude", &observed[0].4)
+        .unwrap()
+        .usage
+        .meters
+        .first()
+        .and_then(|m| m.used_percent);
+    app.shutdown_cleanup().unwrap();
+    for (runtime_owner, outcome, actual, expected, _) in observed {
+        assert!(
+            outcome.is_ok(),
+            "MP-08/MP-10/MP-11 {runtime_owner}: {outcome:?}"
+        );
+        assert_eq!(actual, Some(expected));
+    }
+    assert!(
+        rejected,
+        "MP-08/MP-10/MP-11 collaborator must retain its independent namespace"
+    );
+    assert_eq!(local_after, Some(22.0));
+}
+
 #[derive(Clone, Default)]
 struct RecordingPermissionBridge {
     interaction_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
