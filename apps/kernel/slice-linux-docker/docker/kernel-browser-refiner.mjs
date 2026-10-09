@@ -47,7 +47,7 @@ export class NativeRefiner {
      this.latest={...source,pixels,repair_tiles,settled_verified:true,refinement_serial:binding.serial};this.verifiedAt=this.now();
      if(repair_tiles&&pixels?.pixels)this.prepared={pixels,tiles:repair_tiles};
     }
-   })().catch(()=>{if(!this.closed&&revision===this.revision&&valid())this.failure=Error('MD-DISPLAY: exact verification failed')}).finally(()=>{this.active=null});
+   })().catch(error=>{if(!error?.busy&&!this.closed&&revision===this.revision&&valid())this.failure=Error('MD-DISPLAY: exact verification failed')}).finally(()=>{this.active=null});
   }
   return this.same(this.wanted,binding)?this.latest:null;
  }

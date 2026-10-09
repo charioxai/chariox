@@ -6,7 +6,7 @@ use super::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 
 pub(super) struct ExactPlan {
@@ -137,7 +137,9 @@ impl ExactWorker {
             thread: Some(thread),
         }
     }
-    pub fn submit(&self, id: u64, plan: ExactPlan) -> Result<(), String> {
+    /// MP-10 (#933 review 7): Ok(false) when the bounded queue is full, a
+    /// soft refusal for the caller; only a dead exact thread is fatal.
+    pub fn submit(&self, id: u64, plan: ExactPlan) -> Result<bool, String> {
         self.submit_job(
             id,
             Box::new(move || {
@@ -146,12 +148,14 @@ impl ExactWorker {
             }),
         )
     }
-    pub fn submit_job(&self, id: u64, job: Job) -> Result<(), String> {
-        self.sender
-            .as_ref()
-            .unwrap()
-            .try_send((id, job))
-            .map_err(|_| "MP-11: native exact queue unavailable".into())
+    pub fn submit_job(&self, id: u64, job: Job) -> Result<bool, String> {
+        match self.sender.as_ref().unwrap().try_send((id, job)) {
+            Ok(()) => Ok(true),
+            Err(TrySendError::Full(_)) => Ok(false),
+            Err(TrySendError::Disconnected(_)) => {
+                Err("MP-11: native exact queue unavailable".into())
+            }
+        }
     }
 }
 impl Drop for ExactWorker {
@@ -160,5 +164,34 @@ impl Drop for ExactWorker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // MP-10 (#933 review 7): a full exact queue is a soft refusal, not fatal.
+    #[test]
+    fn mp10_full_exact_queue_reports_busy_without_failing_the_worker() {
+        let worker = ExactWorker::new();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(gate));
+        let blocked =
+            |gate: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>| -> Job {
+                Box::new(move || {
+                    let _ = gate.lock().unwrap().recv();
+                    json!({})
+                })
+            };
+        // One job running plus eight queued fill the bounded channel.
+        let mut queued = 0;
+        while worker.submit_job(queued, blocked(gate.clone())).unwrap() {
+            queued += 1;
+            assert!(queued <= 10, "the exact queue must stay bounded");
+        }
+        assert!(queued >= 8);
+        for _ in 0..queued {
+            release.send(()).unwrap();
+        }
+        drop(worker);
     }
 }

@@ -10,6 +10,24 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap, fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf,
 };
+/// MP-08/MP-11: codec rows (the C layout) whose set of intersecting masks
+/// differs between two mask lists.
+pub(super) fn protection_rows(h: i32, rows: i32, old: &[Rect], new: &[Rect]) -> u32 {
+    (0..rows).fold(0, |changed, r| {
+        let (top, bottom) = (2 * ((h / 2 * r) / rows), 2 * ((h / 2 * (r + 1)) / rows));
+        let within = |list: &[Rect]| {
+            list.iter()
+                .filter(|m| m.top < bottom && m.bottom > top)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        if within(old) != within(new) {
+            changed | 1 << r
+        } else {
+            changed
+        }
+    })
+}
 fn stripe_default() -> bool {
     true
 }
@@ -294,14 +312,29 @@ impl Sessions {
                 })?
         };
         let sessions = &mut self.sessions;
-        if sessions.get(&q.encoder).is_some_and(|s| {
-            s.regions != regions || s.stripes != q.stripes || s.reduced != q.reduced
-        }) {
+        if sessions
+            .get(&q.encoder)
+            .is_some_and(|s| s.stripes != q.stripes || s.reduced != q.reduced)
+        {
             sessions.remove(&q.encoder);
+        }
+        // MP-08/MP-11 (#933 review 6): moved masks (a protected field scrolls)
+        // keep the session; only codec rows whose protection changed reopen
+        // (fresh IDR at the protected quantizer bound). Pixels are masked
+        // before conversion either way.
+        if let Some(s) = sessions
+            .get_mut(&q.encoder)
+            .filter(|s| s.regions != regions)
+        {
+            resets |= protection_rows(h, if q.stripes { 8 } else { 1 }, &s.regions, &regions);
+            s.regions = regions.clone();
         }
         // MP-08/MP-10: a rate change retunes the live x264 rows (no IDR);
         // hardware rows cannot and reopen.
-        if let Some(s) = sessions.get_mut(&q.encoder).filter(|s| s.bitrate != q.bitrate) {
+        if let Some(s) = sessions
+            .get_mut(&q.encoder)
+            .filter(|s| s.bitrate != q.bitrate)
+        {
             let retuned = s
                 .codec
                 .as_ref()
@@ -672,5 +705,68 @@ impl Sessions {
             revision,
             started,
         })
+    }
+}
+#[cfg(test)]
+mod protection_tests {
+    use super::*;
+    fn encode(regions: Value, stripes: bool) -> Encode {
+        serde_json::from_value(json!({"id":1,"encoder":"motion","serial":1,"bitrate":8000000,"reset":false,"regions":regions,"stripes":stripes})).unwrap()
+    }
+    fn begin(sessions: &mut Sessions, regions: Value, stripes: bool) -> u32 {
+        let job = sessions.begin_encode(&encode(regions, stripes)).unwrap();
+        // Return the codec as finish_encode does after x264.
+        sessions.sessions.get_mut("motion").unwrap().codec = Some(job.codec);
+        job.resets
+    }
+    // MP-08/MP-11 (#933 review 6): moving masks re-key only affected rows.
+    #[test]
+    fn mp11_moved_masks_keep_the_session_and_reset_only_rows_whose_protection_changed() {
+        let mut s = Sessions::new(1280, 800, std::env::temp_dir());
+        let first = json!([{"x":10,"y":20,"width":100,"height":28}]);
+        assert_eq!(
+            begin(&mut s, first.clone(), true),
+            255,
+            "a new session keys every row"
+        );
+        assert_eq!(begin(&mut s, first, true), 0);
+        // Same row band (rows are 100 px at 800): only row 0 re-keys.
+        assert_eq!(
+            begin(
+                &mut s,
+                json!([{"x":10,"y":60,"width":100,"height":28}]),
+                true
+            ),
+            1
+        );
+        // Moved to row 5 (500..600): its old and new rows re-key.
+        assert_eq!(
+            begin(
+                &mut s,
+                json!([{"x":10,"y":520,"width":100,"height":20}]),
+                true
+            ),
+            1 | 1 << 5
+        );
+        assert_eq!(
+            begin(&mut s, json!([]), true),
+            1 << 5,
+            "clearing a mask re-keys its row only"
+        );
+        assert_eq!(
+            s.sessions.len(),
+            1,
+            "the session and its references survive"
+        );
+        // Whole-frame motion has one row: any protection change re-keys it.
+        assert_eq!(
+            begin(&mut s, json!([]), false),
+            255,
+            "a stripe/whole switch reopens"
+        );
+        assert_eq!(
+            begin(&mut s, json!([{"x":0,"y":700,"width":4,"height":4}]), false),
+            1
+        );
     }
 }

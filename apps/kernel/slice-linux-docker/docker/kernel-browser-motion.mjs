@@ -44,7 +44,9 @@ export class MotionEncoder {
     if(this.closed||!this.valid()||revision!==this.revision)continue;
     let png=sample.data_base64,nativeExact;
     if(sample.raw?.nativeExact){
-     const raw=sample.raw,exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],patch:false});
+     const raw=sample.raw;let exact;
+     // MP-10: a busy native queue skips this sample; the key stays requested.
+     try{exact=await raw.nativeExact({encoder:this.encoder.nativeSession,regions:raw[displayMaskRegions]??[],patch:false});}catch(error){if(!error?.busy)throw error;continue;}
      png=exact.data_base64;
      // MP-08/MP-10/MP-11: the native exact contract includes indexed PNGs
      // and prepared repair tiles; never send it through the RGBA-only decoder.

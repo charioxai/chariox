@@ -16,6 +16,8 @@ export class NativeWorkerControl {
   const waiter=this.pending.get(header.reply);this.pending.delete(header.reply);
   try{
    const value=JSON.parse(bytes);
+   // MP-10 (#933 review 7): a full worker queue refuses one request softly.
+   if(value.busy===true&&Object.keys(value).length===1){waiter.reject(Object.assign(Error('MD-DISPLAY: native worker busy'),{busy:true}));return;}
    if(value.error)throw Error('MP-11: native worker refused');
    if(Array.isArray(value.timings)&&value.timings.length<=64){
     const stages=new Set(['native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);

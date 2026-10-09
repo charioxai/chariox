@@ -221,3 +221,15 @@ jobs:
         env:
           RUST_MIN_STACK: 16777216
           RUST_TEST_THREADS: 1
+
+      - name: Native display worker
+        # MP-08/MP-10/MP-11 (#933 review 8): the Linux kernel's XShm/x264
+        # worker (unsafe FFI, sessions, C harnesses on a real Xvfb).
+        run: |
+          sudo apt-get install -y xvfb libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
+          cargo test -p chariox-kernel --lib --features native-display display_native
+          node --test apps/browser-display/native-capture-*.test.mjs
+        env:
+          CHARIOX_BROWSER_DISPLAY_SOFTWARE: '1'
+          CHARIOX_NATIVE_DISPLAY_INCLUDE: /usr/include
+          CHARIOX_NATIVE_DISPLAY_LIB: /usr/lib/x86_64-linux-gnu

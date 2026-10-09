@@ -387,9 +387,15 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
-                    codec_tx
-                        .try_send((q, slot.codec_lease()))
-                        .map_err(|_| "MP-11: native codec queue unavailable")?;
+                    // MP-10 (#933 review 7): a full codec queue refuses this
+                    // encode softly (Node skips one sample); never fatal.
+                    match codec_tx.try_send((q, slot.codec_lease())) {
+                        Ok(()) => {}
+                        Err(std::sync::mpsc::TrySendError::Full((q, _))) => {
+                            reply(q.id, json!({"busy": true}))?
+                        }
+                        Err(_) => return Err("MP-11: native codec queue unavailable".into()),
+                    }
                 }
                 Command::Exact { exact: q } => {
                     let id = q.id;
@@ -406,7 +412,7 @@ pub(super) fn run() -> Result<(), String> {
                             |reason: String| json!({"shift_refused": true, "reason": reason});
                         match locked()?.shift(q, slot) {
                             Ok(job) => {
-                                if exact.submit_job(id, job).is_err() {
+                                if !matches!(exact.submit_job(id, job), Ok(true)) {
                                     reply(id, refused("MP-10: native exact queue busy".into()))?;
                                 }
                             }
@@ -421,8 +427,8 @@ pub(super) fn run() -> Result<(), String> {
                                 |_| json!({"error":"MP-11: exact preparation failed"}),
                             );
                             reply(id, value)?;
-                        } else {
-                            exact.submit(id, plan)?;
+                        } else if !exact.submit(id, plan)? {
+                            reply(id, json!({"busy": true}))?;
                         }
                     }
                 }
