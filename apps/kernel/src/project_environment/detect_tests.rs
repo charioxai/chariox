@@ -370,6 +370,7 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
         evidence_digest: detection.evidence_digest.clone(),
         proposals: detection.proposals.clone(),
         operation,
+        modeled_folders: detection.folder_digests.clone(),
     };
     let store_root = TestWorktree::new("envp02a-cache-state");
     let store = ProjectEnvironmentStore::new(store_root.path());
@@ -412,3 +413,21 @@ fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
             RequirementSpec::Software { identity, detect_only: true, .. } if identity == name)));
     }
 }
+
+#[path = "detect_review_2_tests.rs"]
+mod review_2;
+
+#[path = "detect_review_3_tests.rs"]
+mod review_3;
+
+#[path = "detect_review_4_tests.rs"]
+mod review_4;
+
+#[path = "detect_review_5_tests.rs"]
+mod review_5;
+
+#[path = "detect_review_1_tests.rs"]
+mod review_1;
+
+#[path = "detect_review_6_tests.rs"]
+mod review_6;

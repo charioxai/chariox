@@ -279,6 +279,11 @@ pub fn project_environment_snapshot(
         legacy_reviewed_manifest: legacy.and_then(|s| s.reviewed_manifest.clone()),
         legacy_review: legacy.and_then(|s| s.last_review.clone()),
     };
+    refresh_environment_content_digest(&mut snapshot);
+    snapshot
+}
+
+pub fn refresh_environment_content_digest(snapshot: &mut ProjectEnvironment) {
     // Machine observations and target-owned absolute paths are not portable content identity.
     snapshot.content_digest = metadata_digest(&(
         &snapshot.lineage,
@@ -312,7 +317,6 @@ pub fn project_environment_snapshot(
             .collect::<Vec<_>>(),
         &snapshot.evidence_digest,
     ));
-    snapshot
 }
 
 // MP-08/MP-10: allowlist specification fields; keep legacy readiness in the response only.

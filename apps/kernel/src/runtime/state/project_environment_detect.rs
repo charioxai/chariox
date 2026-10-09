@@ -100,13 +100,53 @@ impl KernelRuntimeState {
             }
         }
         let id = environment.lineage.environment_id.clone();
-        let detection = tokio::task::spawn_blocking(move || detect_environment(&roots, &id))
+        let mut detection = tokio::task::spawn_blocking(move || detect_environment(&roots, &id))
             .await
             .map_err(|_| environment_error("Detect index task failed"))??;
         let model_folders =
             detection.model_folders(previous.as_ref(), &request.allow_model_folders, &folders);
+        let mut modeled_folders = std::collections::BTreeMap::new();
+        if let Some(cache) = previous
+            .as_ref()
+            .filter(|cache| cache.operation.phase == EnvironmentOperationPhase::Ready)
+        {
+            for (folder, digest) in &cache.modeled_folders {
+                if detection.folder_digests.get(folder) == Some(digest)
+                    && !model_folders.contains(folder)
+                {
+                    modeled_folders.insert(folder.clone(), digest.clone());
+                }
+            }
+            detection.reuse_model_metadata(cache, &modeled_folders.keys().cloned().collect());
+        }
         let now = crate::session::unix_epoch_ms();
         let mut results = detection.skips.clone();
+        // Shared projection discloses automatic code-folder submission and true opt-ins.
+        results.extend(environment.folders.iter().map(|folder| {
+            let automatic = detection.code_folders.contains(&folder.folder_id);
+            EnvironmentItemResult {
+                requirement_id: format!("detect:folder:{}", folder.folder_id),
+                status: EnvironmentObservationStatus::NeedsYourInput,
+                reason_code: if automatic {
+                    "code_manifest"
+                } else {
+                    "no_code_manifest"
+                }
+                .into(),
+                safe_summary: if automatic {
+                    format!(
+                        "{} · provider metadata sent automatically (code manifest)",
+                        folder.label
+                    )
+                } else {
+                    format!(
+                        "{} · deterministic detection; model requires opt-in",
+                        folder.label
+                    )
+                },
+                receipt_ids: vec![],
+            }
+        }));
         if model_folders.is_empty() {
             results.push(EnvironmentItemResult {
                 requirement_id: "detect:model".into(),
@@ -151,6 +191,16 @@ impl KernelRuntimeState {
             let utility_result = self
                 .detect_environment_utility(&project, primary, request.provider.as_ref(), &input)
                 .await;
+            if let Ok(manifest) = &utility_result {
+                for folder in &model_folders {
+                    if let Some(digest) = detection.folder_digests.get(folder) {
+                        modeled_folders.insert(folder.clone(), digest.clone());
+                    }
+                }
+                let old_skips = detection.skips.len();
+                detection.merge_manifest(&environment.lineage.environment_id, &input, manifest);
+                results.extend(detection.skips[old_skips..].iter().cloned());
+            }
             let error_text = utility_result
                 .as_ref()
                 .err()
@@ -230,11 +280,13 @@ impl KernelRuntimeState {
             evidence_digest: detection.evidence_digest.clone(),
             proposals: detection.proposals.clone(),
             operation: operation.clone(),
+            modeled_folders,
         })?;
         environment.proposals.retain(|p| !matches!(&p.requirement.scope, RequirementScope::Folder { folder_id } if environment.folders.iter().any(|f| &f.folder_id == folder_id)));
         environment.proposals.extend(detection.proposals);
         environment.evidence_digest = Some(detection.evidence_digest);
         environment.operations = vec![operation];
+        refresh_environment_content_digest(&mut environment);
         store.attach_revision(&mut environment)?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }

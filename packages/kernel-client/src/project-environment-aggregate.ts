@@ -17,7 +17,7 @@ export type EnvironmentViewSection = { readonly id: string; readonly title: stri
 export function environmentOriginLabel(origin: RequirementOrigin): string {
   switch (origin.kind) {
     case "migrated": return `Migrated · ${origin.source}`
-    case "detected": return `${origin.relative_path}${origin.line == null ? "" : `:${origin.line}`} · evidence ${origin.evidence_digest}`
+    case "detected": return `${origin.relative_path}${origin.line == null ? "" : `:${origin.line}`} · evidence ${origin.evidence_digest.slice(0, 8)}`
     case "detected_metadata": return `Proposal · ${origin.source}`
     case "user_added": return "Added by you"
   }
@@ -46,13 +46,16 @@ function details(requirement: Requirement): string[] {
   return []
 }
 export function environmentDetectionMessages(environment: ProjectEnvironment): string[] {
-  return detectionMessages(environment).filter(message => !message.startsWith("Skipped "))
+  return detectionResults(environment).filter(result => !isDetectionSkip(result)).map(result => result.safe_summary)
 }
 export function environmentDetectionSkips(environment: ProjectEnvironment): string[] {
-  return detectionMessages(environment).filter(message => message.startsWith("Skipped "))
+  return detectionResults(environment).filter(isDetectionSkip).map(result => result.safe_summary)
 }
-function detectionMessages(environment: ProjectEnvironment): string[] {
-  return environment.operations.filter(operation => operation.kind === "detect").flatMap(operation => operation.per_item_results.map(result => result.safe_summary))
+function detectionResults(environment: ProjectEnvironment) {
+  return environment.operations.filter(operation => operation.kind === "detect").flatMap(operation => operation.per_item_results)
+}
+function isDetectionSkip(result: ProjectEnvironment["operations"][number]["per_item_results"][number]): boolean {
+  return result.reason_code === "skip_summary_limit" || !result.requirement_id.startsWith("detect:")
 }
 export function projectEnvironmentSections(environment: ProjectEnvironment): EnvironmentViewSection[] {
   const section = (id: string, title: string, requirements: readonly Requirement[]): EnvironmentViewSection => {
@@ -82,4 +85,11 @@ export function projectEnvironmentLines(environment: ProjectEnvironment): string
       `    ${row.title} · ${row.status}`, ...row.origins.map(origin => `      ${origin}`), ...row.details.map(detail => `      ${detail}`),
     ])]) : ["  No requirements · Not checked"]),
   ]), ...(skips.length > 4 ? ["Skipped evidence", ...skips] : [])]
+}
+
+// MP-08 / MP-10 / MP-11: disclosure comes from the kernel, never inferred from labels.
+export function environmentFolderModelDisclosure(environment: ProjectEnvironment, folderId: string): "automatic" | "optional" | "unknown" {
+  const operation = environment.operations.filter(operation => operation.kind === "detect").at(-1)
+  const result = operation?.per_item_results.find(result => result.requirement_id === `detect:folder:${folderId}`)
+  return result?.reason_code === "code_manifest" ? "automatic" : result?.reason_code === "no_code_manifest" ? "optional" : "unknown"
 }

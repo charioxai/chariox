@@ -23,15 +23,13 @@ impl Importer {
                 .push(skip(&file.folder_id, &file.path, "protected_metadata"));
             return;
         }
-        if self.proposals.len() >= 2048 {
-            self.skips
-                .push(skip(&file.folder_id, &file.path, "proposal_limit"));
-            return;
-        }
-        let id = project_environment_item_id(
-            &self.environment_id,
-            &format!("{}\0{}\0{key}", file.folder_id, file.path),
-        );
+        // Secret names are folder requirements with all actual use sites.
+        let identity = if key.starts_with("secret:") {
+            format!("{}\0{key}", file.folder_id)
+        } else {
+            format!("{}\0{}\0{key}", file.folder_id, file.path)
+        };
+        let id = project_environment_item_id(&self.environment_id, &identity);
         let scope = RequirementScope::Folder {
             folder_id: file.folder_id.clone(),
         };
@@ -45,6 +43,12 @@ impl Importer {
             if !proposal.requirement.origins.contains(&origin) {
                 proposal.requirement.origins.push(origin)
             }
+            return;
+        }
+        // Existing IDs retain new origins even when new-proposal admission is full.
+        if self.proposals.len() >= 2048 {
+            self.skips
+                .push(skip(&file.folder_id, &file.path, "proposal_limit"));
             return;
         }
         self.proposals.insert(
@@ -155,11 +159,19 @@ impl Importer {
             },
         );
     }
-    pub fn import(&mut self, file: &EvidenceFile) {
+    pub fn import_file(&mut self, file: &EvidenceFile) {
+        // Code already travels as source. Only protected declarations need a separate
+        // transfer review; plain-folder documents/assets remain file proposals.
         let name = std::path::Path::new(&file.path)
             .file_name()
-            .and_then(|s| s.to_str())
+            .and_then(|n| n.to_str())
             .unwrap_or("");
+        if self.code_folders.contains(&file.folder_id)
+            && !name.starts_with(".env")
+            && !credential_configuration_name(name)
+        {
+            return;
+        }
         self.add(
             file,
             "file",
@@ -199,6 +211,12 @@ impl Importer {
                 }],
             },
         );
+    }
+    pub fn import(&mut self, file: &EvidenceFile) {
+        let name = std::path::Path::new(&file.path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         for gui in ["Canva", "Notion", "ChatGPT"] {
             if contains_word(&name.to_ascii_lowercase(), &gui.to_ascii_lowercase()) {
                 self.software(file, gui, None, None, true)

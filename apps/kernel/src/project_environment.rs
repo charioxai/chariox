@@ -8,6 +8,7 @@ mod detect;
 mod detect_importers;
 mod detect_index;
 mod detect_metadata;
+mod detect_model;
 mod detect_store;
 mod discovery;
 mod import;

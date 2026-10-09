@@ -1,3 +1,5 @@
+// MP-08 / MP-10 / MP-11: Detect uses shared request builders.
+import { projectEnvironmentOperationRequest, relayStatusRequest } from "@chariox/kernel-client/ipc-requests"
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
 import { getProjectEnvironmentRequest, projectEnvironmentLines, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, type ProjectEnvironment } from "@chariox/kernel-client"
 
@@ -45,11 +47,11 @@ export function createProjectEnvironmentReadController(deps: {
       detectionGeneration = requestGeneration
       lines = ["Detecting requirements…"]; deps.render()
       try {
-        const statusResponse = await deps.send({ RelayStatus: null }) as { RelayStatus?: { status: { machine_id: string; daemon_id: string } } }
+        const statusResponse = await deps.send(relayStatusRequest()) as { RelayStatus?: { status: { machine_id: string; daemon_id: string } } }
         const status = statusResponse.RelayStatus?.status
         if (!status?.machine_id || !status.daemon_id) throw new Error("Kernel identity unavailable")
         if (requestGeneration !== generation) return
-        const response = await deps.send({ DetectProjectEnvironment: { projectId, operationId: `detect-${crypto.randomUUID()}`, folderIds: [], target: { machine_id: status.machine_id, target_instance_generation: status.daemon_id, slice_ref: null }, provider: null, allowModelFolders: [] } }) as { ProjectEnvironment?: { environment: ProjectEnvironment } }
+        const response = await deps.send(projectEnvironmentOperationRequest("DetectProjectEnvironment", { projectId, operationId: `detect-${crypto.randomUUID()}`, folderIds: [], target: { machine_id: status.machine_id, target_instance_generation: status.daemon_id, slice_ref: null }, provider: null, allowModelFolders: [] })) as { ProjectEnvironment?: { environment: ProjectEnvironment } }
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return

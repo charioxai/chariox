@@ -32,13 +32,24 @@ pub(super) fn skip(folder: &str, path: &str, reason: &str) -> EnvironmentItemRes
         receipt_ids: vec![],
     }
 }
+fn legacy_key_literal(value: &str) -> bool {
+    value
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        .any(|token| {
+            token
+                .strip_prefix("sk-")
+                .is_some_and(|body| body.len() >= 20)
+        })
+}
 /// Allow metadata, never terminal controls, URL credentials or common key literals.
 pub(super) fn safe_metadata(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 1024
         && !value.chars().any(char::is_control)
+        && !legacy_key_literal(value)
         && ![
-            "sk-",
+            "sk-proj-",
+            "sk-ant-",
             "ghp_",
             "github_pat_",
             "AKIA",
@@ -53,6 +64,7 @@ pub(super) fn safe_metadata(value: &str) -> bool {
 }
 pub(super) fn credential_content(text: &str) -> bool {
     super::index::contains_secret_configuration(text)
+        || legacy_key_literal(text)
         || text.split([':', '=']).take(100_000).any(|prefix| {
             let key = prefix
                 .rsplit(['{', ',', '\n'])
