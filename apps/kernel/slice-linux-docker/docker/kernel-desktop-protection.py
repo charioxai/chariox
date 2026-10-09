@@ -1,6 +1,6 @@
 """MP-08/MP-11: desktop protection oracle for the native desktop capture.
 One persistent process per desktop source. Each request line is answered by one
-complete AT-SPI/X11 snapshot: the masks to apply, or none (mask everything),
+field-only AT-SPI/CDP snapshot: the masks to apply, or none (retry),
 plus a digest of the whole snapshot. The kernel binds a readback only between
 two equal snapshots taken before and after it. Never reads pixels.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 def scope(request):
     if set(request) - {'values'} != {'processes', 'browser_processes', 'browser_protection'}:
         raise ValueError('desktop protection request')
-    # Owner 2026-10-09: registered Vault values, masked best effort by text box.
+    # Owner 2026-10-09: only live Vault-filled plain fields contribute masks.
     values = request.get('values', [])
     if not isinstance(values, list) or len(values) > 256 or not all(isinstance(v, str) and 0 < len(v) <= 4096 for v in values):
         raise ValueError('desktop protection values')
@@ -30,7 +30,7 @@ def answer(request, snapshot):
     tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'], request.get('values', []))
     digest = hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     # Native password widgets already paint dots. Preserve the desktop and
-    # apply only the saved-value rectangles supplied by the snapshot.
+    # apply only the filled-field rectangles supplied by the snapshot.
     usable = tree.get('available') and tree.get('complete')
     # Fixed-label diagnostics only: why masks are absent, never page data.
     state = [int(bool(tree.get(key))) for key in ('available', 'complete', 'protected')] + [int(tree.get('browser_withheld', 0) or 0)]
@@ -44,7 +44,7 @@ def main():
     for line in sys.stdin.buffer:
         if len(line) > 1 << 20:
             raise ValueError('desktop protection request bound')
-        sys.stdout.write(json.dumps(answer(scope(json.loads(line)), accessibility.snapshot)) + '\n')
+        sys.stdout.write(json.dumps(answer(scope(json.loads(line)), accessibility.capture_snapshot)) + '\n')
         sys.stdout.flush()
 
 

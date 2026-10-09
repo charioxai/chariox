@@ -53,7 +53,7 @@ export class DesktopSource {
     return { processes:identities(await this.binding.ownedProcesses()), browser_processes:identities(await this.binding.browserProcesses()),
       browser_protection:this.gate.protection, serial:this.gate.protectionSerial,
       // Owner 2026-10-09: Vault values never black out the desktop; the oracle masks
-      // their accessible-text boxes best effort (browser windows keep #935 masks).
+      // only their currently plain filled fields.
       mask:this.policy.unknown, values:[...this.policy.values] };
   }
   async start() {
@@ -140,7 +140,7 @@ export class DesktopSource {
     if(this.protecting)return;this.protecting=true;
     try{while(this.next&&!this.closed){
       const raw=this.next,scope=this.current;this.next=null;this.inflight=true;
-      if(scope.mask){this.bind(raw,null,scope.serial,raw.captured_ms);continue;}
+      if(scope.mask){raw.release();continue;}
       try{await this.measure(scope);}catch(error){raw.release();throw error;}
       if(this.closed){raw.release();break;}
       const first=this.history.findLastIndex(item=>item.end<=raw.captured_ms),span=first<0?[]:this.history.slice(first);
@@ -148,10 +148,12 @@ export class DesktopSource {
         this.timing('desktop_readback_dropped',raw.captured_ms);raw.release();if(!this.next)this.worker.notify({refresh:true},true);continue;
       }
       const stable=span.every(item=>item.scope===scope&&item.digest===span[0].digest);
-      this.timing(stable?'desktop_readback_bound':'desktop_readback_masked',raw.captured_ms);
-      this.bind(raw,stable?span[0].masks:null,scope.serial,raw.captured_ms);
-      // A whole-masked frame must not stick on a still desktop: read again.
-      if(!stable&&!this.next)this.worker.notify({refresh:true},true);
+      if(!stable||span[0].masks===null){
+        this.timing('desktop_readback_dropped',raw.captured_ms);raw.release();
+        if(!this.next)this.worker.notify({refresh:true},true);continue;
+      }
+      this.timing('desktop_readback_bound',raw.captured_ms);
+      this.bind(raw,span[0].masks,scope.serial,raw.captured_ms);
     }}catch{this.next?.release();this.next=null;void this.close().catch(()=>{});}
     finally{this.protecting=false;this.inflight=false;}
   }
@@ -169,7 +171,7 @@ export class DesktopSource {
   }
   bind(raw,masks,serial,captured) {
     const {width,height}=this.binding;
-    const regions=(masks??[[0,0,width,height]]).map(([x,y,w,h])=>({x,y,width:w,height:h}));
+    const regions=masks.map(([x,y,w,h])=>({x,y,width:w,height:h}));
     const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);
     if(masked!==raw)raw.release();
     this.previousRegions=regions;

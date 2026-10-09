@@ -7,6 +7,8 @@ _x11_module=_x11_import.module_from_spec(_x11_spec);_x11_spec.loader.exec_module
 # MP-08/MP-11: proven CDP document-to-desktop placement for the kernel browser.
 _protection_spec=_x11_import.spec_from_file_location('browser_desktop_protection',_X11Path(__file__).with_name('browser-desktop-protection.py'))
 _protection=_x11_import.module_from_spec(_protection_spec);_protection_spec.loader.exec_module(_protection)
+_fill_spec=_x11_import.spec_from_file_location('native_fill_targets',_X11Path(__file__).with_name('native-fill-targets.py'))
+_fills=_x11_import.module_from_spec(_fill_spec);_fill_spec.loader.exec_module(_fills)
 
 import hashlib
 import json
@@ -114,31 +116,6 @@ def subtract(rect, cover):
     return parts
 
 
-def value_boxes(node, values, pyatspi):
-    """MP-08 / MP-11: best effort Vault string boxes, never a native blackout."""
-    variants={variant for value in values for variant in (value,value.lower(),value.upper()) if variant}
-    if not variants:return []
-    boxes=[]
-    try:
-        text=node.queryText();content=text.getText(0,min(text.characterCount,MAX_TEXT))
-        for variant in variants:
-            start=content.find(variant)
-            while start>=0 and len(boxes)<16:
-                try:
-                    rect=text.getRangeExtents(start,start+len(variant),pyatspi.DESKTOP_COORDS)
-                    x,y,width,height=(rect.x,rect.y,rect.width,rect.height) if hasattr(rect,"width") else rect
-                    if width>0 and height>0:boxes.append([x,y,width,height])
-                except Exception:pass
-                start=content.find(variant,start+1)
-    except Exception:pass
-    if not boxes and any(variant in (node.name or '') for variant in variants):
-        try:
-            rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-            if rect.width>0 and rect.height>0:boxes.append([rect.x,rect.y,rect.width,rect.height])
-        except Exception:pass
-    return boxes
-
-
 def native_frame_scale(bounds, frame, client):
     """MP-08/MP-11: GTK reports logical coordinates on a scaled X11 desktop.
     Admit only an integer scale whose entire frame matches X11 (rounding <=1
@@ -148,6 +125,42 @@ def native_frame_scale(bounds, frame, client):
         if any(all(abs(a-b*scale)<scale for a,b in zip(rect,bounds)) for rect in (frame,client)):
             return scale
     return None
+
+
+def capture_snapshot(processes, browser_processes=None, browser_protection=None, values=()):
+    """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot()."""
+    masks = _fills.regions()
+    pages = [page for page in (browser_protection or {}).get('pages', []) if page.get('regions')]
+    if pages:
+        owned = {item['pid'] for item in browser_processes or () if alive(item)}
+        desktop = pyatspi.Registry.getDesktop(0)
+        apps = {app.get_process_id(): app for app in (desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))) if app}
+        try:
+            from Xlib import X, display
+        except ModuleNotFoundError:
+            from selkies.Xlib import X, display
+        connection = _x11_module.open_display(display)
+        try:
+            screen = connection.screen(); root = screen.root
+            clients = root.get_full_property(connection.intern_atom('_NET_CLIENT_LIST'), X.AnyPropertyType)
+            unmatched = list(pages)
+            for window_id in clients.value if clients is not None else []:
+                window = connection.create_resource_object('window', int(window_id))
+                if window.get_attributes().map_state != X.IsViewable: continue
+                pid = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
+                pid = int(pid.value[0]) if pid is not None and len(pid.value) else None
+                if pid not in owned or pid not in apps: continue
+                geometry = window.get_geometry(); origin = root.translate_coords(window, 0, 0)
+                client = [origin.x, origin.y, geometry.width, geometry.height]
+                matching = [page for page in unmatched if _protection._screen_scale(page.get('window'), client)]
+                if not matching: continue
+                placed = _protection.window_masks({'pages': matching}, client, frame_rect(root, window), _protection.document_rects(apps[pid], pyatspi))
+                if placed is None: raise ValueError('fill desktop placement unavailable')
+                masks.extend(part for part in (visible_rect(box, screen) for box in placed) if part)
+                unmatched = [page for page in unmatched if page not in matching]
+            if unmatched: raise ValueError('fill desktop window unavailable')
+        finally: connection.close()
+    return {'available': True, 'complete': True, 'protected': False, 'masks': masks, 'nodes': []}
 
 
 def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
@@ -167,7 +180,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         except OSError:pass
     # MP-11: `complete` also requires every window attributed (capture masking);
     # `traversed` only that the owned AT-SPI trees were walked without truncation.
-    nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[];echoes=[]
+    nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[]
     try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
@@ -192,7 +205,6 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         name='[protected]' if secret else (node.name or '')[:4096]
         for value in values:name=name.replace(value,'[redacted]')
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
-        if values and not secret and 'showing' in states:echoes.extend((nodes[-1],box) for box in value_boxes(node,values,pyatspi))
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
                              state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and
@@ -306,10 +318,6 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     geometry=child.get_geometry()
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible);masks.append(visible)
-            for node,box in echoes:
-                scale=scales.get(id(node),1);x,y,w,h=[v*scale for v in box];margin=scale-1
-                part=visible_rect([x-margin,y-margin,w+2*margin,h+2*margin],screen)
-                if part:masks.append(part)
         finally:connection.close()
         # MP-11: browser pixels are placed by the CDP transform above; the
         # structured browser app stays withheld (titles, OTP/payment/private

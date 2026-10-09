@@ -153,7 +153,7 @@ try:
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
         if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
         protection_serial=config.get('protection_serial',0)
-        if desktop:before=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
+        if desktop:before=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
         if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
@@ -162,16 +162,15 @@ try:
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
         protected_regions=[]
         if desktop:
-            after=accessibility.snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
-            # MP-08/MP-11: native password dots stay visible; saved plaintext
-            # values use the same local AT-SPI masks as on-demand capture.
+            after=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
+            # MP-08/MP-11: only currently plain Vault-filled fields are masked.
             if config.get('mask') or before!=after or not before.get('available') or not before.get('complete'):
-                protected_regions=[[0,0,width,height]]
+                continue
             else:protected_regions=before.get('masks',before.get('uncovered',[]))
             protected=bytearray(raw)
             for rx,ry,rw,rh in protected_regions:
                 if any(type(v) is not int for v in [rx,ry,rw,rh]) or rx<0 or ry<0 or rw<1 or rh<1 or rx+rw>width or ry+rh>height:
-                    protected_regions=[[0,0,width,height]];protected=bytearray(size);break
+                    raise ValueError('fill geometry unavailable')
                 for row in range(ry,ry+rh):protected[(row*width+rx)*4:(row*width+rx+rw)*4]=bytes(rw*4)
             raw=bytes(protected)
         sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False

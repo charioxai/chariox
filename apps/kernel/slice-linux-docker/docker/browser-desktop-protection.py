@@ -98,10 +98,10 @@ def _clip(rect, outer):
 def _screen_scale(window, client):
     """Device pixels per screen DIP proven by the X11 client geometry, or None."""
     if not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, (int, float)) for v in window) or window[2] <= 0:
-        return None
+        return []
     scale = client[2]/window[2]
     if not MIN_SCALE <= scale <= MAX_SCALE:
-        return None
+        return []
     slack = 0 if scale == round(scale) else 1  # Fractional scales round DIP to pixels.
     exact = all(abs(dip*scale-px) <= slack for dip, px in zip(window, client))
     return scale if exact else None
@@ -149,8 +149,4 @@ def window_masks(protection, client, frame, docs):
             placed = _clip([x+rx-pad, y+ry-pad, rw+2*pad, rh+2*pad], doc['rect'])
             if placed:
                 masks.append(placed)
-        if page.get('chrome'):
-            # Vault policy: titles, URL bar and status bubbles may echo values.
-            masks.append([frame[0], frame[1], frame[2], max(1, y-frame[1])])
-            masks.append([x, y+height-status, width, status])
     return masks

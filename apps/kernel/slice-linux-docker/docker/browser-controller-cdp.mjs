@@ -1,3 +1,4 @@
+import { recordBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
@@ -125,6 +126,8 @@ export class BrowserCdpClient {
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
+    this.fillTargets = new Map();
+    this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
     this.cookieWriterFence = null;
@@ -698,7 +701,14 @@ export class BrowserCdpClient {
         timeoutMs: rawRequest?.timeout_ms,
         signal,
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
-      }, performBrowserAction);
+      }, async options => {
+        if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
+          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration}, rawRequest.action.text, ++this.fillRevision);
+          Object.assign(target, {document_id:documentId,node_ref:rawRequest.node_ref});
+          this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+        }
+        return performBrowserAction(options);
+      });
       return {
         browser_generation: this.browserGeneration,
         ...result,
@@ -945,7 +955,7 @@ export class BrowserCdpClient {
       if (request.kind === "identity") {
         artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
       } else if (request.kind === "image") {
-        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues });
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
         artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
         redaction = captured.redaction;
       } else if (request.kind === "network") {

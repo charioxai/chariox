@@ -19,7 +19,7 @@ import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
@@ -102,13 +102,9 @@ export class KernelBrowserHost {
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
-      stream.latest = policy.unknown || policy.values.length ? this.maskedStreamFrame(stream) : null;
+      stream.latest = null;
     }
     return {};
-  }
-  maskedStreamFrame(stream) {
-    return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
-      width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
   // MP-08/MP-10: concurrent reconciles (e.g. a native click that navigates)
   // share one writer; parallel renames of one temporary file raced (ENOENT).
@@ -387,7 +383,7 @@ export class KernelBrowserHost {
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
-      stream.latest ??= this.maskedStreamFrame(stream);
+
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
@@ -401,7 +397,7 @@ export class KernelBrowserHost {
     };
     stream.off = connection.subscribe(message => {
       if(regionProtectionChanged(message,sessionId,stream.latest?.[displayMaskRegions]?.length!==0)){
-        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=this.maskedStreamFrame(stream);}
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=null;}
         captureProtected();return;
       }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;

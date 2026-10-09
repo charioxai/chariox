@@ -34,9 +34,9 @@ class WindowMasks(unittest.TestCase):
         emulated = page(window=[0, 0, 1280, 800], viewport=[1280, 800], dpr=2, zoom=1)
         self.assertIsNone(protection.window_masks({'pages': [emulated]}, [0, 0, 1280, 800], [0, 0, 1280, 800], [{'uri': DOC['uri'], 'rect': [0, 0, 1280, 800]}]))
 
-    def test_vault_policy_masks_native_chrome_and_status_bubble(self):
+    def test_mp11_vault_policy_leaves_browser_chrome_and_status_visible(self):
         masks = protection.window_masks({'pages': [page(chrome=True, regions=[])]}, CLIENT, [40, 10, 900, 720], [DOC])
-        self.assertEqual(masks, [[40, 10, 900, 163], [44, 702, 892, 24]])
+        self.assertEqual(masks, [])
 
     def test_withholds_without_a_one_to_one_binding(self):
         cases = [

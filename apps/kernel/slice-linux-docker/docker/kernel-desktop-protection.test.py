@@ -36,9 +36,9 @@ class OracleTests(unittest.TestCase):
                 module.scope(bad)
 
 
-    def test_registered_values_reach_the_snapshot_for_best_effort_boxes(self):
+    def test_registered_values_do_not_choose_capture_masks(self):
         # Owner 2026-10-09: Vault values never mask the whole desktop; the
-        # snapshot masks only their accessible-text boxes.
+        # capture collector masks only the fill ledger, never echo text.
         seen = []
         tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[5, 6, 7, 8]], 'nodes': []}
         answer = module.answer({**REQUEST, 'values': ['synthetic-vault-value']}, lambda *args: seen.append(args) or tree)

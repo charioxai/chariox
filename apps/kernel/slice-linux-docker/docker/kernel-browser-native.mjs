@@ -83,8 +83,8 @@ export class LinuxCapture {
    await this.screenshot();
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{frames:this.frames,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
-   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{frames:this.frames,targetId:this.tab.target_id,policy:this.policy,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
+   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||error.code!=='fill_capture_retry')throw error;}}
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
@@ -160,15 +160,18 @@ export class LinuxCapture {
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
-   // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
-   // page targets fence this source by event (onCdp); every delivered frame
-   // still passes the credit's document check, which CDP orders after those
-   // events. The owned single-tab window is never occluded or hidden.
+   // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
+   // and geometry. Document changes also retire the source through onCdp.
    let at=performance.timeOrigin+performance.now();let regions;
    try{
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
-   }catch(error){if(revision===this.regionRevision)throw error;}
+   }catch(error){
+    if(error.code==='fill_capture_retry') {
+     raw.release?.();this.publishingRaw=null;await this.regions.refresh();this.wake(true);continue;
+    }
+    if(revision===this.regionRevision)throw error;
+   }
    this.timing('native_region_fence',at);
    if(revision!==this.regionRevision){raw.release?.();this.publishingRaw=null;continue;}
    // Attribute-only changes need a new readback even if XDamage/pixels did

@@ -32,20 +32,20 @@ test('MP-08/MP-11 a readback between two equal snapshots carries exactly their m
   assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:10,height:10}]);
   assert.equal(f.published[0].raw.nativeEncode,undefined,'the fixture raw has no worker');
 });
-test('MP-11 a protection change across the readback masks the whole desktop',async()=>{
+test('MP-11 a protection change drops the readback',async()=>{
   const f=fixture();
   f.source.next=f.raw(1,f.now());await f.source.protect();
   f.snapshots.push(['changed',[]]);
   f.source.next=f.raw(2,f.now()+2);await f.source.protect();
-  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
-  assert.deepEqual(f.notices,[{refresh:true},{refresh:true}],'a whole-masked frame asks for a fresh readback (no sticky black on a still desktop)');
+  assert.equal(f.published.length,0);
+  assert.deepEqual(f.notices,[{refresh:true},{refresh:true}],'an unbound frame asks for a fresh readback');
 });
-test('MP-11 unavailable or protected snapshots mask the whole desktop',async()=>{
+test('MP-11 unavailable field snapshots drop the readback',async()=>{
   const f=fixture();
   f.snapshots.push(['same',null],['same',null]);
   f.source.next=f.raw(1,f.now());await f.source.protect();
   f.source.next=f.raw(2,f.now()+2);await f.source.protect();
-  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
+  assert.equal(f.published.length,0);
 });
 test('MP-11 an unobserved gap above 200 ms before the readback drops it',async()=>{
   const f=fixture();
@@ -58,13 +58,13 @@ test('MP-11 a new process or protection scope retires earlier snapshots',async()
   f.source.next=f.raw(1,f.now());await f.source.protect();
   f.source.current={...f.source.current,processes:[{pid:7,started:'1'}]};
   f.source.next=f.raw(2,f.now()+2);await f.source.protect();
-  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
+  assert.equal(f.published.length,0);
 });
-test('MP-11 an unknown policy masks every native readback without snapshots',async()=>{
+test('MP-11 an unknown policy drops native readbacks without snapshots',async()=>{
   const f=fixture({mask:true});
   f.source.measure=async()=>{throw Error('no snapshot under a masking policy')};
   f.source.next=f.raw(1,f.now());await f.source.protect();
-  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:1280,height:800}]);
+  assert.equal(f.published.length,0);
 });
 test('MP-08 the native worker is used only with an absolute worker and packet root',()=>{
   assert.equal(nativeDesktopWorker({}),null);

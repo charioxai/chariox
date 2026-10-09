@@ -89,7 +89,7 @@ export class MirrorService {
     const regions=targets.length?await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1}):[];
     mark('regions');
     let source;stream.fullFallback=false;
-    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify(observationProtectedVariants(policy.values))},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
+    try {source=await this.evaluate(world,`globalThis.__charioxMirror.read(${JSON.stringify([])},${JSON.stringify(regions)},${JSON.stringify(command.subscription_id)},${!stream.observed})`);}catch {
       await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);
       // Bounded/unsupported DOM becomes the existing protected full video region.
       // Synthetic tile IDs never authorize element input into the original page.
@@ -143,10 +143,8 @@ export class MirrorService {
     source.nodes=source.nodes.filter(n=>!hidden.has(n.id));
     if(source.selection&&!source.nodes.some(n=>n.id===source.selection.anchor_id&&n.kind==='text')||source.selection&&!source.nodes.some(n=>n.id===source.selection.focus_id&&n.kind==='text'))source.selection=null;
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
-    // MP-10/MP-11: permanently opaque foreign/closed regions render protected
-    // placeholders; they need no source pixels or compositor crop bandwidth.
     const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
-    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||['cross_origin_frame','opaque_shadow'].includes(n.reason)||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
+    const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<1280&&b.y<800&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
     if(tiles.length>64)throw new Error('MP-11: visible tile limit; use display fallback');
     mark('sanitize');
@@ -163,7 +161,7 @@ export class MirrorService {
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch;
       const clip=refine?{x:0,y:0,width:1280,height:800,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
-      const masks=await captureRegionMasks(world.connection,world.sessionId);
+      const masks=await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy});
       mark('tile_masks_before');
       const captured=await this.host.screenshot(tab,refine?null:clip);
       stream.refinePending=!refine;stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;
