@@ -7,10 +7,15 @@ import path from 'node:path';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { PortableEncoder } from './kernel-browser-display.mjs';
 import { launchChromium } from './browser-protection-fixture.mjs';
 import { measureBrowserProtection } from './browser-protection-regions.mjs';
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
+import { MirrorService } from './kernel-browser-mirror.mjs';
+import { mirrorHash } from './kernel-browser-mirror-resources.mjs';
 async function videoPixels(png,dpr,label) {
   if(process.env.CHARIOX_FILL_VIDEO!=='1')return null;
   const encoder=new PortableEncoder();
@@ -50,6 +55,71 @@ async function setup(dpr, run) {
   } finally {await chrome?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: image artifacts report actual plain-field redaction`,()=>setup(dpr,async({browser,connection,fill,evaluate,targetId,documentId})=>{
+   connection.browserInstanceId='MP11-public-artifact-fixture';
+   const request={target_id:targetId,document_id:documentId,browser_generation:browser.browserGeneration,kind:'image',guid:null,viewport:{css_width:1280,css_height:800,device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr,revision:1,last_actor_id:null}};
+   await browser.reconcile(request.viewport,{browserBarVisible:false});
+   await fill('#password');
+   let image=await browser.captureArtifact(request);
+   assert.equal(image.redaction,'none','MP-11 password dots have no pixel redaction');
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`artifact-dpr${dpr}-password.json`),JSON.stringify(image));
+   await fill('#plain');image=await browser.captureArtifact(request);
+   assert.equal(image.redaction,'fill_targets');
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`artifact-dpr${dpr}-plain.json`),JSON.stringify(image));
+   const frame=decodePng(image.data_base64,dpr),index=((90*dpr)*frame.width+100*dpr)*4;
+   assert.deepEqual([...frame.pixels.subarray(index,index+3)],[0,0,0]);
+   await evaluate("document.querySelector('#plain').value=''");
+   image=await browser.captureArtifact(request);assert.equal(image.redaction,'none','MP-11 retired/plain and password targets do not claim redaction');
+   if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`artifact-dpr${dpr}-retired.json`),JSON.stringify(image));
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: mirror packets mask the exact top and same-origin frame fields`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,evaluate,fill,policy,url})=>{
+   await evaluate(`document.querySelector('iframe').src=${JSON.stringify(url+'frame')};document.querySelector('iframe').style.left='700px';document.querySelector('iframe').style.top='350px'`);
+   for(let i=0;i<100;i++){const {result}=await evaluate("!!document.querySelector('iframe').contentDocument?.querySelector('#plain')");if(result.value)break;await new Promise(r=>setTimeout(r,30));}
+   await evaluate("document.querySelector('#plain').style.left='550px';document.querySelector('#plain').style.top='160px'");
+   await evaluate("document.querySelector('#password').remove();document.querySelector('iframe').contentDocument.querySelector('#password').remove()");
+   const tab={tab_id:'t',target_id:targetId,document_id:documentId};
+   const host={generation:1,scales:new Map(),protection:policy,browser,async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',...(clip?{clip}:{}),captureBeyondViewport:false},sessionId)).data,dpr,clip),protected_regions:[]}}};
+   const service=new MirrorService(host);
+   try {
+     const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'test');
+     await fill('#plain');
+     const {result}=await connection.send('Runtime.evaluate',{expression:"document.querySelector('iframe').contentDocument.querySelector('#editor')",returnByValue:false},sessionId);
+     const {node}=await connection.send('DOM.describeNode',{objectId:result.objectId},sessionId);
+     const node_ref=`backend:${node.backendNodeId}`;
+     await browser.performAction({target_id:targetId,document_id:documentId,node_ref,action:{kind:'fill',text:value,expected_document_url:url+'frame'}});
+     policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});
+     await evaluate("document.querySelector('iframe').contentDocument.querySelector('#editor').innerHTML='<span>MP11-disposable-</span><b>fill-value</b>'");
+     const packet=await service.next({subscription_id:sub.subscription_id,generation:1,after_sequence:0,drift_nodes:[]},'test');
+     const masks=packet.nodes.filter(n=>n.kind==='mask');
+     assert.equal(masks.length,2,'MP-11 top CSS box and child-document contenteditable must both be placeholders');
+     for(const masked of masks){assert.deepEqual(masked.children,[]);assert.equal(masked.form,undefined);}
+     assert(!packet.nodes.some(n=>n.kind==='text'&&/MP11-disposable-|fill-value/.test(n.text)&&n.parent===masks[1].id),'MP-11 split field text is absent');
+     assert.equal(packet.hash,mirrorHash({root:packet.root,nodes:packet.nodes,fonts:packet.fonts,scroll:packet.scroll,focused:packet.focused,selection:packet.selection}));
+     const bundleRoot=await mkdtemp(path.join(tmpdir(),'protxform-mirror-client-'));
+     try {
+       const bundle=path.join(bundleRoot,'client.js');
+       const built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});
+       assert.equal(built.status,0,built.stderr);
+       const code=await readFile(bundle,'utf8');
+       const clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
+       try {
+         const {sessionId:clientSession}=await browser.resolvePageTarget(clientTarget);
+         const render=await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{document.body.replaceChildren();const module=await import(URL.createObjectURL(new Blob([${JSON.stringify(code)}],{type:'text/javascript'})));const container=document.createElement('div');document.body.append(container);const renderer=new module.BrowserMirrorRenderer(container,async()=>{},error=>{throw error});await renderer.ready();await renderer.apply(${JSON.stringify(packet)});const result={overlays:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').length,masked:renderer.overlays.filter(n=>n.getAttribute('aria-label')==='Protected content').map(n=>n.style.background)};globalThis.__charioxMirrorFixtureRenderer=renderer;return result})()`},clientSession);
+         assert.equal(render.exceptionDetails,undefined,'MP-11 real mirror client accepts the protected packet/hash');
+         const opaque=packet.nodes.filter(n=>['cross_origin_frame','opaque_shadow'].includes(n.reason)).length;
+         assert.equal(render.result.value.overlays,2+opaque);
+         assert(render.result.value.masked.every(color=>color==='black'));
+         await connection.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:dpr,mobile:false},clientSession);
+         const screenshot=(await connection.send('Page.captureScreenshot',{format:'png'},clientSession)).data;
+         const rendered=decodePng(screenshot,dpr);
+         for(const [x,y] of [[560,170],[790,660]]){const index=((y*dpr)*rendered.width+x*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[0,0,0],'MP-11 client pixels cover top and child fields');}
+         {const index=((440*dpr)*rendered.width+790*dpr)*4;assert.deepEqual([...rendered.pixels.subarray(index,index+3)],[255,0,255],'MP-11 unfilled child field stays visible');}
+         if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`mirror-client-dpr${dpr}.png`),Buffer.from(screenshot,'base64'));
+         await connection.send('Runtime.evaluate',{expression:'globalThis.__charioxMirrorFixtureRenderer.close()'},clientSession);
+       }finally{await connection.send('Target.closeTarget',{targetId:clientTarget});}
+     }finally{await rm(bundleRoot,{recursive:true,force:true});}
+   }finally{clearInterval(service.expiry);service.clear();}
+ }));
  test(`MP-08/MP-11 DPR${dpr}: only Vault filled plain fields, password toggle, clear and navigation`,()=>setup(dpr,async({browser,fill,collect,capture,evaluate,policy,connection,sessionId})=>{
    assert.deepEqual(await collect(),[],'registration alone never masks password, media, frames or echoes');
    await evaluate("document.querySelector('iframe').style.transform='perspective(500px) rotateY(35deg)'");
