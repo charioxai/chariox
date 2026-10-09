@@ -84,7 +84,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (entry !== frames[0] || !values.length) throw error;
           // A renderer can replace a field without changing its document. Re-locate
           // value-bearing inputs using raw, trusted layout; never retry insertion.
-          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, sessionId);
+          snapshot = await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true, includeTextColorOpacities: true }, sessionId);
           const document = snapshot.documents?.[0], strings = snapshot.strings ?? [];
           const nodes = document?.nodes ?? {}, layout = document?.layout ?? {};
           const input = nodes.inputValue ?? {};
@@ -120,7 +120,7 @@ export async function locateBrowserRegions(targets, browser, values = [], { cont
           if (placement?.whole) regions.push(desktop(origin, placement.whole));
           if (!placement?.origin) continue;
           const frameSnapshot = frame.sessionId === sessionId && snapshot ? snapshot
-            : await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true }, frame.sessionId);
+            : await connection.send('DOMSnapshot.captureSnapshot', { computedStyles: RENDER_ORDER_STYLES, includeDOMRects: true, includeTextColorOpacities: true }, frame.sessionId);
           if (frame.sessionId === sessionId) snapshot = frameSnapshot;
           const strings = frameSnapshot.strings ?? [], documents = frameSnapshot.documents ?? [];
           const echoed = index => typeof strings[index] === 'string' && redactObservation(strings[index], values) !== strings[index];

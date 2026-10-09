@@ -91,6 +91,30 @@ const inline = { display: 'inline' };
 const reversed = { 1: [0, 0, 200, 20], 2: [50, 0, 40, 20], 3: [50, 0, 40, 20], 4: [0, 0, 50, 20], 5: [0, 0, 50, 20] };
 const inOrder = { 1: [0, 0, 200, 20], 2: [0, 0, 40, 20], 3: [0, 0, 40, 20], 4: [40, 0, 50, 20], 5: [40, 0, 50, 20] };
 const pair = (css, boxes = reversed, outer = 'DIV') => snapshot([['#document', -1], [outer, 0], ['SPAN', 1], ['#text', 2, [], 'value'], ['SPAN', 1], ['#text', 4, [], 'vault-'], ['P', 0], ['#text', 6, [], 'ordinary']], { css, boxes });
+test('MP-08/MP-11 rendered boxes keep scaled small or faint text in the order proof', () => {
+  for (const style of [{ 'font-size': '2px', transform: 'matrix(10,0,0,10,0,0)' },
+    { opacity: '0.05' }, { visibility: 'hidden' }, { '-webkit-text-fill-color': 'transparent' }]) {
+    const doc = pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' }, 4: style });
+    doc.documents[0].textBoxes = { layoutIndex: [3, 5, 7], bounds: [reversed[3], reversed[5], [60, 0, 10, 10]] };
+    doc.documents[0].layout.textColorOpacities = doc.documents[0].layout.nodeIndex.map(() => 1);
+    assert(documentProtection(doc, 0, vault).regions.some(box => JSON.stringify(box) === JSON.stringify(reversed[1])), JSON.stringify(style));
+  }
+});
+
+test('MP-08/MP-11 tiny and unknown text boxes stay covered locally', () => {
+  for (const box of [[0, 0, 1, 1], [0, 0, 0, 0], undefined]) {
+    const doc = pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' } });
+    doc.documents[0].textBoxes = { layoutIndex: [3, 5], bounds: [reversed[3], box] };
+    if (!box) doc.documents[0].layout.styles[1] = RENDER_ORDER_STYLES.map(p => {
+      if (p.startsWith('overflow-')) { doc.strings.push('hidden'); return doc.strings.length - 1; }
+      return doc.documents[0].layout.styles[1][RENDER_ORDER_STYLES.indexOf(p)];
+    });
+    const regions = documentProtection(doc, 0, vault).regions;
+    assert(regions.some(b => JSON.stringify(b) === JSON.stringify(reversed[1])), String(box));
+    assert(!regions.some(([x,y,w,h]) => x <= 300 && x+w > 300), 'ordinary distant content stays visible');
+  }
+});
+
 test('MP-08/MP-11 uncertain containers cover overflowing descendant layout and text boxes, including zero-sized containers', () => {
   for(const box of [[100,0,1,20],[100,0,0,0]]){
     const doc=pair({1:{display:'flex','flex-direction':'row-reverse'}},{1:box,2:[80,0,20,20],3:[80,0,20,20],4:[20,0,60,20],5:[20,0,60,20]});
@@ -144,8 +168,10 @@ test('flex, grid, -webkit-box and table containers whose rendered order differs 
   const padded = { ...reversed, 3: [70, 0, 20, 20], 5: [0, 0, 30, 20] };
   assert.deepEqual(documentProtection(pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' } }, padded), 0, vault).regions, []);
   assert.deepEqual(documentProtection(pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' } }, { ...padded, 3: [45, 0, 20, 20] }), 0, vault).regions, [reversed[1]]);
-  // Items with no visible glyphs, out-of-flow items and items of zero size do not decide the order.
-  assert.deepEqual(documentProtection(pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' }, 4: { visibility: 'hidden' } }), 0, vault).regions, []);
+  // Only Chromium's final zero text opacity excludes a rendered box.
+  const transparent = pair({ 1: { display: 'flex', 'flex-direction': 'row-reverse' } });
+  transparent.documents[0].layout.textColorOpacities = [1, 1, 1, 1, 0, 0, 1, 1];
+  assert.deepEqual(documentProtection(transparent, 0, vault).regions, []);
   // TABLE > [caption or row group with 'value'], TBODY > TR > TD 'vault-', rendered above it or below.
   const table = (first, css, below = true) => snapshot([['#document', -1], ['TABLE', 0], [first, 1], ['#text', 2, [], 'value'], ['TBODY', 1], ['TR', 4], ['TD', 5], ['#text', 6, [], 'vault-']],
     { css: { 1: { display: 'table' }, 4: { display: 'table-row-group' }, 5: { display: 'table-row' }, 6: { display: 'table-cell' }, ...css },
@@ -183,29 +209,31 @@ test('bidi overrides, direction changes and right-to-left or bidi-control text m
 test('negative margins that can pull text across its siblings mask the block container', () => {
   const pulled = (outer, css, boxes) => pair(css, boxes, outer);
   assert.deepEqual(documentProtection(pulled('P', { 2: inline, 4: { display: 'inline-block', 'margin-left': '-100px' } }), 0, vault).regions, [reversed[1]], 'inline-level');
-  assert.deepEqual(documentProtection(pulled('P', { 2: inline, 4: { ...inline, 'margin-right': '-8px' } }), 0, vault).regions, [reversed[1]], 'inline, half an em');
+  assert.deepEqual(documentProtection(pulled('P', { 2: inline, 4: { ...inline, 'margin-right': '-10px' } }), 0, vault).regions, [reversed[1]], 'inline, half a rendered line height');
   assert.deepEqual(documentProtection(pulled('DIV', { 1: { display: 'flex' }, 4: { 'margin-left': '-100px' } }), 0, vault).regions, [reversed[1]], 'flex item');
   assert.deepEqual(documentProtection(pulled('DIV', { 4: { 'margin-top': '-20px' } }), 0, vault).regions, [reversed[1]], 'vertical');
   assert.deepEqual(documentProtection(pulled('DIV', { 2: { 'margin-bottom': '-16px' } }), 0, vault).regions, [reversed[1]], 'vertical, previous sibling');
-  // Shifts add up per container; below half an em in total they cannot reorder glyphs.
-  assert.deepEqual(documentProtection(pulled('P', { 2: { ...inline, 'margin-left': '-4px' }, 4: { ...inline, 'margin-left': '-4px' } }), 0, vault).regions, [reversed[1]], 'summed');
-  assert.deepEqual(documentProtection(pulled('P', { 2: inline, 4: { ...inline, 'margin-right': '-7px' } }), 0, vault).regions, [], 'below half an em');
+  // Shifts add up per container; below half a rendered line height in total they cannot reorder glyphs.
+  assert.deepEqual(documentProtection(pulled('P', { 2: { ...inline, 'margin-left': '-5px' }, 4: { ...inline, 'margin-left': '-5px' } }), 0, vault).regions, [reversed[1]], 'summed');
+  assert.deepEqual(documentProtection(pulled('P', { 2: inline, 4: { ...inline, 'margin-right': '-7px' } }), 0, vault).regions, [], 'below half a rendered line height');
   assert.deepEqual(documentProtection(pulled('DIV', { 4: { 'margin-left': '-15px', 'margin-right': '-15px' } }), 0, vault).regions, [], 'block rows stay certain');
   // Pulled, yet still rendered in DOM reading order.
   assert.deepEqual(documentProtection(pulled('DIV', { 4: { 'margin-top': '-20px' } }, inOrder), 0, vault).regions, [], 'in DOM order');
-  // Screen-reader-only text: 1px, clipped, margin -1px; its glyphs are invisible and it moves nothing.
+  // A style clip cannot prove invisibility. Chromium must report absent opacity.
   const sr = snapshot([['#document', -1], ['BODY', 0], ['A', 1], ['#text', 2, [], 'Jump to content'], ['H1', 1], ['#text', 4, [], 'Title']],
     { css: { 2: { position: 'absolute', 'overflow-x': 'hidden', 'overflow-y': 'hidden', 'margin-top': '-1px', 'margin-right': '-1px', 'margin-bottom': '-1px', 'margin-left': '-1px' } },
       boxes: { 1: [0, 0, 900, 600], 2: [10, 40, 1, 1], 3: [10, 40, 120, 20], 4: [10, 40, 400, 40], 5: [10, 40, 100, 40] } });
+  assert(documentProtection(sr, 0, vault).regions.length > 0, 'unproven clipping stays covered');
+  sr.documents[0].layout.textColorOpacities = [1, 1, 1, 0, 1, 1];
   assert.deepEqual(documentProtection(sr, 0, vault).regions, []);
   // The same with a legacy clip rect instead of overflow; an auto clip shows the text.
   const rect = clip => snapshot([['#document', -1], ['BODY', 0], ['A', 1], ['#text', 2, [], 'Jump to content'], ['H1', 1], ['#text', 4, [], 'Title']],
     { css: { 2: { position: 'absolute', clip } }, boxes: { 1: [0, 0, 900, 600], 2: [10, 40, 120, 20], 3: [10, 40, 120, 20], 4: [10, 40, 400, 40], 5: [10, 40, 100, 40] } });
-  assert.deepEqual(documentProtection(rect('rect(1px, 1px, 1px, 1px)'), 0, vault).regions, []);
+  assert.deepEqual(documentProtection(rect('rect(1px, 1px, 1px, 1px)'), 0, vault).regions, [[10, 40, 120, 20], [10, 40, 400, 40]], 'unproven legacy clipping stays covered');
   assert.deepEqual(documentProtection(rect('rect(0px, auto, auto, 0px)'), 0, vault).regions, [[10, 40, 120, 20], [10, 40, 400, 40]]);
 });
 
-test('displaced text within 1em of other text masks both block containers; text it separates in DOM order still matches', () => {
+test('displaced text within a rendered line height of other text masks both block containers; text it separates in DOM order still matches', () => {
   // P [0,0,200,20] > SPAN (displaced) 'value' at [60,0,40,20], SPAN 'vault-' at [0,0,50,20]; far P [0,500,200,20].
   const boxes = { 1: [0, 0, 200, 20], 2: [60, 0, 40, 20], 3: [60, 0, 40, 20], 4: [0, 0, 50, 20], 5: [0, 0, 50, 20], 6: [0, 500, 200, 20], 7: [0, 500, 60, 20] };
   const moved = (css, at = boxes) => snapshot([['#document', -1], ['P', 0], ['SPAN', 1], ['#text', 2, [], 'value'], ['SPAN', 1], ['#text', 4, [], 'vault-'], ['P', 0], ['#text', 6, [], 'ordinary']],
@@ -219,31 +247,35 @@ test('displaced text within 1em of other text masks both block containers; text 
     assert.deepEqual(documentProtection(moved(css), 0).regions, [], `${label}: ordinary without values`);
     assert.deepEqual(documentProtection(moved(css), 0, vault).regions, css.display === 'inline' ? [boxes[1]] : [boxes[1], boxes[2]], label);
   }
-  // Within 1em (mean font-size), gaps included; farther text and undisplaced or zero-offset boxes are certain.
+  // Rendered line heights set the gap even if the computed font size is tiny.
   const gap = gapPx => ({ ...boxes, 2: [50 + gapPx, 0, 40, 20], 3: [50 + gapPx, 0, 40, 20] });
   assert.deepEqual(documentProtection(moved({ position: 'absolute' }, gap(15)), 0, vault).regions, [boxes[1], gap(15)[2]], '15px gap');
-  assert.deepEqual(documentProtection(moved({ position: 'absolute', 'font-size': '4px' }, gap(9)), 0, vault).regions, [boxes[1], gap(9)[2]], 'the mean font size sets the gap');
-  assert.deepEqual(documentProtection(moved({ position: 'absolute', 'font-size': '4px' }, gap(15)), 0, vault).regions, [], 'the mean font size sets the gap');
-  assert.deepEqual(documentProtection(moved({ position: 'absolute' }, gap(17)), 0, vault).regions, [], '17px gap');
+  assert.deepEqual(documentProtection(moved({ position: 'absolute', 'font-size': '4px' }, gap(9)), 0, vault).regions, [boxes[1], gap(9)[2]], 'rendered height sets the gap');
+  assert.deepEqual(documentProtection(moved({ position: 'absolute', 'font-size': '4px' }, gap(15)), 0, vault).regions, [boxes[1], gap(15)[2]], 'rendered height sets the gap');
+  assert.deepEqual(documentProtection(moved({ position: 'absolute' }, gap(21)), 0, vault).regions, [], '21px gap');
   assert.deepEqual(documentProtection(moved({ ...inline, position: 'relative', top: '0px', left: 'auto' }), 0, vault).regions, [], 'relative without offset');
-  // Displaced text without visible glyphs (a collapsed menu) is not near anything.
+  // Style values alone never hide rendered boxes; only final opacity does.
   for (const css of [{ visibility: 'hidden' }, { opacity: '0' }, { '-webkit-text-fill-color': 'rgba(0, 0, 0, 0)' }]) {
-    assert.deepEqual(documentProtection(moved({ position: 'absolute', ...css }), 0, vault).regions, [], JSON.stringify(css));
+    const doc = moved({ position: 'absolute', ...css });
+    assert.deepEqual(documentProtection(doc, 0, vault).regions, [boxes[1], boxes[2]], JSON.stringify(css));
+    doc.documents[0].layout.textColorOpacities = [1, 1, 0, 0, 1, 1, 1, 1];
+    assert.deepEqual(documentProtection(doc, 0, vault).regions, [], 'Chromium reports fully transparent text');
   }
-  // Clipped by its own overflow box, or by an ancestor it cannot escape; absolute text escapes a static clip.
+  // A CSS clip box alone is not proof that transformed text was clipped away.
   const clipped = (css, box2) => moved({ position: 'absolute', 'overflow-x': 'hidden', 'overflow-y': 'hidden', ...css }, { ...boxes, 2: box2 });
-  assert.deepEqual(documentProtection(clipped({}, [60, 0, 0, 20]), 0, vault).regions, [], 'zero-width clip');
+  assert(documentProtection(clipped({}, [60, 0, 0, 20]), 0, vault).regions.some(box => JSON.stringify(box) === JSON.stringify(boxes[1])), 'unproven zero-width clip remains covered');
   assert.deepEqual(documentProtection(clipped({}, [60, 0, 40, 20]), 0, vault).regions, [boxes[1], boxes[2]], 'clip shows the text');
   // P > 'vault-', SPAN (absolute, far away) 'X', 'value': the visible run spells the value.
   const split = css => snapshot([['#document', -1], ['P', 0], ['#text', 1, [], 'vault-'], ['SPAN', 1], ['#text', 3, [], 'X'], ['#text', 1, [], 'value']],
     { css: { 3: css }, boxes: { 1: [0, 0, 200, 20], 2: [0, 0, 50, 20], 3: [0, 900, 10, 20], 4: [0, 900, 10, 20], 5: [50, 0, 40, 20] } });
   for (const [label, css] of [['absolute', { position: 'absolute' }], ['float', { float: 'left' }], ['transform', { ...inline, transform: 'matrix(1, 0, 0, 1, 0, 900)' }],
-    ['font-size 0', { ...inline, 'font-size': '0px' }], ['transparent', { ...inline, '-webkit-text-fill-color': 'rgba(0, 0, 0, 0)' }],
-    ['hidden', { ...inline, visibility: 'hidden' }], ['opacity 0', { ...inline, opacity: '0' }], ['clipped', { display: 'inline-block', 'overflow-x': 'hidden', 'overflow-y': 'hidden' }],
-    ['clip-path', { ...inline, 'clip-path': 'inset(50%)' }]]) {
+    ['clipped', { display: 'inline-block', 'overflow-x': 'hidden', 'overflow-y': 'hidden' }], ['clip-path', { ...inline, 'clip-path': 'inset(50%)' }]]) {
     assert.deepEqual(documentProtection(split(css), 0).regions, [], `${label}: ordinary without values`);
     assert.deepEqual(documentProtection(split(css), 0, vault).regions, [[0, 0, 200, 20], [0, 0, 50, 20], [50, 0, 40, 20]], label);
   }
+  const invisible = split(inline);
+  invisible.documents[0].layout.textColorOpacities = [1, 1, 1, 1, 0, 1];
+  assert.deepEqual(documentProtection(invisible, 0, vault).regions, [[0, 0, 200, 20], [0, 0, 50, 20], [50, 0, 40, 20]], 'final zero opacity removes the separator');
   assert.deepEqual(documentProtection(split(inline), 0, vault).regions, [], 'a visible separator breaks the value');
 });
 
