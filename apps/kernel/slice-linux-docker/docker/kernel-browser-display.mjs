@@ -48,8 +48,8 @@ export class PortableEncoder {
       // measured contention. Sparse stripes and protected frames stay native.
       const reduced=!stripes&&!raw[displayMaskRegions]?.length&&(raw.width===2560||cpuContention.engaged());
       const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[]});
-      if(!['native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
-      this.backend=reply.backend==='native-vaapi'?'vaapi':'x264';this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
+      if(!['native-openh264','native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
+      this.backend=reply.backend.slice('native-'.length);this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
       if(this.hardwareFallback&&typeof reply.hardware_diagnostic==='string'&&reply.hardware_diagnostic.length<=4096&&reply.hardware_diagnostic!==this.hardwareDiagnostic){this.hardwareDiagnostic=reply.hardware_diagnostic;this.timing?.hardware?.(reply.hardware_diagnostic);}
       if(reply.dropped)return {dropped:true};
       if(reply.stripes.length>8||reply.stripes.some(r=>Object.hasOwn(r,'data_base64')))throw Error('MP-11: native row headers');
