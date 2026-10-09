@@ -33,6 +33,9 @@ const foreign = new LocalIpcClient(profile.endpoint, profile.options)
 const report = { mp: ["MP-03", "MP-08", "MP-10"], protocol: 471, scope: "live owned Project read without a live session/agent (ended bootstrap history retained); authenticated foreign-owner denial; reserved Export without side effects", checks: [], cleanup: null }
 let projectId, sessionId
 let stage = "empty-kernel-precondition"
+async function liveSessions() {
+  return (await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.filter(session => session.status !== "Ended")
+}
 async function directoryDigest() {
   const home = process.env.CHARIOX_HOME
   const kernels = await readdir(path.join(home, "kernels")).catch(error => { if (error.code === "ENOENT") return []; throw error })
@@ -50,7 +53,7 @@ async function directoryDigest() {
   return hash.digest("hex")
 }
 try {
-  assert.equal((await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, 0, "use an empty disposable kernel")
+  assert.equal((await liveSessions()).length, 0, "use an empty disposable kernel")
   const workspace = path.resolve(options["--workspace"] ?? repo)
   const created = (await owner.send(requests.createSessionRequest(workspace, workspace, "Protocol 471", undefined, null, null, null, null, { kind: "new" }))).SessionCreated
   assert(created)
@@ -64,7 +67,7 @@ try {
   assert.equal(ended.status, "Ended"); assert.equal(ended.agents.length, 0)
   report.bootstrapSessionEnded = true
   report.endedBootstrapHistoryRetained = true
-  assert.equal((await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, 0)
+  assert.equal((await liveSessions()).length, 0)
   stage = "owned-get-no-session-or-agent"
   const snapshot = (await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment
   assert.equal(snapshot.local_project_id, projectId)
@@ -88,7 +91,7 @@ try {
   assert.equal(await directoryDigest(), before)
   await assert.rejects(stat(destination), { code: "ENOENT" })
   assert.deepEqual((await owner.send(requests.getProjectEnvironmentRequest(projectId))).ProjectEnvironment.environment, snapshot)
-  assert.equal((await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, 0)
+  assert.equal((await liveSessions()).length, 0)
   report.checks.push({ name: "reserved-export-no-side-effects", passed: true })
   report.result = "PASS"
 } catch {
@@ -99,7 +102,7 @@ try {
       const remaining = (await owner.send(requests.listProjectsRequest(true))).ProjectsListed.projects
       if (remaining.some(project => project.id === projectId)) await owner.send(requests.deleteProjectRequest(projectId))
     }
-    report.cleanup = { sessions: (await owner.send(requests.listSessionsRequest())).SessionsListed.sessions.length, ownedProjectRemoved: !(await owner.send(requests.listProjectsRequest(true))).ProjectsListed.projects.some(project => project.id === projectId) }
+    report.cleanup = { sessions: (await liveSessions()).length, ownedProjectRemoved: !(await owner.send(requests.listProjectsRequest(true))).ProjectsListed.projects.some(project => project.id === projectId) }
     assert.equal(report.cleanup.sessions, 0); assert(report.cleanup.ownedProjectRemoved)
   } catch { report.result = "FAIL"; report.cleanup = { failed: true }; process.exitCode = 1 }
   owner.close(); foreign.close()
