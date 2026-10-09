@@ -193,3 +193,19 @@ test("MP-10: review #941-6 CSSOM sheet.disabled toggles reach the viewer (disabl
     for (let i = 0; i < 4 && ops.length < 2; i++) ops.push(...(await next(1500)).ops.filter(op => op.op === "attr" && op.name === "media"));
     assert.deepEqual(ops.map(op => [op.id, op.value]).sort(), [[styles[0][0], "not all"], [styles[1][0], null]].sort());
   }));
+
+test("MP-10: review #941-1 attributes referenced only by a CDP-read cross-origin sheet survive the snapshot (top level and child frame)", () => mirrored(
+  '<link rel="stylesheet" href="http://localhost:PORT/cdn.css"><div id="top" data-state="open">top</div><iframe src="http://localhost:PORT/child" style="width:300px;height:100px"></iframe>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    const divs = elements(snapshot).filter(([, tag]) => tag === "div");
+    const top = divs.find(([id]) => Number(id.slice(1)) < 1e9), child = divs.find(([id]) => Number(id.slice(1)) >= 1e9);
+    assert.equal(top?.[2]["data-state"], "open", `MP-10: top-level attribute kept (${JSON.stringify(divs)})`);
+    assert.equal(child?.[2]["data-state"], "open", `MP-10: child-frame attribute kept (${JSON.stringify(divs)})`);
+    await evaluate("document.getElementById('top').dataset.state='closed';true");
+    const ops = []; for (let i = 0; i < 3 && !ops.length; i++) ops.push(...(await next(1000)).ops.filter(op => op.op === "attr" && op.name === "data-state"));
+    assert.deepEqual(ops.map(op => [op.id, op.value]), [[top[0], "closed"]], "MP-10: a later change of that attribute travels");
+  }, {
+    "/cdn.css": { type: "text/css", body: '[data-state="open"]{outline:1px solid red}' },
+    "/child": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/cdn.css"><div data-state="open">child</div>' },
+  }));

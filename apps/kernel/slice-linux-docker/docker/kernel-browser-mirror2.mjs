@@ -229,12 +229,16 @@ export class Mirror2 {
       if (reset) {
         await this.protectTargets(world, tab, policy);
         await this.markClosedHosts(world);
-        const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
+        let snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;
+        // Sheets this CSSOM cannot read come through CDP; attribute names they
+        // reference were pruned from this snapshot: take it once more.
+        let sheetOps = await this.sheetOps(world, snap.sheets);
+        if (sheetOps.length && await this.evaluate(world, `${world.ref}.cssStale()`)) { snap = await this.evaluate(world, `${world.ref}.snapshot()`); if (snap.resync) return snap; sheetOps = await this.sheetOps(world, snap.sheets); }
         // Cross-origin frames: child DOM under the owner, or an opaque region.
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.opaque(snap.nodes, frames.opaque);
-        return { ...snap, nodes: [...snap.nodes, ...frames.records], ops: frames.ops, resources: [...snap.resources, ...(frames.resources ?? [])] };
+        return { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: [...frames.ops, ...sheetOps], resources: [...snap.resources, ...(frames.resources ?? [])] };
       }
       return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
@@ -280,8 +284,7 @@ export class Mirror2 {
     }
     if (fallback) resources = [];
     mark('observe_resources');
-    const sheets = [];
-    for (const sheet of source?.sheets ?? []) { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); if (text !== null) sheets.push({ op: 'css', id: sheet.id, css: text }); }
+    const sheets = await this.sheetOps(world, source?.sheets);
     let tiles = [];
     if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset); } catch (error) {
       if (error.mirrorReason !== 'region_area') throw error;
@@ -440,6 +443,11 @@ export class Mirror2 {
       }
     } finally { await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); }
     return Buffer.concat(chunks);
+  }
+  async sheetOps(world, sheets = []) {
+    const ops = [];
+    for (const sheet of sheets) { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); if (text !== null) ops.push({ op: 'css', id: sheet.id, css: text }); }
+    return ops;
   }
   // Cross-origin sheets: CDP reads the text regardless of CORS; the page's
   // CSSOM in the isolated world normalizes it, then the same sanitizer runs.

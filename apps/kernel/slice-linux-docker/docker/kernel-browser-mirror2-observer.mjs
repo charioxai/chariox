@@ -83,6 +83,10 @@ export function installMirror2(sanitizeMirrorCss) {
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
     // New attribute names in CSS mean earlier records lack attributes: resnapshot.
+    // Attribute names referenced by sheets read through CDP (cross-origin): kept
+    // across this observer's snapshots; a new one marks the current records stale.
+    const learned = new Set(); let cssStale = false;
+    const learnCss = text => { for (const name of referenced(text)) if (!RENDERED.has(name) && !name.startsWith('aria-')) { learned.add(name); if (cssAttrs && !cssAttrs.has(name)) cssStale = true; } };
     const noteCss = text => { if (!cssAttrs) return false; let grew = false; for (const name of referenced(text)) if (!cssAttrs.has(name) && !RENDERED.has(name) && !name.startsWith('aria-')) { cssAttrs.add(name); grew = true; } return grew; };
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
@@ -300,7 +304,7 @@ export function installMirror2(sanitizeMirrorCss) {
       newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
       cssAttrs = null;
       const out = [], root = serialize(document, null, out);
-      cssAttrs = new Set();
+      cssAttrs = new Set(learned); cssStale = false;
       for (const record of out) { if (record.css) noteCss(record.css); if (record.attrs?.style) noteCss(record.attrs.style); for (const text of record.adopted ?? []) noteCss(text); }
       for (const record of out) if (record.attrs && !record.ns) for (const name of Object.keys(record.attrs)) if (!keepAttr(true, name.toLowerCase())) delete record.attrs[name];
       lastSheetCheck = performance.now();
@@ -441,7 +445,7 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const key of Object.keys(dirty)) dirty[key].clear();
       let grew = false;
       for (const op of ops) { if (op.op === 'css') grew = noteCss(op.css) || grew; else if (op.op === 'adopted') for (const text of op.sheets) grew = noteCss(text) || grew; else if (op.op === 'children') for (const record of op.nodes) { if (record.css) grew = noteCss(record.css) || grew; for (const text of record.adopted ?? []) grew = noteCss(text) || grew; } }
-      if (grew) return { resync: 'css_attributes' };
+      if (grew || cssStale) return { resync: 'css_attributes' };
       return { ops, changed: rebound, ...take(), ...header() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
@@ -582,7 +586,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (changed()) return finish();
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
-    const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
+    const sanitize = (text, base) => { const out = sanitizeMirrorCss(String(text), String(base), resource); learnCss(out); return out; };
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const loaded = () => { const names = new Set([...timed, ...performance.getEntriesByType('resource').map(entry => entry.name)]); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
@@ -612,6 +616,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ cssStale: () => cssStale, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }
