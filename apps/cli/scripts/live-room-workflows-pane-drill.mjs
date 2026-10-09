@@ -182,7 +182,7 @@ try {
   startTerminal()
   await capture('01-room-inventory',text=>text.includes(heading))
   if (busyRefusalRounds) {
-    noiseRoot=await mkdtemp('/tmp/wfpause-busy-');receipt.ownedNoiseRoot=noiseRoot
+    noiseRoot=await mkdtemp(path.join(args['state-parent'],'busy-'));receipt.ownedNoiseRoot=noiseRoot
     for(let round=0;round<busyRefusalRounds;round++) {
       const label=`busy-${String(round+1).padStart(2,'0')}`
       const marker=path.join(noiseRoot,label+'-running')
@@ -206,7 +206,7 @@ try {
   assert.ok(Number.isSafeInteger(queuedFollowupRounds)&&queuedFollowupRounds>=0&&queuedFollowupRounds<=20)
   if (queuedFollowupRounds) {
     if(noiseRoot)await rm(noiseRoot,{recursive:true,force:true})
-    noiseRoot=await mkdtemp('/tmp/wfpause-queue-');receipt.ownedNoiseRoot=noiseRoot
+    noiseRoot=await mkdtemp(path.join(args['state-parent'],'queue-'));receipt.ownedNoiseRoot=noiseRoot
     for(let round=0;round<queuedFollowupRounds;round++) {
       const label=`queue-${String(round+1).padStart(2,'0')}`
       const marker=path.join(noiseRoot,label+'-started')
@@ -230,7 +230,7 @@ try {
   }
   if (noisyInterruptRounds) {
     if(noiseRoot)await rm(noiseRoot,{recursive:true,force:true})
-    noiseRoot = await mkdtemp('/tmp/wfpause-noisy-')
+    noiseRoot = await mkdtemp(path.join(args['state-parent'],'noisy-'))
     receipt.ownedNoiseRoot = noiseRoot
     receipt.noisyInterrupts = []
     receipt.noisyProducerFailures = []
