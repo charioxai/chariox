@@ -566,8 +566,12 @@ MP-08 / MP-11 owner destination bindings are
 `{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
 persisted operations, authoritative receipts and launch targets retain this binding.
 `environmentId` / `target_environment_id` is absent only for this branch; mixed
-or missing bindings are rejected. Owner-managed tickets use
-`/v1/owner-managed-kernels/context/ticket`, never the managed-environment authority.
+or missing bindings are rejected. The source issues owner tickets with
+`POST /v1/owner-managed-context-tickets` (peer directory at
+`GET /v1/owner-managed-context-tickets/peers`). Consumption, export and import checks
+share `POST /v1/managed-kernels/context/ticket`, discriminated by the
+`ownerManaged`, `ownerManagedExport` or `ownerManagedImport` body; they never use the
+managed-environment authority.
 The target independently validates a Cloud ticket against the encrypted source
 identity and its own enrollment; every arm/begin/chunk/finalize/status operation
 retains the existing capability, identity/key, realm/user, digest, TTL and size checks.
