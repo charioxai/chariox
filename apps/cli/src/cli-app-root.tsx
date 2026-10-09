@@ -919,6 +919,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleNativeSelectionKey: nativeSelection.handleKey,
     handleNativeSelectionPaste: nativeSelection.handlePaste,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
+    hasPromptSelection: () => promptInputRefController.isFocused() && Boolean(promptInputRefController.current()?.hasSelection()),
     showProviderLoginLink: providerLoginLink,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,

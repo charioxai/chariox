@@ -38,6 +38,7 @@ export type CliStdinKeyControllerDeps = {
   cycleAgentFocus: () => void
   copyPromptSelection: () => boolean
   clearTextSelection?: () => void
+  hasPromptSelection?: () => boolean
   hasActiveTurnWork: () => boolean
   requestPromptStop: () => void
   removePromptAttachmentsForEdit: (edit: "backspace" | "delete") => boolean
@@ -58,11 +59,17 @@ export function createCliStdinKeyController(
   // MP-08 / MP-10: decode complete events only. A mouse report split across
   // chunks (after ESC, inside the CSI parameters) must never act as a key.
   const parser = deps.createStdinParser(() => { drain() })
+  // MP-08 / MP-10: the renderer already applied prompt editing/selection.
+  // Clear retained transcript highlights only; clearing the textarea here
+  // would erase the selection just created by Shift+Arrow/Home (or a binding).
+  const clearRetainedSelection = () => {
+    if (!deps.hasPromptSelection?.()) deps.clearTextSelection?.()
+  }
   const drain = () => {
     let handled = false
     parser.drain((event) => {
       // Mouse reports and terminal responses keep the selection.
-      if (event.type === "paste" && !deps.handleNativeSelectionPaste?.()) deps.clearTextSelection?.()
+      if (event.type === "paste" && !deps.handleNativeSelectionPaste?.()) clearRetainedSelection()
       else if (event.type === "key" && event.key) handled = handleKey(event.key) || handled
     })
     return handled
@@ -75,7 +82,7 @@ export function createCliStdinKeyController(
     // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
     // without extended keyboard support (where it is indistinguishable from Ctrl+C).
     const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))
-    if (event.eventType !== "release" && !copyKey) deps.clearTextSelection?.()
+    if (event.eventType !== "release" && !copyKey) clearRetainedSelection()
     // OpenTUI's global key handler owns this dialog. Do not also dispatch
     // its terminal bytes into focused-agent or workflow shortcuts.
     if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true

@@ -283,6 +283,35 @@ try {
     return cells
   }
   const promptShows = text => page.evaluate(t => terminalScreen().split('\n').slice(-8).some(row => row.includes(t)), text)
+  // MP-08 / MP-10: keyboard edits in the real focused prompt, after a real turn.
+  const promptKeyboardSelectionCases = async () => {
+    const cells = []
+    for (const batched of [false, true]) for (const [kind, keys, selected, replacement] of [
+      ['left', ['\x1b[1;2D', '\x1b[1;2D'], 'ft', 'draZ'],
+      ['home', ['\x1b[1;2H'], 'draft', 'Z'],
+    ]) {
+      // Reset the whole draft even on RED, where replacement leaves a suffix.
+      await press('\x1b[F')
+      await press('\x15')
+      await typeText('draft')
+      await sleep(250)
+      assert.ok(await promptShows('draft'), 'keyboard selection precondition: focused draft')
+      const count = (await copiedTexts()).length
+      await capture(`prompt-${kind}-${batched}-before`)
+      if (batched) await press(keys.join('') + copySequence)
+      else { for (const key of keys) await press(key); await press(copySequence) }
+      await capture(`prompt-${kind}-${batched}-selected`)
+      const copied = (await copiedTexts()).slice(count).includes(selected)
+      await typeText('Z')
+      await sleep(250)
+      const replaced = await promptShows(replacement) && !await promptShows('draft') && !await promptShows(replacement + 'ft')
+      await capture(`prompt-${kind}-${batched}-replaced`)
+      cells.push({ kind, batched, selected, replacement, copied, replaced })
+      await writeFile(path.join(evidence, 'prompt-selections.json'), JSON.stringify(cells, null, 2))
+    }
+    await press('\x15')
+    return cells
+  }
   // MP-08 / MP-10: one PTY write per toggle/input pair, as SSH can buffer
   // them. A populated focused prompt must survive entry and accept exit text.
   const nativeBatchCases = async () => {
@@ -438,6 +467,9 @@ try {
     await press('\r')
     await capture('a01b-prompt-sent')
     await waitFor(async () => (await rowOf(marker)) !== null, 240_000).catch(async error => { await capture('a01c-response-timeout'); throw error })
+    // MP-08 / MP-10: the marker can stream before final turn settlement.
+    // Select the completed response; settlement may still replace its view.
+    await waitFor(() => page.evaluate(() => terminalScreen().split('\n').slice(-8).some(row => /^\s*[│ ]*IDLE\b/.test(row))), 240_000)
     await sleep(4000)
     await capture('a02-response')
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
@@ -469,14 +501,16 @@ try {
       await press('\x15'); await press(copySequence)
       const emptyCopyKeptAlive = tui.exitCode === null
       await capture('a05-typed-and-empty-copy')
+      const promptSelections = options['prompt-selection-review'] ? await promptKeyboardSelectionCases() : []
       result = { items: ['MP-08', 'MP-10'], mode: 'selection-review', source: options.source,
         kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null,
         cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
         dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), fragmentMouse: Boolean(options['fragment-mouse']), copyKey: options['copy-key'] ?? 'f6',
-        nativeCopy, highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted, themes,
+        nativeCopy, highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted, themes, promptSelections,
         acceptance: 'real provider and built TUI via PTY; native clipboard uses a Linux browser terminal; Terminal.app/SSH and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
+        && promptSelections.every(cell => cell.copied && cell.replaced)
         && pasted.every(cell => cell.cleared && cell.inserted)
         && themes.every(cell => cell.highlighted && cell.retained && cell.copied)
       console.log(JSON.stringify(result))

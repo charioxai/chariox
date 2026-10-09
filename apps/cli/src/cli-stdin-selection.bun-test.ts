@@ -1,5 +1,6 @@
 import { parseKeypress, StdinParser, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { createClipboardController } from "./clipboard-controller.js"
 import { createNativeSelectionController } from "./native-selection-controller.js"
 import assert from "node:assert/strict"
 import test from "node:test"
@@ -225,5 +226,65 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       native.dispose()
       harness.renderer.destroy()
     }
+  })
+}
+
+// MP-08 / MP-10: raw routing runs after the real textarea handles each chunk.
+for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (const batched of [false, true]) for (const paste of [false, true]) for (const [kind, movement, selected] of [
+  ["Shift+Left twice", "\x1b[1;2D\x1b[1;2D", "ft"],
+  ["Shift+Home", "\x1b[1;2H", "draft"],
+] as const) {
+  test(`MP-08 / MP-10 prompt ${kind} survives raw routing and F6/replacement (${buffer ? "Buffer" : "string"}; raw ${rawFirst ? "first" : "last"}; ${batched ? "coalesced" : "separate"}; ${paste ? "paste" : "typing"})`, async () => {
+    const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
+    const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2, initialValue: "draft" })
+    harness.renderer.root.add(prompt)
+    prompt.focus()
+    await harness.renderOnce()
+    prompt.gotoBufferEnd()
+    const copies: string[] = []
+    const clipboard = createClipboardController({
+      renderer: harness.renderer,
+      promptInput: () => prompt,
+      flashFooter: () => {},
+      copyText: async (text) => { copies.push(text); return "copied" },
+    })
+    let rebuildDeferred = true, rebuilds = 0
+    const raw = createCliStdinKeyController({
+      createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+      hasPromptSelection: () => prompt.hasSelection(),
+      clearTextSelection: () => {
+        harness.renderer.clearSelection()
+        if (rebuildDeferred) { rebuildDeferred = false; rebuilds++ }
+      },
+      dialogOverlayOpen: () => false,
+      handleSessionBrowserKey: (event: CliStdinKeyEvent) => event.name !== "f6",
+      promptFocused: () => true,
+      focusedInteractionActive: () => false,
+      handleFocusedInteractionKey: () => false,
+      copyPromptSelection: clipboard.copyPromptSelection,
+    } as unknown as CliStdinKeyControllerDeps)
+    const rawInput = (chunk: Buffer | string) => { queueMicrotask(() => { raw.handleData(chunk) }) }
+    if (rawFirst) harness.renderer.stdin.prependListener("data", rawInput)
+    else harness.renderer.stdin.on("data", rawInput)
+    const send = async (bytes: string) => {
+      harness.renderer.stdin.emit("data", buffer ? Buffer.from(bytes) : bytes)
+      await Promise.resolve()
+    }
+    try {
+      if (batched) await send(movement + "\x1b[17~")
+      else {
+        // Repeated selection commands must extend the same anchor.
+        for (const key of movement.match(/\x1b\[[^A-Z]*[A-Z]/g)!) await send(key)
+        assert.equal(prompt.getSelectedText(), selected)
+        await send("\x1b[17~")
+      }
+      assert.equal(prompt.getSelectedText(), selected, "keyboard selection remains highlighted")
+      assert.deepEqual(copies, [selected], "F6 copies the textarea's selected range")
+      assert.equal(rebuilds, 0, "selection keeps the waiting-room rebuild deferred")
+      await send(paste ? "\x1b[200~Z\x1b[201~" : "Z")
+      assert.equal(prompt.plainText, kind === "Shift+Home" ? "Z" : "draZ", "typing replaces the selected range")
+      assert.equal(prompt.hasSelection(), false)
+      assert.equal(rebuilds, 1, "editing releases selection and flushes the deferred rebuild")
+    } finally { harness.renderer.destroy() }
   })
 }
