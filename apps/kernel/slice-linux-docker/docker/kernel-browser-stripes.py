@@ -118,9 +118,11 @@ class StripeEncoder:
                 else:codec=av.CodecContext.create(backend,'w')
                 codec.width=width;codec.height=h
                 codec.pix_fmt='yuv420p';codec.time_base=Fraction(1,60);codec.framerate=Fraction(60,1)
-                codec.bit_rate=max(16000,int(bitrate*.45*h/height));codec.thread_count=1
+                # MP-08/MP-10: Selkies/pixelflux CBR at the row's share of the
+                # negotiated rate, 1.5-frame VBV, infinite GOP (native codec.c).
+                codec.bit_rate=max(16000,int(bitrate*h/height));codec.thread_count=1
                 if backend=='libx264':
-                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','crf':'23','g':'120','bf':'0','forced-idr':'1','x264-params':f'scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate//20000)}'}
+                    codec.options={'preset':'ultrafast','tune':'zerolatency','profile':'baseline','level':'5.1','g':'-1','bf':'0','forced-idr':'1','x264-params':f'keyint=infinite:scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:bitrate={max(16,codec.bit_rate//1000)}:vbv-maxrate={max(16,codec.bit_rate//1000)}:vbv-bufsize={max(16,codec.bit_rate*3//120000)}:filler=0'}
                 elif backend=='libopenh264':codec.options={'profile':'constrained_baseline','allow_skip_frames':'0','rc_mode':'bitrate','max_nal_size':'0'}
                 else:codec.options={'deadline':'realtime','cpu-used':'8','lag-in-frames':'0','g':'120','error-resilient':'1','bufsize':str(max(16000,codec.bit_rate//20)),'maxrate':str(codec.bit_rate),'minrate':'0','undershoot-pct':'95','overshoot-pct':'5','qmin':'4','qmax':'48','rc_init_occupancy':str(max(16000,codec.bit_rate//20)),'max-intra-rate':'200'}
                 old={'codec':codec,'sequence':0,'converter':BgrConverter(),

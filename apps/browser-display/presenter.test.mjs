@@ -239,3 +239,63 @@ test('MP-11 an errored main-thread decoder is replaced without a second close',a
   presenter.close();
  }finally{Object.assign(globalThis,prior)}
 });
+// MP-08/MP-10: protocol 475 push. No credits; one ack per presented frame,
+// reordered events decode in sequence, lost frames request a key.
+test('MP-08/MP-10 push display acknowledges each presented frame in sequence without credits',async()=>{
+ let listener;const ops=[];
+ const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>{ops.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'running'}:{}}}}};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1},{idleMs:20});
+ const presented=[];stream.presenter.present=async frame=>{presented.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  assert.ok(stream.push);assert.deepEqual(ops.filter(c=>c.op==='display_ack').map(c=>[c.sequence,c.lost]),[[0,false]],'the first ack starts the kernel pump');
+  for(const sequence of [2,1,3])listener({event:'kernel_browser_frame',subscription_id:'s',frame:{sequence}});
+  assert.equal((await stream.next()).sequence,1);assert.equal((await stream.next()).sequence,2);assert.equal((await stream.next()).sequence,3);
+  assert.equal(await stream.next(),null,'a quiet stream reads as settled');
+  assert.deepEqual(presented,[1,2,3]);
+  assert.deepEqual(ops.filter(c=>c.op==='display_ack').map(c=>c.sequence),[0,1,2,3]);
+  assert.equal(ops.filter(c=>c.op==='display_next').length,0,'push mode issues no credits');
+  stream.requestKey();assert.deepEqual(ops.at(-1),{op:'display_ack',subscription_id:'s',generation:1,sequence:3,lost:true});
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10 push display reports a stopped kernel pump as a stream error',async()=>{
+ const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'failed'}:{}}})};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1},{idleMs:20});
+ try{await new Promise(r=>setTimeout(r,5));await assert.rejects(stream.next(),/push pump failed/);}finally{await stream.close()}
+});
+test('MP-08/MP-10 credit transports without a display subscription keep display_next',async()=>{
+ const ops=[];const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{ops.push(command.op);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s'}:{frame_sent:false}}}}};
+ const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1});
+ try{assert.equal(stream.push,undefined);assert.equal(await stream.next(),null);assert.deepEqual(ops,['display_subscribe','display_next'])}finally{await stream.close()}
+});
+// MP-08/MP-10 (1.5): recover in place; never fall back to images.
+function pushFixture(){
+ let listener;const ops=[];
+ const transport={kernelProtocolVersion:475,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>{ops.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'running'}:{}}}}};
+ return {transport,ops,emit:frame=>listener({event:'kernel_browser_frame',subscription_id:'s',frame})};
+}
+test('MP-08/MP-10 push display recovers a lost base in place with one key request',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20});
+ const shown=[];stream.presenter.present=async frame=>{if(frame.fail)throw Error('MD-DISPLAY: video base lost; subscribe afresh');shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  f.emit({sequence:1,kind:'video',key:true});f.emit({sequence:2,kind:'video',key:false,fail:true});f.emit({sequence:3,kind:'video',key:false});f.emit({sequence:4,kind:'tiles'});f.emit({sequence:5,kind:'video',key:true});f.emit({sequence:6,kind:'video',key:false});
+  for(let i=0;i<4;i++)await stream.next();
+  assert.deepEqual(shown,[1,5,6],'dependent frames after a lost base are skipped until the key');
+  const acks=f.ops.filter(c=>c.op==='display_ack');
+  assert.deepEqual(acks.filter(c=>c.lost).map(c=>c.sequence),[1],'one rate-limited key request, from the last good base');
+  assert.deepEqual(acks.filter(c=>!c.lost).map(c=>c.sequence),[0,1,2,3,4,5,6],'skipped frames are still acknowledged so the gate stays open');
+  assert.equal(stream.error,null);
+ }finally{await stream.close()}
+});
+test('MP-08/MP-10 push display skips a receive gap and fails only on binding mismatch',async()=>{
+ const f=pushFixture();const stream=await attachBrowserDisplay({width:1,height:1},f.transport,{tab_id:'t',generation:1},{idleMs:20});
+ const shown=[];stream.presenter.present=async frame=>{if(frame.foreign)throw Error('MD-DISPLAY: invalid geometry/binding');shown.push(frame.sequence);stream.presenter.sequence=frame.sequence;return true};
+ try{
+  for(let n=2;n<=10;n++)f.emit({sequence:n,kind:n===6?'png':'tiles'});
+  for(let i=0;i<5;i++)await stream.next();assert.deepEqual(shown,[6,7,8,9,10],'missing sequence 1 is skipped and recovery waits for an independent frame');
+  assert.ok(f.ops.some(c=>c.op==='display_ack'&&c.lost));
+  f.emit({sequence:11,kind:'png',foreign:true});await assert.rejects(async()=>{for(let i=0;i<10;i++)await stream.next()},/invalid geometry\/binding/);
+ }finally{await stream.close()}
+});

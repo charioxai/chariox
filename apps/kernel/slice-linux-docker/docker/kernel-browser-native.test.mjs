@@ -59,7 +59,8 @@ test('MP-11 marker insertion retires native pixels even while attestation is pen
   source.latest={raw:{release:()=>released++}};source.pending={release:()=>released++};
   source.onCdp({sessionId:'foreign',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});assert.equal(source.closed,false);
   source.onCdp({sessionId:'session',method:'DOM.attributeModified',params:{name:'data-chariox-observation-protected'}});
-  assert.equal(source.closed,true);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(released,2);await source.close();
+  // MP-08/MP-10: the source stays open; attestation needs a fresh, refenced readback.
+  assert.equal(source.closed,false);assert.equal(source.attested,false);assert.equal(source.regions.guard,null);assert.equal(source.latest,null);assert.equal(source.pending,null);assert.equal(released,2);assert.equal(source.regionRevision,1);await source.close();
  }
 });
 
@@ -161,4 +162,18 @@ test('MP-10 native refusals carry fixed reasons',async()=>{
  assert.equal(nativeRefusalReason(Error('secret https://example.test/page')),'other');
  const reasons=[];assert.equal(await selectNativeCapture({platform:'linux',display:null,refused:r=>reasons.push(r),create:()=>assert.fail()}),null);
  assert.deepEqual(reasons,['display_not_owned']);
+});
+
+// MP-08/MP-10/MP-11 phase 1.3: readbacks publish without a CDP round trip;
+// navigation fences the source by event before any later delivery.
+test('MP-08/MP-10 native readbacks publish without per-frame CDP fences; navigation still fences by event',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const sent=[];const connection={send:async method=>{sent.push(method);if(method==='DOM.getDocument')return {root:{nodeId:1}};if(method==='DOM.querySelectorAll')return {nodeIds:[]};assert.fail('MP-10: per-readback CDP call '+method);}};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
+ source.valid=()=>!source.closed;source.attested=true;source.regions=new NativeRegionProtection(connection,'s');await source.regions.refresh();
+ const setup=sent.length,published=[];source.subscribe(sample=>published.push(sample.serial));
+ for(let serial=1;serial<=5;serial++){source.pending={width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};await source.publish();}
+ assert.deepEqual(published,[1,2,3,4,5]);assert.equal(sent.length,setup,'no CDP call per readback');
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{}}});
+ assert.equal(source.closed,true);assert.equal(source.sample(),null,'a navigated source never offers its pixels');await source.close();
 });

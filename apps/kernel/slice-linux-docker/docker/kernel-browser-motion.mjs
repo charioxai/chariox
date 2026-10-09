@@ -29,7 +29,7 @@ export class MotionEncoder {
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
-   const sample=this.pending;this.pending=null;const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
+   const sample=this.pending;this.pending=null;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
    let encoded;
    try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
@@ -76,20 +76,14 @@ export class MotionEncoder {
    }finally{sample.raw?.release?.()}
   }
  }
- feedback(lag){if(this.rate.feedback(lag))this.key=true;}
+ // MP-08/MP-10: native x264 sessions retune their rate live (no IDR);
+ // other encoders restart their reference chain on a rate change.
+ feedback(lag){if(this.rate.feedback(lag)&&!this.native)this.key=true;}
+ // MP-08/MP-10: the queue is bounded (two frames) and the client ACK gate
+ // bounds delivery, so queued deltas are never dropped (Selkies keeps every
+ // encoded frame of a live chain; a drop would force an IDR and a rate cut).
  take(){
   if(this.failure)throw this.failure;
-  // Dropping an encoded delta also retires every reference after it. Recover
-  // once from the latest source with an independent frame, never decode gaps.
-  const oldest=this.frames[0];
-  const age=oldest ? this.now()-oldest.offeredAt : 0;
-  // An input burst can delay admitted capture credits beyond100ms. Repeatedly
-  // discarding its recovery key then starves the decoder forever. Permit that
-  // independently decodable base a bounded300ms; stale deltas still retire
-  // their entire reference chain after100ms, and older keys also retire.
-  if(oldest && age>((oldest.force_lossless||oldest.encoded?.key||oldest.encoded?.stripes?.every(r=>r.key))?300:100) && this.source.sample()?.serial>oldest.serial){
-   this.rate.feedback(8);this.invalidateRows();this.pump();return null;
-  }
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
  retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
@@ -107,7 +101,8 @@ export class CreditBudget {
   // MP-08/MP-10: up to four pipelined credits are ordinary scheduling, not
   // evidence of congestion. Reserve adaptation for a nearly full8-frame window.
   if(lag>=6){this.clearAt=null;this.pressureAt??=now;if(now-this.pressureAt<500||now-this.changedAt<500)return false;this.pressureAt=now;return this.set(Math.max(this.floor,Math.round(this.bitrate*.8)),now)}
-  this.pressureAt=null;if(lag<=1){this.clearAt??=now;if(now-this.clearAt>=2000&&now-this.changedAt>=2000){this.clearAt=now;return this.set(Math.min(this.ceiling,Math.round(this.bitrate*1.1)),now)}}else this.clearAt=null;return false;
+  // MP-08/MP-10: +10% per 5 s without pressure (the ACK gate's clean period).
+  this.pressureAt=null;if(lag<=1){this.clearAt??=now;if(now-this.clearAt>=5000&&now-this.changedAt>=5000){this.clearAt=now;return this.set(Math.min(this.ceiling,Math.round(this.bitrate*1.1)),now)}}else this.clearAt=null;return false;
  }
  set(value,now){if(value===this.bitrate)return false;this.bitrate=value;this.changedAt=now;return true;}
 }

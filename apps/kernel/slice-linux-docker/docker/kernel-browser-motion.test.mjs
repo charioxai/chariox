@@ -36,7 +36,7 @@ test('MP-08/MP-10 raw-less stripe fallback recovers an oversized unsent full-vid
  const m=new MotionEncoder(source,encoder,{stripes:true,codec:'avc1.420033',bitrate:8000000});
  try{await m.active;assert.deepEqual(keys,[true,true]);assert.equal(m.take().encoded.key,true)}finally{await m.close()}
 });
-for(const mode of ['queued','stale','in-flight'])test('MP-08/MP-10 raw-less stripe negotiation recovers '+mode+' full-video work with a key',async()=>{
+for(const mode of ['queued','in-flight'])test('MP-08/MP-10 raw-less stripe negotiation recovers '+mode+' full-video work with a key',async()=>{
  let now=0,latest,offer,release;const keys=[];
  const source={subscribe(f){offer=f;return()=>{}},sample:()=>latest};
  const encoder={async encode(image,bitrate,key){keys.push(key);if(release)await new Promise(ok=>release=ok);return{key,data_base64:image}}};
@@ -47,7 +47,7 @@ for(const mode of ['queued','stale','in-flight'])test('MP-08/MP-10 raw-less stri
   if(mode==='in-flight')release=true;
   latest={serial:2,data_base64:'discarded'};offer(latest);
   if(mode==='in-flight'){m.retireUnsent();const done=release;release=null;done();await m.active}
-  else {await m.active;if(mode==='stale'){now=350;assert.equal(m.take(),null);await m.active;assert.equal(m.take().encoded.key,true);return}m.retireUnsent()}
+  else {await m.active;m.retireUnsent()}
   latest={serial:3,data_base64:'recovery'};offer(latest);await m.active;
   assert.equal(m.take().encoded.key,true,'discarded full-video dependencies require a full-video key');
  }finally{await m.close()}
@@ -58,7 +58,7 @@ test('MD-DISPLAY invalidation and close retire in-flight encoding',async()=>{con
 test('MD-DISPLAY exact repair retains a fully delivered video reference, avoiding a key per click',async()=>{const f=fixture();f.offer(1);await f.m.active;assert.equal(f.m.take().encoded.key,true);f.m.retireUnsent();f.offer(2);await f.m.active;assert.equal(f.m.take().encoded.key,false);await f.m.close()});
 test('MD-DISPLAY full queue preserves decoder references and coalesces only unencoded source work',async()=>{const f=fixture();for(let n=1;n<=5;n++){f.offer(n);await f.m.active}assert.deepEqual(f.calls.map(x=>x.image),['1','2']);assert.equal(f.m.frames.length,2);assert.equal(f.m.take().serial,1);await f.m.active;assert.deepEqual(f.calls.map(x=>x.image),['1','2','5']);assert.equal(f.m.take().serial,2);assert.equal(f.m.take().serial,5);assert.equal(f.calls[2].key,false);await f.m.close()});
 
-test('MD-DISPLAY credit pressure has hysteresis, bounded rate and recovery',()=>{let time=0;const r=new CreditBudget(2000000,()=>time);assert.equal(r.feedback(6),false);time=500;assert.equal(r.feedback(6),true);assert.equal(r.bitrate,1600000);for(let i=0;i<20;i++){time+=500;r.feedback(8)}assert.equal(r.bitrate,500000);r.feedback(0);time+=2000;r.feedback(0);assert.equal(r.bitrate,550000);assert.equal(r.feedback(NaN),false);for(let i=0;i<30;i++){time+=2000;r.feedback(0)}assert.equal(r.bitrate,2000000)});
+test('MD-DISPLAY credit pressure has hysteresis, bounded rate and recovery',()=>{let time=0;const r=new CreditBudget(2000000,()=>time);assert.equal(r.feedback(6),false);time=500;assert.equal(r.feedback(6),true);assert.equal(r.bitrate,1600000);for(let i=0;i<20;i++){time+=500;r.feedback(8)}assert.equal(r.bitrate,500000);r.feedback(0);time+=2000;r.feedback(0);assert.equal(r.bitrate,500000,'MP-10: recovery waits for 5 s without pressure');time+=3000;r.feedback(0);assert.equal(r.bitrate,550000);assert.equal(r.feedback(NaN),false);for(let i=0;i<30;i++){time+=5000;r.feedback(0)}assert.equal(r.bitrate,2000000)});
 
 test('MP-08/MP-10 ordinary four-credit pipelining does not ratchet encoding to its bitrate floor',()=>{
  let now=0;const rate=new CreditBudget(8000000,()=>now);
@@ -67,34 +67,19 @@ test('MP-08/MP-10 ordinary four-credit pipelining does not ratchet encoding to i
 });
 test('MD-DISPLAY exact refinement retires stale work without re-encoding the same source serial',async()=>{const f=fixture();f.offer(1);await f.m.active;f.m.retireUnsent();f.offer(1);await f.m.active;assert.equal(f.calls.length,1);assert.equal(f.m.take(),null);f.offer(2);await f.m.active;assert.equal(f.m.take().encoded.key,true);await f.m.close()});
 
-test('MD-DISPLAY stale encoded queue recovers latest source with a key and bounds memory',async()=>{
- let now=0,offer;const calls=[];let latest;
+// MP-08/MP-10: queued deltas of a live chain are delivered, never dropped
+// for age; dropping forced an IDR and a rate cut on every credit delay.
+test('MP-08/MP-10 aged queued deltas are delivered in order without an IDR or rate cut',async()=>{
+ let now=0,offer,latest;const calls=[];
  const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
- const encoder={encode:async(image,bitrate,key)=>{calls.push({image,key});return{key,data_base64:image}}};
- const m=new MotionEncoder(source,encoder,{bitrate:2000000,codec:'avc1.420033',now:()=>now});
+ const encoder={encode:async(image,bitrate,key)=>{calls.push({image,key,bitrate});return{key,data_base64:image}}};
+ const m=new MotionEncoder(source,encoder,{bitrate:8000000,codec:'avc1.420033',now:()=>now});
  try{
   latest={serial:1,data_base64:'one'};offer(latest);await m.active;
   now=350;latest={serial:2,data_base64:'two'};offer(latest);await m.active;
-  assert.equal(m.take(),null);await m.active;
-  assert.equal(m.take().serial,2);assert.equal(calls.at(-1).key,true);assert.equal(m.frames.length,0);
- }finally{await m.close()}
-});
-
-test('MD-DISPLAY delayed credits deliver a bounded recovery key instead of repeatedly starving continuous input',async()=>{
- let now=0,offer,latest;const calls=[];
- const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
- const encoder={encode:async(image,bitrate,key)=>{calls.push({image,key});return{key,data_base64:image}}};
- const m=new MotionEncoder(source,encoder,{bitrate:32000000,codec:'avc1.420033',now:()=>now});
- try{
-  latest={serial:1,data_base64:'one'};offer(latest);await m.active;
-  now=150;latest={serial:2,data_base64:'two'};offer(latest);await m.active;
-  assert.equal(m.take()?.serial,1,'admitted input delay must not discard every decoder recovery key');
-  now=260;latest={serial:3,data_base64:'three'};offer(latest);await m.active;
-  assert.equal(m.take(),null,'a stale dependent reference chain still retires');await m.active;
-  now=410;latest={serial:4,data_base64:'four'};offer(latest);await m.active;
-  assert.equal(m.take()?.serial,3,'recovery key must make bounded progress under sustained input');
-  assert.equal(calls.filter(c=>c.image==='three').at(-1).key,true);
-  assert.ok(m.frames.length<=2);
+  now=900;latest={serial:3,data_base64:'three'};offer(latest);await m.active;
+  assert.equal(m.take().serial,1);assert.equal(m.take().serial,2);await m.active;assert.equal(m.take().serial,3);
+  assert.deepEqual(calls.map(c=>c.key),[true,false,false]);assert.ok(calls.every(c=>c.bitrate===8000000));assert.ok(m.frames.length<=2);
  }finally{await m.close()}
 });
 
@@ -126,7 +111,7 @@ test('MP-10 lost queued stripe resets only affected row references',async()=>{
   latest={serial:1,raw:{row:0}};offer(latest);await m.active;assert.equal(m.take().encoded.stripes.length,8);
   latest={serial:2,raw:{row:0}};offer(latest);await m.active;
   latest={serial:3,raw:{row:0}};offer(latest);await m.active;
-  now=150;assert.equal(m.take(),null);await m.active;
+  m.retireUnsent();latest={serial:4,raw:{row:0}};offer(latest);await m.active;
   assert.deepEqual(resets.at(-1),[0]);assert.deepEqual(m.take().encoded.stripes.map(r=>r.row),[0]);
   m.invalidate();await m.active;assert.equal(resets.at(-1),true,'protection/navigation fences reset every row');
  }finally{await m.close()}
@@ -218,4 +203,18 @@ test('MP-11 an exact encode overlapping the producer skips one sample instead of
   latest={serial:2,data_base64:'2'};offer(latest);await m.active;
   assert.equal(m.take().encoded.key,true);assert.deepEqual(calls.map(c=>c[0]),['exact','2']);
  }finally{await m.close();await encoder.close()}
+});
+// MP-08/MP-10: native x264 retunes rate live; only other encoders re-key.
+for(const native of [true,false])test('MP-08/MP-10 congestion rate change keeps the native reference chain '+native,async()=>{
+ let offer,latest,now=0;const calls=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={encode:async(image,bitrate,key)=>{calls.push({key,bitrate});return{key,data_base64:'x'}}};
+ const m=new MotionEncoder(source,encoder,{bitrate:8000000,codec:'avc1.420033',now:()=>now});
+ const sample=serial=>native?{serial,raw:{nativeEncode(){},width:1,height:1}}:{serial,data_base64:String(serial)};
+ try{
+  latest=sample(1);offer(latest);await m.active;m.take();
+  m.feedback(8);now=600;m.feedback(8);
+  latest=sample(2);offer(latest);await m.active;
+  assert.ok(calls[1].bitrate<8000000,'congestion lowers the rate');assert.equal(calls[1].key,!native);
+ }finally{await m.close()}
 });

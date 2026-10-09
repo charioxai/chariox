@@ -5,6 +5,7 @@ import {WorkerVideoDecoder} from './decoder-worker.mjs';
 // admitted/encrypted kernel request and event adapter; never a Cloud media proxy.
 export const minimumProtocolVersion = 466;
 export const desktopMinimumProtocolVersion = 474;
+export const pushProtocolVersion = 475;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -95,7 +96,8 @@ export class BrowserDisplayPresenter {
         context.drawImage(bitmap, 0, 0);
       } else if (frame.kind === 'video' && videoCodecs.includes(frame.codec) && typeof frame.key === 'boolean') {
         if (globalThis.Worker) {
-          if(!this.workerDecoder)this.workerDecoder=new WorkerVideoDecoder();
+          // A timed-out or crashed worker closes itself; a key starts afresh.
+          if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();
         } else if (!this.decoder || frame.key) {
           if (this.decoder?.state !== 'closed') this.decoder?.close();
           this.decoder = new VideoDecoder({ output: value => (this.decoded ? this.decoded.resolve(value) : value.close()), error: error => this.decoded?.reject(error) });
@@ -190,14 +192,19 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     if (codecs.length === 8) codecs.splice(codecs.indexOf('png') - 1, 1);
     codecs.push('chariox-relay-binary-v96');
   }
+  // MP-08/MP-10: protocol 475 kernels push frames on a relay display
+  // subscription; older kernels and other transports keep credits.
+  const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
   const offer={codecs:options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs,bitrate:options.bitrate??2_000_000,device_scale_factor:options.deviceScaleFactor??1};
   const subscribed=await request(options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...offer});
-  const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...subscribed,...tab};
+  // The reply's generation wins: the kernel may restart its browser at the
+  // viewer's device scale (protocol 475), rotating the generation.
+  const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
   if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
     await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
     throw Error('MP-11: invalid desktop subscription binding');
   }
-  const actorCommand=op=>options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,...tab};
+  const actorCommand=op=>op==='actors'?(options.desktop?{op:'computer',command:{op}}:{op:'display_actors'}):options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,tab_id:binding.tab_id,generation:binding.generation};
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion);
@@ -244,6 +251,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }).catch(() => {});
     throw error;
   }
+  if (pushMode) { off(); return pushDisplay(presenter, transport, request, binding, actorCommand, options); }
   const next = async () => {
     if (stopped || creditOutstanding || running || active.size) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
     creditOutstanding = true;
@@ -321,7 +329,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     input: async input => {presenter.prediction?.restore();idle.wake();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!stopped){idle.wake();if(epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1)}return reply;},
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
-    actors: () => request(options.desktop?{op:'computer',command:{op:'actors'}}:{op:'display_actors'}),
+    actors: () => request(actorCommand('actors')),
     async close() {
       // MP-11: detach first; parked credits cannot hold teardown for their window timeout.
       running = false; stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close();
@@ -329,5 +337,78 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation });
       await stop().catch(() => {});
     },
+  };
+}
+
+// MP-08/MP-10: protocol 475 pushed display. The kernel pump sends frames as
+// they are produced; the viewer acknowledges each presented sequence (plus a
+// heartbeat), which drives the kernel's ACK gate (after Selkies' frame ACK).
+function pushDisplay(presenter, transport, request, binding, actorCommand, options) {
+  const {onTiming = () => {}, idleMs = 400, heartbeatMs = 1000} = options;
+  const held = new Map(), unread = [], waiters = new Set();
+  let nextSequence = presenter.sequence + 1, heldBytes = 0, chain = Promise.resolve(), failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
+  let recovering = false, keyRequestedAt = -Infinity;
+  const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
+  const ack = (sequence, lost = false) => {
+    if (closed) return;
+    ackedAt = performance.now();
+    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, sequence, lost })
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail);
+  };
+  // MP-08/MP-10 (1.5): a lost base, decode failure or receive gap keeps the
+  // canvas, asks for an independent frame and drops dependent frames until
+  // it arrives. Only a binding/geometry mismatch or a stopped pump is fatal.
+  const independent = frame => frame.kind === 'png' || frame.kind === 'video' && frame.key === true || independentStripeCover(frame);
+  const recover = () => {
+    recovering = true;
+    if (performance.now() - keyRequestedAt >= 1000) { keyRequestedAt = performance.now(); ack(presenter.sequence, true); }
+  };
+  const present = frame => {
+    chain = chain.then(async () => {
+      if (failure || closed) return;
+      if (recovering && !independent(frame)) { ack(frame.sequence); return recover(); }
+      const at = performance.timeOrigin + performance.now();
+      try { if (!await presenter.present(frame)) return; }
+      catch (error) {
+        if (/invalid geometry\/binding/.test(error?.message ?? '')) throw error;
+        onTiming('client_recover_request', at); ack(frame.sequence); return recover();
+      }
+      recovering = false;
+      onTiming('client_present_total', at);
+      if (presenter.didDraw !== false) options.onPresented?.(frame);
+      ack(frame.sequence);
+      unread.push(frame); if (unread.length > 64) unread.shift();
+      for (const wake of waiters) wake();
+    }).catch(fail);
+  };
+  const off = transport.onEvent(event => {
+    if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id || failure || closed) return;
+    const frame = event.frame, size = frameBytes(frame);
+    // Relay lanes and concurrent decryption may reorder; decode in sequence.
+    if (!Number.isSafeInteger(frame.sequence) || frame.sequence < nextSequence || held.has(frame.sequence)) return;
+    held.set(frame.sequence, frame); heldBytes += size;
+    // A sequence that never arrives: skip the gap and recover from a key.
+    if (held.size > 8 || heldBytes > 8 * 1024 * 1024) { nextSequence = Math.min(...held.keys()); recovering = true; }
+    while (held.has(nextSequence)) { const ordered = held.get(nextSequence); held.delete(nextSequence++); heldBytes -= frameBytes(ordered); present(ordered); }
+  });
+  const heartbeat = setInterval(() => { if (performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
+  ack(presenter.sequence);
+  const next = async () => {
+    if (failure) throw failure;
+    if (!unread.length) await new Promise(resolve => { const wake = () => { clearTimeout(timer); waiters.delete(wake); resolve(); }; const timer = setTimeout(wake, idleMs); waiters.add(wake); });
+    if (failure) throw failure;
+    return unread.shift() ?? null;
+  };
+  return { binding, presenter, next, push: true,
+    start: () => { if (failure) throw failure; running = true; unread.length = 0; },
+    stop: async () => { running = false; await chain; if (failure) throw failure; },
+    get running() { return running; },
+    get error() { return failure; },
+    requestKey: () => ack(presenter.sequence, true),
+    input: async input => {presenter.prediction?.restore();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!closed&&epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1);return reply;},
+    takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
+    release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
+    actors: () => request(actorCommand('actors')),
+    async close() { closed = true; running = false; clearInterval(heartbeat); off(); await chain.catch(() => {}); presenter.close(); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
   };
 }

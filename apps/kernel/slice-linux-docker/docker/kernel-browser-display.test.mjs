@@ -319,14 +319,18 @@ test('MD-DISPLAY lost viewer base starts large prepared exact recovery independe
 });
 
 // MP-08/MP-10: input echo may borrow one bounded burst; ordinary frames repay it.
-test('MP-08/MP-10 input damage bypasses pacing once and repays bounded debt',async()=>{
+test('MP-08/MP-10 rate-controlled video is never paced; exact repairs pay the link rate',async()=>{
  let now=0;const waits=[];
  const stream=new DisplayStream({...binding,bitrate:8000000},{now:()=>now,wait:async ms=>{waits.push(ms);now+=ms},encoder:{close:async()=>{}}});
- const source=n=>({motion:true,generation:1,width:1280,height:800,data_base64:String(n),encoded:{key:true,data_base64:'A'.repeat(9000)},input_triggered:true});
+ const source=n=>({motion:true,generation:1,width:1280,height:800,data_base64:String(n),encoded:{key:true,data_base64:'A'.repeat(90000)}});
  try{
-  await stream.frame(source(1),'d',0);assert.equal(now,0,'first input frame must ship immediately');assert.ok(stream.tokens<0,'borrowed bytes must remain charged');
-  await stream.frame(source(2),'d',1);assert.ok(now>0,'continuous input cannot create an unlimited burst');assert.ok(stream.tokens>=-32768);
-  waits.length=0;const start=now;await stream.frame({...source(3),input_triggered:false},'d',2);assert.ok(now>start,'motion pays the negotiated rate');
+  for(let n=1;n<=3;n++)await stream.frame(source(n),'d',n-1);
+  assert.equal(now,0,'video ships as encoded; its encoder and the ACK gate bound bytes');assert.deepEqual(waits,[]);
+  // A lossless scroll frame (native moves + WebP residuals) is budgeted by shiftFits.
+  stream.exact=true;const shift={generation:1,width:1280,height:800,data_base64:'shift',motion:false,moves:[[0,0,1280,700,-100]],native_tiles:[{x:0,y:700,width:1280,height:100,format:'webp',data_base64:'A'.repeat(60000)}]};
+  await stream.frame(shift,'d',3);assert.equal(now,0,'lossless scroll frames are not token paced');
+  const repair={generation:1,width:1280,height:800,data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,7)),force_lossless:true};
+  await stream.frame(repair,'d',4);assert.ok(now>0,'exact repair bytes are paced');
  }finally{await stream.close()}
 });
 

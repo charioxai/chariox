@@ -23,7 +23,7 @@ test('MP-11 writer cannot reuse a slot while any encoder holds its raster',()=>{
  raw.retain();raw.release();assert.throws(()=>p.apply({...header,serial:2}),/lease/);assert.deepEqual(releases,[]);
  raw.release();assert.deepEqual(releases,[[0,1]]);assert.throws(()=>raw.retain(),/retired/);assert.throws(()=>raw.release(),/duplicate/);
  const next=p.apply({...header,serial:2});next.release();assert.deepEqual(releases,[[0,1],[0,2]]);
- assert(!JSON.stringify(raw).includes('pixels'));assert.throws(()=>p.apply({...header,slot:3}),/bound/);
+ assert(!JSON.stringify(raw).includes('pixels'));assert.throws(()=>p.apply({...header,slot:6}),/bound/);
 });
 
 test('MP-10 attestation reads one snapshot rather than one file per channel',async()=>{

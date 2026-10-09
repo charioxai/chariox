@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 474);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,7 +130,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 474);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
@@ -142,8 +142,8 @@ fn kernel_browser_protocol_443_response_snapshot() {
 }
 
 #[test]
-fn kernel_browser_display_protocol_466_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 474);
+fn kernel_browser_display_protocol_475_shapes_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),
@@ -160,6 +160,12 @@ fn kernel_browser_display_protocol_466_shapes_and_hash() {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
+        },
+        Command::DisplayAck {
+            subscription_id: "s".into(),
+            generation: 2,
+            sequence: 3,
+            lost: true,
         },
         Command::DisplayInput {
             tab_id: "t".into(),
@@ -218,6 +224,6 @@ fn kernel_browser_display_protocol_466_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ed138abc4c0b301a51450cee7132b1c4f432f58b1ba4d668db80ccc31eb71b10"
+        "422dea57f036781e882a57634a1a3bba953505038853725eb2b2aa0768f4d7ed"
     );
 }

@@ -69,6 +69,8 @@ extern "C" {
     pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_shift(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_wheel(c: *mut c_void, x: i32, y: i32, dx: i32, dy: i32) -> i32;
+    pub(super) fn cx_capture_click(c: *mut c_void, x: i32, y: i32) -> i32;
+    pub(super) fn cx_capture_key(c: *mut c_void, keysym: libc::c_ulong, shift: i32) -> i32;
     pub(super) fn cx_capture_plans(c: *mut c_void, enabled: i32);
     pub(super) fn cx_webp_lossless(
         bgrx: *const u8,
@@ -106,6 +108,7 @@ extern "C" {
     pub(super) fn cx_codec_diagnostic(c: *mut c_void) -> *const std::ffi::c_char;
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
+    pub(super) fn cx_codec_rate(c: *mut c_void, bitrate: i32) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_codec_close(c: *mut c_void);
     pub(super) fn cx_codec_encode(

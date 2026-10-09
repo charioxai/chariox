@@ -270,4 +270,6 @@ pub use workspace::*;
 /// MP-08/MP-10: version 466 makes display frame events binary (raw payload
 /// segments) and adds lossless WebP tiles and scroll move rectangles.
 /// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 474;
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 475;

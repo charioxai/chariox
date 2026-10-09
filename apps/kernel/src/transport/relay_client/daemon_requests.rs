@@ -136,6 +136,30 @@ pub(super) async fn handle_daemon_request(
                     error: Some(error),
                 };
             }
+            // MP-08/MP-10: protocol 475 acknowledgements stay in the relay
+            // layer: they only gate this sender's own push pump and renew
+            // its delivery lease; the pump's frames take the admitted path.
+            if let LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command:
+                    crate::local::KernelBrowserCommand::DisplayAck {
+                        subscription_id,
+                        generation,
+                        sequence,
+                        lost,
+                    },
+            }) = &request.request
+            {
+                let status = super::browser_display::acknowledge(
+                    display_subscriptions,
+                    subscription_id,
+                    &client_public_key,
+                    *generation,
+                    *sequence,
+                    *lost,
+                )
+                .await;
+                return display_ack_outcome(status, &daemon_private_key, &client_public_key);
+            }
             let poll = match &request.request {
                 LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
                     command:
@@ -372,6 +396,48 @@ pub(super) async fn handle_daemon_request(
             display_event: None,
             encrypted_response: None,
             error: Some(error),
+        },
+    }
+}
+
+fn display_ack_outcome(
+    status: Option<&'static str>,
+    daemon_private_key: &str,
+    client_public_key: &str,
+) -> RelayRequestOutcome {
+    let Some(status) = status else {
+        return RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "display_subscription_required",
+                "MD-DISPLAY: register a fresh display subscription with the same sender identity",
+                false,
+            )),
+        };
+    };
+    let response = crate::local::LocalDaemonResponse::KernelBrowser {
+        result: serde_json::json!({"acknowledged":true,"push":status}),
+    };
+    match serde_json::to_vec(&response)
+        .ok()
+        .and_then(|plaintext| {
+            relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+                .ok()
+        }) {
+        Some(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        None => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                "failed to encrypt relay response",
+                false,
+            )),
         },
     }
 }

@@ -28,20 +28,31 @@ export function nativeRefusalReason(error,helperStage){
  if(message.includes('native readback unavailable'))return helperStage??'first_frame_timeout';
  return 'other';
 }
+// Pixels inside protected regions of the reference capture (null: none).
+const STATUS_BAND_DIP=26;
+export function attestationMask(regions,width,height){
+ if(!regions.length)return null;
+ const mask=new Uint8Array(width*height);
+ for(const r of regions){
+  const l=Math.max(0,Math.floor(r.x)-2),t=Math.max(0,Math.floor(r.y)-2),right=Math.min(width,Math.ceil(r.x+r.width)+2),bottom=Math.min(height,Math.ceil(r.y+r.height)+2);
+  for(let y=t;y<bottom;y++)mask.fill(1,y*width+l,y*width+Math.max(l,right));
+ }
+ return mask;
+}
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,policy,screenshot,allowed,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,screenshot,allowed,frames,timing=()=>{}}){
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
  onCdp(m){
   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
-  // MP-11: attribute-only protection changes produce no XDamage. Fence even
+  // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
-  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.guard?.hasRegions)){
-   if(!this.attested){this.fence();return;}
-   // MP-08/MP-10/MP-11: the owned window/document binding stays intact.
+  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){
+   // MP-08/MP-10/MP-11: the owned window/document binding stays intact,
+   // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
    this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
@@ -55,15 +66,19 @@ export class LinuxCapture {
    this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
    // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
-   await this.connection.send('Browser.setWindowBounds',{windowId,bounds:{width:geometry.width*this.scale,height:geometry.height*this.scale+87}});
+   // Window bounds are host DIPs: the negotiated raster divided by host scale.
+   const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
+   await this.connection.send('Browser.setWindowBounds',{windowId,bounds});
+   // The X window resize is asynchronous; the worker needs its final size.
+   for(let n=0;n<50;n++){const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
    await this.connection.send('Page.bringToFront',{},this.sessionId);
-   const {frameTree}=await this.connection.send('Page.getFrameTree',{},this.sessionId);
-   const {executionContextId}=await this.connection.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'chariox-native-surface-fence',grantUniveralAccess:false},this.sessionId);
-   this.contextId=executionContextId;
    await delay(100);
    // Force the emulated viewport to paint before establishing its native crop.
    await this.screenshot();
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId);await this.regions.refresh();
+   // A DOM mutation may retire the first fence while it is measured (busy
+   // real pages); retry a bounded number of times instead of refusing.
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{frames:this.frames,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
+   for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
    this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
@@ -106,13 +121,30 @@ export class LinuxCapture {
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.
-   for(let attempt=0;attempt<3&&!matched;attempt++){
-    const reference=decodePng((await this.screenshot()).data_base64,this.scale);
+   for(let attempt=0;attempt<6&&!matched;attempt++){
+    const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
     await delay(50);
-    const raw=this.latest?.raw;if(!raw||!this.valid())break;
+    // A protection event may have retired the readback meanwhile; its fresh
+    // replacement follows the refreshed fence (bounded wait).
+    let raw=this.latest?.raw;
+    for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
+    if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
     matched=reference.width===raw.width&&reference.height===raw.height;
     const nativePixels=raw.pixels;
-    for(let n=0;matched&&n<nativePixels.length;n+=4)matched=reference.pixels[n]===nativePixels[n+2]&&reference.pixels[n+1]===nativePixels[n+1]&&reference.pixels[n+2]===nativePixels[n];
+    // MP-08/MP-11: the reference is the protected capture; its masked
+    // regions (+2 px for rounding) are excluded. The same trusted regions
+    // mask every native frame before any encoder or client sees it.
+    // MP-08/MP-10: Chromium's link-status bubble (browser UI under a parked
+    // XTest pointer, bottom 24 DIP) is absent from CDP references; it is not
+    // page content and stays visible to the viewer, as on a native desktop.
+    const band=STATUS_BAND_DIP*this.scale,masked=attestationMask([...(shot[displayMaskRegions]??[]),{x:0,y:raw.height-band,width:raw.width,height:band}],raw.width,raw.height);
+    // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
+    let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
+    for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
+    // A mostly masked viewport cannot attest the surface; stay on CDP.
+    if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
+    if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
+    else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
    }
    if(!matched)throw Error('native attestation RGB differed');
    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
@@ -125,13 +157,11 @@ export class LinuxCapture {
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
-   let at=performance.timeOrigin+performance.now();const fenced=at;
-   // Both fences follow this readback; each must pass. Concurrent, not skipped.
-   const [,visibility]=await Promise.all([
-    assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id).then(()=>this.timing('native_document_fence',fenced)),
-    this.connection.send('Runtime.evaluate',{expression:'document.visibilityState',contextId:this.contextId,returnByValue:true},this.sessionId).then(value=>{this.timing('native_visibility_fence',fenced);return value})]);
-   if(visibility.result?.value!=='visible')throw Error('native source not visible');
-   at=performance.timeOrigin+performance.now();let regions;
+   // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
+   // page targets fence this source by event (onCdp); every delivered frame
+   // still passes the credit's document check, which CDP orders after those
+   // events. The owned single-tab window is never occluded or hidden.
+   let at=performance.timeOrigin+performance.now();let regions;
    try{
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
@@ -160,6 +190,20 @@ export class LinuxCapture {
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
   if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
   return this.control({wheel:[px,py,dx,dy]},true);
+ }
+ // MP-08/MP-10: primary click on the owned display (CSS coordinates).
+ click(x,y){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
+  if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
+  return this.control({click:[px,py]},true);
+ }
+ // MP-08/MP-10: one key press/release on the owned display (X keysym:
+ // printable ASCII or a named editing key); callers fence the text target.
+ key(keysym,shift=false){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  if(!Number.isSafeInteger(keysym)||!(keysym>=0x20&&keysym<=0x7e||keysym>=0xff08&&keysym<=0xffff))return false;
+  return this.control({key:[keysym,shift?1:0]},true);
  }
  // MP-08/MP-10: scroll plans cost a full-frame compare per readback; request
  // them only while a viewer canvas is exact and unprotected.

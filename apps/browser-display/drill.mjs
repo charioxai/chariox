@@ -159,12 +159,15 @@ try {
   try {
    const name=new URL(req.url,'http://localhost').pathname;
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
+   // MP-11 (owner 2026-10-08): a cross-site (isolated) consent-style frame with a protected field.
+   if(name==='/frame-consent'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><body style="margin:0;height:100vh;background:rgb(0,90,200)" onclick="document.body.style.background=\'rgb(0,200,90)\'"><input type="password" value="fixture" style="position:absolute;left:250px;top:120px;width:120px;height:40px;border:0"></body>');return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
    if(page){
     res.setHeader('Content-Type','text/html');const dynamic=process.env.MD_DYNAMIC_PROTECTED==='1'&&!dynamicFixtureServed;if(dynamic)dynamicFixtureServed=true;
     const overlay=`<div id="protected-fixture" ${dynamic?'':'data-chariox-observation-protected'} style="position:fixed;left:900px;top:200px;width:150px;height:80px;background:red;color:white;z-index:100">Protected fixture</div>`;
     const button=dynamic?`<button style="position:fixed;left:720px;top:200px;width:160px;height:80px;z-index:100" onclick="document.querySelector('#protected-fixture').setAttribute('data-chariox-observation-protected','')">Protect</button>`:'';
-    res.end(process.env.MD_PROTECTED==='1'?page.replace('</body>',overlay+button+'</body>'):page);return;
+    const frame=process.env.MD_FRAMES==='1'?`<iframe src="http://localhost:${server.address().port}/frame-consent" style="position:fixed;left:600px;top:400px;width:400px;height:200px;border:0;z-index:100"></iframe>`:'';
+    res.end(process.env.MD_PROTECTED==='1'||frame?page.replace('</body>',(process.env.MD_PROTECTED==='1'?overlay+button:'')+frame+'</body>'):page);return;
    }
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
@@ -285,7 +288,7 @@ try {
   receipt.unsupported_dpr_rejected=await page.evaluate(async ready=>{try{const reply=await mdTransport.request({KernelBrowser:{command:{op:'display_subscribe',tab_id:ready.tab_id,generation:ready.generation,codecs:['avc1.420033','png','chariox-video-dependencies-v1','chariox-stripes-v1'],bitrate:8000000,device_scale_factor:2}}});return Boolean(reply.Error)}catch{return true}},ready);
   if(!receipt.unsupported_dpr_rejected)throw Error('MP-08: #893 admitted unsupported 1080p DPR2');
  }
- receipt.codec=await page.evaluate(()=>mdStream.binding.codec);receipt.codec_provenance='kernel negotiated binding; delivered video codecs retained in frame metadata';
+ receipt.codec=await page.evaluate(()=>mdStream.binding.codec);receipt.delivery=await page.evaluate(()=>mdStream.push?'push-ack-475':'credit');receipt.codec_provenance='kernel negotiated binding; delivered video codecs retained in frame metadata';
  const bootstrapStarted=performance.now();
  const first=await until(()=>page.evaluate(()=>mdStream.next()),'first asynchronous display frame');receipt.bootstrap={kind:first.kind,sequence:first.sequence,duration_ms:performance.now()-bootstrapStarted};
  const reference=async()=>Buffer.from((await page.evaluate(async()=>{const r=await mdTransport.request({KernelBrowser:{command:{op:'display_capture',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation}}});return r.KernelBrowser.result.data_base64})),'base64');
@@ -318,6 +321,18 @@ try {
  const settled=await verifySettled(()=>page.evaluate(()=>mdStream.next()),attempt=>pair('settled-verification-'+attempt));
  receipt.settle_duration_ms=performance.now()-settleStarted;receipt.settled={kind:'verified-unchanged',polls:settled.polls,verification_attempts:settled.verification_attempts,sequence:await page.evaluate(()=>mdStream.presenter.sequence),fidelity:settled.fidelity};
  if(!receipt.settled.fidelity.lossless)throw Error('MD-DISPLAY: settled pixels differ');
+ if(process.env.MD_FRAMES==='1'){
+  // MP-11: the isolated frame is visible and clickable; its protected field stays masked.
+  const dpr=geometry.dpr,read=async()=>{await page.evaluate(()=>mdStream.next());return PNG.sync.read(Buffer.from((await actual()).png.split(',')[1],'base64'))};
+  const px=(img,x,y)=>{const i=(y*dpr*img.width+x*dpr)*4;return [img.data[i],img.data[i+1],img.data[i+2]]},near=(a,b)=>a.every((v,i)=>Math.abs(v-b[i])<=24);
+  let img=await read();receipt.frame_checks={visible:px(img,620,420),field:px(img,910,540)};
+  if(!near(receipt.frame_checks.visible,[0,90,200]))throw Error('MP-11: isolated consent frame must be visible');
+  if(!near(receipt.frame_checks.field,[0,0,0]))throw Error('MP-11: protected field inside an isolated frame must be masked');
+  await page.evaluate(()=>mdStream.input({kind:'click',x:650,y:450}));
+  for(const deadline=performance.now()+5000;!near(px(img=await read(),620,420),[0,200,90]);await new Promise(r=>setTimeout(r,50)))if(performance.now()>deadline)throw Error('MP-11: click into the isolated frame was not presented');
+  Object.assign(receipt.frame_checks,{clicked:px(img,620,420),field_after:px(img,910,540)});await writeFile(path.join(output,'frames-clicked-viewer.png'),PNG.sync.write(img));
+  if(!near(receipt.frame_checks.field_after,[0,0,0]))throw Error('MP-11: protected field inside an isolated frame must stay masked');
+ }
  // A source compositor may finish painting after its first protected snapshot.
  // Permit bounded distinct refinements, then require an unchanged exact poll.
  receipt.idle_refinements=0;
@@ -398,9 +413,11 @@ try {
  if(process.env.MD_PROTECTED==='1'){
   if(process.env.MD_PROTECTION_REPETITIONS)receipt.protection_stress=await stressProtection({page,pair,pause,resource,repetitions:Number(process.env.MD_PROTECTION_REPETITIONS)});
   receipt.protected_reference_recovery=await page.evaluate(async()=>{
-   const previous=mdStream.presenter.sequence;mdStream.presenter.sequence=0;let frame;const deadline=performance.now()+10000;
-   while(!(frame=await mdStream.next())){if(performance.now()>deadline)throw Error('MP-11: protected reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
-   return {previous,sequence:frame.sequence,kind:frame.kind,independent:frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(row=>row.key)};
+   const previous=mdStream.presenter.sequence,independent=frame=>frame.kind==='png'||frame.kind==='video'&&frame.key||frame.kind==='stripes'&&frame.stripes.length===8&&frame.stripes.every(row=>row.key);let frame;const deadline=performance.now()+10000;
+   // MP-08/MP-10: protocol 475 push asks the pump for a key; credits rewind.
+   if(mdStream.push)mdStream.requestKey();else mdStream.presenter.sequence=0;
+   while(!(frame=await mdStream.next())||mdStream.push&&!independent(frame)){if(performance.now()>deadline)throw Error('MP-11: protected reference recovery timeout');await new Promise(r=>setTimeout(r,4));}
+   return {previous,sequence:frame.sequence,kind:frame.kind,independent:independent(frame),push:mdStream.push===true};
   });
   if(!receipt.protected_reference_recovery.independent)throw Error('MP-11: protected recovery must be independent');
   await pair('protected-reference-recovery');
@@ -409,7 +426,9 @@ try {
  receipt.fixture_statistics=fixtureStats;
  const oldDocument=await page.evaluate(()=>mdStream.presenter.documentId);
  await page.evaluate(()=>mdStream.input({kind:'click',x:80,y:mdStream.presenter.canvas.height/mdStream.binding.device_scale_factor-25}));await pause(200);
- const navigated=await until(()=>page.evaluate(()=>mdStream.next()),'asynchronous independent navigation frame');
+ // MP-08/MP-10: pushed frames of the old document (painted between the
+ // native click and the commit) precede it; judge the first new-document frame.
+ const navigated=await until(async()=>{const frame=await page.evaluate(()=>mdStream.next());return frame&&frame.document_id!==oldDocument?frame:null},'asynchronous independent navigation frame');
  assertIndependentNavigation(navigated,oldDocument,await page.evaluate(()=>mdStream.binding.codec));
  const oldRejected=await page.evaluate(async document=>{try{await mdTransport.request({KernelBrowser:{command:{op:'display_input',tab_id:mdStream.binding.tab_id,generation:mdStream.binding.generation,document_id:document,input:{kind:'click',x:100,y:200}}}});return false}catch{return true}},oldDocument);
  if(!oldRejected)throw Error('MD-DISPLAY: navigated document accepted stale input');

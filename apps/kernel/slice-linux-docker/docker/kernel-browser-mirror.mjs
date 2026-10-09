@@ -60,7 +60,7 @@ export class MirrorService {
     const tab=await this.host.target(command),scale=this.host.scales.get(tab.tab_id);
     if(scale && scale!==command.device_scale_factor)throw new Error('MP-08: canonical mirror geometry already selected');
     this.assertWebTab(tab);const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-    await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor),sessionId);
+    await connection.send('Emulation.setDeviceMetricsOverride',displayDeviceMetrics(1280,800,command.device_scale_factor,this.host.chromium?.scale??1),sessionId);
     this.host.scales.set(tab.tab_id,command.device_scale_factor);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});

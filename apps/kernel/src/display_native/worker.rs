@@ -57,6 +57,12 @@ enum Command {
     Wheel {
         wheel: [i32; 4],
     },
+    Click {
+        click: [i32; 2],
+    },
+    Key {
+        key: [u32; 2],
+    },
     Plans {
         plans: bool,
     },
@@ -64,6 +70,7 @@ enum Command {
 fn admit_default() -> bool {
     true
 }
+const RASTER_SLOTS: usize = 6;
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -129,7 +136,10 @@ pub(super) fn run() -> Result<(), String> {
     if capture.0.is_null() {
         return Err("MP-10: native capture unavailable".into());
     }
-    let mut slots = (0..3)
+    // MP-08/MP-10: Node holds the latest and a pending readback while the
+    // codec/exact threads lease another; three slots starved input-echo
+    // readbacks for 30-60 ms on hosted typing. Keep in sync with Node's pool.
+    let mut slots = (0..RASTER_SLOTS)
         .map(|i| Slot::create(&config.pool, i, (w * h * 4) as usize))
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
@@ -325,6 +335,22 @@ pub(super) fn run() -> Result<(), String> {
                 } => {
                     if unsafe { ffi::cx_capture_wheel(capture.0, x, y, dx, dy) } != 0 {
                         return Err("MP-11: native wheel refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                // MP-08/MP-10: [x, y] primary click in device pixels.
+                Command::Click { click: [x, y] } => {
+                    if unsafe { ffi::cx_capture_click(capture.0, x, y) } != 0 {
+                        return Err("MP-11: native click refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                // MP-08/MP-10: [keysym, shift] one key press/release.
+                Command::Key {
+                    key: [keysym, shift],
+                } => {
+                    if unsafe { ffi::cx_capture_key(capture.0, keysym.into(), shift as i32) } != 0 {
+                        return Err("MP-11: native key refused".into());
                     }
                     wake = Some(epoch());
                 }

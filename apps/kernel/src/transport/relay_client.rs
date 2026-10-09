@@ -35,6 +35,7 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
+mod display_pump;
 mod connection_config;
 mod connection_state;
 mod connector;

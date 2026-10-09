@@ -15,6 +15,8 @@ static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CP
 #include <X11/extensions/Xdamage.h>
 #include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/XTest.h>
+#include <X11/XKBlib.h>
+#include <X11/keysym.h>
 
 struct Capture {
     Display *display;
@@ -372,6 +374,43 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
     if(!XTestFakeMotionEvent(c->display,-1,rx+x,ry+c->offset+y,CurrentTime))return -1;
     for(int i=0;i<abs(dy);i++){unsigned b=dy>0?5:4;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
     for(int i=0;i<abs(dx);i++){unsigned b=dx>0?7:6;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
+    XFlush(c->display);return 0;
+}
+
+/* MP-08/MP-10: a primary-button click into the owned window (no renderer
+ * acknowledgement round trip); the caller fenced document and actor first. */
+int cx_capture_click(struct Capture *c,int x,int y){
+    if(x<0||y<0||x>=c->width||y>=c->height)return -1;
+    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    Window child;int rx,ry;
+    if(!XTranslateCoordinates(c->display,c->window,DefaultRootWindow(c->display),0,0,&rx,&ry,&child))return -1;
+    if(!XTestFakeMotionEvent(c->display,-1,rx+x,ry+c->offset+y,CurrentTime))return -1;
+    XTestFakeButtonEvent(c->display,1,True,CurrentTime);XTestFakeButtonEvent(c->display,1,False,CurrentTime);
+    XFlush(c->display);return 0;
+}
+
+/* MP-08/MP-10: one key press/release into the owned window, focused first
+ * (no renderer acknowledgement round trip); the caller fenced document,
+ * actor and text target. A keysym outside the private keymap is refused. */
+int cx_capture_key(struct Capture *c,unsigned long keysym,int shift){
+    if(window_pid(c->display,c->window)!=c->owner)return -1;
+    KeyCode code=XKeysymToKeycode(c->display,(KeySym)keysym),shifter=XKeysymToKeycode(c->display,XK_Shift_L);
+    if(!code||!shifter)return -1;
+    if(XkbKeycodeToKeysym(c->display,code,0,0)!=(KeySym)keysym){
+        if(XkbKeycodeToKeysym(c->display,code,0,1)!=(KeySym)keysym)return -1;
+        shift=1;
+    }
+    Window focus;int revert;XGetInputFocus(c->display,&focus,&revert);
+    if(focus!=c->window){
+        XSync(c->display,False);redirect_display=c->display;redirect_error=0;
+        redirect_previous=XSetErrorHandler(redirect_failed);
+        XSetInputFocus(c->display,c->window,RevertToParent,CurrentTime);XSync(c->display,False);
+        XSetErrorHandler(redirect_previous);redirect_display=NULL;
+        if(redirect_error)return -1;
+    }
+    if(shift)XTestFakeKeyEvent(c->display,shifter,True,CurrentTime);
+    XTestFakeKeyEvent(c->display,code,True,CurrentTime);XTestFakeKeyEvent(c->display,code,False,CurrentTime);
+    if(shift)XTestFakeKeyEvent(c->display,shifter,False,CurrentTime);
     XFlush(c->display);return 0;
 }
 

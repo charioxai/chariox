@@ -295,12 +295,22 @@ impl Sessions {
         };
         let sessions = &mut self.sessions;
         if sessions.get(&q.encoder).is_some_and(|s| {
-            s.bitrate != q.bitrate
-                || s.regions != regions
-                || s.stripes != q.stripes
-                || s.reduced != q.reduced
+            s.regions != regions || s.stripes != q.stripes || s.reduced != q.reduced
         }) {
             sessions.remove(&q.encoder);
+        }
+        // MP-08/MP-10: a rate change retunes the live x264 rows (no IDR);
+        // hardware rows cannot and reopen.
+        if let Some(s) = sessions.get_mut(&q.encoder).filter(|s| s.bitrate != q.bitrate) {
+            let retuned = s
+                .codec
+                .as_ref()
+                .is_some_and(|codec| unsafe { ffi::cx_codec_rate(codec.0, q.bitrate) } == 0);
+            if retuned {
+                s.bitrate = q.bitrate;
+            } else {
+                sessions.remove(&q.encoder);
+            }
         }
         if !sessions.contains_key(&q.encoder) {
             if sessions.len() >= 8 {
