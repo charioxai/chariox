@@ -690,3 +690,28 @@ test("MP-08/MP-11 configured defaults hydrate while provider metadata is still p
   await boot.deferred?.providerCatalog
   assert.deepEqual(beforeMetadata, {provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"})
 })
+
+
+test("MP-08/MP-11 defaults recover after the first live report when relay routing drops", async () => {
+  const { LocalIpcError } = await import("./ipc.js")
+  let report!: (event: { event: string }) => void
+  let disposed = 0, reads = 0
+  const client = { onKernelEvent: (handler: typeof report) => { report = handler; return () => { disposed += 1 } } }
+  const boot = bootstrapWaitingRoom(client as never, { clientId: "cli", model: "default", effort: "", accountProfile: "default" }, {}, {
+    getConfiguredProviderLaunchDefaults: async () => {
+      if (++reads === 1) throw new LocalIpcError("read configured defaults", "target daemon disconnected from relay", "target_disconnected", true)
+      return { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" }
+    },
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let outcome = "pending"
+  void boot.deferred?.waitingRoomDefaults?.then(() => { outcome = "ready" }, () => { outcome = "failed" })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(outcome, "pending")
+  report({ event: "waiting_room_rows_changed" })
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" })
+  assert.equal(reads, 2)
+  assert.equal(disposed, 1)
+})

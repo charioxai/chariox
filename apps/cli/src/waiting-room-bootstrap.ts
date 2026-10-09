@@ -1,3 +1,4 @@
+import { readWaitingRoomConfiguredDefaults } from "./waiting-room-bootstrap-defaults.js"
 import type { BootstrapState, CliOptions } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { CharioxPreferences } from "./preferences.js"
@@ -10,7 +11,7 @@ export function bootstrapWaitingRoom(client: LocalIpcClient, options: CliOptions
   const useConfiguredModel = options.model === "default"
   const useConfiguredEffort = !options.effort.trim()
   const defaults = Promise.resolve().then(async () => {
-    const configured = await deps.getConfiguredProviderLaunchDefaults?.(client) ?? {}
+    const configured = await readWaitingRoomConfiguredDefaults(client, deps.getConfiguredProviderLaunchDefaults)
     return {
       ...(useConfiguredProvider && configured.provider ? { provider: configured.provider } : {}),
       ...(useConfiguredModel && configured.model ? { model: configured.model } : {}),

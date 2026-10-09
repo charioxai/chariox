@@ -19,3 +19,17 @@ test("background defaults reconcile only before user launch choices or attachmen
   controller.apply({ provider: "claude" })
   assert.equal(state.providerId, "codex")
 })
+
+
+test("MP-08/MP-11 defaults never retry an authentication refusal", async () => {
+  const { LocalIpcError } = await import("./ipc.js")
+  const { readWaitingRoomConfiguredDefaults } = await import("./waiting-room-bootstrap-defaults.js")
+  let reads = 0, disposed = 0
+  const client = { onKernelEvent: () => () => { disposed += 1 } }
+  await assert.rejects(readWaitingRoomConfiguredDefaults(client as never, async () => {
+    reads += 1
+    throw new LocalIpcError("read defaults", "permission denied", "authorization_denied", false)
+  }), /permission denied/)
+  assert.equal(reads, 1)
+  assert.equal(disposed, 1)
+})

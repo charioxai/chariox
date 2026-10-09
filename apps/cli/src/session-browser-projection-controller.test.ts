@@ -50,13 +50,13 @@ test("live session insertion keeps the selected session and subsequent arrows mo
   assert.equal(controller.normalizeIndex(), 1)
   rows = [session("new", "Created", 40), ...rows]
   assert.equal(controller.normalizeIndex(), 2)
-  assert.equal(controller.sessions()[selectedIndex].id, "old")
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
   selectedIndex -= 1
   assert.equal(controller.normalizeIndex(), 1)
-  assert.equal(controller.sessions()[selectedIndex].id, "recent")
+  assert.equal(controller.sessions()[selectedIndex]?.id, "recent")
   rows = rows.filter(row => row.id !== "recent")
   assert.equal(controller.normalizeIndex(), 1)
-  assert.equal(controller.sessions()[selectedIndex].id, "old")
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
 })
 
 test("session browser projection scopes sessions to the selected project", () => {

@@ -664,7 +664,7 @@ function createHarness(options: {
 
   const controller = createWaitingRoomInventoryRefreshController({
     isKernelConnected: () => options.connected ?? true,
-    nowMs: options.nowMs,
+    ...(options.nowMs ? { nowMs: options.nowMs } : {}),
     getInventoryStatus: () => inventoryStatus,
     setInventoryStatus: (status) => {
       inventoryStatus = status
