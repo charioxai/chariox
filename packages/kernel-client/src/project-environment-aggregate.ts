@@ -93,3 +93,5 @@ export function environmentFolderModelDisclosure(environment: ProjectEnvironment
   const result = operation?.per_item_results.find(result => result.requirement_id === `detect:folder:${folderId}`)
   return result?.reason_code === "code_manifest" ? "automatic" : result?.reason_code === "no_code_manifest" ? "optional" : "unknown"
 }
+
+export { createEnvironmentViewCache } from "./project-environment-view-cache.js"

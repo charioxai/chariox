@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { projectEnvironmentOperationRequest, relayStatusRequest } from "@chariox/kernel-client/ipc-requests"
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
-import { getProjectEnvironmentRequest, projectEnvironmentLines, type ProjectEnvironment } from "@chariox/kernel-client"
+import { createEnvironmentViewCache, getProjectEnvironmentRequest, projectEnvironmentLines, type ProjectEnvironment } from "@chariox/kernel-client"
 
 export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
@@ -12,6 +12,9 @@ export function createProjectEnvironmentReadController(deps: {
   render: () => void
   pageSize: () => number
 }) {
+  const cache = createEnvironmentViewCache()
+  const scope = Symbol("kernel-client-view")
+  let refreshing = false
   let open = false
   let generation = 0
   let lines: string[] = []
@@ -24,22 +27,25 @@ export function createProjectEnvironmentReadController(deps: {
     close() { open = false; generation++; deps.render() },
     async open(projectId: string) {
       const requestGeneration = ++generation
-      open = true; current = null; offset = 0; lines = ["Loading Environment…"]; deps.render()
+      open = true; refreshing = true; current = cache.peek(scope, projectId); offset = 0
+      lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines(current)] : ["Loading Environment…"]; deps.render()
       try {
         const response = await deps.send(getProjectEnvironmentRequest(projectId)) as { ProjectEnvironment?: { environment: ProjectEnvironment } }
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId || environment.schema_version !== 1) throw new Error("Environment unavailable for this Project")
         if (requestGeneration !== generation) return
-        current = environment
+        cache.remember(scope, environment); current = environment
         lines = viewLines(environment)
       } catch (error) {
         if (requestGeneration !== generation) return
+        cache.forget(scope, projectId); current = null
         lines = [error instanceof Error ? error.message : "Environment unavailable"]
       }
+      if (requestGeneration === generation) refreshing = false
       deps.render()
     },
     async detect() {
-      if (!current || detectionGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("detect")) return
+      if (!current || refreshing || detectionGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("detect")) return
       const requestGeneration = generation
       const projectId = current.local_project_id
       detectionGeneration = requestGeneration
@@ -53,7 +59,7 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return
-        current = environment; lines = viewLines(environment); offset = 0
+        cache.remember(scope, environment); current = environment; lines = viewLines(environment); offset = 0
       } catch (error) {
         if (requestGeneration !== generation) return
         lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
