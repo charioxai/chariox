@@ -298,7 +298,7 @@ fn public_history_duplicate_event_cannot_replace_authoritative_public_text() {
 
 #[test]
 fn public_history_protocol_453_result_shape_hash() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 453);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let f = Fixture::new();
     f.append("room", "compiler");
     let mut wire = serde_json::to_value(f.search("room", "compiler", 50, None).unwrap()).unwrap();
@@ -367,7 +367,7 @@ fn public_history_recreated_index_rebuilds_from_sanitized_source() {
 
 #[test]
 fn public_history_protocol_453_detail_shape_hash() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 453);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let f = Fixture::new();
     let event = f.append("room", "compiler");
     let _guard = f.store.lock_public_history().unwrap();
