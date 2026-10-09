@@ -1,28 +1,68 @@
-import { parseKeypress } from "@opentui/core"
+import { parseKeypress, StdinParser } from "@opentui/core"
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
   createCliStdinKeyController,
   type CliStdinKeyControllerDeps,
 } from "./cli-stdin-key-controller.js"
+import { recordedDragStreams } from "./cli-stdin-drag-streams.test-fixture.js"
+
+function selectionController() {
+  const counts = { clears: 0, shortcuts: 0 }
+  const controller = createCliStdinKeyController({
+    createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+    clearTextSelection: () => { counts.clears++ },
+    dialogOverlayOpen: () => false,
+    handleSessionBrowserKey: () => { counts.shortcuts++; return true },
+  } as unknown as CliStdinKeyControllerDeps)
+  return { controller, counts }
+}
 
 test("MP-08 / MP-10 batched SGR mouse reports preserve the drag and deferred rebuild", () => {
   const reports = ["\x1b[<32;11;5M", "\x1b[<32;12;5M", "\x1b[<0;12;5m"]
   for (const raw of [reports.slice(0, 2).join(""), reports.join("")]) {
     for (const chunk of [raw, Buffer.from(raw)]) {
-      let clears = 0
-      let shortcuts = 0
-      const controller = createCliStdinKeyController({
-        parseKeypress,
-        clearTextSelection: () => { clears++ },
-        dialogOverlayOpen: () => false,
-        handleSessionBrowserKey: () => { shortcuts++; return true },
-      } as unknown as CliStdinKeyControllerDeps)
-
+      const { controller, counts } = selectionController()
       assert.equal(controller.handleData(chunk), false)
-      assert.equal(clears, 0)
-      assert.equal(shortcuts, 0)
+      assert.deepEqual(counts, { clears: 0, shortcuts: 0 })
     }
+  }
+})
+
+// MP-08 / MP-10: stdin chunks may split a report anywhere, including right
+// after ESC or inside the CSI parameters. No split of a real drag may act as
+// a key press, and the next real key must still be decoded afterwards.
+test("MP-08 / MP-10 recorded drags split at every byte boundary keep the selection", () => {
+  for (const [name, reports] of Object.entries(recordedDragStreams)) {
+    const stream = reports.join("")
+    const deliveries = [
+      ...Array.from({ length: stream.length - 1 }, (_, i) => [stream.slice(0, i + 1), stream.slice(i + 1)]),
+      [...stream],
+    ]
+    for (const chunks of deliveries) {
+      const { controller, counts } = selectionController()
+      chunks.forEach((chunk, i) => controller.handleData(i % 2 ? Buffer.from(chunk) : chunk))
+      const at = `${name} split ${JSON.stringify(chunks[0])}`
+      assert.deepEqual(counts, { clears: 0, shortcuts: 0 }, at)
+      controller.handleData("x")
+      assert.deepEqual(counts, { clears: 1, shortcuts: 1 }, at)
+    }
+  }
+})
+
+test("MP-08 / MP-10 a lone legacy ESC is still decoded as escape after the timeout", async () => {
+  const { controller, counts } = selectionController()
+  controller.handleData("\x1b")
+  assert.deepEqual(counts, { clears: 0, shortcuts: 0 })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.deepEqual(counts, { clears: 1, shortcuts: 1 })
+})
+
+test("MP-08 / MP-10 terminal focus reports keep the selection", () => {
+  for (const raw of ["\x1b[I", "\x1b[O"]) {
+    const { controller, counts } = selectionController()
+    controller.handleData(raw)
+    assert.deepEqual(counts, { clears: 0, shortcuts: 0 })
   }
 })
 
@@ -34,26 +74,20 @@ test("MP-08 / MP-10 F6 is distinct from Ctrl+C with the legacy keyboard protocol
   assert.equal(interrupt?.shift, false)
 })
 
-// MP-08 / MP-10: these real parser inputs must release retained selection so
-// the root's clearTextSelection callback can flush waiting-room rebuilds.
-for (const [label, raw] of [
-  ["bracketed paste", "\x1b[200~pasted text\x1b[201~"],
-  ["batched text", "ab"],
-] as const) {
-  test(`MP-08 / MP-10 ${label} clears retained selection before returning`, () => {
-    for (const chunk of [raw, Buffer.from(raw)]) {
-      let clears = 0
-      let shortcuts = 0
-      const controller = createCliStdinKeyController({
-        parseKeypress,
-        clearTextSelection: () => { clears++ },
-        handleSessionBrowserKey: () => { shortcuts++; return true },
-      } as unknown as CliStdinKeyControllerDeps)
+// MP-08 / MP-10: real input must release retained selection so the root's
+// clearTextSelection callback can flush waiting-room rebuilds.
+test("MP-08 / MP-10 bracketed paste clears retained selection before returning", () => {
+  for (const chunk of ["\x1b[200~pasted text\x1b[201~", Buffer.from("\x1b[200~pasted text\x1b[201~")]) {
+    const { controller, counts } = selectionController()
+    assert.equal(controller.handleData(chunk), false)
+    assert.deepEqual(counts, { clears: 1, shortcuts: 0 })
+  }
+})
 
-      assert.equal(parseKeypress(chunk, { useKittyKeyboard: true })?.name, "")
-      assert.equal(controller.handleData(chunk), false)
-      assert.equal(clears, 1)
-      assert.equal(shortcuts, 0)
-    }
-  })
-}
+test("MP-08 / MP-10 batched typing is decoded as the same keys typed one by one", () => {
+  for (const chunk of ["ab", Buffer.from("ab")]) {
+    const { controller, counts } = selectionController()
+    assert.equal(controller.handleData(chunk), true)
+    assert.deepEqual(counts, { clears: 2, shortcuts: 2 })
+  }
+})

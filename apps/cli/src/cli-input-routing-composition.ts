@@ -1,4 +1,4 @@
-import { parseKeypress } from "@opentui/core"
+import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
@@ -673,7 +673,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const stdinKeyController = createCliStdinKeyController({
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    // Same settings as the renderer's own parser, so both agree on every chunk.
+    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,

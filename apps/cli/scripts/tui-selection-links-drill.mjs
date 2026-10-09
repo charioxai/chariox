@@ -199,6 +199,19 @@ try {
     await writeFile(path.join(evidence, `${name}.txt`), await page.evaluate(() => terminalScreen()))
   }
   const press = async sequence => { tui.terminal.write(sequence); await sleep(180) }
+  // MP-08 / MP-10 --fragment-mouse: split every SGR report right after ESC
+  // and inside its parameters across PTY writes, as stdin may deliver it.
+  const mouse = async sequence => {
+    if (!options['fragment-mouse']) return press(sequence)
+    const pieces = ['']
+    for (const report of sequence.match(/\x1b\[<[^Mm]*[Mm]/g)) {
+      const cut = report.indexOf(';') + 2
+      pieces[pieces.length - 1] += report[0]
+      pieces.push(report.slice(1, cut), report.slice(cut))
+    }
+    for (const piece of pieces) { tui.terminal.write(piece); await sleep(2) }
+    await sleep(180)
+  }
   const typeText = async text => { for (const c of text) { tui.terminal.write(c); await sleep(15) } }
   const rowOf = needle => page.evaluate(n => {
     const rows = terminalScreen().split('\n'); const y = rows.findIndex(row => row.includes(n))
@@ -212,10 +225,10 @@ try {
   const copySequence = options['copy-key'] === 'kitty' ? '\x1b[99;6u' : '\x1b[17~'
   // Real SGR drag across `width` cells of a visible row, then release.
   const dragSelect = async (at, width) => {
-    await press(`\x1b[<0;${at.x+1};${at.y+1}M`)
+    await mouse(`\x1b[<0;${at.x+1};${at.y+1}M`)
     const move = `\x1b[<32;${at.x+width};${at.y+1}M`
-    await press(options['batch-mouse'] ? `\x1b[<32;${at.x+2};${at.y+1}M${move}` : move)
-    await press(`\x1b[<0;${at.x+width};${at.y+1}m`)
+    await mouse(options['batch-mouse'] ? `\x1b[<32;${at.x+2};${at.y+1}M${move}` : move)
+    await mouse(`\x1b[<0;${at.x+width};${at.y+1}m`)
     await sleep(400)
   }
   const settledRowOf = async needle => {
@@ -238,6 +251,7 @@ try {
       const before = await cellColors(at, needle.length)
       await dragSelect(at, needle.length + 1)
       const highlighted = JSON.stringify(await cellColors(at, needle.length)) !== JSON.stringify(before)
+      await capture(`${kind}-dragged`)
       assert.ok(highlighted, 'paste begins with a retained selection')
       const deferred = await beforePaste?.(kind)
       await capture(`${kind}-selected`)
@@ -278,7 +292,7 @@ try {
     } finally { await client.close() }
     result = {items: ['MP-08','MP-10'], mode: 'waiting-room-paste', source: options.source,
       cli, cliSha256: await hashClient(path.dirname(cli)), kernelSha256: await hashFile(options['kernel-binary']),
-      dpr: Number(options.dpr ?? 1), cells}
+      dpr: Number(options.dpr ?? 1), fragmentMouse: Boolean(options['fragment-mouse']), cells}
     const green = cells.every(cell => cell.cleared && cell.rebuilt)
     console.log(JSON.stringify(result))
     if (options['expect-red']) assert.ok(!green, 'base must fail paste selection/refresh')
@@ -323,7 +337,7 @@ try {
       result = { items: ['MP-08', 'MP-10'], mode: 'selection-review', source: options.source,
         cli, cliSha256: await hashClient(path.dirname(cli)), kernelUrl: options['fleet-kernel-url'],
         provider: options.provider ?? 'codex', accountProfile: options['account-profile'], model: options.model,
-        dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), copyKey: options['copy-key'] ?? 'f6',
+        dpr: Number(options.dpr ?? 1), batchMouse: Boolean(options['batch-mouse']), fragmentMouse: Boolean(options['fragment-mouse']), copyKey: options['copy-key'] ?? 'f6',
         highlighted, keyboardCopy, typedAfterDrag, clearedByTyping, emptyCopyKeptAlive, pasted,
         acceptance: 'real provider and built TUI via PTY; desktop Terminal.app and hosted transport need separate observations' }
       const green = highlighted && keyboardCopy && typedAfterDrag && clearedByTyping && emptyCopyKeptAlive
@@ -355,14 +369,14 @@ try {
     await capture('a04-typed-after-drag')
     await press('\x15')
     // Zero-length click on transcript text, then type.
-    await press(`\x1b[<0;${at.x+3};${at.y+1}M`); await press(`\x1b[<0;${at.x+3};${at.y+1}m`); await sleep(400)
+    await mouse(`\x1b[<0;${at.x+3};${at.y+1}M`); await mouse(`\x1b[<0;${at.x+3};${at.y+1}m`); await sleep(400)
     await typeText('zr'); await sleep(500)
     const typedAfterClick = await promptShows('zr')
     await capture('a05-typed-after-click')
     await press('\x15')
     // A user whose keys were lost clicks the prompt before continuing.
     const promptRow = await rowOf('Write your next prompt here')
-    if (promptRow) { await press(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}M`); await press(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}m`); await sleep(300) }
+    if (promptRow) { await mouse(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}M`); await mouse(`\x1b[<0;${promptRow.x+3};${promptRow.y+1}m`); await sleep(300) }
     let selectedWithQueue = false, queuedAtMeta = false, metaCopies = [], metaCopy = false, queueStripAfterMeta = false
     let kernelQueuedAfterMeta = 'not-reached', queuedSurvived = false, waitingRoomAfterDelete = false, flowError = null
     try {
@@ -463,14 +477,14 @@ try {
     await sleep(500)
     retained = await page.evaluate(() => term.getSelection() === 'Provider Accounts')
   } else {
-  await press(`\x1b[<0;${selection.x+1};${selection.y+1}M`)
+  await mouse(`\x1b[<0;${selection.x+1};${selection.y+1}M`)
   const move = `\x1b[<32;${selection.x+16};${selection.y+1}M`
-  await press(options['batch-mouse'] ? `\x1b[<32;${selection.x+8};${selection.y+1}M${move}` : move)
+  await mouse(options['batch-mouse'] ? `\x1b[<32;${selection.x+8};${selection.y+1}M${move}` : move)
   }
   const during = await colors()
   if (!options['no-mouse']) await capture('02-dragging')
   const copyMark = output.length
-  if (!options['no-mouse']) await press(`\x1b[<0;${selection.x+16};${selection.y+1}m`)
+  if (!options['no-mouse']) await mouse(`\x1b[<0;${selection.x+16};${selection.y+1}m`)
   await sleep(500)
   const after = await colors()
   await capture('03-released')
@@ -540,7 +554,7 @@ try {
   deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
   await press('\r')
   }
-  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
+  result = { items: ['MP-08','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))
   const copied = osc52Declined ? !exactCopy : exactCopy
