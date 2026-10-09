@@ -151,3 +151,40 @@ test("MP-08/MP-11 a clicked link shows again with numbered steps, and a brackete
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test("MP-08/MP-11 bracketed paste survives every delimiter split and UTF-8 byte chunks", async () => {
+  const directory = mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "login-link-"))
+  const fd = openSync(path.join(directory, "terminal"), "w")
+  const opener = "\x1b[200~", closer = "\x1b[201~"
+  const cases: Buffer[][] = []
+  for (let start = 1; start < opener.length; start++) {
+    for (let end = 1; end < closer.length; end++) {
+      cases.push([opener.slice(0, start), opener.slice(start) + "code#state" + closer.slice(0, end), closer.slice(end)].map(value => Buffer.from(value)))
+    }
+  }
+  cases.push([...Buffer.from(opener + "code#státé" + closer)].map(byte => Buffer.from([byte])))
+  try {
+    for (const [caseIndex, chunks] of cases.entries()) {
+      const input = Object.assign(new EventEmitter(), { isTTY: true, setRawMode: () => {}, resume: () => {} })
+      let resumes = 0
+      const renderer = { suspend: () => {}, resume: () => { resumes++ }, idle: async () => {}, copyToClipboardOSC52: () => false }
+      const pasted: string[] = []
+      const present = createProviderLoginLinkPresenter(renderer, { input, output: { isTTY: true, fd } })
+      const shown = present(url, { onPaste: value => pasted.push(value) })
+      await new Promise(resolve => setImmediate(resolve))
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        input.emit("data", chunk)
+        await new Promise(resolve => setImmediate(resolve))
+        // A slow SSH packet must not turn the opener's ESC into a close.
+        if (caseIndex === 0 && chunkIndex === 0) await new Promise(resolve => setTimeout(resolve, 300))
+      }
+      assert.deepEqual(pasted, [chunks.length === 3 ? "code#state" : "code#státé"])
+      assert.equal(await shown, true)
+      assert.equal(resumes, 1)
+      assert.equal(input.listenerCount("data"), 0)
+    }
+  } finally {
+    closeSync(fd)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

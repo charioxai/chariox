@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events"
 import { writeSync } from "node:fs"
+import { StringDecoder } from "node:string_decoder"
 import { clipboardCopyMessage, copyTextToClipboard, isSshTerminal } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 
@@ -95,22 +96,32 @@ export function createProviderLoginLinkPresenter(
       await new Promise<void>((resolve, reject) => {
         let busy = false
         let paste: string | null = null
+        const decoder = new StringDecoder("utf8")
+        const opener = "\x1b[200~", closer = "\x1b[201~"
         const finish = () => {
           input.removeListener("data", onData)
           input.removeListener("end", finish)
           resolve()
         }
         const onData = (chunk: Buffer) => {
-          const key = chunk.toString("utf8")
-          if (options.onPaste && (paste !== null || key.startsWith("\x1b[200~"))) {
+          const key = decoder.write(chunk)
+          if (!key) return
+          if (options.onPaste && (paste !== null || key.startsWith("\x1b"))) {
             paste = (paste ?? "") + key
-            const end = paste.indexOf("\x1b[201~")
-            if (end < 0) return
-            const text = paste.slice("\x1b[200~".length, end)
+            // stdin is a byte stream: even ESC alone may start a paste.
+            if (opener.startsWith(paste)) return
+            if (paste.startsWith(opener)) {
+              const end = paste.indexOf(closer, opener.length)
+              if (end < 0) return
+              const text = paste.slice(opener.length, end)
+              paste = null
+              options.onPaste(text)
+              finish()
+              return
+            }
+            // If it was an ordinary escape sequence, process the new key.
+            // Enter/Ctrl-C remain available even after a standalone ESC.
             paste = null
-            options.onPaste(text)
-            finish()
-            return
           }
           if (/^[\r\n\x03\x1b]$/.test(key)) { if (!busy) finish(); return }
           if (busy || !/^[co]$/i.test(key)) return

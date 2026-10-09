@@ -147,7 +147,8 @@ try {
     },
     websocket: { open(s) { sockets.add(s); s.send(output) }, close(s) { sockets.delete(s) }, message(_s, data) { tui?.terminal.write(String(data)) } },
   })
-  browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
+  browser = await chromium.launch({ headless: true, args: ['--no-sandbox'],
+    ...(process.env.VALENV_CHROMIUM ? { executablePath: process.env.VALENV_CHROMIUM } : {}) })
   const page = await browser.newPage({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: Number(options.dpr ?? 1) })
   await page.goto(`http://127.0.0.1:${frontend.port}`)
 
@@ -229,11 +230,22 @@ try {
   record('click shows the link as one terminal-wrapped logical line', logical.some(l => l.trimEnd() === loginUrl) && await shows('1. Open this link (Cmd-click it, or select and copy it):'))
 
   if (attach) {
-    // Shared kernel: return from the plain view and cancel at the code prompt.
-    await press('\r')
+    // MP-08/MP-11: shared kernel dry run. Fill only the TUI's masked field
+    // with synthetic text, splitting both delimiters as SSH may do. Never
+    // submit it to the official provider or complete a real authorization.
+    if (options['split-paste'] === 'yes') {
+      const code = 'dry#state'
+      for (const chunk of ['\x1b', '[20', '0~' + code + '\x1b[20', '1~']) await press(chunk)
+      await sleep(800)
+      await capture('split-paste-masked')
+      record('split paste returns with the masked code without submitting it',
+        (await rows()).some(r => r.includes(`Code: ${'*'.repeat(code.length)}▏`)) && !(await shows(code)))
+      // Also lets the before-fix client leave a plain view after losing paste.
+      if (await shows('1. Open this link')) await press('\r')
+    } else await press('\r')
     await sleep(800)
     await capture('returned')
-    record('Enter returns to the focused code field', (await rows()).some(r => r.includes('> Code: <paste the code>▏')))
+    record('returns to the focused code field', (await rows()).some(r => r.includes(options['split-paste'] === 'yes' ? `> Code: ${'*'.repeat('dry#state'.length)}▏` : '> Code: <paste the code>▏')))
   } else {
     // The code pasted in the plain view returns to Chariox and fills the field.
     // Without a plain view (the client before this change) the user selects
