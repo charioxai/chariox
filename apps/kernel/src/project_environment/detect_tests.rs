@@ -412,3 +412,6 @@ fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
             RequirementSpec::Software { identity, detect_only: true, .. } if identity == name)));
     }
 }
+
+#[path = "detect_review_2_tests.rs"]
+mod review_2;
