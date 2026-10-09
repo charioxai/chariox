@@ -20,10 +20,15 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    // Provider modes share one account and its credential; storage already
+    // canonicalizes the family, so launch/unlock lookups must do the same.
+    let normalized_provider = provider.trim().to_ascii_lowercase();
+    let provider = crate::provider::canonical_provider_family(&normalized_provider)
+        .unwrap_or(&normalized_provider);
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        provider,
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
@@ -258,6 +263,26 @@ mod tests {
     }
 
     #[test]
+    fn claude_modes_resolve_the_same_account_credential() {
+        let expected = provider_account_credential_id("owner", "claude", "work");
+        for provider in ["claude", "claude-p", "claude-headless", " Claude-P "] {
+            assert_eq!(
+                provider_account_credential_id("owner", provider, "work"),
+                expected,
+                "MP-08/MP-11: provider mode must use the enrolled account credential"
+            );
+            assert_ne!(
+                provider_account_credential_id("other-owner", provider, "work"),
+                expected
+            );
+            assert_ne!(
+                provider_account_credential_id("owner", provider, "personal"),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn distinct_account_profiles_have_distinct_credential_handles() {
         assert_ne!(
             provider_account_credential_id("local", "claude", "personal"),
@@ -309,10 +334,12 @@ mod tests {
                 metadata: None,
             })
             .expect("provider credential should register");
-        assert!(
-            provider_account_credential_uses_vault("local", "claude", "work")
-                .expect("vault-backed credential should require vault access")
-        );
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            assert!(
+                provider_account_credential_uses_vault("local", provider, "work")
+                    .expect("vault-backed credential should require vault access for every mode")
+            );
+        }
 
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
@@ -347,16 +374,18 @@ mod tests {
             })
             .expect("provider credential should register");
 
-        let environment = resolve_provider_account_credentials(
-            &crate::config::DaemonConfig::for_tests(),
-            "local",
-            "claude",
-            "work",
-        )
-        .expect("provider credential should resolve");
-        let values = environment.iter().collect::<Vec<_>>();
-        assert_eq!(values, vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]);
-        assert!(!format!("{environment:?}").contains("setup-token-secret"));
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            let environment = resolve_provider_account_credentials(
+                &crate::config::DaemonConfig::for_tests(),
+                "local",
+                provider,
+                "work",
+            )
+            .expect("provider credential should resolve for every mode");
+            let values = environment.iter().collect::<Vec<_>>();
+            assert_eq!(values, vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]);
+            assert!(!format!("{environment:?}").contains("setup-token-secret"));
+        }
 
         std::env::remove_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN");
         std::env::remove_var("CHARIOX_HOME");
