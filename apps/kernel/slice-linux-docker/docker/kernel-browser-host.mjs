@@ -15,7 +15,7 @@ import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectionFence, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
@@ -87,13 +87,9 @@ export class KernelBrowserHost {
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
-      stream.latest = policy.unknown || policy.values.length ? this.maskedStreamFrame(stream) : null;
+      stream.latest = null;
     }
     return {};
-  }
-  maskedStreamFrame(stream) {
-    return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
-      width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
   // MP-08/MP-10: concurrent reconciles (e.g. a native click that navigates)
   // share one writer; parallel renames of one temporary file raced (ENOENT).
@@ -173,7 +169,7 @@ export class KernelBrowserHost {
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
-    const scope=stream.codec==='png'?'png_codec':this.protection.unknown||this.protection.values.length||this.protection.targets.length?'protection_policy':
+    const scope=stream.codec==='png'?'png_codec':this.protection.unknown?'protection_policy':
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
@@ -195,7 +191,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
@@ -303,7 +299,9 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureProtectionFence(connection, sessionId, tab.target_id, this.protection, { record: reason => this.timing('region_frame_masked ' + reason, timestamp()) }) : null;
+    const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
+      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]})
+      : {async afterCapture(){return [];}} : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -333,7 +331,6 @@ export class KernelBrowserHost {
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
-      stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
@@ -348,7 +345,7 @@ export class KernelBrowserHost {
     stream.off = connection.subscribe(message => {
       if(regionProtectionChanged(message,sessionId)){
         stream.regionEpoch=(stream.regionEpoch??0)+1;
-        stream.latest=this.maskedStreamFrame(stream);captureProtected();return;
+        stream.latest=null;captureProtected();return;
       }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;

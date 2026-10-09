@@ -89,7 +89,8 @@ The source is the existing `KernelBrowserHost.screenshot` protected PNG seam.
 An emulated canonical tab viewport stays 1280×800 CSS pixels with negotiated
 DPR 1 or 2. Different DPR selections on the same live tab are refused. Screenshots
 and Vault region masks follow that geometry, including DPR2 pixel conversion.
-The display never consumes unmasked CDP screencast pixels. Capture checks the
+MP-08/MP-11: the display covers only recorded Vault-filled plain fields;
+password fields already show dots. No other content receives a mask. Capture checks the
 observed document again after screenshot acquisition; replacement documents fail
 that frame instead of attaching old input coordinates to new content.
 
@@ -546,3 +547,16 @@ admitted typing actions and measures their presented-pixel echoes under
 `motion.typing`. This extra input changes the workload, so its CPU/fps results
 must be labelled separately from the unchanged phase29 matrix. Both are
 supplementary fixture checks, not real live acceptance.
+
+## MP-08/MP-10/MP-11 field-only display protection (2026-10-09)
+
+The video and screenshot paths consume the shared recorded Vault fill targets
+from the Room collector. Generic password, marker, iframe, shadow-host, media,
+and page-text masks are removed. Password fields retain their native dots;
+the collector checks the current type, value and document on each capture.
+Changing or unavailable field geometry refuses that capture for retry rather
+than replacing the page with a whole-frame mask. Native motion remains eligible
+with fill targets and applies only their measured boxes before encoding.
+Legacy subscriptions clear stale frames and await a fresh protected capture.
+These source regressions do not establish hosted Vault/provider/Web/TUI
+acceptance; the live conjunction remains a separate MP-10 gate.
