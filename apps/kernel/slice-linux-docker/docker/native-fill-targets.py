@@ -102,24 +102,41 @@ def begin(expected_window, value, connection=None):
         node = candidates[0]
         target = {**identity(node), 'window': expected_window, 'pending': True,
                   'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
+        text = node.queryText()
+        offset, selected = text.caretOffset, 0
+        if text.getNSelections():
+            selection = text.getSelection(0)
+            offset = min(selection.startOffset, selection.endOffset)
+            selected = abs(selection.endOffset - selection.startOffset)
         update(lambda targets: [t for t in targets if (t['pid'],t['path']) != (target['pid'],target['path'])] + [target])
-        return node, target
+        return node, target, (text.characterCount, offset, selected)
     except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
-def finish(record):
+def finish(record, inserted):
     if record is None: return
-    node, target = record
+    node, target, (initial_length, offset, selected) = record
     try:
-        # Physical XTEST input is delivered asynchronously to GTK.
+        # Physical XTEST input is delivered asynchronously to GTK. Account for
+        # the existing contents and replaced selection, rather than input length.
+        expected = initial_length - selected + len(inserted)
         for _ in range(20):
-            if node.queryText().characterCount >= target['length']: break
+            if node.queryText().characterCount == expected: break
             time.sleep(.025)
         import pyatspi
-        if node.getRole() != pyatspi.ROLE_PASSWORD_TEXT:
-            value = field_value(node)
-            target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
         target['length'] = node.queryText().characterCount
+        if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
+            # GTK exposes dots, not the resulting password. Bind the delivered
+            # insertion at its original caret, including max-length truncation.
+            length = target['length'] - initial_length + selected
+            if not 0 < length <= len(inserted):
+                update(lambda targets: [t for t in targets if t['registration'] != target['registration']])
+                return
+            target['value_hash'] = None
+            target['insertion'] = {'offset': offset, 'length': length,
+                                   'hash': hashlib.sha256(inserted[:length].encode()).hexdigest()}
+        else:
+            target['value_hash'] = hashlib.sha256(field_value(node).encode()).hexdigest()
         target['pending'] = False
         update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
     except Exception: pass
@@ -133,7 +150,17 @@ def matches(node, target):
         if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
             return node.queryText().characterCount == target['length'] and target['length'] > 0
         value = field_value(node)
-        return bool(value) and hashlib.sha256(value.encode()).hexdigest() == target['value_hash']
+        if not value: return False
+        if target.get('value_hash') is None:
+            insertion = target['insertion']
+            offset, length = insertion['offset'], insertion['length']
+            if len(value) != target['length'] or hashlib.sha256(value[offset:offset+length].encode()).hexdigest() != insertion['hash']: return False
+            # First reveal binds the complete contents. Later edits, including
+            # same-length prefix/suffix replacement, use that exact fingerprint.
+            target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
+            del target['insertion']
+            update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
+        return hashlib.sha256(value.encode()).hexdigest() == target['value_hash']
     except Exception: raise ValueError('Vault fill field unavailable') from None
 
 

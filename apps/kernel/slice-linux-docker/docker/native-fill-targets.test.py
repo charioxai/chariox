@@ -31,6 +31,22 @@ class FillTests(unittest.TestCase):
             text.return_value='same-length-edit!'
             self.assertFalse(fill.matches(node,target))
 
+    def test_mp11_masked_insertion_binds_prefix_partial_and_repeated_fill(self):
+        for previous, inserted, actual in [('prefix-', 'public-canary', 'public-canary'), ('prefix-public-canary', 'again', 'again'), ('prefix-', 'partial', 'part')]:
+            final = previous + actual
+            target = {'pid': 200, 'started': 'one', 'path': '/entry', 'registration': 1,
+                      'pending': True, 'value_hash': hashlib.sha256(inserted.encode()).hexdigest(), 'length': len(inserted)}
+            node = SimpleNamespace(getRole=lambda: 1, queryText=lambda: SimpleNamespace(characterCount=len(final)))
+            with patch.dict(sys.modules, pyatspi=SimpleNamespace(ROLE_PASSWORD_TEXT=1)), patch.object(fill, 'identity', return_value={key:target[key] for key in ('pid','started','path')}), patch.object(fill, 'field_value', return_value='•' * len(final)), patch.object(fill, 'update'):
+                record = (node, target, (len(previous), len(previous), 0))
+                fill.finish(record, inserted)
+                self.assertTrue(fill.matches(node, target))
+                node.getRole = lambda: 0
+                with patch.object(fill, 'field_value', return_value=final):
+                    self.assertTrue(fill.matches(node, target), 'MP-11 revealing the same insertion must retain coverage')
+                with patch.object(fill, 'field_value', return_value='X' * len(previous) + actual):
+                    self.assertFalse(fill.matches(node, target), 'MP-11 same-length replacement retires after reveal')
+
     def test_mp11_reused_process_object_is_not_the_fill_target(self):
         target={'pid':200,'started':'old','path':'/entry','pending':True}
         with patch.dict(sys.modules, pyatspi=SimpleNamespace(ROLE_PASSWORD_TEXT=1)), patch.object(fill,'identity',return_value={'pid':200,'started':'new','path':'/entry'}):
