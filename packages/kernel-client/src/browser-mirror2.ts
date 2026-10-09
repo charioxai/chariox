@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 482). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
-import { validateMirror2Packet, decodeMirror2Packet, mirror2SandboxCsp } from './browser-mirror2-security.js'
+import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
 import type { Mirror2Action, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -222,7 +222,7 @@ export class BrowserMirror2Renderer {
     if (!root) { this.forget(record.id); return }
     root.replaceChildren(...Array.from(fragment.childNodes))
     this.dom.set(record.id, root); this.ids.set(root, record.id)
-    if (record.adopted?.length) this.setStyled(record.id, { kind: 'adopted', raw: record.adopted, node: root, keys: [] })
+    if (record.adopted?.length) this.setStyled(record.id, { kind: 'adopted', raw: record.adopted as string[], node: root, keys: [] })
   }
   private forget(id: string): void {
     const node = this.dom.get(id), kind = this.records.get(id)?.kind
@@ -246,7 +246,7 @@ export class BrowserMirror2Renderer {
       const built = this.build(subtree.slice(1), nested, frames, scrolls)
       const html = subtree[1] ? built.get(subtree[1].id) as Element | undefined : undefined
       if (html) { if (nested.documentElement) nested.documentElement.replaceWith(html); else nested.appendChild(html); this.csp(nested) }
-      if (documentRecord.adopted?.length) this.setStyled(documentRecord.id, { kind: 'adopted', raw: documentRecord.adopted, node: nested, keys: [] })
+      if (documentRecord.adopted?.length) this.setStyled(documentRecord.id, { kind: 'adopted', raw: documentRecord.adopted as string[], node: nested, keys: [] })
       this.bind(nested)
     }
   }
@@ -259,10 +259,12 @@ export class BrowserMirror2Renderer {
     const head = doc.head ?? doc.documentElement.insertBefore(doc.createElement('head'), doc.documentElement.firstChild)
     const meta = doc.createElement('meta'); meta.httpEquiv = 'Content-Security-Policy'; meta.content = mirror2SandboxCsp; head.prepend(meta)
   }
-  async apply(packet: Mirror2Packet): Promise<void> {
+  private sheets = new Map<string, string>()
+  async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
     if (this.disposed || !this.doc) throw Error('MP-08: mirror unavailable')
-    if (!packet.reset && (packet.base_sequence !== this.sequence || packet.document_id !== this.documentId)) throw Error('MP-11: mirror lost base')
+    if (!wire.reset && (wire.base_sequence !== this.sequence || wire.document_id !== this.documentId)) throw Error('MP-11: mirror lost base')
+    const packet = resolveMirror2Sheets(wire, this.sheets)
     validateMirror2Packet(packet, this.records)
     // Resource keys are per document; a new document starts an empty map.
     if (packet.reset && packet.document_id !== this.documentId) { for (const url of this.resources.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear() }
@@ -307,7 +309,7 @@ export class BrowserMirror2Renderer {
     const built = this.build(main.slice(1), doc, frames, scrolls)
     const html = main[1] ? built.get(main[1].id) as Element | undefined : undefined
     if (html) { doc.documentElement.replaceWith(html); this.csp(doc) }
-    if (root.adopted?.length) this.setStyled(root.id, { kind: 'adopted', raw: root.adopted, node: doc, keys: [] })
+    if (root.adopted?.length) this.setStyled(root.id, { kind: 'adopted', raw: root.adopted as string[], node: doc, keys: [] })
     else doc.adoptedStyleSheets = []
     this.hydrateFrames(frames, records, scrolls)
   }
@@ -350,7 +352,7 @@ export class BrowserMirror2Renderer {
       }
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
       case 'css': { this.records.get(op.id)!.css = op.css; this.setStyled(op.id, { kind: 'css', raw: op.css, node: node as Element, keys: [] }); break }
-      case 'adopted': this.setStyled(op.id, { kind: 'adopted', raw: op.sheets, node: node as Document | ShadowRoot, keys: [] }); break
+      case 'adopted': this.setStyled(op.id, { kind: 'adopted', raw: op.sheets as string[], node: node as Document | ShadowRoot, keys: [] }); break
       case 'form': this.records.get(op.id)!.form = op.form; this.form(node as Element, op.form); break
       case 'scroll': scrolls.push([node as Element, op.scroll[0], op.scroll[1]]); break
       case 'size': { const style = (node as HTMLElement).style; style.setProperty('width', `${op.size[0]}px`, 'important'); style.setProperty('height', `${op.size[1]}px`, 'important'); this.records.get(op.id)!.size = op.size; break }

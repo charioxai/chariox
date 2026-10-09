@@ -55,6 +55,26 @@ export function decodeMirror2Records(rows: unknown, context: string | null): Mir
   })
   return out
 }
+// Stylesheet digests resolve against this snapshot epoch's sheet table (the
+// texts are validated wherever they are used, like inline texts).
+export function resolveMirror2Sheets(packet: Mirror2Packet, known: Map<string, string>): Mirror2Packet {
+  if (packet.reset) known.clear()
+  if (packet.sheets !== undefined) {
+    if (!packet.sheets || typeof packet.sheets !== 'object' || Array.isArray(packet.sheets) || Object.keys(packet.sheets).length > 4096) fail('sheets')
+    for (const [digest, text] of Object.entries(packet.sheets)) { if (!/^[a-f0-9]{24}$/.test(digest) || typeof text !== 'string') fail('sheets'); known.set(digest, text) }
+  }
+  const text = (ref: unknown): string => { if (typeof ref !== 'string' || !known.has(ref)) fail('sheet reference'); return known.get(ref as string)! }
+  const sheet = (item: string | { ref: string }): string => typeof item === 'string' ? item : item && typeof item === 'object' && Object.keys(item).length === 1 ? text(item.ref) : fail('sheet reference')
+  const record = (r: Mirror2Record): Mirror2Record => {
+    if (r.css_ref === undefined && !r.adopted?.some(item => typeof item !== 'string')) return r
+    const { css_ref, ...rest } = r
+    return { ...rest, ...(css_ref !== undefined ? { css: text(css_ref) } : {}), ...(r.adopted ? { adopted: r.adopted.map(sheet) } : {}) }
+  }
+  const { sheets: _sheets, ...out } = packet
+  if (packet.nodes) out.nodes = packet.nodes.map(record)
+  if (packet.ops) out.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: op.nodes.map(record) } : op.op === 'css' && op.css_ref !== undefined ? { op: 'css', id: op.id, css: text(op.css_ref) } : op.op === 'adopted' ? { ...op, sheets: op.sheets.map(sheet) } : op)
+  return out
+}
 export function decodeMirror2Packet(packet: Mirror2Packet): Mirror2Packet {
   const decoded = { ...packet }
   if (packet.nodes !== undefined) decoded.nodes = decodeMirror2Records(packet.nodes, null)

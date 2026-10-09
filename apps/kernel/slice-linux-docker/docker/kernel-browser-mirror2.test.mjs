@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { mirrorResourceType, encodeMirrorRecords } from './kernel-browser-mirror2.mjs';
+import { mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -78,4 +78,16 @@ test('MP-10: compact wire records keep ids, parents, kinds and fields (fixture s
   assert.deepEqual(encodeMirrorRecords(records, null), [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]);
   assert.deepEqual(encodeMirrorRecords([{ id: 'n9', parent: 'n3', kind: 'text', text: 'a' }, { id: 'n10', parent: 'n3', kind: 'element', tag: 'b' }], 'n3'), [[9, 0, 0, 'a'], [1, 0, 'b']]);
   assert.throws(() => encodeMirrorRecords([{ id: 'n9', parent: 'n4', kind: 'text', text: 'a' }], 'n3'), /unordered/);
+});
+
+test('MP-10: a repeated large stylesheet travels once per snapshot epoch', () => {
+  const big = '.a{color:red}'.repeat(400), sent = new Set();
+  const packet = { nodes: [{ id: 'n1', kind: 'element', tag: 'style', css: big }, { id: 'n2', kind: 'element', tag: 'style', css: big }, { id: 'n3', kind: 'shadow', adopted: [big, '.b{}'] }, { id: 'n4', kind: 'element', tag: 'style', css: '.small{}' }] };
+  dedupeMirrorSheets(packet, sent);
+  const digest = packet.nodes[0].css_ref;
+  assert.match(digest, /^[a-f0-9]{24}$/);
+  assert.deepEqual(Object.keys(packet.sheets), [digest]);
+  assert.equal(packet.nodes[1].css_ref, digest); assert.deepEqual(packet.nodes[2].adopted, [{ ref: digest }, '.b{}']); assert.equal(packet.nodes[3].css, '.small{}');
+  const next = { ops: [{ op: 'css', id: 'n5', css: big }] }; dedupeMirrorSheets(next, sent);
+  assert.equal(next.sheets, undefined); assert.deepEqual(next.ops[0], { op: 'css', id: 'n5', css_ref: digest });
 });

@@ -4,14 +4,15 @@ export type Mirror2Form = { value: string; checked: boolean; selected_index: num
 export type Mirror2Record = {
   id: string; parent: string | null; kind: Mirror2Kind
   tag?: string; ns?: 'svg' | 'math'; attrs?: Record<string, string>; text?: string; css?: string; res?: string
-  form?: Mirror2Form; scroll?: [number, number]; size?: [number, number]; display?: string; reason?: string; adopted?: string[]
+  form?: Mirror2Form; scroll?: [number, number]; size?: [number, number]; display?: string; reason?: string; adopted?: Array<string | { ref: string }>
+  css_ref?: string
 }
 export type Mirror2Op =
   | { op: 'children'; id: string; children: string[]; nodes: Mirror2Record[] }
   | { op: 'attr'; id: string; name: string; value: string | null }
   | { op: 'text'; id: string; text: string }
-  | { op: 'css'; id: string; css: string }
-  | { op: 'adopted'; id: string; sheets: string[] }
+  | { op: 'css'; id: string; css: string; css_ref?: string }
+  | { op: 'adopted'; id: string; sheets: Array<string | { ref: string }> }
   | { op: 'form'; id: string; form: Mirror2Form }
   | { op: 'scroll'; id: string; scroll: [number, number] }
   | { op: 'size'; id: string; size: [number, number] }
@@ -22,7 +23,7 @@ export type Mirror2Selection = { anchor_id: string; anchor_offset: number; focus
 export type Mirror2Packet = {
   wire: 2; subscription_id: string; tab_id: string; generation: number; document_id: string
   sequence: number; base_sequence: number | null; reset: boolean; fallback?: string
-  root?: string; nodes?: Mirror2Record[]; ops?: Mirror2Op[]
+  root?: string; nodes?: Mirror2Record[]; ops?: Mirror2Op[]; sheets?: Record<string, string>
   scroll: [number, number]; focused: string | null; selection: Mirror2Selection | null
   resources: Mirror2Resource[]; tiles: Mirror2Tile[]; css_width: number; css_height: number; device_scale_factor: 1 | 2
 }

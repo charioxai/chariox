@@ -66,6 +66,29 @@ export function encodeMirrorRecords(records, contextParent) {
   return out;
 }
 
+// A large stylesheet text travels once per snapshot epoch (pages repeat the same
+// sheet across shadow roots/links); records and ops reference it by digest.
+export function dedupeMirrorSheets(packet, sent) {
+  const sheets = {};
+  const ref = text => {
+    if (typeof text !== 'string' || text.length < 2048) return null;
+    const digest = createHash('sha256').update(text).digest('hex').slice(0, 24);
+    if (!sent.has(digest)) { sent.add(digest); sheets[digest] = text; }
+    return digest;
+  };
+  const record = r => {
+    const digest = ref(r.css); if (digest) { delete r.css; r.css_ref = digest; }
+    if (r.adopted) r.adopted = r.adopted.map(text => { const d = ref(text); return d ? { ref: d } : text; });
+  };
+  for (const r of packet.nodes ?? []) record(r);
+  for (const op of packet.ops ?? []) {
+    if (op.op === 'children') op.nodes.forEach(record);
+    else if (op.op === 'css') { const digest = ref(op.css); if (digest) { delete op.css; op.css_ref = digest; } }
+    else if (op.op === 'adopted') op.sheets = op.sheets.map(text => { const d = ref(text); return d ? { ref: d } : text; });
+  }
+  if (Object.keys(sheets).length) packet.sheets = sheets;
+}
+
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); }
   parentWorld(stream) { return stream.world; }
@@ -202,6 +225,8 @@ export class Mirror2 {
     else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = sheets; }
     else packet.ops = [...source.ops, ...sheets];
     for (const op of packet.ops ?? []) if (op.op === 'attr') stream.attrSequence.set(op.id, sequence);
+    if (reset) stream.sheetRefs = new Set();
+    dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
     stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.fallback = fallback;
