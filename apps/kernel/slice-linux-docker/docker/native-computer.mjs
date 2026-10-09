@@ -149,7 +149,7 @@ export class NativeComputer {
     const processes=await binding.ownedProcesses?.()??[];
     const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
-    // only for an unchanged, presented CDP measurement; otherwise whole windows.
+    // only for an unchanged, presented field measurement; uncertain placement retries.
     const browser=command.op==='clipboard_read'?null:binding.browser?.();
     // AT-SPI may expose a just-navigated document a moment after CDP does:
     // retry a capture whose kernel-browser window stayed unbound (withheld).
