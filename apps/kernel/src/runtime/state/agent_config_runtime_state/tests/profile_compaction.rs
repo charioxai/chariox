@@ -111,7 +111,7 @@ async fn compact_fixture_with_lease(
     let release = root.path().join("release");
     let mut run = RuntimeProviderRun::new("compact-run", &request, ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(), pty_target: None, pty_program: Some("/bin/sh".into()),
-        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do touch '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display(), release.display())],
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do printf '%s' \"$line\" > '{}'; n=0; while [ ! -f '{}' ] && [ $n -lt 30 ]; do sleep .1; n=$((n+1)); done; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display(), release.display())],
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
@@ -347,6 +347,11 @@ async fn profile_compaction_reserves_local_agent_until_the_profile_is_committed(
     assert!(
         started,
         "profile update should compact before retiring the source run: {result:?}"
+    );
+    let command = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        command.contains("/compact Keep the latest explicit user goal"),
+        "compaction should focus on the current records: {command}"
     );
     assert!(
         matches!(

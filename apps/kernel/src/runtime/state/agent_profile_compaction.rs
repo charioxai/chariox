@@ -14,6 +14,9 @@ use super::KernelRuntimeState;
 /// The share of the new window above which the session is compacted first.
 const COMPACT_ABOVE_WINDOW_PERCENT: u64 = 75;
 pub(super) const COMPACT_TIMEOUT: Duration = Duration::from_secs(300);
+// Claude's documented /compact focus instructions keep the current task's
+// explicit records instead of letting the default summary choose what matters.
+const COMPACT_COMMAND: &str = "/compact Keep the latest explicit user goal, constraints, accepted decisions, completed and blocked items, next steps, named proposals, paths and exact tool results. Copy each recorded label and value verbatim. A later explicit revision replaces an earlier one; assistant recollections and progress lists do not revise user records, and proposals stay distinct from accepted decisions.";
 
 impl KernelRuntimeState {
     /// Compacts the agent's live Claude session with its current model when
@@ -55,7 +58,7 @@ impl KernelRuntimeState {
         let result = self
             .run_structured_provider_utility_prompt(
                 run.clone(),
-                "/compact".to_string(),
+                COMPACT_COMMAND.to_string(),
                 String::new(),
                 COMPACT_TIMEOUT,
                 ProviderUtilityExecutionPolicy::SessionCommand,
