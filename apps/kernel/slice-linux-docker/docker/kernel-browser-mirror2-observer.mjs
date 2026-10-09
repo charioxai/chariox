@@ -34,6 +34,9 @@ export function sanitizeMirrorCss(text, base, resource, variants = []) {
   // Invalidates (never rewrites) legacy executable/binding constructs.
   out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
   out = out.replace(/@import[^;]*;/gi, '');
+  // Residual spellings the rewrites cannot parse (an unterminated url( inside a
+  // string, a bare @import) are neutralized; the client refuses any that remain.
+  out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
   for (const variant of variants) if (variant && out.includes(variant)) out = out.replaceAll(variant, '*'.repeat(Math.min(variant.length, 64)));
   return out;
 }
@@ -48,13 +51,21 @@ export function installMirror2(sanitizeMirrorCss) {
   const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
   const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
   const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes'.split(' '));
+  // HTML attributes that the UA renders or exposes (presentational, form,
+  // accessibility, tooltips); any other attribute ships only if a selector or
+  // attr() of the page's own CSS references it (CSS is the only reader).
+  const RENDERED = new Set('class id style title lang dir hidden tabindex role alt for placeholder width height colspan rowspan span type value checked selected disabled readonly multiple open start reversed size rows cols wrap label popover inert contenteditable slot part exportparts href align valign bgcolor border cellpadding cellspacing color face nowrap hspace vspace clear noshade frame rules text link vlink alink compact abbr scope summary datetime cite min max low high optimum media headers'.split(' '));
   const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time color hidden'.split(' '));
   const MARKERS = '[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]';
   let serial = 0, variants = [], targets = new WeakSet(), records = [], overflow = false, revision = 0;
   const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map();
   const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
   const urlKeys = new Map();
-  let newResources = [], pendingSheets = [], marked = new WeakSet(), lastSheetCheck = 0;
+  let newResources = [], pendingSheets = [], marked = new WeakSet(), lastSheetCheck = 0, cssAttrs = null;
+  const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
+  const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
+  // New attribute names in CSS mean earlier records lack attributes: resnapshot.
+  const noteCss = text => { if (!cssAttrs) return false; let grew = false; for (const name of referenced(text)) if (!cssAttrs.has(name) && !RENDERED.has(name) && !name.startsWith('aria-')) { cssAttrs.add(name); grew = true; } return grew; };
   const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
   let waiters = [];
   const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
@@ -146,7 +157,7 @@ export function installMirror2(sanitizeMirrorCss) {
       const name = attribute.name, lower = name.toLowerCase(), value = attribute.value;
       if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || lower.startsWith('on') || value.length > 65536) continue;
       if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
-      if (DENY_ATTR.has(lower)) continue;
+      if (DENY_ATTR.has(lower) || !keepAttr(html, lower)) continue;
       // Presentation attributes may reference paint servers by fragment only.
       if (/url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) continue;
       if (/^\s*javascript:/i.test(value)) continue;
@@ -255,7 +266,11 @@ export function installMirror2(sanitizeMirrorCss) {
     pendingSheets = []; budget = { nodes: 0, bytes: 0 };
     newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
     markSecrets();
+    cssAttrs = null;
     const out = [], root = serialize(document, null, out);
+    cssAttrs = new Set();
+    for (const record of out) { if (record.css) noteCss(record.css); if (record.attrs?.style) noteCss(record.attrs.style); for (const text of record.adopted ?? []) noteCss(text); }
+    for (const record of out) if (record.attrs && !record.ns) for (const name of Object.keys(record.attrs)) if (!keepAttr(true, name.toLowerCase())) delete record.attrs[name];
     lastSheetCheck = performance.now();
     return { root, nodes: out, ...take(), ...header() };
   };
@@ -314,6 +329,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (node.localName === 'input' && names.has('type')) { dirty.replace.add(node); continue; }
       const attrs = attributes(node, node.baseURI);
       for (const name of names) {
+        if (!keepAttr(node.namespaceURI === HTML, name.toLowerCase()) && name !== 'href') continue;
         if (name === 'href' || name === 'xlink:href') { ops.push({ op: 'attr', id, name: 'href', value: attrs.href ?? null }); continue; }
         ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
       }
@@ -358,6 +374,9 @@ export function installMirror2(sanitizeMirrorCss) {
       if (signature !== rootSignatures.get(id)) { rootSignatures.set(id, signature); ops.push({ op: 'adopted', id, sheets: adopted(root) }); }
     }
     for (const key of Object.keys(dirty)) dirty[key].clear();
+    let grew = false;
+    for (const op of ops) { if (op.op === 'css') grew = noteCss(op.css) || grew; else if (op.op === 'adopted') for (const text of op.sheets) grew = noteCss(text) || grew; else if (op.op === 'children') for (const record of op.nodes) { if (record.css) grew = noteCss(record.css) || grew; for (const text of record.adopted ?? []) grew = noteCss(text) || grew; } }
+    if (grew) return { resync: 'css_attributes' };
     return { ops, ...take(), ...header() };
   };
   // Opaque regions visible now, in top-level viewport CSS pixels.

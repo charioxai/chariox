@@ -1,10 +1,10 @@
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 482). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
-import { validateMirror2Packet, mirror2SandboxCsp } from './browser-mirror2-security.js'
+import { validateMirror2Packet, decodeMirror2Packet, mirror2SandboxCsp } from './browser-mirror2-security.js'
 import type { Mirror2Action, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
-export { mirror2SandboxCsp, validateMirror2Packet } from './browser-mirror2-security.js'
+export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
 export const browserMirror2MinimumProtocolVersion = 482
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
@@ -32,6 +32,7 @@ export class BrowserMirror2Renderer {
   private empty: string
   sequence = 0
   documentId = ''
+  private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
   private pendingInputs = 0
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
@@ -164,6 +165,7 @@ export class BrowserMirror2Renderer {
     else if (record.kind === 'document' || record.kind === 'shadow') node = doc.createDocumentFragment()
     else node = record.ns ? doc.createElementNS(NS[record.ns], record.tag!) : doc.createElement(record.tag ?? 'span')
     this.dom.set(record.id, node); this.ids.set(node, record.id); this.records.set(record.id, record)
+    if (record.kind === 'tile' || record.kind === 'mask') this.counts[record.kind]++
     if (node.nodeType === 1) this.decorate(record, node as Element)
     return node
   }
@@ -223,7 +225,8 @@ export class BrowserMirror2Renderer {
     if (record.adopted?.length) this.setStyled(record.id, { kind: 'adopted', raw: record.adopted, node: root, keys: [] })
   }
   private forget(id: string): void {
-    const node = this.dom.get(id)
+    const node = this.dom.get(id), kind = this.records.get(id)?.kind
+    if (kind === 'tile' || kind === 'mask') this.counts[kind]--
     this.dom.delete(id); this.records.delete(id); this.styled.delete(id); this.styled.delete(`${id}#style`); this.styled.delete(`${id}#adopted`)
     const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }
     if (node) this.ids.delete(node)
@@ -289,12 +292,13 @@ export class BrowserMirror2Renderer {
         if (packet.selection) { const s = packet.selection, a = this.dom.get(s.anchor_id), b = this.dom.get(s.focus_id); if (a && b) a.ownerDocument?.getSelection()?.setBaseAndExtent(a, s.anchor_offset, b, s.focus_offset) }
       }
     } finally { this.applying = false }
+    Object.assign(this.frame.dataset, { mirrorSequence: String(packet.sequence), mirrorRegions: String(this.counts.tile), mirrorMasks: String(this.counts.mask) })
     this.timed(packet.reset ? 'apply_reset' : 'apply_delta', started)
   }
   private reset(packet: Mirror2Packet, scrolls: Array<[Element, number, number]>): void {
     const doc = this.doc!
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.ids = new WeakMap()
+    this.tileUrls.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
     const records = packet.nodes ?? [], frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
     const root = records[0]!
     const main = this.subtree(records, root.id)
@@ -413,7 +417,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     if (reset) resetOutstanding = true
     inflight++
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs })
-      .then(inflateMirror2Packet).then(async (packet: Mirror2Packet) => {
+      .then(inflateMirror2Packet).then(decodeMirror2Packet).then(async (packet: Mirror2Packet) => {
         if (packet.subscription_id !== subscription_id || packet.tab_id !== binding.tab_id || packet.generation !== binding.generation || packet.wire !== 2) throw Error('MP-11: foreign mirror packet')
         if (packet.reset) resetOutstanding = false
         buffered.set(packet.sequence, packet); await drain()

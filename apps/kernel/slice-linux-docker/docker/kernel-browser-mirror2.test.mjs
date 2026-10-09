@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { mirrorResourceType } from './kernel-browser-mirror2.mjs';
+import { mirrorResourceType, encodeMirrorRecords } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -40,6 +40,14 @@ test('MP-11: CSS-escaped fetching function names are decoded before the url() re
   assert.equal(seen.length, 3);
 });
 
+test('MP-11: unparseable url( and @import spellings inside strings are neutralized', () => {
+  const { resource } = keys();
+  const out = sanitizeMirrorCss('.a::after { content: "see url(" } .b { --x: "@import" } .c { background: url("x.png") }', 'https://site.example/', resource);
+  assert.ok(onlyKernelUrls(out), out);
+  assert.ok(!/@import/i.test(out), out);
+  assert.ok(out.includes('url("mr:r1")'), out);
+});
+
 test('MP-11: executable CSS is invalidated and Vault values never leave in CSS text', () => {
   const { resource } = keys();
   const out = sanitizeMirrorCss('@import url(a.css);\n.c{background:url(javascript:alert(1))}.d::before{content:"javascript:x"}\n.a{width:expression(alert(1));behavior:url(x.htc);-moz-binding:url(b.xml);} .b::after{content:"hunter2-SECRET"}\n@namespace svg url(http://www.w3.org/2000/svg);\n@namespace x url(https://evil.example/);',
@@ -55,4 +63,19 @@ test('MP-11: resource bytes are typed by content, not by URL or header', () => {
   assert.equal(mirrorResourceType(Buffer.from('wOF2' + '\0'.repeat(60)), 'font'), 'font/woff2');
   assert.equal(mirrorResourceType(Buffer.from('wOF2' + '\0'.repeat(60)), 'image'), null);
   assert.equal(mirrorResourceType(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, ...Array(16).fill(0)]), 'font'), null);
+});
+
+test('MP-10: compact wire records keep ids, parents, kinds and fields (fixture shared with the client decoder)', () => {
+  const records = [
+    { id: 'n1', parent: null, kind: 'document' },
+    { id: 'n2', parent: 'n1', kind: 'element', tag: 'html', attrs: { lang: 'en' } },
+    { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+    { id: 'n5', parent: 'n3', kind: 'text', text: 'Hello' },
+    { id: 'n6', parent: 'n3', kind: 'mask', tag: 'span', size: [10, 20], display: 'inline-block' },
+    { id: 'n7', parent: 'n3', kind: 'element', tag: 'svg', ns: 'svg', attrs: { viewBox: '0 0 1 1' } },
+    { id: 'n1000000001', parent: 'n3', kind: 'frame', tag: 'iframe' },
+  ];
+  assert.deepEqual(encodeMirrorRecords(records, null), [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]);
+  assert.deepEqual(encodeMirrorRecords([{ id: 'n9', parent: 'n3', kind: 'text', text: 'a' }, { id: 'n10', parent: 'n3', kind: 'element', tag: 'b' }], 'n3'), [[9, 0, 0, 'a'], [1, 0, 'b']]);
+  assert.throws(() => encodeMirrorRecords([{ id: 'n9', parent: 'n4', kind: 'text', text: 'a' }], 'n3'), /unordered/);
 });

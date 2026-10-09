@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { gzipSync } from 'node:zlib'
-import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp } from './browser-mirror2-security.js'
+import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records } from './browser-mirror2-security.js'
 import { inflateMirror2Packet, browserMirror2MinimumProtocolVersion } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
@@ -58,4 +58,20 @@ test('MP-10: gzip packet bodies inflate exactly and refuse lying sizes', async (
   await assert.rejects(inflateMirror2Packet({ ...wire, packet_bytes: json.length - 1 }), /mirror packet bounds/)
   await assert.rejects(inflateMirror2Packet({ ...wire, packet_bytes: json.length + 1 }), /mirror packet bounds/)
   await assert.rejects(inflateMirror2Packet({ ...wire, encoding: 'br' }), /mirror packet bounds/)
+})
+
+test('MP-10/MP-11: compact rows decode to records (kernel encoder fixture) and refuse malformed rows', () => {
+  const rows = [[1, 0, 1], [1, 1, 'html', { lang: 'en' }], [1, 1, 'body'], [2, 1, 0, 'Hello'], [1, 2, 4, 0, { size: [10, 20], display: 'inline-block', tag: 'span' }], [1, 3, 'svg', { viewBox: '0 0 1 1' }, { ns: 'svg' }], [999999994, 4, 3, 0, { tag: 'iframe' }]]
+  assert.deepEqual(decodeMirror2Records(rows, null), [
+    { id: 'n1', parent: null, kind: 'document' },
+    { id: 'n2', parent: 'n1', kind: 'element', tag: 'html', attrs: { lang: 'en' } },
+    { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+    { id: 'n5', parent: 'n3', kind: 'text', text: 'Hello' },
+    { size: [10, 20], display: 'inline-block', tag: 'span', id: 'n6', parent: 'n3', kind: 'mask' },
+    { ns: 'svg', id: 'n7', parent: 'n3', kind: 'element', tag: 'svg', attrs: { viewBox: '0 0 1 1' } },
+    { tag: 'iframe', id: 'n1000000001', parent: 'n3', kind: 'frame' },
+  ])
+  for (const bad of [[[1, 2, 'div']], [[0, 0, 'div']], [[1, 0, 9]], [[1, 0, 0, 5]], [[1, 0, 'div', [1]]], [[1, 0, 'div', 0, 'x']], [['1', 0, 'div']]]) assert.throws(() => decodeMirror2Records(bad, null), /unsafe mirror/, JSON.stringify(bad))
+  // Extra keys cannot smuggle unknown record fields past validation.
+  assert.throws(() => validateMirror2Record(decodeMirror2Records([[1, 0, 'div', 0, { onload: 'x' }]], 'n1')[0]!), /unsafe mirror node/)
 })

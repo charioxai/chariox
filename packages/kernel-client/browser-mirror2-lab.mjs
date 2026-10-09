@@ -42,6 +42,7 @@ if (process.argv[2] !== 'child') {
     await mkdir(path.join(root, 'client'));
     execFileSync(process.env.MIRROR_LAB_ESBUILD ?? path.join(tools, '.bin/esbuild'), [path.join(here, 'src/browser-mirror2.ts'), '--bundle', '--format=esm', '--target=es2022', `--outfile=${path.join(root, 'client/mirror2.js')}`], { stdio: 'inherit' });
     execFileSync(process.env.MIRROR_LAB_ESBUILD ?? path.join(tools, '.bin/esbuild'), [path.join(here, 'src/browser-mirror.ts'), '--bundle', '--format=esm', '--target=es2022', `--outfile=${path.join(root, 'client/mirror1.js')}`], { stdio: 'inherit' });
+    execFileSync(process.env.MIRROR_LAB_ESBUILD ?? path.join(tools, '.bin/esbuild'), [path.join(here, 'src/browser-mirror2-security.ts'), '--bundle', '--format=esm', '--platform=node', `--outfile=${path.join(root, 'client/security.mjs')}`], { stdio: 'inherit' });
     const playwright = path.dirname(execFileSync('node', ['-e', 'console.log(require.resolve("playwright-core/package.json"))'], { cwd: path.dirname(tools), encoding: 'utf8' }).trim());
     await cp(playwright, path.join(root, 'node_modules/playwright-core'), { recursive: true, dereference: true });
     for (const name of ['home', 'evidence']) { await mkdir(path.join(root, name), { mode: 0o700 }); await chown(path.join(root, name), 65534, 65534); }
@@ -61,6 +62,17 @@ if (process.argv[2] !== 'child') {
   const { KernelBrowserHost } = await import(path.join(root, 'controller/kernel-browser-host.mjs'));
   const { decodePng } = await import(path.join(root, 'controller/kernel-browser-pixels.mjs'));
   const { mirrorRasterMetrics } = await import(path.join(root, 'browser-mirror-metrics.mjs'));
+  const security = await import(path.join(root, 'client/security.mjs'));
+  // Diagnose client refusals: the offending CSS-bearing field, not just the fixed error.
+  const validate = async result => {
+    if (result?.wire !== 2) return;
+    let packet; try { packet = security.decodeMirror2Packet(result); security.validateMirror2Packet(packet, new Map()); return; } catch (error) { if (!/CSS/.test(error.message)) return; }
+    const fields = [];
+    const scan = (where, record) => { for (const [k, v] of [['css', record.css], ['style', record.attrs?.style], ...((record.adopted ?? []).map((t, i) => ['adopted' + i, t]))]) if (typeof v === 'string') try { security.validateMirror2Css(v); } catch { const m = /url\s*\(|@import|expression|javascript:|-moz-binding|behavior|\\[0-9a-fA-F]/i.exec(v); fields.push({ where, id: record.id, field: k, context: m ? v.slice(Math.max(0, m.index - 120), m.index + 160) : v.slice(0, 200) }); } };
+    for (const r of packet.nodes ?? []) scan('nodes', r);
+    for (const op of packet.ops ?? []) { if (op.op === 'children') for (const r of op.nodes) scan('children', r); if (op.op === 'css') scan('css-op', { id: op.id, css: op.css }); if (op.op === 'adopted') scan('adopted-op', { id: op.id, adopted: op.sheets }); if (op.op === 'attr' && op.name === 'style') scan('attr-op', { id: op.id, attrs: { style: op.value } }); }
+    await writeFile(path.join(evidence, `${currentCell}-refused-css-${Date.now()}.json`), JSON.stringify(fields.slice(0, 20), null, 1));
+  };
   const wire = Number(wireArg), evidence = path.join(root, 'evidence'), settle = Number(process.env.MIRROR_LAB_SETTLE_MS || 4000);
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
   const results = []; const wireLog = []; const inputLog = []; let currentCell = '';
@@ -73,9 +85,10 @@ if (process.argv[2] !== 'child') {
       : await host.request({ ...command, observed_by: 'lab' });
       if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, x: command.action.x, y: command.action.y, sequence: command.sequence, ok: true });
     } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, error: String(error?.message ?? error).slice(0, 200) }); throw error; }
+    if (command.op === 'mirror_next') await validate(result).catch(() => {});
     const json = JSON.stringify({ KernelBrowser: { result } });
     if (command.op === 'mirror_next' && process.env.MIRROR_LAB_DUMP === '1' && !wireLog.some(entry => entry.raw)) await writeFile(path.join(evidence, `${currentCell}-first-packet.json.gz`), gzipSync(json));
-    if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json).length, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
+    if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json, { level: 9 }).length, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
     return json;
   };
   const viewerPage = `<!doctype html><html><body style="margin:0"><div id="mirror"></div><script type="module">

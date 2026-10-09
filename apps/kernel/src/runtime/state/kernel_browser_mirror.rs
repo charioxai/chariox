@@ -75,7 +75,7 @@ fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
     let tiles = object.remove("tiles").unwrap_or_else(|| json!([]));
     let body = serde_json::to_vec(&packet)
         .map_err(|_| host_error("MP-11: invalid mirror packet".into()))?;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     encoder
         .write_all(&body)
         .map_err(|_| host_error("MP-10: mirror packet compression failed".into()))?;

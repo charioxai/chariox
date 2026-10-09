@@ -40,6 +40,32 @@ function dataUrlBytes(url) {
   try { return match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8'); } catch { return null; }
 }
 
+// Compact wire records (pre-order): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
+// parentBack 0 = the context parent (null for a snapshot root, the op id for
+// children ops); kind codes: 0 text (4th item = text), 1 document, 2 shadow,
+// 3 frame, 4 mask, 5 tile. The client decodes and validates independently.
+const KIND_CODES = { text: 0, document: 1, shadow: 2, frame: 3, mask: 4, tile: 5 };
+export function encodeMirrorRecords(records, contextParent) {
+  const index = new Map(), out = []; let previous = 0;
+  records.forEach((record, i) => {
+    const number = Number(record.id.slice(1));
+    const back = index.has(record.parent) ? i - index.get(record.parent) : 0;
+    if (!back && record.parent !== contextParent) throw new Error('MP-11: unordered mirror records');
+    index.set(record.id, i);
+    if (record.kind === 'text') out.push([number - previous, back, 0, record.text]);
+    else {
+      const { id, parent, kind, tag, attrs, ...extra } = record; void id; void parent;
+      if (kind !== 'element' && tag !== undefined) extra.tag = tag;
+      const row = [number - previous, back, kind === 'element' ? tag : KIND_CODES[kind]], more = Object.keys(extra).length > 0, named = attrs && Object.keys(attrs).length > 0;
+      if (named || more) row.push(named ? attrs : 0);
+      if (more) row.push(extra);
+      out.push(row);
+    }
+    previous = number;
+  });
+  return out;
+}
+
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); }
   parentWorld(stream) { return stream.world; }
@@ -176,6 +202,8 @@ export class Mirror2 {
     else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = sheets; }
     else packet.ops = [...source.ops, ...sheets];
     for (const op of packet.ops ?? []) if (op.op === 'attr') stream.attrSequence.set(op.id, sequence);
+    if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
+    if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
     stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
     stream.lastHeader = JSON.stringify([packet.scroll, packet.focused, packet.selection]);

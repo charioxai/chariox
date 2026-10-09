@@ -32,7 +32,38 @@ function validateAttrs(record: Mirror2Record): void {
   if (!record.ns && record.tag === 'input' && record.attrs?.type !== undefined && !INPUT_TYPES.has(record.attrs.type.toLowerCase())) fail('form type')
   if (record.attrs?.contenteditable !== undefined && !['true', 'false', 'plaintext-only'].includes(record.attrs.contenteditable)) fail('editable state')
 }
+// Compact wire rows (see the kernel encoder): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
+const KINDS = ['text', 'document', 'shadow', 'frame', 'mask', 'tile'] as const
+export function decodeMirror2Records(rows: unknown, context: string | null): Mirror2Record[] {
+  if (!Array.isArray(rows) || rows.length > 200000) fail('records')
+  const out: Mirror2Record[] = []; let previous = 0
+  ;(rows as unknown[]).forEach((row, i) => {
+    if (!Array.isArray(row) || row.length < 3 || row.length > 5) fail('record')
+    const [delta, back, head, attrs, extra] = row as [number, number, string | number, unknown, unknown]
+    if (!Number.isSafeInteger(delta) || !Number.isSafeInteger(back) || back < 0 || back > i) fail('record')
+    const number = previous + delta; if (!Number.isSafeInteger(number) || number < 1) fail('record'); previous = number
+    const parent = back ? out[i - back]!.id : context
+    if (head === 0) { if ((row as unknown[]).length !== 4 || typeof attrs !== 'string') fail('record'); out.push({ id: `n${number}`, parent, kind: 'text', text: attrs as string }); return }
+    const kind = typeof head === 'string' ? 'element' : KINDS[head]
+    if (!kind || kind === 'text') fail('record')
+    if (attrs !== undefined && attrs !== 0 && (typeof attrs !== 'object' || attrs === null || Array.isArray(attrs))) fail('record')
+    if (extra !== undefined && (typeof extra !== 'object' || extra === null || Array.isArray(extra))) fail('record')
+    const record = { ...(extra as object ?? {}), id: `n${number}`, parent, kind } as Mirror2Record
+    if (typeof head === 'string') record.tag = head
+    if (attrs) record.attrs = attrs as Record<string, string>
+    out.push(record)
+  })
+  return out
+}
+export function decodeMirror2Packet(packet: Mirror2Packet): Mirror2Packet {
+  const decoded = { ...packet }
+  if (packet.nodes !== undefined) decoded.nodes = decodeMirror2Records(packet.nodes, null)
+  if (packet.ops !== undefined) { if (!Array.isArray(packet.ops)) fail('ops'); decoded.ops = packet.ops.map(op => op?.op === 'children' ? { ...op, nodes: decodeMirror2Records(op.nodes, op.id) } : op) }
+  return decoded
+}
+const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted'])
 export function validateMirror2Record(record: Mirror2Record): void {
+  if (record && typeof record === 'object' && Object.keys(record).some(key => !RECORD_KEYS.has(key))) fail('node')
   if (!record || typeof record !== 'object' || !id.test(record.id) || record.parent !== null && !id.test(record.parent) || !['document', 'shadow', 'element', 'text', 'frame', 'mask', 'tile'].includes(record.kind)) fail('node')
   if (['element', 'frame', 'mask', 'tile'].includes(record.kind)) {
     const tag = record.tag ?? ''
