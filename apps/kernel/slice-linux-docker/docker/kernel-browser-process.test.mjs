@@ -25,6 +25,18 @@ test('MP-08/MP-10 source browser keeps normal animation cadence rather than outr
  assert(!launchArguments('/private',false,true).includes('--disable-frame-rate-limit'));
 });
 
+// MP-08/MP-10/MP-11: after an unclean kernel stop Chromium's crash-restore
+// bubble covered the page in the owned window, so native attestation refused
+// the window until a click dismissed it. The host restores tabs itself.
+test('MP-08/MP-10 relaunch after an unclean stop shows no crash-restore bubble',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const display of [false,true]){
+  const args=launchArguments('/private',false,display);
+  assert(args.includes('--hide-crash-restore-bubble'));
+  assert(!args.includes('--disable-session-crashed-bubble'),'obsolete switch: Chromium ignores it');
+ }
+});
+
 // MP-08/MP-10: LCD stripes are tied to a physical panel, whereas these
 // captured pixels are shown on arbitrary remote panels at either DPR.
 test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordinary browser launch stays native',async()=>{

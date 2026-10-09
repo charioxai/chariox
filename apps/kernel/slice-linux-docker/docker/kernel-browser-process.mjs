@@ -33,7 +33,9 @@ export function launchArguments(profile, headless, display = false, scale = 1) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
-    "--disable-session-crashed-bubble", "--disable-background-networking",
+    // The host restores its own tabs; after an unclean stop Chromium's
+    // "Restore pages?" bubble would cover the page in the owned window.
+    "--hide-crash-restore-bubble", "--disable-background-networking",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
