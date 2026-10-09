@@ -503,12 +503,22 @@ export function installMirror2(sanitizeMirrorCss) {
     return { mirrored: mirroredText, total };
   };
   // Credit long-poll: resolves on the next page change (or the bound).
-  const wait = ms => records.length || overflow ? Promise.resolve(true) : new Promise(resolve => { waiters.push(resolve); setTimeout(() => resolve(false), Math.min(Math.max(ms, 1), 2000)); });
+  const changed = () => records.length > 0 || overflow || Object.values(dirty).some(set => set.size > 0);
+  // Credit long-poll. The delta is taken in the wake microtask, right after our
+  // capture-phase listener or MutationObserver callback, so an echo does not
+  // wait for the page's own handlers to finish their task. A change flagged
+  // between drains (input event, scroll, load) resolves immediately.
+  const waitDrain = (ms, policy) => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; try { resolve(drain(policy)); } catch (error) { reject(error); } };
+    if (changed()) return finish();
+    waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
+  });
   const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource, variants);
   // URLs this document actually fetched (Resource Timing): the kernel reads
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
   const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
-  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, wait, sanitize, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, sanitize, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   return true;
 }

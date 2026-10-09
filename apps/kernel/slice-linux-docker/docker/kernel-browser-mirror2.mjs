@@ -174,7 +174,9 @@ export class Mirror2 {
         this.opaque(snap.nodes, frames.opaque);
         return { ...snap, nodes: [...snap.nodes, ...frames.records], ops: frames.ops, resources: [...snap.resources, ...(frames.resources ?? [])] };
       }
-      const delta = await this.evaluate(world, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`);
+      return processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`));
+    };
+    const processDelta = async delta => {
       if (delta.resync) return delta;
       const ops = [], resources = [...delta.resources];
       for (const op of delta.ops) {
@@ -198,9 +200,8 @@ export class Mirror2 {
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null) : [];
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline) {
-        await this.evaluate(world, `globalThis.__charioxMirror2.wait(${Math.max(1, Math.min(500, deadline - Date.now()))})`, true);
+        const more = await processDelta(await this.evaluate(world, `globalThis.__charioxMirror2.waitDrain(${Math.max(1, Math.min(500, deadline - Date.now()))},${JSON.stringify({ variants })})`, true));
         assertNotCancelled(signal);
-        const more = await read();
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
         if (this.empty(stream, source)) resources = await this.materialize(world, stream, null);
