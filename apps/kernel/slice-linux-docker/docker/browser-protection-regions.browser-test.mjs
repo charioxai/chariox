@@ -39,25 +39,36 @@ for (const dpr of [1, 2]) for (const [label, values, query] of [['snapshot', [VA
       assert.equal(pages.length, 1);
       const [page] = pages;
       assert.equal(page.dpr, dpr);
-      // Every frame is inspected; only the CSS-scaled frame is withheld whole.
-      assert.ok(page.withheld.every(reason => reason === 'transformed_frame') && (scroll || page.withheld.length === 1), String(page.withheld));
       const pixels = await shot();
       assert.deepEqual(page.viewport, [pixels.width, pixels.height]);
       const before = census(pixels), after = census(pixels, page.regions);
       assert.ok(before.magenta > 1000 * dpr * dpr, 'fixture shows protected pixels');
       assert.equal(after.magenta, 0, `scroll ${scroll}: protected pixels remain`);
+      // Every frame is inspected; only the scaled, mirrored and rotated frames are withheld whole
+      // (the selector search places the rotated in-process frame's field from its transformed quad).
+      assert.ok(page.withheld.every(reason => reason === 'transformed_frame') && (scroll || page.withheld.length === (values.length ? 3 : 2)), String(page.withheld));
       // Ordinary content incl. the cross-site captcha frame is not withheld.
       assert.ok(after.cyan > before.cyan * 0.95, `scroll ${scroll}: ordinary content masked (${after.cyan}/${before.cyan})`);
     }
   }, query));
 }
 
-test('Vault echoes and opaque media are protected only while values are registered', () => withFixture(1, async ({ browser, shot }) => {
+// The canvas draws the value and removes its script: no DOM string echoes it.
+for (const dpr of [1, 2]) test(`DPR ${dpr}: Vault echoes and opaque media are protected only while values are registered`, () => withFixture(dpr, async ({ browser, connection, sessionId, shot }) => {
+  const { result } = await connection.send('Runtime.evaluate', { returnByValue: true,
+    expression: `[...document.scripts].some(script => script.text.includes(${JSON.stringify(VAULT_VALUE)})) ? null : ['drawn', 'media'].map(id => document.getElementById(id).getBoundingClientRect()).map(b => [b.left, b.top, b.width, b.height])` }, sessionId);
+  assert.ok(result.value, 'the drawing script is gone');
+  const [drawn, media] = result.value.map(box => box.map(v => v * dpr));
   const pixels = await shot();
   const without = (await measureBrowserProtection(browser, policy())).pages[0];
   const withValue = (await measureBrowserProtection(browser, policy([VAULT_VALUE]))).pages[0];
+  const crop = ([x, y, w, h]) => ({ width: w, pixels: Buffer.concat(Array.from({ length: h }, (_, row) => pixels.pixels.subarray(((y + row) * pixels.width + x) * 4, ((y + row) * pixels.width + x + w) * 4))) });
+  const inBox = ([x, y, w, h], regions) => regions.map(([rx, ry, rw, rh]) => [rx - x, ry - y, rw, rh]);
+  assert.ok(census(crop(drawn), inBox(drawn, without.regions)).magenta > 50 * dpr * dpr, 'the drawn value is ordinary without a Vault value');
+  assert.ok(census(crop(media), inBox(media, without.regions)).cyan === media[2] * media[3], 'media stay visible without a Vault value');
   assert.ok(census(pixels, without.regions).magenta > 0, 'the echo paragraph is ordinary without a Vault value');
-  assert.equal(census(pixels, withValue.regions).magenta, 0);
+  assert.equal(census(pixels, withValue.regions).magenta, 0, 'echoes and the canvas-drawn value are masked');
+  assert.equal(census(crop(media), inBox(media, withValue.regions)).cyan, 0, 'every medium is masked while a value is registered');
 }));
 
 test('a captcha frame stays visible; its region is not protected', () => withFixture(1, async ({ browser, connection, sessionId }) => {

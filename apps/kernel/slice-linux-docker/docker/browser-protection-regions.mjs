@@ -8,6 +8,7 @@ import { redactObservation } from './browser-controller-snapshot.mjs';
 
 const MAX_FRAMES = 64, MAX_REGIONS = 4096, MAX_PAGES = 32, FRAME_TIMEOUT_MS = 500;
 const MARKERS = ['data-chariox-secret', 'data-chariox-observation-protected', 'data-observation-protected'];
+const OPAQUE_MEDIA = new Set(['canvas', 'svg', 'img', 'video']);
 const FRAME_OWNERS = new Set(['iframe', 'frame']);
 const PLUGINS = new Set(['object', 'embed']);
 
@@ -28,24 +29,32 @@ const outward = ([x, y, w, h]) => {
   return [left, top, Math.ceil(x + w) - left, Math.ceil(y + h) - top];
 };
 
-// Device-pixel boxes. A frame owner maps child coordinates by translation only
-// when its border box is untransformed: an axis-aligned quad with the layout
-// size. Otherwise the child cannot be placed: its whole owner box is protected.
+// A frame owner maps child coordinates by translation only when its border
+// quad (TL, TR, BR, BL) is its layout box moved: directed edges of the layout
+// size (no mirror or rotation), no skew. Layout sizes are whole CSS pixels.
+export function translatedQuad(q, width, height) {
+  if (!Array.isArray(q) || q.length !== 8 || !q.every(Number.isFinite)) return false;
+  const near = (a, b, tolerance = 0.01) => Math.abs(a - b) < tolerance;
+  return near(q[2] - q[0], width, 0.5) && near(q[7] - q[1], height, 0.5) &&
+    near(q[3], q[1]) && near(q[4], q[2]) && near(q[5], q[7]) && near(q[6], q[0]);
+}
+
+// Device-pixel boxes. A child that cannot be placed by translation (plain
+// false) is withheld: its whole owner box is protected.
 async function nodeBox(connection, sessionId, backendNodeId, dpr) {
   const { model } = await connection.send('DOM.getBoxModel', { backendNodeId }, sessionId);
   const border = quadRect(model?.border), content = quadRect(model?.content);
-  const q = model.border;
-  const aligned = q[1] === q[3] && q[5] === q[7] && q[0] === q[6] && q[2] === q[4];
-  const plain = aligned && Math.abs(border[2] - model.width) < 0.5 && Math.abs(border[3] - model.height) < 0.5;
-  return { border: scaled(border, dpr), content: scaled(content, dpr), plain };
+  return { border: scaled(border, dpr), content: scaled(content, dpr), plain: translatedQuad(model.border, model.width, model.height) };
 }
 
 // Pure: protected layout rectangles of one DOMSnapshot document, in device
 // pixels of that document's viewport. Protection is inherited by descendants
 // (display:contents, overflow, shadow content); markers, password/OTP/payment
-// fields, policy target nodes and Vault value echoes are protected. Frame and
-// plugin owners are returned for mapping or withholding (owner decision
-// 2026-10-08: media and inspectable frames are not masked whole).
+// fields, policy target nodes and Vault value echoes are protected. While Vault
+// values are registered, opaque media are protected too: a page can draw a
+// value into them and delete every DOM echo. Frame and plugin owners are
+// returned for mapping or withholding (owner decision 2026-10-08: inspectable
+// frames, and media without Vault values, are not masked whole).
 export function documentProtection(snapshot, index, { values = [], targetNodes = new Set() } = {}) {
   const document = snapshot.documents[index], strings = snapshot.strings ?? [];
   const nodes = document.nodes ?? {}, layout = document.layout ?? {};
@@ -65,6 +74,7 @@ export function documentProtection(snapshot, index, { values = [], targetNodes =
       own = MARKERS.includes(key) || (key === 'autocomplete' && /password|one-time-code|cc-/i.test(value)) ||
         (name === 'input' && key === 'type' && value.toLowerCase() === 'password') || echoed(attributes[a + 1]);
     }
+    if (values.length && OPAQUE_MEDIA.has(name)) own = true;
     const up = parent[i] ?? -1;
     if (!Number.isInteger(up) || up >= i) throw new Error('MP-11: unordered snapshot'); // Pre-order: parents first.
     marked[i] = own || (up >= 0 && marked[up]) ? 1 : 0;

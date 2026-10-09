@@ -13,11 +13,13 @@ export const VAULT_VALUE = 'disposable-vault-echo-7d1c';
 const M = 'background:#ff00ff', C = 'background:#00ffff';
 const page = body => `<!doctype html><meta charset=utf-8><body style="margin:0;font:14px sans-serif">${body}</body>`;
 // Query flags: novault (no Vault echo text), nomarkers (secret fields only).
+// Mirrored/rotated frames paint their password field away from its layout x.
 export function fixtureHtml(url, cross) {
   const markers = !url.includes('nomarkers');
   switch (url.split('?')[0]) {
     case '/captcha': return page(`<div style="${C};width:300px;height:74px"><span style="display:inline-block;width:24px;height:24px;margin:24px;border:2px solid #555;background:#fff"></span></div>`);
     case '/login': return page(`<div style="${C};height:30px"></div><input type=password value=hunter2 style="${M};border:0;margin:10px;width:150px;height:24px">`);
+    case '/field': return page(`<input type=password value=hunter2 style="${M};border:0;margin:10px;width:150px;height:24px">`);
     case '/whole': return page(`<div style="${M};width:100%;height:100vh"></div>`);
     case '/echo': return page(`<div style="${C};height:30px"></div><p style="color:#ff00ff;font:bold 18px sans-serif;margin:4px">token ${VAULT_VALUE}</p>`);
     case '/nested': return page(`<iframe src="${cross}/login" style="border:0;margin:6px;width:220px;height:90px"></iframe>`);
@@ -33,12 +35,19 @@ export function fixtureHtml(url, cross) {
       <iframe id=same src="/same" style="position:absolute;left:760px;top:170px;width:160px;height:100px;border:0"></iframe>
       <iframe id=nested src="${cross}/nested" style="position:absolute;left:20px;top:280px;width:260px;height:110px;border:0"></iframe>
       <iframe id=scaled src="${cross}/login" style="position:absolute;left:320px;top:280px;width:200px;height:80px;border:0;transform:scale(.5);transform-origin:0 0"></iframe>
+      <iframe id=mirrored src="${cross}/field" style="position:absolute;left:320px;top:330px;width:200px;height:80px;border:0;transform:scaleX(-1)"></iframe>
+      <iframe id=rotated src="/field" style="position:absolute;left:420px;top:70px;width:200px;height:90px;border:0;transform:rotate(180deg)"></iframe>
+      <canvas id=media width=60 height=40 style="position:absolute;left:880px;top:280px;z-index:1"></canvas>
       ${url.includes('novault') ? '' : `<p id=echo style="color:#ff00ff;font:bold 18px sans-serif;position:absolute;left:560px;top:280px;margin:0">token ${VAULT_VALUE}</p>`}
       ${url.includes('novault') ? '' : `<iframe id=echoframe src="${cross}/echo" style="position:absolute;left:560px;top:350px;width:300px;height:60px;border:0"></iframe>`}
+      ${url.includes('novault') ? '' : `<canvas id=drawn width=340 height=30 style="position:absolute;left:640px;top:80px"></canvas>
+        <script>{ const c = document.getElementById('drawn').getContext('2d'); c.fillStyle = '#ff00ff'; c.font = 'bold 24px sans-serif';
+          c.fillText(${JSON.stringify(VAULT_VALUE)}, 0, 24); document.currentScript.remove(); }</script>`}
       <div id=host style="position:absolute;left:560px;top:320px"></div>
       <input id=fixed type=password style="${M};position:fixed;right:10px;bottom:10px;width:90px;height:22px;border:0">
       <article style="${C};position:absolute;left:20px;top:420px;width:880px;height:1600px">Ordinary article text.</article>
       <script>document.getElementById('host').attachShadow({mode:'closed'}).innerHTML='<input type=password style="${M};width:110px;height:22px;border:0">';
+        { const c = document.getElementById('media').getContext('2d'); c.fillStyle = '#00ffff'; c.fillRect(0, 0, 60, 40); }
         document.getElementById('same').onload = e => e.target.contentWindow.scrollTo(0, 360);</script>`);
   }
 }
@@ -80,10 +89,11 @@ export async function openFixture(browser, url) {
   const { sessionId } = await browser.resolvePageTarget(target.targetId);
   await connection.send('Page.navigate', { url }, sessionId);
   for (let i = 0; i < 100; i++) {
-    const expected = 5 + !url.includes('nomarkers') + !url.includes('novault');
+    const expected = 7 + !url.includes('nomarkers') + !url.includes('novault');
     const { result } = await connection.send('Runtime.evaluate', { returnByValue: true, expression: `document.readyState === 'complete' && [...document.querySelectorAll('iframe')].length === ${expected}` }, sessionId);
+    // Isolated frame targets: the two same-site frames are in-process; nested adds one.
     const frames = (await connection.send('Target.getTargets')).targetInfos.filter(info => info.type === 'iframe').length;
-    if (result.value && frames >= expected) break;
+    if (result.value && frames >= expected - 1) break;
     await delay(50);
   }
   await delay(300);

@@ -2,7 +2,7 @@
 // is covered by the opt-in *.browser-test.mjs files).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ProtectionGate, documentProtection } from './browser-protection-regions.mjs';
+import { ProtectionGate, documentProtection, translatedQuad } from './browser-protection-regions.mjs';
 
 // nodes: [name, parent, attributes, extra]; every node gets a 10x10 box at (i*10, 0).
 function snapshot(nodes, { scroll = [0, 0], inputValue = {} } = {}) {
@@ -33,13 +33,14 @@ test('markers, secret fields and policy targets protect themselves and all desce
   assert.deepEqual(documentProtection(doc, 0, { targetNodes: new Set([109]) }).regions, at(1, 2, 3, 4, 5, 6, 9));
 });
 
-test('Vault echoes are protected only with registered values; media and plugins are not masked whole', () => {
+test('Vault echoes and opaque media are protected only with registered values; plugins are owners', () => {
   const doc = snapshot([
     ['#document', -1], ['P', 0], ['#text', 1, [], 'pre vault-value post'], ['INPUT', 0], ['A', 0, ['href', '/x?vault-value']],
     ['CANVAS', 0], ['IMG', 0], ['SVG', 0], ['VIDEO', 0], ['P', 0], ['EMBED', 0], ['OBJECT', 0],
   ], { inputValue: { 3: 'vault-value' } });
   assert.deepEqual(documentProtection(doc, 0).regions, []);
-  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4));
+  // A registered value can be drawn into media with no DOM echo left.
+  assert.deepEqual(documentProtection(doc, 0, { values: ['vault-value'] }).regions, at(2, 3, 4, 5, 6, 7, 8));
   // Plugins have no inspectable document: returned as owners to withhold.
   assert.deepEqual(documentProtection(doc, 0).owners.map(owner => [owner.backendNodeId, owner.plugin]), [[110, true], [111, true]]);
 });
@@ -49,6 +50,19 @@ test('frame owners are returned for mapping unless protected; scroll is removed'
   const { regions, owners } = documentProtection(doc, 0);
   assert.deepEqual(regions, [[25, -7, 10, 10], [35, -7, 10, 10]]);
   assert.deepEqual(owners, [{ backendNodeId: 101, rect: [5, -7, 10, 10], contentDocument: undefined }, { backendNodeId: 102, rect: [15, -7, 10, 10], contentDocument: 1 }]);
+});
+
+test('only a pure translation of the layout box maps frame content', () => {
+  const box = [10, 20, 210, 20, 210, 70, 10, 70]; // 200x50 at (10, 20): TL, TR, BR, BL.
+  assert.equal(translatedQuad(box, 200, 50), true);
+  assert.equal(translatedQuad(box.map(v => v + 0.25), 200, 50), true);
+  assert.equal(translatedQuad([210, 20, 10, 20, 10, 70, 210, 70], 200, 50), false, 'scaleX(-1)');
+  assert.equal(translatedQuad([10, 70, 210, 70, 210, 20, 10, 20], 200, 50), false, 'scaleY(-1)');
+  assert.equal(translatedQuad([210, 70, 10, 70, 10, 20, 210, 20], 200, 50), false, 'rotate(180deg)');
+  assert.equal(translatedQuad([60, 20, 60, 70, 10, 70, 10, 20], 50, 50), false, 'rotate(90deg), square');
+  assert.equal(translatedQuad([10, 20, 110, 20, 110, 45, 10, 45], 200, 50), false, 'scale(.5)');
+  assert.equal(translatedQuad([10, 20, 210, 30, 210, 80, 10, 70], 200, 50), false, 'skewY');
+  assert.equal(translatedQuad([10, 20, 210, 20, 210, 70, 10], 200, 50), false, 'malformed');
 });
 
 test('malformed snapshots fail closed', () => {
