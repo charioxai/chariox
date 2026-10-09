@@ -26,6 +26,9 @@ pub fn detect_environment(
     for file in &index.files {
         importer.import(file)
     }
+    for file in &index.files {
+        importer.import_file(file)
+    }
     if importer.skips.len() > 1024 {
         let omitted = importer.skips.len() - 1024;
         importer.skips.truncate(1024);
@@ -33,7 +36,16 @@ pub fn detect_environment(
     }
     let mut proposals: Vec<_> = importer.proposals.into_values().collect();
     // Protected source contributes sanitized semantic names only, no content length/hash.
-    let evidence_digest = metadata_digest(&(&proposals, &importer.skips, &importer.code_folders));
+    let evidence_digest = metadata_digest(&(
+        &proposals,
+        &importer.skips,
+        &importer.code_folders,
+        index
+            .files
+            .iter()
+            .map(|file| (&file.folder_id, &file.path, &file.digest))
+            .collect::<Vec<_>>(),
+    ));
     for proposal in &mut proposals {
         for origin in &mut proposal.requirement.origins {
             if let RequirementOrigin::Detected {

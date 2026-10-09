@@ -415,3 +415,6 @@ fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
 
 #[path = "detect_review_2_tests.rs"]
 mod review_2;
+
+#[path = "detect_review_3_tests.rs"]
+mod review_3;
