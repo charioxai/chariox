@@ -33,11 +33,11 @@ export function startNativeKernelPumpLoop(
         ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity>, session?: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(sessionId))
         : undefined
       if (stopped) return
-      let outputDrained = !options.onTerminalRecords
+      let outputDrained = false
       // TerminalOutput is size bounded. Keep each tick bounded too, and defer
       // settlement to a later tick if the attachment still has output pages.
       const maxPages = options.onAgentActivity ? 8 : 1
-      for (let page = 0; options.onTerminalRecords && !stopped && page < maxPages; page++) {
+      for (let page = 0; !stopped && page < maxPages; page++) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
         traceCodexLifecycle("pump_reply", { responseKinds: Object.keys(response),
           records: Array.isArray((response.TerminalOutput as { records?: unknown[] } | undefined)?.records)
@@ -56,7 +56,7 @@ export function startNativeKernelPumpLoop(
               count: terminalRecords.length,
               records: terminalRecords.map(summarizeTerminalRecord),
             })
-            options.onTerminalRecords(terminalRecords)
+            options.onTerminalRecords?.(terminalRecords)
           }
         }
       }
@@ -75,7 +75,7 @@ export function startNativeKernelPumpLoop(
       inFlight = false
     }
   }
-  const intervalMs = options.intervalMs ?? (options.onTerminalRecords ? 250 : 10_000)
+  const intervalMs = options.intervalMs ?? 250
   const interval = setInterval(() => {
     void tick()
   }, intervalMs)

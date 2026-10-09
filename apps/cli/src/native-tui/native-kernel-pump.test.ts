@@ -4,20 +4,20 @@ import test from "node:test"
 import { LocalIpcClient } from "../ipc.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 
-test("native kernel pump uses a liveness cadence when no output projection is needed", async () => {
+test("MP-08 MP-10 native kernel pump drives home settlement when the provider renders output", async () => {
   const harness = installTimerHarness()
   const requests: string[] = []
   const client = fakeClient((request) => {
     requests.push(requestVariant(request))
-    return { RuntimeNotices: { notices: [] } }
+    return requestVariant(request) === "PumpTerminalOutput" ? { TerminalOutput: { records: [] } } : { RuntimeNotices: { notices: [] } }
   })
 
   try {
     const pump = startNativeKernelPumpLoop(client, "session-1", "attachment-1")
     await flushPromises()
 
-    assert.equal(harness.intervalMs(), 10_000)
-    assert.deepEqual(requests, ["PollRuntimeNotices"])
+    assert.equal(harness.intervalMs(), 250)
+    assert.deepEqual(requests, ["PumpTerminalOutput", "PollRuntimeNotices"])
     pump.stop()
   } finally {
     harness.restore()
