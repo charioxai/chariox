@@ -62,7 +62,8 @@ def locate_regions(policy):
     import importlib.util
     spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
-    regions.extend(native.regions())
+    try:regions.extend(native.regions())
+    except Exception:pass  # Native best effort; browser targets still measured.
     browser_targets = [target for target in policy.get('targets', []) if target['kind'] == 'browser']
     if browser_targets:
         result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs'))],
