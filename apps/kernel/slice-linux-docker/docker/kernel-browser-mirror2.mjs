@@ -10,6 +10,7 @@ import { assertCurrentDocument, assertNotCancelled } from './browser-controller-
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-display.mjs';
+import { MirrorFrames, slotOf, localId } from './kernel-browser-mirror2-frames.mjs';
 
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 2 * 1024 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Trusted admission error: never constructed from page/CDP error strings.
@@ -40,7 +41,8 @@ function dataUrlBytes(url) {
 }
 
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); }
+  parentWorld(stream) { return stream.world; }
   async world(tab) {
     const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
     const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
@@ -64,7 +66,7 @@ export class Mirror2 {
     return reply.result.value;
   }
   stream(stream) {
-    Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null });
+    Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0 });
     return stream;
   }
   // Registered Vault targets are marked by node identity in the observer's world.
@@ -99,18 +101,38 @@ export class Mirror2 {
     const tab = await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
     this.service.assertWebTab(tab); assertNotCancelled(signal);
     const world = await this.world(tab), policy = this.host.protection;
+    stream.world = world;
     mark('world');
     const variants = observationProtectedVariants(policy.values);
     const after = command.after_sequence;
     let reset = after === 0 || after > stream.issued || after < stream.issued - 8 || stream.document_id !== tab.document_id || stream.policy !== policy || stream.fallback !== null;
     if (stream.document_id !== tab.document_id) { stream.resources.clear(); stream.attrSequence.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
+    // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
+    if (stream.frameSlot >= 900) reset = true;
+    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
         await this.protectTargets(world, tab, policy);
-        return this.evaluate(world, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
+        const snap = await this.evaluate(world, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
+        if (snap.resync) return snap;
+        // Cross-origin frames: child DOM under the owner, or an opaque region.
+        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), variants, policy, tab);
+        this.opaque(snap.nodes, frames.opaque);
+        return { ...snap, nodes: [...snap.nodes, ...frames.records], ops: frames.ops, resources: [...snap.resources, ...(frames.resources ?? [])] };
       }
-      return this.evaluate(world, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`);
+      const delta = await this.evaluate(world, `globalThis.__charioxMirror2.drain(${JSON.stringify({ variants })})`);
+      if (delta.resync) return delta;
+      const ops = [], resources = [...delta.resources];
+      for (const op of delta.ops) {
+        if (op.op === 'children') {
+          const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), variants, policy, tab);
+          this.opaque(op.nodes, frames.opaque);
+          ops.push({ ...op, nodes: [...op.nodes, ...frames.records] }, ...frames.ops); resources.push(...(frames.resources ?? []));
+        } else ops.push(op);
+      }
+      const children = await this.frames.drain(stream, variants);
+      return { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources] };
     };
     let resources = [];
     try {
@@ -164,6 +186,10 @@ export class Mirror2 {
     return !source.ops?.length && !source.sheets?.length && JSON.stringify([source.scroll, source.focused, source.selection]) === stream.lastHeader && !this.tilesDue(stream);
   }
   merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])] }; }
+  // Unattached foreign frames are opaque regions (masked captures only).
+  opaque(records, ids) {
+    for (const record of records) if (record.foreign) { delete record.foreign; if (ids.includes(record.id)) { record.kind = 'tile'; record.reason = 'cross_origin_frame'; } }
+  }
   register(stream, source, reset) {
     for (const descriptor of source?.resources ?? []) if (!stream.resources.has(descriptor.key)) stream.resources.set(descriptor.key, { ...descriptor, state: 'new', tries: 0, sent: false });
     if (reset) for (const entry of stream.resources.values()) entry.sent = false;
@@ -172,12 +198,19 @@ export class Mirror2 {
   // Bytes the page itself loaded: data URLs, the inspector's resource tree, or
   // Chrome's cache (credential-free) for URLs in the page's Resource Timing.
   // A URL a stylesheet merely mentions waits until the page loads it.
-  async materialize(world, stream, kind) {
-    const count = await this.evaluate(world, 'globalThis.__charioxMirror2.loadedCount()');
-    const recheck = count !== stream.loadedCount; stream.loadedCount = count;
-    const due = [...stream.resources.values()].filter(entry => (!kind || entry.kind === kind) && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
-    if (!due.length) return [];
-    const loaded = new Set(await this.evaluate(world, 'globalThis.__charioxMirror2.loaded()'));
+  async materialize(main, stream, kind) {
+    const worlds = new Map([[0, main], ...[...stream.frameSlots].map(([slot, entry]) => [slot, entry.child])]);
+    let counts = 0; for (const world of worlds.values()) counts += await this.evaluate(world, 'globalThis.__charioxMirror2.loadedCount()').catch(() => 0);
+    const recheck = counts !== stream.loadedCount; stream.loadedCount = counts;
+    const out = [];
+    for (const [slot, world] of worlds) {
+      const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (!kind || entry.kind === kind) && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
+      if (due.length) out.push(...await this.materializeWorld(world, due, slot, RESOURCE_PACKET_BYTES - out.reduce((n, r) => n + r.data_base64.length, 0)));
+    }
+    return out;
+  }
+  async materializeWorld(world, due, slot, budget) {
+    const loaded = new Set((await this.evaluate(world, 'globalThis.__charioxMirror2.loaded()')).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
     let tree = null;
     const frames = async () => {
       if (tree) return tree;
@@ -187,7 +220,7 @@ export class Mirror2 {
     };
     const out = []; let bytes = 0;
     for (const entry of due) {
-      if (bytes >= RESOURCE_PACKET_BYTES) break;
+      if (bytes >= budget) break;
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);
@@ -233,7 +266,7 @@ export class Mirror2 {
   // Opaque regions (canvas/video/foreign frames) as masked lossless stills,
   // refreshed at most once a second until phase 3 binds them to video rows.
   async tiles(world, tab, stream, reset) {
-    const boxes = await this.evaluate(world, 'globalThis.__charioxMirror2.opaqueBoxes()');
+    const boxes = [...(await this.evaluate(world, 'globalThis.__charioxMirror2.opaqueBoxes()')).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     if (!boxes.length || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
@@ -274,31 +307,51 @@ export class Mirror2 {
     const assertEpoch = () => { if (this.service.require(input.subscription_id, scope, generation) !== stream || stream.policy !== this.host.protection || stream.document_id !== tab.document_id || stream.fallback) throw new Error('MP-11: stale mirror protection policy or admitted input'); };
     const call = async expression => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertEpoch(); const value = await this.evaluate(world, expression); assertEpoch(); return value; };
     const m = 'globalThis.__charioxMirror2';
+    // Nodes of a mirrored cross-origin frame live in that frame's own world.
+    const frameOf = id => { const slot = id ? slotOf(id) : 0; if (!slot) return null; const entry = stream.frameSlots.get(slot); if (!entry) throw new Error('MP-11: changed mirror input target'); return entry; };
+    const inFrame = async (entry, expression) => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); const value = await this.evaluate(entry.child, expression); assertEpoch(); return value; };
+    if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
     if (action.kind === 'click' || action.kind === 'scroll') {
-      const at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+      const entry = frameOf(action.node_id);
+      let at, local = null;
+      if (entry) {
+        local = await inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        const origin = await call(`${m}.frameOrigin(${JSON.stringify(entry.owner)})`);
+        at = { x: Math.floor(local.x + origin[0]), y: Math.floor(local.y + origin[1]) };
+        if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
+      } else at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
       let checked = false;
       // MP-11: re-validated after focus emulation, immediately before the first
       // physical event; release stays paired even if the page reacts.
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`); checked = true; };
+      const guard = async () => {
+        assertEpoch(); assertNotCancelled(signal); if (checked) return;
+        if (entry) { await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(entry.owner)})`); await inFrame(entry, `${m}.hitCheck(${JSON.stringify(local)},${JSON.stringify(localId(action.node_id))})`); }
+        else await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`);
+        checked = true;
+      };
       if (action.kind === 'click') return { input: { kind: 'click', ...at }, guard };
       if (!Number.isInteger(action.delta_x) || !Number.isInteger(action.delta_y)) throw new Error('MP-11: invalid mirror input');
       return { input: { kind: 'scroll', ...at, delta_x: action.delta_x, delta_y: action.delta_y }, guard };
     }
     if (action.kind === 'scroll_to') {
       if (action.node_id !== undefined && action.node_id !== null && !validId(action.node_id) || !Number.isFinite(action.x) || !Number.isFinite(action.y) || Math.abs(action.x) > 1e7 || Math.abs(action.y) > 1e7) throw new Error('MP-11: invalid mirror input');
-      return { perform: async () => { await call(`${m}.scrollTo(${JSON.stringify({ node_id: action.node_id ?? null, x: action.x, y: action.y })})`); } };
+      const entry = frameOf(action.node_id);
+      return { perform: async () => { if (entry) await inFrame(entry, `${m}.scrollTo(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`); else await call(`${m}.scrollTo(${JSON.stringify({ node_id: action.node_id ?? null, x: action.x, y: action.y })})`); } };
     }
-    if (action.kind === 'focus') return { perform: async () => { await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); } };
-    if (action.kind === 'selection') return { perform: async () => { await call(`${m}.select(${JSON.stringify(action)})`); } };
+    if (action.kind === 'focus') { const entry = frameOf(action.node_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); } }; }
+    if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
+    // Live focus inside a mirrored cross-origin frame is validated in that frame.
+    const activeTarget = async editable => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus'); return entry ? inFrame(entry, `${m}.activeTarget(${editable})`) : call(`${m}.activeTarget(${editable})`); };
     if (action.kind === 'key') {
       let checked = false;
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await call(`${m}.activeTarget(false)`); checked = true; };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
       return { input: { kind: 'key', key: action.key }, guard, observedFrameInput: true };
     }
     if (action.kind === 'text' || action.kind === 'composition') {
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); await call(`${m}.activeTarget(true)`); };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
+      const entry = frameOf(action.node_id);
       return { guard, observedFrameInput: true, perform: async send => {
-        if (action.node_id) await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`);
+        if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }
         assertNotCancelled(signal); assertEpoch();
         if (action.kind === 'text') return send('Input.insertText', { text: action.text });
         return send('Input.imeSetComposition', { text: action.text, selectionStart: action.selection_start, selectionEnd: action.selection_end });

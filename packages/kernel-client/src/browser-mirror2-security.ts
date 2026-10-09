@@ -16,8 +16,10 @@ const finite = (values: unknown[]): boolean => values.every(v => typeof v === 'n
 export function validateMirror2Css(text: unknown): void {
   if (typeof text !== 'string' || text.length > 16 * 1024 * 1024) fail('CSS')
   const css = text as string
-  const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0
+  const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,9}|#[\w-]*)"\)/g)?.length ?? 0
   if (all !== allowed || /@import|expression\s*\(|javascript:|-moz-binding|(?:^|[;{\s])behavior\s*:/i.test(css)) fail('CSS')
+  // A CSS-escaped function name (`u\\72l(`) would still fetch: none may remain.
+  if (/(?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])*\\(?:[0-9a-fA-F]{1,6}\s?|[^\n0-9a-fA-F])(?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])*\(/.test(css)) fail('CSS')
 }
 function validateAttrs(record: Mirror2Record): void {
   for (const [name, value] of Object.entries(record.attrs ?? {})) {
@@ -43,7 +45,7 @@ export function validateMirror2Record(record: Mirror2Record): void {
   if (record.css !== undefined) { if (record.tag !== 'style') fail('style'); validateMirror2Css(record.css) }
   validateAttrs(record)
   if (record.text !== undefined && (record.kind !== 'text' || typeof record.text !== 'string' || record.text.length > 16 * 1024 * 1024)) fail('text')
-  if (record.res !== undefined && !/^r[0-9]{1,6}$/.test(record.res)) fail('resource')
+  if (record.res !== undefined && !/^r[0-9]{1,9}$/.test(record.res)) fail('resource')
   if (record.scroll !== undefined && (!Array.isArray(record.scroll) || record.scroll.length !== 2 || !finite(record.scroll))) fail('scroll')
   if (record.size !== undefined && (!Array.isArray(record.size) || record.size.length !== 2 || !finite(record.size))) fail('geometry')
   if (record.form !== undefined && (typeof record.form.value !== 'string' || record.form.value.length > 65536 || typeof record.form.checked !== 'boolean' || !Number.isInteger(record.form.selected_index))) fail('form')
@@ -75,7 +77,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'adopted': if (!Array.isArray(op.sheets) || op.sheets.length > 256) fail('op'); op.sheets.forEach(validateMirror2Css); break
     case 'form': if (typeof op.form?.value !== 'string' || op.form.value.length > 65536 || known(op.id)?.kind === 'mask') fail('op'); break
     case 'scroll': case 'size': { const value = op.op === 'scroll' ? op.scroll : op.size; if (!Array.isArray(value) || value.length !== 2 || !finite(value)) fail('op'); break }
-    case 'res': if (op.res !== null && !/^r[0-9]{1,6}$/.test(op.res)) fail('op'); break
+    case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     default: fail('op')
   }
 }
@@ -91,7 +93,7 @@ export function validateMirror2Packet(packet: Mirror2Packet, previous: ReadonlyM
     for (const record of packet.nodes!) fresh.set(record.id, record)
   }
   for (const op of packet.ops ?? []) { validateOp(op, known); if (op.op === 'children') for (const record of op.nodes) fresh.set(record.id, record) }
-  for (const resource of packet.resources) if (!/^r[0-9]{1,6}$/.test(resource.key) || !/^[a-f0-9]{64}$/.test(resource.resource_id) || !MIME.has(resource.mime_type) || typeof resource.data_base64 !== 'string' || resource.data_base64.length > 6 * 1024 * 1024) throw Error('MP-11: executable/oversized mirror resource')
+  for (const resource of packet.resources) if (!/^r[0-9]{1,9}$/.test(resource.key) || !/^[a-f0-9]{64}$/.test(resource.resource_id) || !MIME.has(resource.mime_type) || typeof resource.data_base64 !== 'string' || resource.data_base64.length > 6 * 1024 * 1024) throw Error('MP-11: executable/oversized mirror resource')
   for (const tile of packet.tiles) if (!id.test(tile.node_id) || !finite([tile.x, tile.y, tile.width, tile.height]) || tile.width <= 0 || tile.height <= 0 || typeof tile.data_base64 !== 'string' || tile.data_base64.length > 8 * 1024 * 1024 || known(tile.node_id) && known(tile.node_id)!.kind !== 'tile') throw Error('MP-11: invalid mirror tile')
   if (packet.selection) { const s = packet.selection; if (!id.test(s.anchor_id) || !id.test(s.focus_id) || !Number.isInteger(s.anchor_offset) || !Number.isInteger(s.focus_offset) || s.anchor_offset < 0 || s.focus_offset < 0) fail('selection') }
 }

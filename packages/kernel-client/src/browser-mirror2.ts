@@ -7,7 +7,7 @@ export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet } from './browser-mirror2-security.js'
 export const browserMirror2MinimumProtocolVersion = 482
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
-const resourcePattern = /url\("mr:(r[0-9]{1,6})"\)/g
+const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[] } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
@@ -33,7 +33,11 @@ export class BrowserMirror2Renderer {
   sequence = 0
   documentId = ''
   private pendingInputs = 0
-  private inputChain: Promise<void> = Promise.resolve()
+  private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
+  private sending = false
+  // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
+  private localScrollAt = -Infinity
+  private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, private failure: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
@@ -58,9 +62,22 @@ export class BrowserMirror2Renderer {
   private enqueue(action: Mirror2Action): void {
     if (this.applying || this.disposed || !this.documentId) return
     const epoch = { sequence: this.sequence, document_id: this.documentId }
-    this.pendingInputs++
-    this.inputChain = this.inputChain.then(async () => { try { if (!this.disposed) await this.send(action, epoch) } finally { this.pendingInputs-- } }).catch(this.failure)
+    // Ordered; a queued scroll position for the same scroller is replaced, not appended.
+    const last = this.queue.at(-1)
+    if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; return }
+    this.queue.push({ action, epoch }); this.pendingInputs++
+    void this.pump()
   }
+  private async pump(): Promise<void> {
+    if (this.sending) return
+    this.sending = true
+    try {
+      for (let next = this.queue.shift(); next; next = this.queue.shift()) {
+        try { if (!this.disposed) await this.send(next.action, next.epoch) } catch (error) { this.failure(error) } finally { this.pendingInputs-- }
+      }
+    } finally { this.sending = false }
+  }
+  private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
     return undefined
@@ -84,7 +101,24 @@ export class BrowserMirror2Renderer {
     on('auxclick', event => event.preventDefault())
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())
-    on('wheel', event => { event.preventDefault(); const hit = element(event), wheel = event as WheelEvent; if (hit) this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
+    // Native, local scrolling; opaque regions (canvas, video, foreign stills) take the wheel themselves.
+    on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
+    let scrolled = new Set<Node>(), frame = 0
+    const position = (target: Node): [number, number] => target.nodeType === 9 ? [(target as Document).defaultView?.scrollX ?? 0, (target as Document).defaultView?.scrollY ?? 0] : [(target as Element).scrollLeft, (target as Element).scrollTop]
+    on('scroll', event => {
+      const target = event.target as Node, kernel = this.applied.get(target), now = position(target)
+      if (this.applying || kernel && Math.abs(kernel[0] - now[0]) < 1 && Math.abs(kernel[1] - now[1]) < 1) return
+      this.applied.delete(target)
+      this.localScrollAt = performance.now(); scrolled.add(target)
+      frame ||= requestAnimationFrame(() => {
+        frame = 0; const targets = scrolled; scrolled = new Set()
+        for (const target of targets) {
+          const doc = target.nodeType === 9 ? target as Document : null, id = this.ids.get(target)
+          if (doc) this.enqueue({ kind: 'scroll_to', node_id: doc === this.doc ? null : id ?? null, x: doc.defaultView?.scrollX ?? 0, y: doc.defaultView?.scrollY ?? 0 })
+          else if (id) this.enqueue({ kind: 'scroll_to', node_id: id, x: (target as Element).scrollLeft, y: (target as Element).scrollTop })
+        }
+      })
+    })
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey } = event as KeyboardEvent
       if (ctrlKey || metaKey || altKey) return
@@ -239,8 +273,15 @@ export class BrowserMirror2Renderer {
       for (const resource of packet.resources) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of packet.resources) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
       for (const tile of packet.tiles) this.tile(tile)
-      for (const [element, x, y] of scrolls) { if (element.scrollLeft !== x) element.scrollLeft = x; if (element.scrollTop !== y) element.scrollTop = y }
-      this.frame.contentWindow!.scrollTo(packet.scroll[0], packet.scroll[1])
+      // The viewer owns scroll while it scrolls; the kernel's position applies on reset or when settled.
+      if (packet.reset || !this.scrolling()) {
+        for (const [element, x, y] of scrolls) {
+          if ((element as Node).nodeType === 9) { const view = (element as unknown as Document).defaultView; view?.scrollTo(x, y); if (view) this.applied.set(element, [view.scrollX, view.scrollY]); continue }
+          if (element.scrollLeft !== x) element.scrollLeft = x; if (element.scrollTop !== y) element.scrollTop = y
+          this.applied.set(element, [element.scrollLeft, element.scrollTop])
+        }
+        const view = this.frame.contentWindow!; view.scrollTo(packet.scroll[0], packet.scroll[1]); this.applied.set(this.doc, [view.scrollX, view.scrollY])
+      }
       this.sequence = packet.sequence; this.documentId = packet.document_id
       if (!this.pendingInputs) {
         const focused = packet.focused ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined
@@ -272,6 +313,13 @@ export class BrowserMirror2Renderer {
     switch (op.op) {
       case 'children': {
         const frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
+        // A frame's child is its document: rebuild the frame's own document.
+        if (this.records.get(op.id)?.kind === 'frame') {
+          const nested = (node as HTMLIFrameElement).contentDocument
+          if (nested?.documentElement) this.forgetTree(nested.documentElement)
+          this.hydrateFrames([{ frame: node as HTMLIFrameElement, id: op.id }], op.nodes, scrolls)
+          break
+        }
         const doc = node.nodeType === 9 ? node as Document : node.ownerDocument!
         const fresh = this.build(op.nodes, doc, frames, scrolls)
         const container: Node = node

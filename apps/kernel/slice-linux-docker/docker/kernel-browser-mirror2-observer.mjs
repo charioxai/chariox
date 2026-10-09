@@ -12,6 +12,13 @@ export function sanitizeMirrorCss(text, base, resource, variants = []) {
   // Known namespace URIs are identifiers, never fetched; any other @namespace drops.
   const namespaces = new Set(['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML', 'http://www.w3.org/1999/xlink']);
   let out = text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
+  // Escaped function names (custom properties keep raw tokens: `u\\72l(`) are
+  // decoded first, so the url() rewrite below sees every fetching function.
+  out = out.replace(/((?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+)\(/g, (match, name) => {
+    if (!name.includes('\\')) return match;
+    const plain = name.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
+    return /^[a-zA-Z_-]+$/.test(plain) ? `${plain}(` : 'x-invalid(';
+  });
   // Custom properties and var()-bearing declarations keep their source tokens,
   // so every url() spelling occurs; image-set() strings are URLs too.
   out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
@@ -45,7 +52,7 @@ export function installMirror2(sanitizeMirrorCss) {
   const MARKERS = '[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected],input[type=password]';
   let serial = 0, variants = [], targets = new WeakSet(), records = [], overflow = false, revision = 0;
   const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map();
-  const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map();
+  const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
   const urlKeys = new Map();
   let newResources = [], pendingSheets = [], marked = new WeakSet(), lastSheetCheck = 0;
   const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
@@ -115,7 +122,7 @@ export function installMirror2(sanitizeMirrorCss) {
   const forget = id => {
     const node = nodes.get(id);
     for (const child of kids.get(id) ?? []) forget(child);
-    nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id);
+    nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
     if (node) ids.delete(node);
   };
   const remember = (record, node) => { nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
@@ -204,7 +211,9 @@ export function installMirror2(sanitizeMirrorCss) {
     record.attrs = attributes(node, base);
     if (ns === HTML && tag === 'iframe') {
       let nested = null; try { nested = node.contentDocument; } catch {}
-      if (!nested?.documentElement) { opaqueRecord(node, record, 'cross_origin_frame'); spend(64); out.push(record); remember(record, node); return id; }
+      // Cross-origin: the kernel mirrors it through the frame's own CDP session
+      // (or paints it as a protected opaque region when that is unavailable).
+      if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); out.push(record); remember(record, node); foreign.add(id); return id; }
       record.kind = 'frame'; record.tag = 'iframe';
       spend(64); out.push(record); remember(record, node);
       serialize(nested, id, out, depth + 1);
@@ -242,7 +251,7 @@ export function installMirror2(sanitizeMirrorCss) {
     observer.disconnect(); records = []; overflow = false;
     for (const key of Object.keys(dirty)) dirty[key].clear();
     for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-    nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear();
+    nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
     pendingSheets = []; budget = { nodes: 0, bytes: 0 };
     newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
     markSecrets();
@@ -355,10 +364,10 @@ export function installMirror2(sanitizeMirrorCss) {
   const opaqueBoxes = () => {
     const out = [];
     for (const [id, node] of nodes) {
-      if (kindOf.get(id) !== 'tile' || !node.isConnected) continue;
+      if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
       let [x, y, width, height] = box(node);
       for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
-      if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0) out.push({ id, box: [x, y, width, height] });
+      if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0) out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}) });
     }
     return out;
   };
@@ -438,8 +447,26 @@ export function installMirror2(sanitizeMirrorCss) {
   // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer.
   const scrollTo = request => {
     if (!request.node_id) { window.scrollTo(request.x, request.y); return [scrollX, scrollY]; }
-    const node = live(request.node_id); if (node.nodeType !== 1) throw new Error('mirror2 element required');
-    node.scrollTo(request.x, request.y); return [node.scrollLeft, node.scrollTop];
+    const node = nodes.get(request.node_id);
+    // A document id scrolls that document's window (same-origin frames too).
+    if (node?.nodeType === 9 && node.defaultView) { node.defaultView.scrollTo(request.x, request.y); return [node.defaultView.scrollX, node.defaultView.scrollY]; }
+    const element = live(request.node_id); if (element.nodeType !== 1) throw new Error('mirror2 element required');
+    element.scrollTo(request.x, request.y); return [element.scrollLeft, element.scrollTop];
+  };
+  // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
+  const idOfNode = function () { return this && mirrored(this) || null; };
+  // Content-box origin of a cross-origin frame element in this viewport.
+  const frameOrigin = id => {
+    const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
+    const style = getComputedStyle(node); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
+    const r = node.getBoundingClientRect(), [fx, fy] = frameOffset(node);
+    return [r.x + node.clientLeft + (parseFloat(style.paddingLeft) || 0) + fx, r.y + node.clientTop + (parseFloat(style.paddingTop) || 0) + fy];
+  };
+  // Live focus inside a cross-origin frame: the frame element's mirror id.
+  const activeForeign = () => {
+    let node = document.activeElement;
+    for (let depth = 0; depth < 128; depth++) { let nested = node?.shadowRoot?.activeElement; try { nested ??= node?.localName === 'iframe' ? node.contentDocument?.activeElement : null; } catch {} if (!nested) break; node = nested; }
+    const id = node && mirrored(node); return id && foreign.has(id) ? id : null;
   };
   // Trusted-side: resolveNode() hands Vault target nodes to this world.
   const protect = function () { if (this && this.nodeType === 1) { targets.add(this); replaceNode(this); } return true; };
@@ -463,6 +490,6 @@ export function installMirror2(sanitizeMirrorCss) {
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
   const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
-  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, wait, sanitize, loaded, loadedCount, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, wait, sanitize, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   return true;
 }

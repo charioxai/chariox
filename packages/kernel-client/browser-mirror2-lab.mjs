@@ -46,7 +46,7 @@ if (process.argv[2] !== 'child') {
     await cp(playwright, path.join(root, 'node_modules/playwright-core'), { recursive: true, dereference: true });
     for (const name of ['home', 'evidence']) { await mkdir(path.join(root, name), { mode: 0o700 }); await chown(path.join(root, name), 65534, 65534); }
     const child = spawn(process.execPath, [path.join(root, 'run.mjs'), 'child', root, sites, dprs, wire], { uid: 65534, gid: 65534, cwd: root,
-      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '' },
+      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '' },
       stdio: ['ignore', 'pipe', 'pipe'] });
     let logs = ''; for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { process.stdout.write(chunk); logs += chunk; if (logs.length > 1 << 20) logs = logs.slice(-(1 << 20)); });
     code = await new Promise(resolve => child.once('exit', exit => resolve(exit ?? 1)));
@@ -63,7 +63,7 @@ if (process.argv[2] !== 'child') {
   const { mirrorRasterMetrics } = await import(path.join(root, 'browser-mirror-metrics.mjs'));
   const wire = Number(wireArg), evidence = path.join(root, 'evidence'), settle = Number(process.env.MIRROR_LAB_SETTLE_MS || 4000);
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
-  const results = []; const wireLog = []; let currentCell = '';
+  const results = []; const wireLog = []; const inputLog = []; let currentCell = '';
   const kernel = async request => {
     const command = request.KernelBrowser.command;
     let result;
@@ -71,7 +71,8 @@ if (process.argv[2] !== 'child') {
     result = command.op === 'mirror_input'
       ? await host.request({ op: 'input', tab_id: command.tab_id, generation: command.generation, document_id: command.document_id, input: { kind: 'mirror', subscription_id: command.subscription_id, sequence: command.sequence, action: command.action }, observed_by: 'lab' })
       : await host.request({ ...command, observed_by: 'lab' });
-    } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); throw error; }
+      if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, x: command.action.x, y: command.action.y, sequence: command.sequence, ok: true });
+    } catch (error) { if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), error: String(error?.message ?? error).slice(0, 200) }); if (command.op === 'mirror_input') inputLog.push({ at: Date.now(), kind: command.action.kind, node_id: command.action.node_id, error: String(error?.message ?? error).slice(0, 200) }); throw error; }
     const json = JSON.stringify({ KernelBrowser: { result } });
     if (command.op === 'mirror_next' && process.env.MIRROR_LAB_DUMP === '1' && !wireLog.some(entry => entry.raw)) await writeFile(path.join(evidence, `${currentCell}-first-packet.json.gz`), gzipSync(json));
     if (command.op === 'mirror_next') wireLog.push({ at: Date.now(), sequence: result.sequence, reset: result.reset, fallback: result.fallback ?? result.fallback_reason ?? result.nodes?.find?.(n => n.reason === 'observer_bounds_or_unavailable')?.reason ?? null, tile_reasons: wire === 1 ? Object.entries((result.nodes ?? []).reduce((m, n) => (n.reason ? (m[n.reason] = (m[n.reason] ?? 0) + 1) : 0, m), {})) : undefined, raw: json.length, gzip: gzipSync(json).length, ops: result.ops?.length ?? null, nodes: result.nodes?.length ?? null, resources: result.resources?.length ?? 0, tiles: result.tiles?.length ?? 0 });
@@ -97,6 +98,47 @@ if (process.argv[2] !== 'child') {
   const browser = await chromium.launch({ executablePath: CHROME, headless: true, ignoreDefaultArgs: ['--hide-scrollbars'], args: ['--disable-frame-rate-limit'] });
   const sites = labSites.filter(s => siteList.split(',').includes(s.id));
   const main = async (tab, expression) => { const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id); const reply = await connection.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId); if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description ?? 'evaluate failed'); return reply.result.value; };
+  // Supplementary input checks through the real renderer + kernel guards (no relay/shaping).
+  const inputChecks = async (page, tab, site) => {
+    const out = {};
+    const frame = page.frames().find(f => f !== page.mainFrame());
+    const box = await page.evaluate(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return [r.x, r.y]; });
+    // Local scroll: wheel 12 notches; presented fps from viewer rAF; kernel follows.
+    await page.mouse.move(box[0] + 640, box[1] + 400);
+    await page.evaluate(() => { window.scrollFrames = []; const w = document.querySelector('iframe').contentWindow; let last = w.scrollY; const tick = t => { if (w.scrollY !== last) { window.scrollFrames.push(t); last = w.scrollY; } window.scrollRaf = requestAnimationFrame(tick); }; window.scrollRaf = requestAnimationFrame(tick); });
+    for (let i = 0; i < 12; i++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(16); }
+    await page.waitForTimeout(1500);
+    const frames = await page.evaluate(() => { cancelAnimationFrame(window.scrollRaf); return window.scrollFrames; });
+    const span = frames.length > 1 ? frames.at(-1) - frames[0] : 0;
+    out.scroll = { presented_frames: frames.length, fps: span ? (frames.length - 1) / (span / 1000) : null, viewer_y: await page.evaluate(() => document.querySelector('iframe').contentWindow.scrollY), kernel_y: await main(tab, 'scrollY') };
+    if (site.id === 'wikipedia-article') {
+      // Theme toggle (Appearance radio): click in the mirror, kernel effect echoes back.
+      const samples = [];
+      for (let i = 0; i < 6; i++) {
+        const target = i % 2 ? '#skin-client-pref-skin-theme-value-day' : '#skin-client-pref-skin-theme-value-night';
+        const handle = await frame.$(target); if (!handle) { out.click_error = 'theme control absent'; break; }
+        await handle.scrollIntoViewIfNeeded().catch(() => {}); await page.waitForTimeout(800);
+        const want = i % 2 ? 'skin-theme-clientpref-day' : 'skin-theme-clientpref-night';
+        const t0 = Date.now(); await handle.click();
+        const ok = await page.waitForFunction(w => document.querySelector('iframe').contentDocument.documentElement.className.includes(w), want, { timeout: 5000, polling: 'raf' }).then(() => true).catch(() => false);
+        samples.push(ok ? Date.now() - t0 : null);
+        if (!ok && i === 0) { const r = await main(tab, `(()=>{const r=document.querySelector(${JSON.stringify(target)}).getBoundingClientRect();return [Math.floor(r.x+r.width/2),Math.floor(r.y+r.height/2)]})()`); const st = await host.request({ op: 'state', observed_by: 'lab' }); await host.request({ op: 'input', tab_id: tab.tab_id, generation: st.generation, document_id: st.tabs.find(t => t.tab_id === tab.tab_id).document_id, input: { kind: 'click', x: r[0], y: r[1] }, observed_by: 'lab' }).catch(e => out.direct_error = String(e)); await page.waitForTimeout(1500); out.direct_click = await main(tab, `document.documentElement.className.match(/skin-theme-clientpref-\\w+/)?.[0]`); }
+        if (!ok) (out.click_diag ??= []).push({ i, kernel: await main(tab, `(()=>{const e=document.querySelector(${JSON.stringify(target)});const r=e?.getBoundingClientRect();return {checked:e?.checked,disabled:e?.disabled,rect:r&&[r.x,r.y,r.width,r.height],scrollY,cls:document.documentElement.className.match(/skin-theme-clientpref-\\w+/)?.[0],hit:r&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.outerHTML.slice(0,120)}})()`).catch(e => String(e)), viewer: await page.evaluate(t => { const d = document.querySelector('iframe').contentDocument, e = d.querySelector(t), r = e?.getBoundingClientRect(); return { rect: r && [r.x, r.y, r.width, r.height], scrollY: d.defaultView.scrollY }; }, target) });
+      }
+      out.click_ms = samples;
+    }
+    if (site.id === 'wikipedia-portal') {
+      const field = await frame.$('#searchInput');
+      if (field) {
+        await field.click(); await page.waitForTimeout(600);
+        const samples = [];
+        for (let i = 0; i < 6; i++) { const want = 'abcdef'.slice(0, i + 1); const t0 = Date.now(); await page.keyboard.insertText(want.at(-1)); const ok = await page.waitForFunction(w => document.querySelector('iframe').contentDocument.querySelector('#searchInput')?.value === w, want, { timeout: 5000, polling: 'raf' }).then(() => true).catch(() => false); samples.push(ok ? Date.now() - t0 : null); }
+        out.type_ms = samples; out.kernel_value = await main(tab, "document.querySelector('#searchInput')?.value");
+      } else out.type_error = 'search field absent';
+    }
+    out.failures = await page.evaluate(() => window.failures);
+    return out;
+  };
   try {
     for (const dpr of dprList.split(',').map(Number)) for (const site of sites) {
       const row = { site: site.id, url: site.url, dpr, wire }; results.push(row); wireLog.length = 0; currentCell = `${site.id}-dpr${dpr}`;
@@ -144,7 +186,9 @@ if (process.argv[2] !== 'child') {
           const world = await host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
           const evalWorld = async expression => (await connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true }, sessionId)).result?.value;
           row.c_text = await evalWorld('globalThis.__charioxMirror2?.textCoverage()');
-          const opaque = await evalWorld('globalThis.__charioxMirror2?.opaqueBoxes()') ?? [];
+          const attached = new Set([...host.mirror.streams.values()].filter(s => s.wire === 2).flatMap(s => [...s.frames.keys()]));
+          const opaque = (await evalWorld('globalThis.__charioxMirror2?.opaqueBoxes()') ?? []).filter(b => !b.foreign || !attached.has(b.id));
+          row.frames_attached = attached.size; row.frame_failures = host.mirror.v2.frames.failures.slice(-8);
           let area = 0; for (const { box } of opaque) { const w = Math.max(0, Math.min(1280, box[0] + box[2]) - Math.max(0, box[0])), h = Math.max(0, Math.min(800, box[1] + box[3]) - Math.max(0, box[1])); area += w * h; }
           row.c_area = 1 - Math.min(1, area / (1280 * 800)); row.opaque_regions = opaque.length;
           // Delta path latency without network: a page mutation -> viewer DOM.
@@ -158,19 +202,21 @@ if (process.argv[2] !== 'child') {
           }
           row.delta_latency_ms = samples.sort((x, y) => x - y); row.delta_p50 = samples[4]; row.delta_p95 = samples[9];
         }
+        if (wire === 2 && process.env.MIRROR_LAB_INPUT === '1') row.input = await inputChecks(page, tab, site);
         row.timings = host.timing?.summary?.() ?? null;
         const table = [...host.mirror.streams.values()].filter(s => s.wire === 2).flatMap(s => [...s.resources.values()].map(({ key, url, kind, state, tries, resource }) => ({ key, url: url.slice(0, 160), kind, state, tries, mime: resource?.mime_type ?? null, bytes: resource?.data_base64?.length ?? 0 })));
         row.resource_states = table.reduce((m, e) => (m[`${e.kind}:${e.state}`] = (m[`${e.kind}:${e.state}`] ?? 0) + 1, m), {});
         await writeFile(path.join(evidence, `${site.id}-dpr${dpr}-resources.json`), JSON.stringify(table, null, 1));
         await writeFile(path.join(evidence, `${site.id}-dpr${dpr}-console.json`), JSON.stringify(consoleLog.slice(0, 500), null, 2));
         await writeFile(path.join(evidence, `${site.id}-dpr${dpr}-wire.json`), JSON.stringify(wireLog, null, 2));
+        await writeFile(path.join(evidence, `${site.id}-dpr${dpr}-input.json`), JSON.stringify(inputLog.splice(0), null, 2));
         row.status = row.failures.length || row.fallback ? 'FAIL' : 'OK';
       } catch (error) { row.status = 'ERROR'; row.error = String(error?.stack ?? error).slice(0, 2000); }
       finally {
         await page?.context().close().catch(() => {});
         if (tabId) await host.request({ op: 'close', tab_id: tabId, generation: host.generation, observed_by: 'lab' }).catch(() => {});
         await writeFile(path.join(evidence, 'RESULTS.json'), JSON.stringify(results, null, 2));
-        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, error: row.error?.slice(0, 300) }));
+        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
       }
     }
   } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); }

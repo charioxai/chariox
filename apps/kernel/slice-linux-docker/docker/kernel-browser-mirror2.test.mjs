@@ -30,6 +30,16 @@ test('MP-11: every url() spelling becomes a kernel resource key (custom properti
   assert.ok(seen.some(([href, kind]) => href === 'https://site.example/css/f.woff2' && kind === 'font'));
 });
 
+test('MP-11: CSS-escaped fetching function names are decoded before the url() rewrite', () => {
+  const { seen, resource } = keys();
+  // Custom properties keep raw tokens; `u\\72l(` is a url() token once substituted.
+  const out = sanitizeMirrorCss('.a { --x: u\\72l(https://leak.example/p.png); } .b { --y: \\75\\72\\6c (//leak2.example/q.png); } .md\\:flex:not(.x) { display: flex; } .c { --z: im\\61 ge-set("r.png" 1x); }', 'https://site.example/', resource);
+  assert.ok(onlyKernelUrls(out), out);
+  assert.ok(!/leak|\\7|\\6/.test(out), out);
+  assert.ok(out.includes('.md\\:flex:not(.x)'), 'escaped selectors are untouched');
+  assert.equal(seen.length, 3);
+});
+
 test('MP-11: executable CSS is invalidated and Vault values never leave in CSS text', () => {
   const { resource } = keys();
   const out = sanitizeMirrorCss('@import url(a.css);\n.c{background:url(javascript:alert(1))}.d::before{content:"javascript:x"}\n.a{width:expression(alert(1));behavior:url(x.htc);-moz-binding:url(b.xml);} .b::after{content:"hunter2-SECRET"}\n@namespace svg url(http://www.w3.org/2000/svg);\n@namespace x url(https://evil.example/);',
