@@ -13,7 +13,7 @@ import {
 import {
   preparePromptAttachmentsForSubmit,
 } from "../prompt-attachment-transfer.js"
-import { hiddenInstructionsStart } from "./hidden-instructions.js"
+import { hiddenInstructionsStart, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 import {
   createHiddenInstructionRedactor,
   createSseHiddenInstructionRedactor,
@@ -42,6 +42,7 @@ type OpenCodeProxyState = {
   providerSessionId: string | null
   providerRunLocal: boolean
   lastNativeSelection: NativeProviderSelection | null
+  initialModel: string | null
 }
 
 type OpenCodeProxyOptions = {
@@ -65,6 +66,7 @@ export async function startOpenCodeProxy(options: OpenCodeProxyOptions): Promise
     providerSessionId: null,
     providerRunLocal: true,
     lastNativeSelection: null,
+    initialModel: null,
   }
   const server = http.createServer((request, response) => {
     handleProxyRequest(request, response, options, state).catch((error) => {
@@ -86,6 +88,7 @@ export async function startOpenCodeProxy(options: OpenCodeProxyOptions): Promise
     server,
     bindProviderRun(run) {
       state.providerRunId = run.id
+      state.initialModel = run.model?.trim() || null
       state.providerSessionId = run.provider_session_id ?? null
       state.providerRunLocal = run.session_id === options.sessionId
     },
@@ -199,7 +202,7 @@ async function handleProxyRequest(
     return
   }
 
-  await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, !isKernelRequest)
+  await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, !isKernelRequest, state.initialModel)
 }
 
 async function proxyToOpenCode(
@@ -208,6 +211,7 @@ async function proxyToOpenCode(
   upstreamBaseUrl: string,
   debug: OpenCodeProxyDebug,
   redactForNativeTui = false,
+  initialModel: string | null = null,
 ): Promise<void> {
   const method = request.method ?? "GET"
   const target = new URL(request.url ?? "/", upstreamBaseUrl)
@@ -238,6 +242,14 @@ async function proxyToOpenCode(
       response.setHeader(key, value)
     }
   })
+  // MP-08 / MP-10 / MP-11: Official attach has no model flag. Seed its
+  // configuration from the admitted run so the first prompt cannot replace
+  // an explicit launch model with the provider's unrelated default.
+  if (redactForNativeTui && initialModel && method === "GET" && target.pathname === "/config" && upstream.ok) {
+    const config = await upstream.json() as Record<string, unknown>
+    response.end(JSON.stringify(redactHiddenInstructionsFromJson({ ...config, model: initialModel })))
+    return
+  }
   if (!upstream.body) {
     response.end()
     return
