@@ -523,7 +523,26 @@ async fn query_relay_once_with_test_trace(
     query_relay_once_inner(config, query, Some(trace)).await
 }
 
-async fn query_relay_once_inner(
+// MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
+// inline future frame; the body keeps admission, receipts and timeouts deferred.
+type RelayMetadataFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<RelayEnvelope, DaemonError>> + Send + 'a>,
+>;
+
+#[inline(never)]
+fn query_relay_once_inner<'a>(
+    config: &'a DaemonConfig,
+    query: RelayMetadataQuery,
+    #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
+) -> RelayMetadataFuture<'a> {
+    #[cfg(test)]
+    let pending = query_relay_once_body(config, query, trace);
+    #[cfg(not(test))]
+    let pending = query_relay_once_body(config, query);
+    Box::pin(pending)
+}
+
+async fn query_relay_once_body(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
