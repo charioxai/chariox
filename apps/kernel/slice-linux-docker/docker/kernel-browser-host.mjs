@@ -414,6 +414,12 @@ export class KernelBrowserHost {
       return this.reconcile();
     }
     if (command.op === "navigate") {
+      // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
+      // Retire native claims before physical focus can show a different page.
+      if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
+        this.foreground.reset();await this.closeCompositors();
+        await this.browser.manageTab({...binding,action:'activate'},{signal});
+      }
       await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
       return this.observe(await this.reconcile(), null, scope);
     }
