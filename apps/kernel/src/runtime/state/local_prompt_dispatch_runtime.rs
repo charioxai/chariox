@@ -4891,25 +4891,7 @@ impl KernelRuntimeState {
                     dispatch.provider_run_id.clone(),
                 );
             }
-            let session = owned.session_store.get_session(&dispatch.session_id)?;
-            let input = provider_run
-                .agent_instance_id()
-                .and_then(|agent_id| {
-                    owned
-                        .prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
-                })
-                .filter(|prompt| {
-                    prompt.status() == crate::session::PromptStatus::Cancelling
-                        && prompt.delivery_pending()
-                })
-                .map(|prompt| {
-                    crate::app::claude_native_pending_prompt_cancel_input(
-                        &provider_run,
-                        prompt.id(),
-                    )
-                })
-                .unwrap_or(b"\x03");
+            let input = dispatch.pty_input;
             owned.terminal_stream.record_input(
                 &dispatch.session_id,
                 &dispatch.provider_run_id,
