@@ -123,7 +123,7 @@ if (process.argv[2] !== 'child') {
 <section data-chariox-secret>marked hidden text</section><img alt="${SECRET}" src="/img.png" width="10" height="10"><div class="bg"></div>
 <p id="b64">${Buffer.from(SECRET).toString('base64')}</p><p id="ordinary">ordinary visible text</p><p id="tainted-later">clean until tainted</p><x-host></x-host>
 <iframe src="http://localhost:${frameServer.address().port}/frame" style="width:400px;height:120px"></iframe><p id="late"></p>
-<script>document.querySelector('x-host').attachShadow({mode:'open'}).innerHTML='<span>shadow ${SECRET}</span>';setTimeout(()=>{document.querySelector('#late').textContent='late ${SECRET}';document.querySelector('#tainted-later').setAttribute('data-x','${SECRET}')},1500)</script></body></html>`);
+<y-closed style="display:block;width:120px;height:30px"></y-closed><script>document.querySelector('y-closed').attachShadow({mode:'closed'}).innerHTML='<b>closed content</b>';document.querySelector('x-host').attachShadow({mode:'open'}).innerHTML='<span>shadow ${SECRET}</span>';setTimeout(()=>{document.querySelector('#late').textContent='late ${SECRET}';document.querySelector('#tainted-later').setAttribute('data-x','${SECRET}')},1500)</script></body></html>`);
   });
   await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
   if (siteList.split(',').includes('protection-fixture')) labSites.push({ id: 'protection-fixture', url: `http://127.0.0.1:${fixtureServer.address().port}/` });
@@ -226,6 +226,7 @@ if (process.argv[2] !== 'child') {
           row.frames_attached = attached.size; row.frame_failures = host.mirror.v2.frames.failures.slice(-8);
           let area = 0; for (const { box } of opaque) { const w = Math.max(0, Math.min(1280, box[0] + box[2]) - Math.max(0, box[0])), h = Math.max(0, Math.min(800, box[1] + box[3]) - Math.max(0, box[1])); area += w * h; }
           row.c_area = 1 - Math.min(1, area / (1280 * 800)); row.opaque_regions = opaque.length;
+          row.wire_first_ms = wireLog[0] ? wireLog[0].at - startedAt : null;
           // Delta path latency without network: a page mutation -> viewer DOM.
           const samples = [];
           for (let i = 0; i < 10; i++) {
@@ -261,7 +262,7 @@ if (process.argv[2] !== 'child') {
         await page?.context().close().catch(() => {});
         if (tabId) await host.request({ op: 'close', tab_id: tabId, generation: host.generation, observed_by: 'lab' }).catch(() => {});
         await writeFile(path.join(evidence, 'RESULTS.json'), JSON.stringify(results, null, 2));
-        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, shadow_roots: row.shadow_roots, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
+        console.log(JSON.stringify({ site: row.site, dpr: row.dpr, status: row.status, fallback: row.fallback, res: row.resource_states, first: row.wire?.first, c_text: row.c_text, c_area: row.c_area, frames: row.frames_attached, frame_failures: row.frame_failures, protection: row.protection, shadow_roots: row.shadow_roots, regions: row.opaque_regions, first_ms: row.first_packet_ms, mismatch: row.pixel_mismatch, outside_edge: row.raster?.outside_edge_mismatch_fraction, delta_p50: row.delta_p50, delta_p95: row.delta_p95, input: row.input, error: row.error?.slice(0, 300) }));
       }
     }
   } finally { await browser.close().catch(() => {}); await host.stop(); server.close(); fixtureServer.close(); frameServer.close(); }

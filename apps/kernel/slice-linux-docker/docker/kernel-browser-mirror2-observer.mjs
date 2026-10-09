@@ -60,6 +60,9 @@ export function installMirror2(sanitizeMirrorCss) {
   let serial = 0, variants = [], targets = new WeakSet(), records = [], overflow = false, revision = 0;
   const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map();
   const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
+  // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
+  // this world cannot read their content, so they are opaque regions.
+  const closedHosts = new WeakSet();
   const urlKeys = new Map();
   let newResources = [], pendingSheets = [], marked = new WeakSet(), lastSheetCheck = 0, cssAttrs = null;
   const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
@@ -214,6 +217,7 @@ export function installMirror2(sanitizeMirrorCss) {
     else if (ns === MATH) { if (!MATH_TAGS.has(tag)) return null; }
     else return null;
     if (secretElement(node)) { maskRecord(node, record); spend(64); out.push(record); remember(record, node); return id; }
+    if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); out.push(record); remember(record, node); return id; }
     if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); out.push(record); remember(record, node); return id; }
     if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); out.push(record); remember(record, node); return id; }
     if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); out.push(record); remember(record, node); return id; }
@@ -487,6 +491,9 @@ export function installMirror2(sanitizeMirrorCss) {
     for (let depth = 0; depth < 128; depth++) { let nested = node?.shadowRoot?.activeElement; try { nested ??= node?.localName === 'iframe' ? node.contentDocument?.activeElement : null; } catch {} if (!nested) break; node = nested; }
     const id = node && mirrored(node); return id && foreign.has(id) ? id : null;
   };
+  const markClosedHost = function () { if (this && this.nodeType === 1) { closedHosts.add(this); replaceNode(this); } return true; };
+  // Custom elements without an open root: only then is a DOMSnapshot pass worth it.
+  const customHosts = () => { let n = 0; for (const e of document.querySelectorAll('*')) if (e.localName.includes('-') && !e.shadowRoot && ++n) break; return n; };
   // Trusted-side: resolveNode() hands Vault target nodes to this world.
   const protect = function () { if (this && this.nodeType === 1) { targets.add(this); replaceNode(this); } return true; };
   // Diagnostics for the coverage oracle: viewport text runs of mirrored text.
@@ -519,6 +526,6 @@ export function installMirror2(sanitizeMirrorCss) {
   // only those bytes, never a URL that a stylesheet merely mentions.
   const loaded = () => { const names = new Set(performance.getEntriesByType('resource').map(entry => entry.name)); for (const img of document.images) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].filter(url => urlKeys.has(url)).map(url => urlKeys.get(url).key); };
   const loadedCount = () => performance.getEntriesByType('resource').length + document.images.length;
-  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, sanitize, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+  globalThis.__charioxMirror2 = Object.freeze({ snapshot, drain, resetTargets, waitDrain, sanitize, markClosedHost, customHosts, loaded, loadedCount, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, focus, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   return true;
 }

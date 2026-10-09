@@ -118,6 +118,26 @@ export class Mirror2 {
     Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0 });
     return stream;
   }
+  // Closed shadow roots (owner decision: opaque regions): a trusted DOMSnapshot
+  // pass finds their hosts before the snapshot, only when custom elements exist.
+  async markClosedHosts(world) {
+    if (!await this.evaluate(world, 'globalThis.__charioxMirror2.customHosts()')) return 0;
+    const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
+    const nodes = snapshot.documents?.[0]?.nodes, strings = snapshot.strings ?? [], types = nodes?.shadowRootType;
+    let marked = 0;
+    for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
+      if (strings[types.value[i]] !== 'closed') continue;
+      const host = nodes.parentIndex?.[types.index[i]], backendNodeId = nodes.backendNodeId?.[host];
+      if (!Number.isSafeInteger(backendNodeId)) continue;
+      try {
+        const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
+        await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: 'function(){return globalThis.__charioxMirror2.markClosedHost.call(this)}', returnByValue: true }, world.sessionId);
+        await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
+        marked++;
+      } catch {}
+    }
+    return marked;
+  }
   // Registered Vault targets are marked by node identity in the observer's world.
   async protectTargets(world, tab, policy) {
     await this.evaluate(world, 'globalThis.__charioxMirror2.resetTargets()');
@@ -167,6 +187,7 @@ export class Mirror2 {
     const read = async () => {
       if (reset) {
         await this.protectTargets(world, tab, policy);
+        await this.markClosedHosts(world);
         const snap = await this.evaluate(world, `globalThis.__charioxMirror2.snapshot(${JSON.stringify({ variants })})`);
         if (snap.resync) return snap;
         // Cross-origin frames: child DOM under the owner, or an opaque region.
