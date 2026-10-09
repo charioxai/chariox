@@ -10,6 +10,13 @@ use super::builder::{answer_item, bounded_excerpt, transcript_text, truncate_byt
 use super::facts::ToolCall;
 
 pub(super) const MAX_BRIEF_BYTES: usize = 16_000;
+// A rendering change must replay history once; a legacy watermark cannot repair lost values.
+const BRIEF_FORMAT: &str = "<!-- chariox-handoff-brief: exact-values-v1 -->\n";
+
+pub(super) fn current_brief(brief: &str) -> bool {
+    brief.starts_with(BRIEF_FORMAT)
+}
+
 /// The transcript one utility call reads, about 50k tokens.
 const CHUNK_BYTES: usize = 160_000;
 const USER_BYTES: usize = 2_000;
@@ -169,6 +176,7 @@ pub(super) fn brief_prompt(
          - ADD the new goals, constraints, preferences, progress, decisions, facts and next steps the transcript shows.\n\
          - UPDATE items whose state changed: move finished work to Done, replace superseded decisions, refresh Next Steps. Drop only what the transcript makes obsolete.\n\
          - Copy exact values verbatim: names, codes, numbers, ports, paths, commands, URLs, error messages, and everything the user asked to remember.\n\
+         - User-recorded exact phrases and named values take priority over implementation detail. Keep each original label and scalar value in Critical Context, even when the surrounding goal or progress grows. Do not replace an explicit recorded value with a paraphrase, a topic, or a list of later work. Preserve assistant-only proposals under their original labels until explicitly superseded.\n\
          - Transcript text uses JSON string escaping without surrounding quotes. Decode escapes and preserve line boundaries: a named value must not absorb its following explanation.
          - Preserve named assistant proposals verbatim and identify them as proposals until the user accepts them.
          - Describe what was done and decided, not raw tool output.\n\
@@ -193,9 +201,12 @@ pub(super) fn parse_brief(output: &str) -> Option<String> {
         .trim_end()
         .trim_end_matches("```")
         .trim_end();
-    brief
-        .contains("## Next Steps")
-        .then(|| truncate_bytes(brief, MAX_BRIEF_BYTES))
+    brief.contains("## Next Steps").then(|| {
+        format!(
+            "{BRIEF_FORMAT}{}",
+            truncate_bytes(brief, MAX_BRIEF_BYTES - BRIEF_FORMAT.len())
+        )
+    })
 }
 
 #[cfg(test)]
@@ -368,7 +379,14 @@ mod tests {
         let brief =
             parse_brief("Here you go:\n```markdown\n## Goal\nShip it.\n## Next Steps\nTest.\n```")
                 .unwrap();
-        assert_eq!(brief, "## Goal\nShip it.\n## Next Steps\nTest.");
+        assert_eq!(
+            brief.strip_prefix(BRIEF_FORMAT),
+            Some("## Goal\nShip it.\n## Next Steps\nTest.")
+        );
+        assert!(current_brief(&brief));
+        assert!(!current_brief(
+            "## Goal\nAn older fold.\n## Next Steps\nTest."
+        ));
         let long = format!("## Goal\n{}\n## Next Steps\n", "g".repeat(40_000));
         assert!(parse_brief(&long).unwrap().len() <= MAX_BRIEF_BYTES);
     }
