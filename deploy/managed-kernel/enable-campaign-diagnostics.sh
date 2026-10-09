@@ -20,8 +20,12 @@ if systemctl is-active --quiet chariox-path1-managed-bootstrap.service; then
   exit 1
 fi
 dropin=/etc/systemd/system/chariox-path1-managed-bootstrap.service.d
-test ! -e "$dropin/path1-campaign-diagnostics.conf" && test ! -L "$dropin/path1-campaign-diagnostics.conf"
-test ! -e /etc/systemd/system/chariox-path1-campaign-diagnostics.service && test ! -L /etc/systemd/system/chariox-path1-campaign-diagnostics.service
+if [ -e "$dropin/path1-campaign-diagnostics.conf" ] || [ -L "$dropin/path1-campaign-diagnostics.conf" ] \
+  || [ -e /etc/systemd/system/chariox-path1-campaign-diagnostics.service ] \
+  || [ -L /etc/systemd/system/chariox-path1-campaign-diagnostics.service ]; then
+  echo 'MP-10 campaign diagnostic configuration already exists' >&2
+  exit 1
+fi
 install -d -m 0700 -o chariox -g chariox /home/chariox/.chariox/runtime-diagnostics
 install -d -m 0755 "$dropin"
 cat > "$dropin/path1-campaign-diagnostics.conf" <<'EOF'

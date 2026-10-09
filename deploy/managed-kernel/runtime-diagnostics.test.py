@@ -39,6 +39,22 @@ class Diagnostics(unittest.TestCase):
             with patch.object(diag.os,'fsync',side_effect=OSError('disk')):
                 with self.assertRaises(OSError):diag.accept(pathlib.Path(a),raw)
             diag.accept(pathlib.Path(a),raw)
+    def test_mp11_installer_rejects_existing_and_dangling_configuration(self):
+        import subprocess
+        source=pathlib.Path(__file__).with_name('enable-campaign-diagnostics.sh').read_text()
+        guard=source.split('dropin=/etc/systemd/system/chariox-path1-managed-bootstrap.service.d\n',1)[1].split('install -d -m 0700',1)[0]
+        with tempfile.TemporaryDirectory() as a:
+            root=pathlib.Path(a);config=root/'path1-campaign-diagnostics.conf'
+            guard=guard.replace('/etc/systemd/system/chariox-path1-campaign-diagnostics.service',str(root/'campaign.service'))
+            script='set -eu; dropin=$1\n'+guard+'\nprintf allowed\n'
+            config.write_text('retained configuration')
+            result=subprocess.run(['/bin/sh','-c',script,'guard',a],capture_output=True)
+            self.assertEqual(result.returncode,1);self.assertEqual(config.read_text(),'retained configuration')
+            config.unlink();config.symlink_to(root/'missing')
+            result=subprocess.run(['/bin/sh','-c',script,'guard',a],capture_output=True)
+            self.assertEqual(result.returncode,1)
+            config.unlink()
+            self.assertEqual(subprocess.run(['/bin/sh','-c',script,'guard',a],capture_output=True).returncode,0)
     def test_mp07_phase_diagnostic_never_masks_failed_durable_write(self):
         import subprocess
         source=pathlib.Path(__file__).with_name('upgrade-image.sh').read_text()
