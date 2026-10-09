@@ -130,15 +130,13 @@ response_policies! {
         EventConnectionAuthorizationObserved,
     ],
     Public => [
-        CloudRelayLoggedOut,
-        KernelSudoRequested,
-        KernelSudoExtended,
-        // MP-08/MP-10/MP-11: reconciled private-notification metadata carries
-        // identifiers, field names and subscription filters, never auth keys.
         WorkflowNotificationSourceRegistered,
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
+        CloudRelayLoggedOut,
+        KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
