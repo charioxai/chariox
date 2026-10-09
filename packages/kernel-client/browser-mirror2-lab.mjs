@@ -47,7 +47,7 @@ if (process.argv[2] !== 'child') {
     await cp(playwright, path.join(root, 'node_modules/playwright-core'), { recursive: true, dereference: true });
     for (const name of ['home', 'evidence']) { await mkdir(path.join(root, name), { mode: 0o700 }); await chown(path.join(root, name), 65534, 65534); }
     const child = spawn(process.execPath, [path.join(root, 'run.mjs'), 'child', root, sites, dprs, wire], { uid: 65534, gid: 65534, cwd: root,
-      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '', MIRROR_LAB_REPLAY: process.env.MIRROR_LAB_REPLAY ?? '', MIRROR_LAB_BYTES: process.env.MIRROR_LAB_BYTES ?? '' },
+      env: { PATH: '/usr/bin:/bin', HOME: path.join(root, 'home'), TMPDIR: path.join(root, 'home'), CHARIOX_KERNEL_BROWSER_HEADLESS: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1', CHARIOX_KERNEL_BROWSER_EXECUTABLE: CHROME, CHARIOX_BROWSER_DISPLAY_TIMING: '1', MIRROR_LAB_SETTLE_MS: process.env.MIRROR_LAB_SETTLE_MS ?? '', MIRROR_LAB_DUMP: process.env.MIRROR_LAB_DUMP ?? '', MIRROR_LAB_INPUT: process.env.MIRROR_LAB_INPUT ?? '', MIRROR_LAB_REPLAY: process.env.MIRROR_LAB_REPLAY ?? '', MIRROR_LAB_BYTES: process.env.MIRROR_LAB_BYTES ?? '', MIRROR_LAB_KEYS: process.env.MIRROR_LAB_KEYS ?? '' },
       stdio: ['ignore', 'pipe', 'pipe'] });
     let logs = ''; for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { process.stdout.write(chunk); logs += chunk; if (logs.length > 1 << 20) logs = logs.slice(-(1 << 20)); });
     code = await new Promise(resolve => child.once('exit', exit => resolve(exit ?? 1)));
@@ -77,8 +77,8 @@ if (process.argv[2] !== 'child') {
   const host = new KernelBrowserHost(path.join(root, 'home/source'));
   const results = []; const wireLog = []; const inputLog = []; const wireJson = []; let currentCell = '', replayNext = false;
   // Bytes the Rust kernel puts on the relay for this result (mirror_wire_result):
-  // plain below 2 KB, else gzip-9 body (base64) beside the encoded media.
-  const kernelWire = result => { const json = JSON.stringify(result); if (result?.wire !== 2 || json.length < 2048) return json.length; const { resources = [], tiles = [], ...body } = result; return Math.ceil(gzipSync(JSON.stringify(body), { level: 9 }).length * 4 / 3) + JSON.stringify(resources).length + JSON.stringify(tiles).length + 96; };
+  // a body from 768 bytes travels gzip-9 (base64) when smaller, media beside it.
+  const kernelWire = result => { const json = JSON.stringify(result); if (result?.wire !== 2) return json.length; const { resources = [], tiles = [], ...body } = result, text = JSON.stringify(body), media = JSON.stringify(resources).length + JSON.stringify(tiles).length; const packed = Math.ceil(gzipSync(text, { level: 9 }).length / 3) * 4; return text.length >= 768 && packed + 64 < text.length ? packed + 96 + media : json.length; };
   const kernel = async request => {
     const command = request.KernelBrowser.command;
     let result;
@@ -222,7 +222,7 @@ if (process.argv[2] !== 'child') {
       if (field) {
         await field.click(); await new Promise(r => setTimeout(r, 1500));
         const keys = [];
-        for (const key of ['a', 'd', 'a', 'Backspace', 'l', 'o']) { const t0 = Date.now(); if (key.length === 1) await page.keyboard.insertText(key); else await page.keyboard.press(key); await new Promise(r => setTimeout(r, 1200)); keys.push({ key, bytes: sum(t0, Date.now()), packets: wireLog.filter(e => e.at >= t0 && e.at < Date.now()).map(e => [e.at - t0, e.kernel_wire, e.ops_kinds?.slice(0, 120), e.detail]) }); }
+        for (const key of (process.env.MIRROR_LAB_KEYS || 'a,d,a,Backspace,l,o').split(',')) { const t0 = Date.now(); if (key.length === 1) await page.keyboard.insertText(key); else await page.keyboard.press(key); await new Promise(r => setTimeout(r, 1200)); keys.push({ key, bytes: sum(t0, Date.now()), packets: wireLog.filter(e => e.at >= t0 && e.at < Date.now()).map(e => [e.at - t0, e.kernel_wire, e.ops_kinds?.slice(0, 120), e.detail]) }); }
         out.keys = keys;
       }
     }

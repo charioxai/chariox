@@ -68,7 +68,8 @@ impl KernelRuntimeState {
 /// Only v2 packets (`mirror_next` results) are compressed; subscribe/close
 /// replies keep their plain fields (`subscription_id`, `wire`). A small delta
 /// (an echo) travels plain: inflating it would only add a client task hop. A
-/// larger body travels gzip-compressed only when that is smaller on the wire.
+/// larger body (from 768 bytes: a typeahead list) travels gzip-compressed only
+/// when that is smaller on the wire.
 fn mirror_wire_result(next: bool, result: Value) -> Result<Value, DaemonError> {
     if !next || result.get("wire").and_then(Value::as_u64) != Some(2) {
         return Ok(result);
@@ -90,7 +91,7 @@ fn compress_mirror_packet(mut packet: Value) -> Result<Value, DaemonError> {
     let body = serde_json::to_vec(&packet)
         .map_err(|_| host_error("MP-11: invalid mirror packet".into()))?;
     let mut compressed = None;
-    if body.len() >= 1024 {
+    if body.len() >= 768 {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
         encoder
             .write_all(&body)

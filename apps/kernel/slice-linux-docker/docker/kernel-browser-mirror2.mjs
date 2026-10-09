@@ -328,14 +328,18 @@ export class Mirror2 {
   }
   async materializeWorld(world, due, slot, budget, stream) {
     // Top-document element images: near the view first; the rest wait.
-    let near = null, moving = false;
+    let near = null, moving = false, stamp = null;
     if (!slot && stream) {
+      // The view is re-measured only after a scroll, a packet or a page load:
+      // an idle long poll does not walk the page's images twice a second.
+      stamp = `${stream.pageScroll}|${stream.issued}|${stream.loadedCount}|${stream.resources.size}|${Date.now() - stream.movedAt < SETTLE_MS}`;
+      if (stamp === stream.nearStamp) return [];
       const view = await this.evaluate(world, `globalThis.__charioxMirror2.nearImages(${NEAR_PX})`);
       near = new Map(view.near.map(([key, width, height]) => [key, [width, height]])); const elements = new Set(view.all);
       due = due.filter(entry => !elements.has(entry.key) || near.has(entry.key)).sort((a, b) => near.has(b.key) - near.has(a.key));
       moving = Date.now() - stream.movedAt < SETTLE_MS;
     }
-    if (!due.length) return [];
+    if (!due.length) { if (stamp) stream.nearStamp = stamp; return []; }
     const loaded = new Set((await this.evaluate(world, 'globalThis.__charioxMirror2.loaded()')).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
     let tree = null;
     const frames = async () => {
