@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { decodePng } from './kernel-browser-pixels.mjs';
-import { fenceBrowserCapture, measureBrowserProtection } from './browser-protection-regions.mjs';
+import { ProtectionGate, awaitPresented, fenceBrowserCapture, measureBrowserProtection } from './browser-protection-regions.mjs';
 import { VAULT_VALUE, census, launchChromium, openFixture, serveFixture } from './browser-protection-fixture.mjs';
 const executable = process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE;
 assert.ok(executable, 'Explicit installed Chromium required; never download a browser');
@@ -97,6 +97,29 @@ test('layout moved between measurement and capture re-measures, then fails close
   assert.equal(result, null, 'continuously moving layout is captured fail-closed');
   assert.deepEqual(moving.map(Boolean), [true, true, true, false]);
 }));
+
+// A failed DOM.getBoxModel (error or timeout) is not proof of absent layout:
+// with repeated failures for the password fields or for the frame owners
+// (isolated login frame included), no protected pixel is released by a fenced
+// capture or by a stream frame.
+for (const failing of ['input', 'iframe']) test(`failed ${failing} box lookups never release protected pixels`, () => withFixture(1, async ({ browser, connection, sessionId, shot }) => {
+  const { root } = await connection.send('DOM.getDocument', { depth: -1 }, sessionId);
+  const { nodeIds } = await connection.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: failing }, sessionId);
+  const failed = new Set(await Promise.all(nodeIds.map(async nodeId => (await connection.send('DOM.describeNode', { nodeId }, sessionId)).node.backendNodeId)));
+  assert.ok(failed.size >= 3);
+  const send = connection.send.bind(connection);
+  connection.send = (method, params, ...rest) => (method === 'DOM.getBoxModel' && failed.has(params?.backendNodeId) ? Promise.reject(new Error('injected box failure')) : send(method, params, ...rest));
+  try {
+    const fenced = await fenceBrowserCapture(browser, policy(), async protection => protection && census(await shot(), protection.pages[0].regions));
+    assert.equal(fenced?.magenta, 0, 'fenced capture releases protected pixels');
+    const gate = new ProtectionGate(async () => { await awaitPresented(browser, gate.protection?.pages ?? [], 1); return measureBrowserProtection(browser, policy()); });
+    await gate.step(); await gate.step();
+    const serial = gate.protectionSerial, frame = await shot();
+    assert.ok(serial > 0, 'stable protection adopted');
+    assert.equal((await gate.step()).verified, serial, 'frame released');
+    assert.equal(census(frame, gate.protection.pages[0].regions).magenta, 0, 'released stream frame shows protected pixels');
+  } finally { connection.send = send; }
+}, '?novault&nomarkers'));
 
 test('unknown protection fails closed', () => withFixture(1, async ({ browser }) => {
   await assert.rejects(measureBrowserProtection(browser, { values: [], targets: [], unknown: true }));
