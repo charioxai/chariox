@@ -49,6 +49,11 @@ impl KernelRuntimeState {
             _ => return Err(host_error("MP-11: mirror command required".into())),
         };
         params["observed_by"] = json!(actor);
+        if next {
+            // A credit replayed after a reconnect keeps its command id: the
+            // controller answers it with the original packet (no new sequence).
+            params["command_id"] = json!(caller.command_id);
+        }
         let admission = self
             .owned
             .kernel_browser_host

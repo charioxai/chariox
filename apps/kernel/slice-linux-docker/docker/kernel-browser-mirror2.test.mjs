@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea } from './kernel-browser-mirror2.mjs';
+import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -100,4 +100,13 @@ test('MP-10: opaque region area is clipped to the viewport for the 25% handoff b
   assert.equal(regionArea([{ box: [-100, 700, 400, 400] }]), 300 * 100);
   assert.ok(regionArea([{ box: [0, 0, 1280, 300] }]) > 0.25 * 1280 * 800);
   assert.ok(regionArea([{ box: [10, 10, 300, 168] }]) < 0.25 * 1280 * 800);
+});
+
+test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet, not a new sequence', async () => {
+  const mirror = new Mirror2({ host: {} }), stream = { chain: Promise.resolve(), issued: 0 };
+  let runs = 0; mirror.packet = async () => ({ sequence: ++stream.issued, run: ++runs });
+  const first = await mirror.next(stream, { command_id: 'c1', after_sequence: 3, wait_ms: 0 }, 'scope');
+  const replay = await mirror.next(stream, { command_id: 'c1', after_sequence: 3, wait_ms: 0 }, 'scope');
+  const other = await mirror.next(stream, { command_id: 'c2', after_sequence: 4, wait_ms: 0 }, 'scope');
+  assert.deepEqual([first, replay, other.sequence, runs], [first, first, 2, 2]);
 });

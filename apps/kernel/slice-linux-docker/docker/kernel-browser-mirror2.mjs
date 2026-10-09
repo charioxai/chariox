@@ -167,6 +167,11 @@ export class Mirror2 {
     // Credits are answered in order; each packet's base is its predecessor.
     // A credit's long-poll deadline counts from its arrival: queued behind
     // others it must not outlive the client's request timeout.
+    // A credit replayed after a reconnect (same command id) gets its original
+    // packet: running it again would issue a new sequence and leave a gap.
+    const replayKey = typeof command.command_id === 'string' && command.command_id.length <= 128 ? command.command_id : null;
+    const replayed = replayKey && stream.replies?.get(replayKey);
+    if (replayed) return replayed;
     const deadline = Date.now() + (command.wait_ms ?? 0);
     // A reset credit (lost base) must not queue behind a waiting long poll.
     // Credits that arrived before it stop waiting (their hurry count is older).
@@ -174,6 +179,7 @@ export class Mirror2 {
     const hurry = stream.hurry;
     const run = stream.chain.then(() => this.packet(stream, command, scope, signal, deadline, hurry));
     stream.chain = run.catch(() => {});
+    if (replayKey) { (stream.replies ??= new Map()).set(replayKey, run); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
   }
   async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
