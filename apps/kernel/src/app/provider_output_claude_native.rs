@@ -110,6 +110,33 @@ pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
 
+/// Ctrl-U clears only a managed composer that Claude has not acknowledged.
+/// Native user drafts and accepted turns keep the ordinary Ctrl-C path.
+pub(crate) fn claude_native_pending_prompt_cancel_input(
+    run: &RuntimeProviderRun,
+    prompt_id: &str,
+) -> &'static [u8] {
+    let owned = run.provider() == "claude"
+        && run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+        && run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+            .is_some_and(|context| {
+                let retry = read_claude_headless_submit_retry(context);
+                claude_native_marker(context).is_some_and(|marker| {
+                    !marker.starts_with("accepted:")
+                        && claude_native_dispatch_prompt_id(&marker) == Some(prompt_id)
+                        && retry.prompt_id == prompt_id
+                        && !retry.visible_prompt.is_empty()
+                })
+            });
+    if owned {
+        b"\x03\x15"
+    } else {
+        b"\x03"
+    }
+}
+
 pub(crate) fn claude_native_recent_terminal_failure(
     provider_run: &RuntimeProviderRun,
 ) -> Option<String> {
@@ -413,14 +440,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     // consume an exact late acknowledgement after cancellation
                     // so it cannot resurrect the cancelled managed turn as an
                     // external prompt.
-                    let matches_managed_dispatch = active_prompt
-                        .as_ref()
-                        .is_some_and(|active_prompt| dispatch_prompt_id == active_prompt.id())
-                        || claude_headless_dispatch_matches_prompt(
-                            context_file,
-                            dispatch_prompt_id,
-                            prompt,
-                        );
+                    let matches_managed_dispatch = claude_headless_dispatch_matches_prompt(
+                        context_file,
+                        dispatch_prompt_id,
+                        prompt,
+                    );
                     if matches_managed_dispatch {
                         write_claude_native_marker(
                             context_file,
@@ -1238,7 +1262,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
             &prompt,
         )?;
-        if provider_run.provider() == "claude-headless" {
+        {
             if let Some(events_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
                 // Workflow dispatch does not have a terminal client polling
                 // provider output. Observe the exact UserPromptSubmit hook
@@ -1271,17 +1295,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             }
         }
-        // Native TUI injection completes once Enter reaches the provider. A
-        // headless run must additionally acknowledge UserPromptSubmit; an
-        // `injected` marker only proves that bytes were written to the PTY and
-        // is not enough to leave the turn running indefinitely if Claude
-        // dropped them during cold startup.
+        // PTY writes do not establish delivery. Both native and headless
+        // Claude acknowledge the exact managed prompt through UserPromptSubmit.
         let marker = claude_native_marker(context_file);
-        let completed_marker = if provider_run.provider() == "claude-headless" {
-            format!("accepted:{}", prompt.id)
-        } else {
-            format!("injected:{}", prompt.id)
-        };
+        let completed_marker = format!("accepted:{}", prompt.id);
         if marker.as_deref() == Some(completed_marker.as_str()) {
             self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
@@ -1445,7 +1462,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
                 write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
-                if provider_run.provider() == "claude-headless" {
+                {
                     let retry = read_claude_headless_submit_retry(context_file);
                     let count = if retry.prompt_id == prompt.id {
                         retry.count
@@ -1535,7 +1552,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
-            if provider_run.provider() == "claude-headless" {
+            {
                 let visible_prompt = claude_headless_prompt_input(prompt, context_file);
                 write_claude_headless_submit_retry(
                     context_file,
@@ -1547,9 +1564,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             }
             return Ok(());
         }
-        if provider_run.provider() == "claude-headless"
-            && marker.as_deref() == Some(&format!("injected:{}", prompt.id))
-        {
+        if marker.as_deref() == Some(&format!("injected:{}", prompt.id)) {
             let retry = read_claude_headless_submit_retry(context_file);
             let now = unix_epoch_ms();
             let recent = claude_permission_recent_file(context_file)
@@ -1592,7 +1607,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     now,
                     &visible_prompt,
                 );
-            } else if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
+            } else if provider_run.provider() == "claude-headless"
+                && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_composer_visible(&recent)
             {
@@ -1683,15 +1699,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
             let written_at_ms = unix_epoch_ms();
-            if provider_run.provider() == "claude-headless" {
-                write_claude_headless_submit_retry(
-                    context_file,
-                    prompt.id,
-                    0,
-                    written_at_ms,
-                    &input,
-                );
-            }
+            write_claude_headless_submit_retry(context_file, prompt.id, 0, written_at_ms, &input);
             // Defer the Enter keystroke: mark `submit-wait` with the write
             // time so a later pass (off the app lock) submits it once the PTY
             // has had CLAUDE_SUBMIT_DELAY_MS to register the pasted text.
