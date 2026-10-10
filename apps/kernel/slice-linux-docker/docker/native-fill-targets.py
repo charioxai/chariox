@@ -187,14 +187,19 @@ def regions():
                     retained.append(target); continue
                 app = next((desktop.getChildAtIndex(i) for i in range(desktop.childCount)
                             if desktop.getChildAtIndex(i).get_process_id() == target['pid']), None)
+                if app is None: raise ValueError('Vault fill field unavailable')
                 pending = [app]; node = None; visited = 0
+                incomplete = False
                 while pending and visited < 8192:
                     item = pending.pop(); visited += 1
                     if not item: continue
                     if item.path == target['path']: node = item; break
-                    pending.extend(item.getChildAtIndex(i) for i in range(min(item.childCount,8192-visited)))
+                    count = item.childCount
+                    limit = min(count,8192-visited)
+                    incomplete |= limit < count
+                    pending.extend(item.getChildAtIndex(i) for i in range(limit))
                 if node is None:
-                    if pending: raise ValueError('Vault fill field unavailable')
+                    if pending or incomplete: raise ValueError('Vault fill field unavailable')
                     continue
                 if not matches(node, target): continue
                 retained.append(target)
