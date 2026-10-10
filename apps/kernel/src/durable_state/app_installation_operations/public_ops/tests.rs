@@ -1,3 +1,4 @@
+use super::super::store::initialize;
 use super::*;
 use crate::durable_state::app_state::{fixture_event_catalog, fixture_event_package};
 use chariox_app_package::{verify, VerificationPolicy};

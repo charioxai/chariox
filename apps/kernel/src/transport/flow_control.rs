@@ -17,6 +17,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
         .providers()
         .get_run(provider_run_id)
         .ok()
+        .or_else(|| app.provider_run_projection_store().get(provider_run_id))
         .and_then(|run| {
             let session_id = run.session_id().to_string();
             let agent_id = run.agent_instance_id()?.to_string();
