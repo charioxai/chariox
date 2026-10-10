@@ -20,7 +20,7 @@ class CaretVerdictTests(unittest.TestCase):
     def tearDown(self):
         # This test owns only these public fake-output files. No recursive cleanup.
         files = list(self.evidence.iterdir())
-        assert all(p.is_file() and p.name in ['probe.json', 'fixture.out', 'GUI_HOLD', 'GUI_OK'] for p in files)
+        assert all(p.is_file() and p.name in ['probe.json', 'probe-warp.json', 'fixture.out', 'GUI_HOLD', 'GUI_OK'] for p in files)
         for path in files:
             path.unlink()
         self.evidence.rmdir()
@@ -43,6 +43,38 @@ class CaretVerdictTests(unittest.TestCase):
 
     def test_refusal_fails(self):
         self.assertFalse(self.verdict('refused: target (no-range-at-point)', ('0', '0')))
+
+    def pointer_verdict(self, pointer, cg_pointer=None, receipt_point='363.0,571.0', refuse=False):
+        state = {'frontmostPID': 42, 'pointer': pointer,
+                 'cgPointer': cg_pointer if cg_pointer is not None else pointer}
+        receipt = ('dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange '
+                   f'location=125 length=0; point={receipt_point}')
+        with patch.object(drill, 'require_gui'), patch.object(drill, 'desktop', return_value=state), \
+                patch.object(drill, 'warp_pointer'), patch.object(drill, 'launch_helper', return_value=receipt) as launch, \
+                patch.object(drill, 'selection', return_value=('125', '0')):
+            if refuse:
+                with self.assertRaisesRegex(RuntimeError, 'pointer-warp-coordinate-mismatch'):
+                    drill.verify_caret(self.evidence, 'probe', [], 42,
+                                       '363.61328125', '571', '125', True)
+                launch.assert_not_called()
+                return
+            result = drill.verify_caret(self.evidence, 'probe', [], 42,
+                                        '363.61328125', '571', '125', True)[0]
+            launch.assert_called_once_with(self.evidence, 'probe', ['--target', 'text', '--click-at-pointer', '--click'])
+            return result
+
+    def test_fractional_warp_uses_sampled_point_for_receipt(self):
+        # Actual fail-first geometry on this Mac: CG warp drops fractional x.
+        self.assertTrue(self.pointer_verdict({'x': 363.0, 'y': 571.0}))
+
+    def test_pointer_receipt_must_match_sample_not_fractional_request(self):
+        self.assertFalse(self.pointer_verdict({'x': 363.0, 'y': 571.0}, receipt_point='363.61328125,571.0'))
+
+    def test_one_point_or_larger_warp_error_refuses_before_helper(self):
+        self.pointer_verdict({'x': 363.61328125, 'y': 572.0}, refuse=True)
+
+    def test_cg_and_appkit_disagreement_refuses_before_helper(self):
+        self.pointer_verdict({'x': 363.0, 'y': 571.0}, {'x': 363.0, 'y': 411.0}, refuse=True)
 
     def test_selection_reads_last_observation(self):
         (self.evidence / 'fixture.out').write_text('fixture selection location=125 length=0\nfixture selection location=84 length=0\n')

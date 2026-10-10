@@ -98,7 +98,13 @@ def verify_caret(evidence, label, scope, pid, x, y, expected, at_pointer):
             warped_state = desktop()
             (evidence / f'{label}-warp.json').write_text(json.dumps(warped_state, indent=2) + '\n')
             warped = warped_state['pointer']
-            if max(abs(warped[k] - requested[k]) for k in ['x', 'y']) > 0.6:
+            # CGWarpMouseCursorPosition can quantize fractional screen points
+            # to whole points. Allow less than one point per axis, but require
+            # CG and converted AppKit samples to agree. The helper receipt must
+            # still match the sampled point below, not the fractional request.
+            if (not all(abs(warped[k] - requested[k]) < 1 for k in ['x', 'y'])
+                    or not all(abs(warped_state['cgPointer'][k] - warped[k]) < 0.01
+                               for k in ['x', 'y'])):
                 raise RuntimeError('pointer-warp-coordinate-mismatch')
             arguments = ['--click-at-pointer', '--click']
         else:
