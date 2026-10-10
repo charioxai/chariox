@@ -24,7 +24,7 @@ func checkWindowStack(_ windows: [WindowOwnership], request: Request,
             throw tagged(.target, "window-stack-unknown")
         }
         if window.id == request.window { return }
-        if window.alpha > 0, window.bounds.contains(point), window.pid != request.pid {
+        if window.alpha > 0, window.bounds.contains(point) {
             throw tagged(.target, "foreign-window-cover")
         }
     }

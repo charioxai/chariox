@@ -27,6 +27,7 @@ const HELPER_ID: &str = "ai.chariox.computer-helper";
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const LEASE: Duration = Duration::from_secs(2);
 const PAIRING: Duration = Duration::from_secs(10);
+const OWNER_RESET: &str = "MP-11: owner-reset-required: native input release is unresolved; owner release and kernel restart required";
 const REQUEST: Duration = Duration::from_secs(20);
 
 type Launch = Box<dyn Fn(&Path) -> Result<(), String> + Send>;
@@ -37,6 +38,7 @@ pub(crate) struct MacComputerHelper {
     launch: Launch,
     link: Option<Arc<Link>>,
     rendezvous_guard: Arc<Mutex<()>>,
+    unresolved_input: bool,
     // Watchers can also retire links, so kernel exit must drain both kinds.
     workers: Vec<std::thread::JoinHandle<()>>,
 }
@@ -49,6 +51,7 @@ struct Link {
     started: Option<(u64, u64)>,
     dir: PathBuf,
     alive: AtomicBool,
+    unresolved_input: AtomicBool,
     control: UnixStream,
     channel: Mutex<(BufReader<UnixStream>, u64)>,
 }
@@ -81,6 +84,7 @@ impl MacComputerHelper {
             launch,
             link: None,
             rendezvous_guard: Arc::new(Mutex::new(())),
+            unresolved_input: false,
             workers: Vec::new(),
         }
     }
@@ -215,6 +219,7 @@ fn admit(
         started: code_identity::started(peer.pid()),
         dir,
         alive: AtomicBool::new(true),
+        unresolved_input: AtomicBool::new(false),
         control: stream.try_clone().map_err(|_| REFUSED)?,
         channel: Mutex::new((reader, 1)),
     }))
@@ -284,17 +289,20 @@ impl Link {
         if response["ok"] == true {
             return Ok(response["result"].clone());
         }
-        Err(
-            match response["error"]["code"]
-                .as_str()
-                .and_then(UserDomainRefusalReason::from_code)
-            {
-                Some(reason) => HostFailure::Refused(reason),
-                // Helper text is untrusted; only the kernel's fixed message leaves.
-                None => HostFailure::Other("MP-11: macOS Computer helper refused".into()),
-            },
-        )
+        if response["error"]["code"] == "owner_reset_required" {
+            self.unresolved_input.store(true, Ordering::Release);
+            self.fence();
+            return Err(HostFailure::Other(OWNER_RESET.into()));
+        }
+        Err(match response["error"]["code"].as_str().and_then(UserDomainRefusalReason::from_code) {
+            Some(reason) => {
+                if matches!(reason, UserDomainRefusalReason::StaleEpoch) { self.fence(); }
+                HostFailure::Refused(reason)
+            }
+            None => HostFailure::Other("MP-11: macOS Computer helper refused".into()),
+        })
     }
+
     fn fence(&self) {
         self.alive.store(false, Ordering::Release);
         let _ = self.control.shutdown(std::net::Shutdown::Both);
@@ -372,6 +380,9 @@ fn watch(link: Weak<Link>) -> std::thread::JoinHandle<()> {
 
 impl ComputerBackend for MacComputerHelper {
     fn ready(&mut self) -> bool {
+        if self.link.as_ref().is_some_and(|l| l.unresolved_input.load(Ordering::Acquire)) {
+            self.unresolved_input = true;
+        }
         if self
             .link
             .as_ref()
@@ -385,6 +396,7 @@ impl ComputerBackend for MacComputerHelper {
         if self.ready() {
             return Ok(());
         }
+        if self.unresolved_input { return Err(OWNER_RESET.into()); }
         let link = self.pair()?;
         self.workers.retain(|worker| !worker.is_finished());
         self.workers.push(watch(Arc::downgrade(&link)));
@@ -394,6 +406,7 @@ impl ComputerBackend for MacComputerHelper {
     fn stop(&mut self) -> Result<(), String> {
         self.workers.retain(|worker| !worker.is_finished());
         if let Some(link) = self.link.take() {
+            self.unresolved_input |= link.unresolved_input.load(Ordering::Acquire);
             let _ = link.call("stop", json!({}), LEASE);
             // End this epoch under the seat lock. Only reaping may outlive Stop.
             link.fence();
@@ -419,7 +432,9 @@ impl ComputerBackend for MacComputerHelper {
         if cancellation.as_ref().is_some_and(|c| c.requested()) {
             return Err("MP-11: Computer action cancelled before dispatch".into());
         }
-        if !self.ready() {
+        let ready = self.ready();
+        if self.unresolved_input { return Err(HostFailure::Other(OWNER_RESET.into())); }
+        if !ready {
             return Err("MP-11: browser_unavailable: explicitly start the Computer seat".into());
         }
         let link = self.link.as_ref().unwrap();
@@ -430,6 +445,8 @@ impl ComputerBackend for MacComputerHelper {
             RequestFence::watch(move || cancel.requested(), move || link.fence())
         });
         let result = link.call(method, params, REQUEST);
+        self.unresolved_input |= link.unresolved_input.load(Ordering::Acquire);
+        if self.unresolved_input { return Err(HostFailure::Other(OWNER_RESET.into())); }
         if cancellation.as_ref().is_some_and(|c| c.requested()) {
             link.fence();
             return Err("MP-11: Computer grant revoked; action cancelled".into());
