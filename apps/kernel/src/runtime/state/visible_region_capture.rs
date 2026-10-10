@@ -13,11 +13,24 @@ mod raster;
 use raster::{crop_png, CaptureMask};
 static CAPTURE_BUDGET: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
-pub(super) fn capture_error(message: impl Into<String>) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "screenshot.capture",
-        message: message.into(),
-    }
+// MP-08/MP-11: static branch receipts preserve admission errors without logging payloads.
+fn capture_refusal(tag: &'static str, error: DaemonError) -> DaemonError {
+    crate::logging::info_with_fields(
+        "screenshot_capture",
+        "Capture refused",
+        serde_json::json!({"reason": tag}),
+    );
+    error
+}
+
+pub(super) fn capture_error(message: &'static str) -> DaemonError {
+    capture_refusal(
+        message,
+        DaemonError::LocalTransport {
+            operation: "screenshot.capture",
+            message: message.into(),
+        },
+    )
 }
 
 impl KernelRuntimeState {
@@ -27,9 +40,12 @@ impl KernelRuntimeState {
         request: CaptureVisibleRegionRequest,
     ) -> Result<VisibleRegionCapture, DaemonError> {
         if !command.is_terminal_caller() {
-            return Err(DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::NotGranted,
-            });
+            return Err(capture_refusal(
+                "[capture:kernel-terminal-admission]",
+                DaemonError::UserDomainRefused {
+                    reason: crate::error::UserDomainRefusalReason::NotGranted,
+                },
+            ));
         }
         if request.capture_id.is_empty()
             || request.capture_id.len() > 64
@@ -38,7 +54,9 @@ impl KernelRuntimeState {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
-            return Err(capture_error("Invalid capture ID [capture:kernel-visible_region_capture-1]"));
+            return Err(capture_error(
+                "Invalid capture ID [capture:kernel-visible_region_capture-1]",
+            ));
         }
         raster::validate_region(&request.region)?;
         let _capture_budget = CAPTURE_BUDGET.try_acquire().map_err(|_| {
@@ -55,10 +73,11 @@ impl KernelRuntimeState {
             } => {
                 let slice = self
                     .authorize_room_screenshot(&command.caller, session_id, attachment_id)
-                    .await?;
-                let before = self
-                    .room_environment_snapshot(session_id)
-                    .map_err(|_| capture_error("Room unavailable [capture:kernel-visible_region_capture-3]"))?;
+                    .await
+                    .map_err(|e| capture_refusal("[capture:kernel-room-admission]", e))?;
+                let before = self.room_environment_snapshot(session_id).map_err(|_| {
+                    capture_error("Room unavailable [capture:kernel-visible_region_capture-3]")
+                })?;
                 if before.runtime_generation != *runtime_generation
                     || before.viewport.revision != *viewport_revision
                     || before.viewport.desktop_pixel_width != request.region.frame_width
@@ -74,19 +93,23 @@ impl KernelRuntimeState {
                             attachment_id: attachment_id.clone(),
                         },
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| capture_refusal("[capture:kernel-room-screenshot]", e))?;
                 let bytes = self
                     .read_complete_room_screenshot(session_id, &slice, &artifact, 16 * 1024 * 1024)
-                    .await?;
+                    .await
+                    .map_err(|e| capture_refusal("[capture:kernel-room-protected-read]", e))?;
                 // The protected worker read also checks the observation epoch and
                 // revision on each chunk. Viewport changes invalidate this crop.
-                let after = self
-                    .room_environment_snapshot(session_id)
-                    .map_err(|_| capture_error("Room unavailable [capture:kernel-visible_region_capture-5]"))?;
+                let after = self.room_environment_snapshot(session_id).map_err(|_| {
+                    capture_error("Room unavailable [capture:kernel-visible_region_capture-5]")
+                })?;
                 if before.runtime_generation != after.runtime_generation
                     || before.viewport != after.viewport
                 {
-                    return Err(capture_error("Room changed during capture [capture:kernel-visible_region_capture-6]"));
+                    return Err(capture_error(
+                        "Room changed during capture [capture:kernel-visible_region_capture-6]",
+                    ));
                 }
                 bytes
             }
@@ -105,20 +128,28 @@ impl KernelRuntimeState {
                         ))]
                         {
                             let (_, view) =
-                                self.app_control().user_views().get(&owner, view_id).ok_or(
+                                self.app_control()
+                                    .user_views()
+                                    .get(&owner, view_id)
+                                    .ok_or_else(|| {
+                                        capture_refusal("[capture:kernel-app-view-admission]",
                                     DaemonError::UserDomainRefused {
                                         reason: crate::error::UserDomainRefusalReason::NotGranted,
                                     },
-                                )?;
+                                )
+                                    })?;
                             let browser = view.browser.ok_or_else(|| {
                                 capture_error(
                                     "Native App views are captured by the trusted client renderer [capture:kernel-visible_region_capture-7]",
                                 )
                             })?;
                             if browser.generation != *generation {
-                                return Err(DaemonError::UserDomainRefused {
-                                    reason: crate::error::UserDomainRefusalReason::StaleEpoch,
-                                });
+                                return Err(capture_refusal(
+                                    "[capture:kernel-app-view-generation]",
+                                    DaemonError::UserDomainRefused {
+                                        reason: crate::error::UserDomainRefusalReason::StaleEpoch,
+                                    },
+                                ));
                             }
                             (browser.tab_id, browser.generation)
                         }
@@ -128,20 +159,25 @@ impl KernelRuntimeState {
                         )))]
                         {
                             let _ = (view_id, generation);
-                            return Err(capture_error("App host unavailable [capture:kernel-visible_region_capture-8]"));
+                            return Err(capture_error(
+                                "App host unavailable [capture:kernel-visible_region_capture-8]",
+                            ));
                         }
                     }
                     _ => unreachable!(),
                 };
                 if tab_id.is_empty() || tab_id.len() > 128 || generation == 0 {
-                    return Err(capture_error("Invalid host identity [capture:kernel-visible_region_capture-9]"));
+                    return Err(capture_error(
+                        "Invalid host identity [capture:kernel-visible_region_capture-9]",
+                    ));
                 }
                 let frame = self
                     .kernel_browser_display_request(
                         command,
                         super::KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation },
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| capture_refusal("[capture:kernel-host-capture]", e))?;
                 if frame.get("generation").and_then(|v| v.as_u64()) != Some(generation)
                     || frame.get("mime_type").and_then(|v| v.as_str()) != Some("image/png")
                 {
@@ -158,7 +194,11 @@ impl KernelRuntimeState {
                     .get("data_base64")
                     .and_then(|v| v.as_str())
                     .filter(|v| v.len() <= 24 * 1024 * 1024)
-                    .ok_or_else(|| capture_error("Host frame exceeds limit [capture:kernel-visible_region_capture-13]"))?;
+                    .ok_or_else(|| {
+                        capture_error(
+                            "Host frame exceeds limit [capture:kernel-visible_region_capture-13]",
+                        )
+                    })?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .map_err(|_| capture_error("Invalid host frame encoding [capture:kernel-visible_region_capture-14]"))?;
@@ -178,7 +218,9 @@ impl KernelRuntimeState {
                             v.browser.is_some_and(|b| b.generation == *generation)
                         })
                     {
-                        return Err(capture_error("App closed during capture [capture:kernel-visible_region_capture-15]"));
+                        return Err(capture_error(
+                            "App closed during capture [capture:kernel-visible_region_capture-15]",
+                        ));
                     }
                 }
                 bytes
@@ -187,7 +229,9 @@ impl KernelRuntimeState {
         let region = request.region;
         let cropped = tokio::task::spawn_blocking(move || crop_png(&bytes, &region, &masks))
             .await
-            .map_err(|_| capture_error("Image crop task failed [capture:kernel-visible_region_capture-16]"))??;
+            .map_err(|_| {
+                capture_error("Image crop task failed [capture:kernel-visible_region_capture-16]")
+            })??;
         let captured_at_ms = crate::session::unix_epoch_ms();
         Ok(VisibleRegionCapture {
             capture_id: request.capture_id,
