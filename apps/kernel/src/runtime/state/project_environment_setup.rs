@@ -1194,7 +1194,8 @@ impl KernelRuntimeState {
             .await
         {
             Ok(provider_run) => provider_run,
-            Err(_) => {
+            Err(error) => {
+                log_project_environment_binding_failure("prepare-discovery", &error);
                 store.mark_failed(
                     &execution.operation_id,
                     attempt,
@@ -1442,7 +1443,8 @@ impl KernelRuntimeState {
             .await
         {
             Ok(provider_run) => provider_run,
-            Err(_) => {
+            Err(error) => {
+                log_project_environment_binding_failure("restore-ordinary", &error);
                 store.mark_failed(
                     &execution.operation_id,
                     attempt,
@@ -3636,3 +3638,48 @@ mod tests {
 #[cfg(test)]
 #[path = "project_environment_access_tests.rs"]
 mod access_tests;
+
+fn log_project_environment_binding_failure(stage: &'static str, error: &DaemonError) {
+    let operation = match error {
+        DaemonError::ProviderProtocol { operation, .. }
+        | DaemonError::LocalTransport { operation, .. }
+        | DaemonError::InternalInvariant { operation, .. }
+        | DaemonError::ManagedContext { operation, .. } => *operation,
+        _ => "unclassified",
+    };
+    let text = error.to_string();
+    crate::logging::warn_with_fields(
+        "project.environment_setup.binding",
+        "project environment provider binding failed",
+        serde_json::json!({
+            "stage": stage,
+            "operation": operation,
+            "timed_out": text.contains("timed out"),
+            "io_in_flight": text.contains("I/O is in flight"),
+            "unauthorized": text.to_ascii_lowercase().contains("unauthorized"),
+        }),
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn binding_failure_diagnostics_do_not_retain_private_details() {
+    let capture = crate::logging::capture::start();
+    let private_marker = "binding-diagnostic-private-test-marker";
+    let error = DaemonError::ProviderProtocol {
+        provider_run_id: private_marker.into(),
+        operation: "codex_endpoint_unhealthy",
+        message: format!("timed out; private context {private_marker}"),
+    };
+    log_project_environment_binding_failure("restore-ordinary", &error);
+    let records = capture.records();
+    assert!(records.iter().any(|record| {
+        record.contains("project.environment_setup.binding")
+            && record.contains("codex_endpoint_unhealthy")
+            && record.contains("restore-ordinary")
+            && record.contains("\"timed_out\":true")
+    }));
+    assert!(records
+        .iter()
+        .all(|record| !record.contains(private_marker)));
+}
