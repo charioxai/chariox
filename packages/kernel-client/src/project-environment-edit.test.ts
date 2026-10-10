@@ -38,3 +38,23 @@ test("folder rename survives rebase and preserves another editor's requirement c
   assert.equal(result.folders[0]?.requirements[0]?.required, false)
   assert.equal(mergeEnvironmentDraft(base, base, { ...latest, folders: [{ ...latest.folders[0]!, label: "server" }] }).folders[0]?.label, "server")
 })
+
+// MP-08 / MP-10 / MP-11: a modify/delete conflict must retain an explicit restoration.
+for (const scope of [{ kind: "project" as const }, { kind: "folder" as const, folder_id: "api" }]) {
+  for (const field of ["title", "version"] as const) test(`${scope.kind} ${field} edit survives concurrent deletion; unchanged deletion stays deleted`, () => {
+    const saved = { ...requirement, scope, origins: [{ kind: "user_added" as const, user_id: "editor", revision: 2 }] }
+    const folder = { folder_id: "api", portable_folder_key: "api", label: "api", optional_git: null, requirements: scope.kind === "folder" ? [saved] : [] }
+    const base = { project_requirements: scope.kind === "project" ? [saved] : [], folders: [folder] }
+    const latest = { project_requirements: [], folders: [{ ...folder, requirements: [] }] }
+    const patch = field === "title" ? { title: "Edited Node" } : { spec: { ...saved.spec, version_constraint: "24" } as Requirement["spec"] }
+    const changed = editEnvironmentRequirement(base, "node", patch)
+    const merged = mergeEnvironmentDraft(base, changed, latest)
+    const restored = scope.kind === "project" ? merged.project_requirements : merged.folders[0]!.requirements
+    assert.deepEqual(restored, [{ ...saved, ...patch }])
+    const unchanged = mergeEnvironmentDraft(base, base, latest)
+    assert.deepEqual(unchanged.project_requirements, [])
+    assert.deepEqual(unchanged.folders[0]!.requirements, [])
+    assert.equal(saved.title, "Node")
+    assert.deepEqual(latest.folders[0]!.requirements, [])
+  })
+}

@@ -12,18 +12,23 @@ export function mergeEnvironmentDraft(base: EnvironmentRevisionDraft, draft: Env
   const all = (d: EnvironmentRevisionDraft) => [...d.project_requirements, ...d.folders.flatMap(f => f.requirements)]
   const original = new Map(all(base).map(r => [r.requirement_id, r]))
   const edited = new Map(all(draft).map(r => [r.requirement_id, r]))
+  const fields = ["title", "scope", "spec", "required", "depends_on", "platform_variants"] as const
   const merge = (r: Requirement): Requirement | null => {
     const old = original.get(r.requirement_id), ours = edited.get(r.requirement_id)
     if (!old) return r
     if (!ours) return null
     const patch: Record<string, unknown> = {}
-    for (const field of ["title", "scope", "spec", "required", "depends_on", "platform_variants"] as const) {
+    for (const field of fields) {
       if (JSON.stringify(old[field]) !== JSON.stringify(ours[field])) patch[field] = ours[field]
     }
     return { ...r, ...patch }
   }
   const merged = all(latest).flatMap(r => { const result = merge(r); return result ? [result] : [] })
-  for (const r of all(draft)) if (!original.has(r.requirement_id) && !merged.some(current => current.requirement_id === r.requirement_id)) merged.push(r)
+  for (const r of all(draft)) {
+    const old = original.get(r.requirement_id)
+    const changed = !old || fields.some(field => JSON.stringify(old[field]) !== JSON.stringify(r[field]))
+    if (changed && !merged.some(current => current.requirement_id === r.requirement_id)) merged.push(r)
+  }
   return { project_requirements: merged.filter(r => r.scope.kind === "project"), folders: latest.folders.map(f => {
     const old = base.folders.find(folder => folder.folder_id === f.folder_id)
     const ours = draft.folders.find(folder => folder.folder_id === f.folder_id)
