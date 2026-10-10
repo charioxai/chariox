@@ -300,7 +300,10 @@ impl KernelRuntimeOwnedState {
                 owner.to_owned()
             };
             if Some(owner.as_str()) != caller_user_id
-                || (review && session.as_ref().is_none_or(|session| self.owner_context_review_owner(session.owner_user_id()) != owner))
+                || (review
+                    && session.as_ref().is_none_or(|session| {
+                        self.owner_context_review_owner(session.owner_user_id()) != owner
+                    }))
             {
                 return Err(interaction_error(
                     "Only the operation owner can answer this decision",
