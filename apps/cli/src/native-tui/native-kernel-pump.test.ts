@@ -47,6 +47,27 @@ test("native kernel pump keeps remote output projection responsive without notic
   }
 })
 
+test("MP-08 native completion reads kernel state before draining final output", async () => {
+  const harness = installTimerHarness()
+  const events: string[] = []
+  const session = { id: "session-1", agents: [], agent_activity: {} }
+  const client = fakeClient((request) => {
+    const variant = requestVariant(request)
+    events.push(variant)
+    return variant === "GetSessionState" ? { SessionState: { session } } : { TerminalOutput: { records: [{ agent_id: "agent-1", kind: "provider_output", bytes: [65] }] } }
+  })
+  try {
+    const pump = startNativeKernelPumpLoop(client, "session-1", "attachment-1", {
+      onTerminalRecords: () => { events.push("project-output") },
+      onSessionState: () => { events.push("project-completion") },
+      pollRuntimeNotices: false,
+    })
+    await flushPromises()
+    assert.deepEqual(events, ["GetSessionState", "PumpTerminalOutput", "project-output", "project-completion"])
+    pump.stop()
+  } finally { harness.restore() }
+})
+
 function fakeClient(
   send: (request: Record<string, unknown>) => Record<string, unknown>,
 ): LocalIpcClient {

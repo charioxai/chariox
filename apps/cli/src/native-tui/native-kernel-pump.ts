@@ -1,6 +1,8 @@
-import type { TerminalOutputRecord } from "../cli-types.js"
+import type { RuntimeSession, TerminalOutputRecord } from "../cli-types.js"
+import { normalizeRuntimeSessionWithAgentActivity } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
+  getSessionStateRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
 } from "../ipc-requests.js"
@@ -10,6 +12,7 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
+    onSessionState?: ((session: RuntimeSession) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
@@ -23,6 +26,12 @@ export function startNativeKernelPumpLoop(
     if (stopped || inFlight) return
     inFlight = true
     try {
+      let session: RuntimeSession | undefined
+      if (options.onSessionState) {
+        const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
+        const payload = response.SessionState as { session: RuntimeSession; agent_activity?: RuntimeSession["agent_activity"] }
+        session = normalizeRuntimeSessionWithAgentActivity(payload)
+      }
       if (options.onTerminalRecords) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
         if ("TerminalOutput" in response) {
@@ -39,6 +48,7 @@ export function startNativeKernelPumpLoop(
           }
         }
       }
+      if (session) options.onSessionState?.(session)
       if (options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }

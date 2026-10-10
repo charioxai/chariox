@@ -57,6 +57,34 @@ test("codex kernel output projection broadcasts matching agent records", () => {
   assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("item/agentMessage/delta")), true)
 })
 
+test("MP-08 native output completes on kernel settlement rather than a gap between deltas", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] })
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: (message) => broadcasts.push(message), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.project([{ agent_id: "agent-1", timestamp_ms: 1_000, kind: "provider_output", bytes: [...Buffer.from("AC")] }])
+  context.mock.timers.tick(1_000)
+  assert.equal(broadcasts.filter((message) => messageMethod(message) === "item/completed").length, 0)
+  projection.project([{ agent_id: "agent-1", timestamp_ms: 2_000, kind: "provider_output", bytes: [...Buffer.from("CLD-NATIVE-OK")] }])
+  projection.projectSessionState({ agent_activity: { "agent-1": { busy: false, last_completed_turn: { prompt_id: "prompt-1", completed_at_ms: 3_000 } } } } as unknown as import("./cli-types.js").RuntimeSession)
+  const completed = broadcasts.filter((message) => messageMethod(message) === "item/completed") as Array<{ params: { item: { text: string } } }>
+  assert.equal(completed.length, 1)
+  assert.equal(completed[0]?.params.item.text, "ACCLD-NATIVE-OK")
+})
+
+test("MP-08 kernel settlement cannot complete output from a newer prompt", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: (message) => broadcasts.push(message), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.project([{ agent_id: "agent-1", timestamp_ms: 4_000, kind: "provider_output", bytes: [...Buffer.from("new turn")] }])
+  const session = { agent_activity: { "agent-1": { busy: false, last_completed_turn: { prompt_id: "old", completed_at_ms: 3_000 } } } } as unknown as import("./cli-types.js").RuntimeSession
+  projection.projectSessionState(session)
+  assert.equal(broadcasts.some((message) => messageMethod(message) === "turn/completed"), false)
+  projection.project([{ agent_id: "agent-1", prompt_id: "new", timestamp_ms: 2_000, kind: "provider_output", bytes: [...Buffer.from("scoped new turn")] }])
+  projection.projectSessionState(session)
+  assert.equal(broadcasts.some((message) => messageMethod(message) === "turn/completed"), false)
+})
+
 test("codex kernel output projection suppresses passive external telemetry", () => {
   const broadcasts: unknown[] = []
   const projection = createCodexKernelOutputProjection({

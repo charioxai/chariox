@@ -47,6 +47,7 @@ type CodexProxyOptions = {
 }
 
 export type CodexProxyServer = WebSocketServer & {
+  projectKernelSessionStateToTui: (session: import("../cli-types.js").RuntimeSession) => void
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
 }
 
@@ -362,7 +363,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project })
+  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project, projectKernelSessionStateToTui: kernelOutputProjection.projectSessionState })
 }
 
 function bindObservedThread(options: CodexProxyOptions, threadId: string) {

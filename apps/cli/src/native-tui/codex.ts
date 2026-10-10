@@ -21,11 +21,7 @@ import {
 } from "./launch-environment.js"
 import {
   type CodexAppServerProcess,
-  releaseKernelPortLocks,
-  reserveCodexKernelServerPort,
   startCodexAppServer,
-  startCodexAppServerInKernel,
-  stopCodexAppServerInKernel,
 } from "./codex-app-server.js"
 import {
   startCodexProxy,
@@ -36,6 +32,7 @@ import {
 } from "./codex-turn-submission.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
+  getNativeProviderRun,
   requestNativeProviderRunLaunch,
 } from "./provider-run-control.js"
 import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
@@ -93,12 +90,9 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     : undefined)
   let appServer: CodexAppServerProcess | null = null
-  let kernelServerPid: string | null = null
   let proxy: CodexProxyServer | null = null
   let endpointBridge: { close: () => Promise<void> } | null = null
   let pump: { stop: () => void } | null = null
-  let cleanupSessionId: string | null = null
-  let cleanupAttachmentId: string | null = null
 
   try {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
@@ -113,8 +107,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       }, options.sliceRef)
     const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
     const attachment = await attachNativeSession(client, session.id, options.clientId)
-    cleanupSessionId = session.id
-    cleanupAttachmentId = attachment.id
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
@@ -126,9 +118,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     let providerSessionId: string | null = null
     let upstreamEndpoint: string
-    let bindProviderEndpoint: string
-    if (options.serverInKernel && remotePlacement) {
-      const run = await launchManagedNativeProviderRun({
+    // MP-08/MP-11: providers belong to the kernel run lifecycle; a completed
+    // shell capability deliberately reaps its background descendants.
+    if (options.serverInKernel) {
+      const run = await launchKernelNativeProviderRun({
         client,
         sessionId: session.id,
         agentId: agent.id,
@@ -136,7 +129,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         effort: options.effort,
       })
       if (!run.structured_endpoint) {
-        throw new Error("Codex managed native server did not expose an endpoint")
+        throw new Error("Codex kernel native server did not expose an endpoint")
       }
       bindState.promise = Promise.resolve(run)
       bindState.run = run
@@ -145,25 +138,9 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         debugNativeCodex("thread_observed", { threadId: run.provider_session_id })
       }
       upstreamEndpoint = run.structured_endpoint
-      bindProviderEndpoint = ""
-    } else if (options.serverInKernel) {
-      const port = await reserveCodexKernelServerPort()
-      upstreamEndpoint = `ws://127.0.0.1:${port}`
-      const listenHost = process.env.CHARIOX_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
-      const listenEndpoint = `ws://${listenHost}:${port}`
-      kernelServerPid = await startCodexAppServerInKernel({
-        client,
-        sessionId: session.id,
-        attachmentId: attachment.id,
-        endpoint: upstreamEndpoint,
-        listenEndpoint,
-        workingDirectory: worktree,
-      })
-      bindProviderEndpoint = process.env.CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE ? upstreamEndpoint : ""
     } else {
       upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
       appServer = await startCodexAppServer(upstreamEndpoint, worktree)
-      bindProviderEndpoint = ""
     }
     const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamEndpoint, "Codex")
     upstreamEndpoint = bridgedEndpoint.endpoint
@@ -185,7 +162,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       throw new Error("Codex proxy did not expose a TCP port")
     }
     const proxyUrl = `ws://127.0.0.1:${proxyAddress.port}`
-    bindState.structuredEndpoint = bindProviderEndpoint || proxyUrl
+    bindState.structuredEndpoint = proxyUrl
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
@@ -208,10 +185,11 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       promptPolicy: "native prompts pass through; Chariox observes the session",
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
-      onTerminalRecords: remotePlacement
+      onSessionState: options.serverInKernel ? (session) => proxy?.projectKernelSessionStateToTui(session) : undefined,
+      onTerminalRecords: options.serverInKernel
         ? (records) => proxy?.projectKernelOutputToTui(records)
         : undefined,
-      pollRuntimeNotices: !remotePlacement,
+      pollRuntimeNotices: !options.serverInKernel,
       debug: debugNativeCodex,
       formatError,
     })
@@ -219,7 +197,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       proxyUrl,
       model: options.model,
       workingDirectory: worktree,
-      providerSessionId: remotePlacement ? null : providerSessionId,
+      providerSessionId: options.serverInKernel ? null : providerSessionId,
       initialPrompt: options.initialPrompt,
     })
   } finally {
@@ -228,6 +206,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       await new Promise<void>((resolve) => proxy!.close(() => resolve()))
     }
     if (appServer && appServer.exitCode == null) {
+      if (!Number.isSafeInteger(appServer.pid) || appServer.pid! <= 1) throw new Error("invalid owned Codex server pid")
       appServer.kill("SIGTERM")
       await Promise.race([
         new Promise((resolve) => appServer?.once("exit", resolve)),
@@ -235,11 +214,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       ])
       if (appServer.exitCode == null) appServer.kill("SIGKILL")
     }
-    if (kernelServerPid) {
-      await stopCodexAppServerInKernel(client, cleanupSessionId, cleanupAttachmentId, kernelServerPid, worktree).catch(() => {})
-    }
     await endpointBridge?.close()
-    releaseKernelPortLocks()
     await client.close()
   }
 }
@@ -390,20 +365,30 @@ function printNativeCodexUsage() {
   ].join("\n") + "\n")
 }
 
-async function launchManagedNativeProviderRun(options: {
+async function launchKernelNativeProviderRun(options: {
   client: LocalIpcClient
   sessionId: string
   agentId: string
   model: string
   effort: string
 }): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(options.client, {
+  const run = await requestNativeProviderRunLaunch(options.client, {
     sessionId: options.sessionId,
     provider: "codex",
     model: options.model,
     effort: options.effort,
     agentId: options.agentId,
   })
+  const deadline = Date.now() + 60_000
+  let latest = run
+  while (Date.now() < deadline) {
+    // Codex initializes its thread on the first prompt; an idle Parked server is ready.
+    if ((latest.state === "Running" || latest.state === "Parked") && latest.structured_endpoint) return latest
+    if (latest.state === "Ended") throw new Error(`Codex provider run ended before attach was ready: ${run.id}`)
+    await sleep(250)
+    latest = await getNativeProviderRun(options.client, run.id)
+  }
+  throw new Error(`timed out waiting for Codex provider run to become ready: ${run.id} (${latest.state})`)
 }
 
 async function runCodexTui(options: {

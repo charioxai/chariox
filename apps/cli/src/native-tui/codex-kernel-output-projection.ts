@@ -1,4 +1,4 @@
-import type { TerminalOutputRecord } from "../cli-types.js"
+import type { RuntimeSession, TerminalOutputRecord } from "../cli-types.js"
 import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import {
   terminalRecordTranscriptProjection,
@@ -12,7 +12,7 @@ type ProjectedItem = {
   kind: "agentMessage" | "reasoning"
   text: string
   completedAtMs: number
-  timer: NodeJS.Timeout | null
+  promptId: string | null
 }
 
 export function createCodexKernelOutputProjection(options: {
@@ -62,40 +62,37 @@ export function createCodexKernelOutputProjection(options: {
     return turnId
   }
 
-  const completeProjectedItemSoon = (projection: ProjectedItem) => {
-    if (projection.timer) clearTimeout(projection.timer)
-    projection.timer = setTimeout(() => {
-      if (!projectedThreadId) return
-      options.broadcast({
-        jsonrpc: "2.0",
-        method: "item/completed",
-        params: {
-          item: projection.kind === "reasoning"
-            ? { type: "reasoning", id: projection.itemId, summary: [], content: [] }
-            : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
-          threadId: projectedThreadId,
-          turnId: projection.turnId,
-          completedAtMs: projection.completedAtMs,
-        },
-      })
-      options.broadcast({
-        jsonrpc: "2.0",
-        method: "thread/status/changed",
-        params: {
-          threadId: projectedThreadId,
-          status: { type: "idle" },
-        },
-      })
-      options.broadcast({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: projectedThreadId,
-          turn: turnPayload(projection.turnId, "completed", projection.completedAtMs),
-        },
-      })
-      projectedItems.delete(projection.key)
-    }, 750)
+  const completeProjectedItem = (projection: ProjectedItem) => {
+    if (!projectedThreadId) return
+    options.broadcast({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        item: projection.kind === "reasoning"
+          ? { type: "reasoning", id: projection.itemId, summary: [], content: [] }
+          : { type: "agentMessage", id: projection.itemId, text: projection.text, phase: "final_answer", memoryCitation: null },
+        threadId: projectedThreadId,
+        turnId: projection.turnId,
+        completedAtMs: projection.completedAtMs,
+      },
+    })
+    options.broadcast({
+      jsonrpc: "2.0",
+      method: "thread/status/changed",
+      params: {
+        threadId: projectedThreadId,
+        status: { type: "idle" },
+      },
+    })
+    options.broadcast({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: {
+        threadId: projectedThreadId,
+        turn: turnPayload(projection.turnId, "completed", projection.completedAtMs),
+      },
+    })
+    projectedItems.delete(projection.key)
   }
 
   const project = (records: TerminalOutputRecord[]) => {
@@ -178,13 +175,13 @@ export function createCodexKernelOutputProjection(options: {
         })
         continue
       }
-      const itemKey = `${itemKind}:${recordProjection.mergeKey ?? "default"}`
+      const itemKey = `${record.prompt_id ?? "unscoped"}:${itemKind}:${recordProjection.mergeKey ?? "default"}`
       let itemProjection = projectedItems.get(itemKey)
       if (!itemProjection) {
         const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
         const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
-        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, timer: null }
+        itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, promptId: record.prompt_id ?? null }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({
           jsonrpc: "2.0",
@@ -211,13 +208,25 @@ export function createCodexKernelOutputProjection(options: {
           delta: recordProjection.transcriptText,
         },
       })
-      completeProjectedItemSoon(itemProjection)
+      if (record.kind === "provider_error") completeProjectedItem(itemProjection)
       options.debug("projected_output_to_tui", { agentId: options.agentId, kind: record.kind, byteLength: record.bytes.length })
     }
   }
 
   return {
     project,
+    projectSessionState: (session: RuntimeSession) => {
+      const activity = session.agent_activity?.[options.agentId]
+      const completed = activity?.last_completed_turn
+      if (!completed) return
+      // The snapshot is read before draining output. Its completion timestamp
+      // fences unscoped legacy records if another turn starts during the drain.
+      for (const item of projectedItems.values()) {
+        if (item.promptId ? item.promptId !== completed.prompt_id : item.completedAtMs > completed.completed_at_ms) continue
+        item.completedAtMs = completed.completed_at_ms
+        completeProjectedItem(item)
+      }
+    },
     setThreadId: (threadId: string) => {
       projectedThreadId = threadId
     },
