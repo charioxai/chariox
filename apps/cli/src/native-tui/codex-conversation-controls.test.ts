@@ -57,6 +57,12 @@ test("MP-08 MP-10 admitted steering returns its committed receipt to the request
   assert(receipt, "initiating native display needs a committed steering receipt")
   assert.equal(receipt.params.turnId, "display-turn")
   assert.equal(receipt.params.threadId, "display-thread")
+  // MP-08/MP-10/MP-11: the official typed client drops either lifecycle
+  // notification without its required timestamp, leaving the steer pending.
+  const started = responses.find(value => value.method === "item/started")
+  assert(Number.isFinite(started?.params.startedAtMs))
+  assert(Number.isFinite(receipt.params.completedAtMs))
+  assert(started.params.startedAtMs <= receipt.params.completedAtMs)
   assert.deepEqual(receipt.params.item, { type: "userMessage", id: "chariox-steering-steer-prompt", clientId: "native-input", content: input })
   assert.deepEqual(responses.filter(value => value.id !== undefined), [{ id: 1, result: { turnId: "display-turn" } }])
 })

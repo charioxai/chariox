@@ -181,10 +181,27 @@ async function handleProxyRequest(
     return
   }
 
-  if (!isKernelRequest && method === "POST" && /^\/session\/[^/]+\/permissions\//.test(path)) {
+  const permissionReply = method === "POST" ? path.match(/^\/permission\/([^/?]+)\/reply(?:\?.*)?$/) : null
+  const legacyPermissionReply = method === "POST" ? path.match(/^\/session\/([^/?]+)\/permissions\/([^/?]+)(?:\?.*)?$/) : null
+  const v2PermissionReply = method === "POST" ? path.match(/^\/api\/session\/([^/?]+)\/permission\/([^/?]+)\/reply(?:\?.*)?$/) : null
+  const scopedPermissionReply = legacyPermissionReply ?? v2PermissionReply
+  if (!isKernelRequest && (permissionReply || scopedPermissionReply)) {
+    // MP-11: provider replies cannot bypass kernel admission, resolve a newer
+    // interaction, or turn a native Deny into the default approval choice.
+    if (scopedPermissionReply && scopedPermissionReply[1] !== state.providerSessionId) {
+      response.writeHead(409, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "OpenCode permission response targets another provider session." }))
+      return
+    }
     const body = await readRequestJson<Record<string, unknown>>(request).catch(() => ({}))
     const choiceId = openCodeNativePermissionChoice(body)
-    const resolved = await resolveActiveOpenCodePermissionInteraction(options.client, options.sessionId, options.agentId, choiceId)
+    if (choiceId === null) {
+      response.writeHead(400, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "Unknown OpenCode permission choice." }))
+      return
+    }
+    const requestId = permissionReply?.[1] ?? scopedPermissionReply![2]!
+    const resolved = await resolveActiveOpenCodePermissionInteraction(options.client, options.sessionId, options.agentId, choiceId, requestId)
     if (!resolved) {
       response.writeHead(409, { "content-type": "application/json" })
       response.end(JSON.stringify({

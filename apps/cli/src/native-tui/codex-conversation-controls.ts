@@ -56,8 +56,13 @@ export async function handleCodexNativeTurnSteer(
       content: Array.isArray(message.params?.input) ? message.params.input : [],
     }
     traceCodexLifecycle("steer_receipt", { promptId, turnId: typeof turnId === "string" ? turnId : null, threadId: bound.threadId, clientId: typeof item.clientId === "string" ? item.clientId : null })
+    const receiptAtMs = Date.now()
     for (const method of ["item/started", "item/completed"]) {
-      sendClient({ jsonrpc: "2.0", method, params: { threadId: bound.threadId, turnId, item } })
+      // The official typed app-server client requires each lifecycle timestamp.
+      // Missing fields discard the receipt and leave already-admitted input pending.
+      const timestamp = method === "item/started"
+        ? { startedAtMs: receiptAtMs } : { completedAtMs: receiptAtMs }
+      sendClient({ jsonrpc: "2.0", method, params: { threadId: bound.threadId, turnId, item, ...timestamp } })
     }
     sendClient({ id: message.id, result: { turnId } })
   } catch (error) {
