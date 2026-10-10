@@ -39,17 +39,19 @@ pub(crate) fn authorize_kernel_cloud_request(
                         return true;
                     }
                     use sha2::{Digest, Sha256};
-                    let issuer = config
-                        .cloud_relay
-                        .as_ref()
-                        .and_then(|profile| profile.kernel_id.as_deref())
-                        .unwrap_or(&config.daemon_id);
+                    // Pivoting may reach another owner kernel; the signed
+                    // issuer prefix changes, the receiving terminal hash does not.
                     authenticated
-                        == format!(
-                            "kernel-client:{:x}:{:x}",
-                            Sha256::digest(issuer.as_bytes()),
-                            Sha256::digest(requested.as_bytes())
-                        )
+                        .strip_prefix("kernel-client:")
+                        .and_then(|subject| subject.split_once(':'))
+                        .is_some_and(|(issuer_hash, client_hash)| {
+                            issuer_hash.len() == 64
+                                && issuer_hash.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                                && client_hash
+                                    == format!("{:x}", Sha256::digest(requested.as_bytes()))
+                        })
                 });
             if !owns_identity
                 || key.is_none()
@@ -180,7 +182,16 @@ mod tests {
             Sha256::digest(b"issuer"),
             Sha256::digest(b"original-cli")
         );
-        for client_id in ["original-cli", subject.as_str()] {
+        let other_issuer = format!(
+            "kernel-client:{:x}:{:x}",
+            Sha256::digest(b"another-owner-kernel"),
+            Sha256::digest(b"original-cli")
+        );
+        for (authenticated, client_id) in [
+            (subject.as_str(), "original-cli"),
+            (subject.as_str(), subject.as_str()),
+            (other_issuer.as_str(), "original-cli"),
+        ] {
             let request = LocalDaemonRequest::IssueCloudRelayClientToken(
                 crate::local::IssueCloudRelayClientTokenRequest {
                     target_daemon_alias: "target".into(),
@@ -194,7 +205,7 @@ mod tests {
             command.caller.caller_kind = KernelCallerKind::RemoteClient;
             command.caller.user_id = Some("owner".into());
             command.caller.realm_id = Some("realm".into());
-            command.caller.client_id = Some(subject.clone());
+            command.caller.client_id = Some(authenticated.into());
             command.caller.public_key_thumbprint = Some("key".into());
             assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
         }
