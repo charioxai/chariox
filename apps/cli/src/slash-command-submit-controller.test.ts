@@ -317,3 +317,21 @@ test("/approvals clears command UI before opening and bypasses shared shell exec
   assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
   assert.equal(opened, 1)
 })
+
+// MP-08/MP-10/MP-11: routing must reach the real shared executor, not alias handling.
+test("slash command submit sends workflow notification settings to shared shell", async () => {
+  const harness = createHarness({
+    attached: true,
+    handleSharedShellCommand: async (command) => {
+      harness.sharedCommands().push(command)
+      return true
+    },
+  })
+  const controller = createSlashCommandSubmitController(harness.deps)
+  await controller.submit("/workflow notifications on retained-source", {
+    allowSlashCommandSubmission: true,
+  })
+  assert.deepEqual(harness.sharedCommands(), ["/workflow notifications on retained-source"])
+  assert.deepEqual(harness.calls(), [])
+  assert.equal(harness.clearPromptCount(), 1)
+})

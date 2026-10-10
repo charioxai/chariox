@@ -308,7 +308,7 @@ fn metaagent_workflow_code_applies_inline_typescript_source() {
 }
 
 async fn metaagent_workflow_code_applies_inline_typescript_source_inner() {
-    let node_path = match crate::workflow_code::discover_workflow_code_node_path() {
+    let _node_path = match crate::workflow_code::discover_workflow_code_node_path() {
         Ok(path) => path,
         Err(error) => {
             eprintln!(

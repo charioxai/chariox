@@ -96,7 +96,8 @@ fn local_request_api_exposes_queue_config_and_notices() {
             ..
         } => {
             assert_eq!(session.queued_prompts().len(), 1);
-            assert!(prompt.id().starts_with("pending-prompt-"));
+            // MP-08/MP-09/MP-10/MP-11: IDs are opaque; the pending
+            // marker, rather than an ID prefix, describes queue membership.
             assert_eq!(prompt.pending_prompt_id(), Some(prompt.id()));
             prompt
         }
@@ -202,7 +203,11 @@ fn local_request_api_exposes_queue_config_and_notices() {
                 .started_next
                 .expect("queued prompt should start after completion");
             assert_eq!(started_next.prompt(), "second");
-            assert_ne!(started_next.id(), queued_prompt.id());
+            if queued_prompt.durable_operation_id().is_some() {
+                assert_eq!(started_next.id(), queued_prompt.id());
+            } else {
+                assert_ne!(started_next.id(), queued_prompt.id());
+            }
             assert_eq!(started_next.pending_prompt_id(), None);
             started_next.id().to_string()
         }

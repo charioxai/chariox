@@ -1331,6 +1331,17 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
+    // inbox admission and request no reply unless asked.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_durable_room_messages() {
+        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+        assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));
+        assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let root = temp_prompt_root("materializes");

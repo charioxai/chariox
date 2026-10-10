@@ -99,8 +99,8 @@ pub(super) fn load_commands(
     let (mut libraries, mut rpaths) = (Vec::new(), Vec::new());
     let mut at = 0;
     for _ in 0..count {
-        let command = word(&commands, at, false).ok_or_else(invalid)?;
-        let length = word(&commands, at + 4, false).ok_or_else(invalid)? as usize;
+        let command = word(commands, at, false).ok_or_else(invalid)?;
+        let length = word(commands, at + 4, false).ok_or_else(invalid)? as usize;
         let body = commands
             .get(at..at + length)
             .filter(|_| length >= 8)

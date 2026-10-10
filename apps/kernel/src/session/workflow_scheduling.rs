@@ -344,6 +344,36 @@ impl WorkflowQueuedPrompt {
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
     }
+    pub(crate) fn notification_expired_at(&self, now: u64) -> bool {
+        self.publication_invocation.as_ref().is_some_and(|i| {
+            matches!(i.transport.as_str(), "app_event" | "workflow_notification")
+                && i.input
+                    .get("deadline_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(i.transport == "workflow_notification", |deadline| {
+                        deadline <= now
+                    })
+        })
+    }
+
+    pub(crate) fn notification_injection_pending(&self) -> bool {
+        self.publication_invocation.as_ref().is_some_and(|i| {
+            matches!(i.transport.as_str(), "app_event" | "workflow_notification")
+                && i.caller
+                    .get("delivery_mode")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("inject")
+                && matches!(
+                    self.status,
+                    WorkflowQueuedPromptStatus::Queued | WorkflowQueuedPromptStatus::Running
+                )
+        })
+    }
+    pub(crate) fn notification_invocation_mut(
+        &mut self,
+    ) -> Option<&mut WorkflowPublicationInvocationEnvelope> {
+        self.publication_invocation.as_mut()
+    }
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()
     }

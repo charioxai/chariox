@@ -517,6 +517,10 @@ impl ProviderProcessServiceStore {
             .enqueue_structured_prompt_abort(session_id, provider_run_id)
     }
 
+    pub(crate) fn structured_submit_epoch(&self) -> u64 {
+        self.read().structured_submit_epoch()
+    }
+
     pub(crate) fn drain_finished_structured_prompt_submit_jobs(
         &self,
     ) -> Vec<FinishedProviderPromptSubmitJob> {

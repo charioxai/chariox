@@ -5,6 +5,7 @@
 
 use super::*;
 
+mod agent_events;
 mod agent_messaging;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
@@ -223,6 +224,7 @@ impl KernelRuntimeState {
         if matches!(provider_runs.as_slice(), [_]) {
             if self.room_agent_tools_enabled() {
                 specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
@@ -345,6 +347,12 @@ impl KernelRuntimeState {
                 return self
                     .dispatch_permission_prompt_runtime_tool_call(run, arguments)
                     .await;
+            }
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
+                let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
+                return self.dispatch_agent_event_tool(run, name, arguments).await;
             }
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);

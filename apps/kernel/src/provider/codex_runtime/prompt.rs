@@ -32,9 +32,11 @@ pub fn submit_codex_prompt(
             provider_run_id: run.id().to_string(),
             operation: "turn/steer",
             message: "active Codex turn settled before steering delivery".to_string(),
-        });
+        }
+        .steer_not_submitted(true));
     }
-    let client = codex_client_for_run(run, state.endpoint(), None)?;
+    let client = codex_client_for_run(run, state.endpoint(), None)
+        .map_err(|error| error.steer_not_submitted(envelope.steering))?;
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
     } else {
@@ -46,6 +48,7 @@ pub fn submit_codex_prompt(
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
     let existing_thread = state.thread_ready() || state.pending_thread_id().is_some();
+    // Durable steering settles only on an RPC acknowledgement, never a buffered error.
     if let Err(error) = ensure_codex_thread_ready(
         &client,
         run,
@@ -54,6 +57,9 @@ pub fn submit_codex_prompt(
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
     ) {
+        if envelope.steering {
+            return Err(error.steer_not_submitted(true));
+        }
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
         });
@@ -72,6 +78,9 @@ pub fn submit_codex_prompt(
                 context,
                 &mut state.buffered_notifications,
             ) {
+                if envelope.steering {
+                    return Err(error.steer_not_submitted(true));
+                }
                 state.buffered_notifications.push(CodexNotification::Error {
                     message: error.to_string(),
                 });
@@ -113,6 +122,9 @@ pub fn submit_codex_prompt(
     let response = match response_result {
         Ok(response) => response,
         Err(error) => {
+            if envelope.steering {
+                return Err(error);
+            }
             state.buffered_notifications.push(CodexNotification::Error {
                 message: error.to_string(),
             });

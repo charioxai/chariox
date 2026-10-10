@@ -921,3 +921,20 @@ fn popup_notice_schema_accepts_one_fixed_choice() {
         assert_eq!(spec.input_schema["properties"]["choices"]["minItems"], 1);
     }
 }
+
+// MP-08 / MP-10 / MP-11 A02 S02–S03: ordinary messages never silently steer.
+#[test]
+fn a02_agent_message_defaults_are_nonurgent_and_no_reply() {
+    let args: SendAgentMessageArgs = serde_json::from_value(serde_json::json!({
+        "agent": "peer", "message": "review result", "origin_prompt_id": "turn-1"
+    }))
+    .unwrap();
+    let value = serde_json::to_value(args).unwrap();
+    assert_eq!(value["urgent"], false);
+    assert_eq!(value["reply_requested"], false);
+    let spec = agent_messaging_runtime_tool_specs()
+        .into_iter()
+        .find(|s| s.name == SEND_AGENT_MESSAGE_TOOL)
+        .unwrap();
+    assert_eq!(spec.input_schema["properties"]["urgent"]["type"], "boolean");
+}
