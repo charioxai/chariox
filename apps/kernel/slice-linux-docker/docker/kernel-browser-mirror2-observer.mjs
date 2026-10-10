@@ -90,7 +90,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // use gets a new key). Keys are never reused within a document, below the frame key slot.
     const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
@@ -475,8 +475,11 @@ export function installMirror2(sanitizeMirrorCss) {
         const id = mirrored(node); if (!id) { const mask = insideMask(node); if (mask) dirty.masks.add(mask); continue; }
         if (kindOf.get(id) === 'text') ops.push({ op: 'text', id, text: node.data });
       }
-      // Upgraded custom elements attach shadow roots without a mutation record.
+      // Upgraded custom elements attach shadow roots without a mutation record; so do ordinary hosts
+      // attaching one late (a bounded rotating check, 5000 nodes per 2 s).
       for (const [id, host] of pendingHosts) if (host.shadowRoot) dirty.children.add(host);
+      const hostNow = performance.now();
+      if (hostNow - lastHostCheck > 2000 && nodes.size) { lastHostCheck = hostNow; const list = [...nodes.keys()]; hostCursor %= list.length; for (let i = 0; i < Math.min(5000, list.length); i++) { const id = list[(hostCursor + i) % list.length], node = nodes.get(id); if (kindOf.get(id) === 'element' && node.shadowRoot && !mirrored(node.shadowRoot)) dirty.children.add(node); } hostCursor += 5000; }
       for (const node of dirty.children) {
         if (!node.isConnected) continue;
         const id = mirrored(node);

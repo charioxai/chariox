@@ -836,3 +836,14 @@ test("MP-10: residue 2.4-13 a collapsed selection (the caret) inside editable co
     packet = await next(1000);
     assert.equal(packet.selection ?? null, null, "MP-10: a caret outside editable content is no selection");
   }));
+
+test("MP-10: residue 2.5-16 an open shadow root attached late to an ordinary (non-custom) host reaches the viewer", () => mirrored(
+  '<div id="h">light</div><p>after</p>', async ({ next, evaluate }) => {
+    const snapshot = await next(), host = rows(snapshot.nodes).find(r => r.tag === "div" && r.attrs.id === "h").id;
+    await evaluate("h.attachShadow({mode:'open'}).innerHTML='<b>shadow text</b><slot></slot>';true");
+    const ops = []; for (let i = 0; i < 6 && !ops.some(op => op.op === "children" && op.id === host); i++) ops.push(...(await next(1000)).ops);
+    const children = ops.find(op => op.op === "children" && op.id === host);
+    assert(children, "MP-10: the host's children change");
+    const shadow = rows(children.nodes).length ? children.nodes : [];
+    assert(JSON.stringify(shadow).includes("shadow text") && children.nodes.some(row => row[2] === 2), `MP-10: the shadow root and its content travel (${JSON.stringify(children)})`);
+  }));
