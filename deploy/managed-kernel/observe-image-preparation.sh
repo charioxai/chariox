@@ -23,20 +23,24 @@ finish_preparation_observation() {
   else
     record_image_preparation_phase image_prepare_failed
   fi
+  final_snapshot_acknowledged=1
   if [ -n "$observer_unit" ]; then
     if ! timeout --foreground --kill-after=5s 20s python3 "$script_root/runtime-diagnostics.py" ship \
       --once --directory "$diagnostic_root" --observer-url "$CHARIOX_IMAGE_PREPARATION_OBSERVER_URL"; then
-      echo 'chariox-image-preparation: final observer acknowledgement failed' >&2
+      final_snapshot_acknowledged=0
+      printf 'chariox-image-preparation: final observer acknowledgement failed; public records retained at %s\n' "$diagnostic_root" >&2
       [ "$preparation_status" -ne 0 ] || preparation_status=1
     fi
     if ! systemctl stop "$observer_unit"; then
-      echo 'chariox-image-preparation: observer stop failed; public records retained' >&2
+      printf 'chariox-image-preparation: observer stop failed; public records retained at %s\n' "$diagnostic_root" >&2
       exit 1
     fi
   fi
-  # Public records only. Remove this invocation's exact mktemp directory, even
-  # after prepare deletes the builder marker; never an inherited runtime store.
-  [ -z "$diagnostic_root" ] || rm -rf -- "$diagnostic_root"
+  # Remove only this invocation's acknowledged snapshot. Failed delivery keeps
+  # the bounded public records available for retry or explicit campaign cleanup.
+  if [ "$final_snapshot_acknowledged" -eq 1 ] && [ -n "$diagnostic_root" ]; then
+    rm -rf -- "$diagnostic_root"
+  fi
   exit "$preparation_status"
 }
 trap finish_preparation_observation EXIT

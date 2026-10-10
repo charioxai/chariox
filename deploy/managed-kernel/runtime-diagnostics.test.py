@@ -267,6 +267,47 @@ diag.accept(pathlib.Path(sys.argv[2]), sys.argv[3].encode())
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(result.stdout,'chariox-image-preparation: image_prepare_packages\n')
 
+    def test_mp07_observed_wrapper_retains_failed_final_flush_for_recovery(self):
+        import subprocess
+        source_dir = pathlib.Path(__file__).resolve().parent
+        for failure, preparation_code in (('post', 42), ('timeout', 0)):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as a:
+                root = pathlib.Path(a)
+                marker = root / 'builder-marker'
+                marker.write_text('managed-remote-kernels-image-builder-v1\n')
+                wrapper = root / 'observe-image-preparation.sh'
+                wrapper.write_text((source_dir / wrapper.name).read_text().replace('/.chariox-managed-image-builder', str(marker)))
+                for name in ('image-preparation-progress.sh', 'runtime-diagnostics.py'):
+                    (root / name).write_bytes((source_dir / name).read_bytes())
+                (root / 'prepare-hetzner-image.sh').write_text('exit ' + str(preparation_code) + '\n')
+                bin_dir = root / 'bin'; bin_dir.mkdir()
+                for name, body in {
+                    'systemd-run': 'printf started > "$TEST_ROOT/started"\n',
+                    'systemctl': '[ "$1" = stop ] || exit 9\nprintf stopped > "$TEST_ROOT/stopped"\n',
+                    **({'timeout': 'exit 124\n'} if failure == 'timeout' else {}),
+                }.items():
+                    tool = bin_dir / name
+                    tool.write_text('#!/bin/sh\n' + body); tool.chmod(0o755)
+                env = dict(os.environ, PATH=str(bin_dir) + ':/usr/bin:/bin', TMPDIR=a,
+                           TEST_ROOT=a, CHARIOX_IMAGE_PREPARATION_OBSERVER_URL='https://127.0.0.1:1/path1-diagnostics/round-20261010i')
+                result = subprocess.run(['/bin/sh', str(wrapper), 'unused-rootfs', 'unused-digest', 'unused-public-pin'],
+                                        env=env, text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, preparation_code or 1, result.stderr)
+                self.assertEqual((root / 'started').read_text(), 'started')
+                self.assertEqual((root / 'stopped').read_text(), 'stopped')
+                retained = list(root.glob('chariox-image-observation.*'))
+                self.assertEqual(len(retained), 1, 'MP-07 final ACK failure must retain its only durable records')
+                self.assertIn(str(retained[0]), result.stderr)
+                terminal = 'image_prepare_' + ('failed' if preparation_code else 'complete')
+                self.assertEqual([json.loads(raw)['event'] for raw in diag.records(retained[0])],
+                                 ['image_prepare_start', terminal])
+                observer = root / 'recovered-observer'; observer.mkdir(mode=0o700)
+                receipt = diag.ship(retained[0], env['CHARIOX_IMAGE_PREPARATION_OBSERVER_URL'], set(),
+                                    lambda raw: {'sha256': diag.accept(observer, raw)})
+                self.assertEqual(receipt['records'], 2)
+                self.assertEqual({json.loads(p.read_bytes())['event'] for p in observer.glob('*.json')},
+                                 {'image_prepare_start', terminal})
+
     def test_mp07_observed_wrapper_keeps_preparation_exit_and_public_terminal_phase(self):
         import subprocess
         source=pathlib.Path(__file__).with_name('observe-image-preparation.sh')
