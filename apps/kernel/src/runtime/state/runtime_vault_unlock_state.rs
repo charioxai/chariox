@@ -1379,7 +1379,10 @@ fi
                 request("synthetic-wrong-source", true),
             )
             .await;
-        assert!(wrong_source.is_err(), "another credential source cannot verify the supplied token");
+        assert!(
+            wrong_source.is_err(),
+            "another credential source cannot verify the supplied token"
+        );
         let values = crate::provider::resolve_provider_account_credentials(
             &state.owned.config_projection.snapshot(),
             &owner,

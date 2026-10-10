@@ -269,7 +269,9 @@ pub(super) async fn verify(
                     if status.auth_state == "authenticated" {
                         Ok(())
                     } else {
-                        Err(login_error("Claude did not report an authenticated supplied token"))
+                        Err(login_error(
+                            "Claude did not report an authenticated supplied token",
+                        ))
                     }
                 })
             }
