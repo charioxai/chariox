@@ -1,6 +1,10 @@
 import type { KernelBrowserCommand, UserDomainGrant, UserDomainGrantEvent, UserDomainResource } from "./kernel-types-kernel-browser.js"
 
 export const userDomainAccessMinimumProtocol = 443
+// MP-08 / MP-10 / MP-11: only Room Computer grant consumers require 449.
+export const roomComputerAccessMinimumProtocol = 449
+// MP-08 / MP-11: bulk restore (`agent_id: null`) after "revoke all" requires 461.
+export const roomComputerBulkGrantMinimumProtocol = 461
 // LocalIpcClient has a 5s response-stall watchdog and no per-request options.
 // Keep each owner observation below that watchdog on every client transport.
 export const userDomainGrantPollWaitMs = 1000
@@ -10,6 +14,7 @@ export type UserDomainAccessClient = {
 }
 export function userDomainResourceLabel(resource: UserDomainResource): string {
   switch (resource.kind) {
+    case "desktop": return `desktop ${resource.surface_id}`
     case "browser_tab": return `tab ${resource.tab_id}`
     case "app_view": return `App ${resource.view_id}`
     case "note": return `note ${resource.note_id}`
@@ -114,6 +119,17 @@ export class UserDomainAccessController {
         this.retry = setTimeout(() => { if (revision === this.revision) this.refresh() }, 2000)
       }
     }
+  }
+  async grantRoomComputer(agentId: string | null): Promise<void> {
+    this.sync()
+    const minimum = agentId === null ? roomComputerBulkGrantMinimumProtocol : roomComputerAccessMinimumProtocol
+    if ((this.protocol ?? 0) < minimum) throw new Error(`Room Computer grants require kernel protocol ${minimum}.`)
+    if (this.busy) return
+    if (!this.snapshot || this.error) throw new Error(this.error ?? "Access grants are loading.")
+    const revision = this.revision
+    this.busy = true; this.publish()
+    try { this.apply(await this.request({ op: "grant_room_computer", agent_id: agentId }, revision, this.abort?.signal)) }
+    finally { if (revision === this.revision) { this.busy = false; this.publish() } }
   }
   async revoke(agentId: string | null): Promise<void> {
     this.sync()

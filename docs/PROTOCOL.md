@@ -1,5 +1,37 @@
 # Chariox v1 Protocol
 
+### Hosted terminal renewal (local protocol 472)
+
+`RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
+Key-bound Cloud terminals probe this capability before relying on background
+renewal through `IssueCloudRelayClientToken`. This contract preserves the
+requested terminal subject, recipient key and exact target. Kernels without the
+capability require an explicit kernel upgrade; their login-client tokens must
+never substitute for a terminal grant. Transient target loss reconnects and
+retries within the admitted grant lifetime. The existing relay peer protocol
+and `client_connect` frames remain unchanged.
+
+Client grants retain the existing 30-minute lifetime, including keyed issuance
+and renewal. Initial `/relay cloud client-token` commands issued by a local
+account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
+The shared client authenticates that local endpoint from the same private CLI
+profile, checks the issuing kernel ID and renewal capability, and renews the
+admitted subject, key, session and target through that kernel. Runtime requests
+and events still travel directly to the target over the encrypted relay lanes.
+A machine-only managed target must never replace the account issuer.
+
+If the original issuer is unavailable, the client displays a notice and retries
+within the existing grant lifetime without changing authority or dropping the
+admission. Recovery resumes renewal; reaching the original expiry ends the
+session with an issuer-unavailable message. Authorization refusal still ends
+admission promptly. The issuer route is public endpoint/ID metadata, not a
+credential, and accepts only local Unix or loopback WebSocket endpoints. Moving
+the launch command to another machine does not transfer the issuing profile or
+make its local endpoint reachable. Legacy launch commands without issuer metadata
+cannot automatically discover an account issuer from a machine-only target;
+they retain their original lifetime with the existing warning/until-expiry path.
+
+
 ### MP-11 F7 public provider-run boundary (local protocol 435)
 
 All client-facing provider-run responses (single/batch launch, read, selection,
@@ -899,11 +931,11 @@ Protocol v296 and relay peer protocol v32 add bounded Room Environment screensho
 
 Protocol v298 and relay peer protocol v34 bind a browser secret fill to the exact document URL inspected before vault resolution. The worker controller rechecks that URL inside the same document-scoped operation that focuses and fills the opaque element reference; a same-document URL change and a target that cannot receive focus fail with distinct stable errors before secret insertion, and the secret is never sent through global keyboard input. Clients that do not invoke browser secret insertion need no new behavior, but home and worker kernels must use the same relay peer version.
 
-Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. Secret paste accepts only an editable HTML password input. The kernel rejects an unmasked or non-editable field before vault resolution, and the controller rechecks the field inside the document-bound insertion operation both before and after focus handlers run.
+Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. MP-08/MP-11 amendment (Miguel 2026-10-09): secret paste accepts an editable input, textarea or contenteditable field. The kernel binds the Vault fill to its frame/backend node/document/generation. Each capture masks only its plain-text box with small device-pixel padding; password fields already render dots. Show-password toggles are rechecked each capture. Removal, document/generation change or user clearing/replacement retires tracking. No echo, container/order/bidi/budget, iframe or media mask remains.
 
-Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input continues to enforce the password-field invariant automatically. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
+Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input binds the exact filled field and masks it on capture only while it is plain text. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
 
-MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and masked-field validation.
+MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and editable-field validation with fill-target capture protection.
 
 MP-08 / MP-11: the worker excludes agent screenshot, OCR, text-from-frame and generic screenshot capability capture while Computer insertion executes. Capture already in progress settles before typing begins. Capture and insertion permits stay with the blocking helper through completion or cancellation, including dropped async callers. Human display transport remains available. The legacy raw Computer-secret resolution request is rejected in favor of home-owned Room insertion. These changes apply to ordinary and managed placement through the same kernel paths; client feature minimums are unchanged.
 
@@ -2636,9 +2668,10 @@ Workflow trigger and deployment direction:
   automatic mutation replay. Numeric versions never replace capability checks.
   This describes the pre-KA framed Unix transport. KA protocol 404 replaces
   that listener with the shared kernel websocket at `ws+unix://`, admitted by
-  OS process identity and session grants. First-party terminal control uses
-  the authenticated TCP or relay websocket path; an external Unix grant does
-  not authorize global disposable-worker or managed-environment controls.
+  OS process identity and access grants. Protocol 451 grants ordinary authority
+  throughout the local kernel, including its managed execution environments.
+  First-party terminal control uses the authenticated TCP or relay websocket
+  path; external Unix grants cannot attach to another kernel.
 - protocol 402: every connection has a class from a fixed vocabulary:
   `terminal` (the kernel's local token on TCP loopback, or a relay client with
   a user id), `external_agent` (reserved for access grants, not assigned yet),
@@ -2701,32 +2734,55 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `session_id`, `holder_pid`, and optional `lifetime_minutes`. The holder
+  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup naming its verified executable, pid, session, and lifetime.
+  passkey popup naming its verified executable, pid, local-kernel authority, and lifetime. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Approve needs a fresh
+  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
+  and extension decisions, established from the same OS-verified holder:
+  `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
+  Linux start ticks or macOS unique process ID), `process_exec_version` (macOS
+  exec version, zero on Linux), and optional `provider_harness` (`codex`,
+  `claude`, or `opencode`). Harness recognition matches the configured native
+  executable (including Codex's official npm native package); unknown paths
+  omit it. This field is attribution, not vendor/signature attestation or new
+  authority. Text remains display-only, with quoted/escaped executable paths;
+  clients must never parse requester identity from it. TUI labels use the
+  structured object and show identity unavailable for old kernels. New access
+  requests and kernel-wide approval replies require protocol 470; refusals
+  remain supported on protocol 451 and legacy session-scoped replies retain
+  their existing route. Other client/relay/native minimums are unchanged.
+  MP-08 / MP-10 / MP-11 focused drill:
+  `python3 apps/cli/scripts/live-kernel-access-requester-drill.py --kernel <built-kernel> --cli <compiled-cli> --codex-profile <approved-product-linked-profile> --source <commit> --output <external-evidence-dir>`.
+  This real outside-Codex drill refuses the grant through TUI keyboard input,
+  never approving access or changing a shared provider login. `--local-cli`
+  is supplementary regression evidence only, not provider acceptance.
+  Approve needs a fresh
   terminal passkey; the critical-approval remember window never applies.
   The owner may choose a lifetime through the approve answer's numeric
   `custom_reply`. Refuse needs no passkey.
 
   `KernelAccessGranted` returns public `KernelAccessGrant` metadata, never
-  a credential. A grant authorizes the live holder and its OS descendants
-  for one session. Kernel-launched processes receive no external authority,
-  even if the holder is an ancestor of the kernel. Session IDs, references,
-  attachments, and every session in a batch are checked. `ListSessions`
-  returns only the granted session. Global requests fail closed. Saved workflow
-  artifacts live in kernel/user registries, so direct artifact creation, lookup,
-  enumeration, mutation, import, and artifact-target export are outside external
-  session grants even when their envelopes include a session ID. Session-local source
-  Apply/Run and exports targeting a workflow remain available. The scope
-  match covers every request variant without a fallback, so an undecided new
-  request fails compilation. A grant cannot answer kernel-owned decisions
-  or critical approvals, or submit a passkey.
+  a credential. Protocol 451 removes `session_id` from this metadata. A grant
+  authorizes the live holder and its OS descendants across the whole LOCAL
+  kernel: every ordinary session/global request a terminal can make, including
+  session creation/attachment, agent prompts/spawns, workflows, App installs and
+  bindings, routine approvals and Vault use through kernel-owned flows.
+  Kernel-launched agents receive no external authority even if the holder is
+  their ancestor. Normal ownership and membership checks still apply.
+  The holder cannot answer critical/passkey-required approvals or payments,
+  mint/extend grants, change the passkey/access configuration, read/export
+  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
+  leased-worker execution remains the local kernel’s responsibility.
+  A holder may request `/sudo` for a local agent in any local session; each
+  request requires a fresh terminal popup confirmation. No remember window
+  applies and the holder never submits the passkey or becomes a sudoagent.
 
   `ListKernelAccessGrants` and `RevokeKernelAccessGrant { grant_id }` are
-  terminal-only and scoped to the caller's owned grants; a null grant id
-  revokes all of them. Expiry, explicit revoke, holder exit, session end,
+  available to terminals and local grant holders and scoped to the caller's owned grants; a null grant id
+  revokes all of them. Expiry, explicit revoke, holder exit,
   passkey rotation, and kernel shutdown revoke authority. Idle subscriptions,
   queued commands, cached replies, and event replay check live authority.
   Workflow controls also recheck after provider-lane and cancellation-settlement
@@ -2743,12 +2799,9 @@ Workflow trigger and deployment direction:
   or home binding persistence. Local controller jobs recheck under the supervisor
   ownership lock; computer helpers recheck inside their blocking process queue.
   A Unix connection binds to its first approved or admitted grant and never
-  switches authority. Session references resolve once to an authorized session
-  ID before dispatch. A later approval on that socket creates a grant for
-  use on a fresh connection; existing subscriptions and queued frames keep
-  their original grant. Fresh connections select an eligible grant matching
-  the requested session. For unscoped requests, a holder's own grant takes
-  precedence over inherited grants.
+  switches authority. Fresh connections prefer the holder’s own eligible
+  process grant over an ancestor’s. There is no session-based selection or
+  response filtering. Session end does not revoke a local-kernel grant.
   Grants stay in memory and do not survive a restart. Durable grant events
   record metadata and outcomes; terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
@@ -2756,10 +2809,14 @@ Workflow trigger and deployment direction:
   TCP and relay access requests return a pointer to the Unix socket; neither
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
-  `ws+unix:///absolute/socket`. `chariox access request --session <id>
+  `ws+unix:///absolute/socket`. `chariox access request
   [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
-  the popup and prints public grant metadata. The default holder is the
-  CLI launcher's grandparent. Terminal controls are `chariox access list`,
+  the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
+  holder is the nearest installed official provider in the CLI launcher's
+  OS-verified ancestry, including native Codex behind its npm launcher. Unknown
+  programs retain the grandparent fallback and the External program label.
+  Selection preserves exact PID/start/exec identity and grant admission fences.
+  Terminal controls are `chariox access list`,
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
@@ -2769,8 +2826,8 @@ Workflow trigger and deployment direction:
 
   ```toml
   [kernel_access]
-  grant_default_minutes = 30
-  grant_max_minutes = 240
+  grant_default_minutes = 480
+  grant_max_minutes = 1440
   grant_extend_notice_minutes = 5
   request_timeout_minutes = 10
   ```
@@ -2794,7 +2851,7 @@ Workflow trigger and deployment direction:
   Terminal authority follows the admitted `terminal` connection class, rather
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
-  access; approved external peers keep the process-bound, session-scoped grant
+  access; approved external peers keep the process-bound, whole-local-kernel grant
   path from protocol 404 and cannot answer critical approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
@@ -2822,7 +2879,7 @@ Workflow trigger and deployment direction:
   No spawned/forked agent inherits elevation.
 - protocol 415: a live external grant holder may send
   `RequestKernelSudo { agent_id, prompt }` over the Unix socket. The kernel
-  resolves the exact target to the granted session and raises the same `sudo`
+  resolves the exact local target agent and its session and raises the same `sudo`
   popup, naming the OS-established executable/PID, target/session and full
   requester-supplied prompt. Only host terminals answer it. The outcome is
   `KernelSudoRequested { agent_id }`; no passkey is accepted from the requester.
@@ -3170,3 +3227,9 @@ existing terminal/passkey gate and shared pending-interaction authority;
 a detached passkey popup has an empty session routing field. Room App views
 retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
 for host isolation, lifecycle and migration. No relay-peer shape changes.
+
+### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.

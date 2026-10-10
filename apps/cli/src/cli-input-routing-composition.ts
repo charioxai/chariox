@@ -1,3 +1,4 @@
+import { createComputerCommandController } from "./computer-command-controller.js"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { parseKeypress } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
@@ -229,6 +230,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         : {}),
     }
   }
+  const computerCommands = createComputerCommandController({client: deps.client, appendNotice: deps.appendNotice})
   const accessCommands = createAccessCommandController({
     client: deps.client,
     appendNotice: deps.appendNotice,
@@ -326,6 +328,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
   handleSharedShellCommand = async (rawCommand) => {
     const access = parseSlashCommand(rawCommand)
+    if (access?.kind === "computer") {
+      await computerCommands.handle(access.args)
+      return true
+    }
     if (access?.kind === "access") {
       await accessCommands.handle(access.args)
       return true

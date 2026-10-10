@@ -60,6 +60,8 @@ impl PendingProviderReloadStore {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
+    /// Kernel-wide decisions live on the same interaction board without a session.
+    pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_id: String,
     /// Detached kernel decision; no Session projection exists for it.
     pub(super) user_domain_interaction: Option<crate::session::RuntimeInteraction>,

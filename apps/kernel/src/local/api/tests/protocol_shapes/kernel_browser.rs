@@ -1,4 +1,4 @@
-//! MD-2: protocol 443 sessionless host-browser snapshots.
+//! MD-2: protocol 461 sessionless host-browser snapshots.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as Command, KernelBrowserInput as Input, KernelBrowserRequest,
@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn kernel_browser_protocol_443_request_snapshots() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
         (Command::State, serde_json::json!({"op":"state"})),
@@ -130,7 +130,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
 
 #[test]
 fn kernel_browser_protocol_443_response_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let result = serde_json::json!({"generation":2,"state":"ready","tabs":[{"tab_id":"host-tab-t","document_id":"d","url":"https://example.com/","title":"Example"}]});
     let response = LocalDaemonResponse::KernelBrowser {
         result: result.clone(),
@@ -143,7 +143,7 @@ fn kernel_browser_protocol_443_response_snapshot() {
 
 #[test]
 fn kernel_browser_display_protocol_443_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let commands = [
         Command::DisplaySubscribe {
             tab_id: "t".into(),

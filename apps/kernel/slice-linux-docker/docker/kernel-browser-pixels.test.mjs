@@ -2,6 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { inflateSync, deflateSync, crc32 } from "node:zlib";
+import { randomBytes } from "node:crypto";
+import { MAX_BROWSER_ARTIFACT_BYTES } from "./browser-controller-artifacts.mjs";
 import { decodePng, encodePng, maskPng, captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 function decoded(data) {
@@ -26,16 +28,42 @@ test("MD-5: trusted mask replaces pixels while keeping unrelated pixels", () => 
   assert.deepEqual(decoded(original).pixel(8, 8), [255, 255, 255, 255]);
   assert.throws(() => maskPng(original.slice(0, -12), []), /frame/);
 });
-test("MD-5: failed/unknown layout masks the full frame without exposing capture", async () => {
-  let captures = 0;
-  const result = await captureProtectedPage({ ensureConnection: async () => { throw new Error("synthetic-only-secret"); } }, { target_id: "target" }, ["synthetic-only-secret"], [], async () => { captures++; return "raw-pixels"; });
-  assert.equal(result, wholeFrameMask());
-  assert.equal(captures, 0);
-  const frame = decoded(result);
-  assert.deepEqual([frame.width, frame.height], [1280, 800]);
-  assert.deepEqual(frame.pixel(0, 0), [0, 0, 0, 255]);
-  assert.deepEqual(frame.pixel(1279, 799), [0, 0, 0, 255]);
-  assert.equal(await captureProtectedPage({}, {}, [], [], async () => "ordinary"), "ordinary");
+test("MP-08/MP-11 registration without a fill leaves pixels visible; unbound fills retry",async()=>{
+  const browser={ensureConnection:async()=>{throw Error('unbound');}};
+  assert.equal(await captureProtectedPage(browser,{target_id:'target'},['value'],[],async()=>'ordinary'),'ordinary');
+  await assert.rejects(captureProtectedPage(browser,{target_id:'target'},['value'],[{kind:'browser',target_id:'target',node_ref:'backend:1'}],async()=>'unsafe'),/capture unavailable/);
+});
+
+test('MP-08/MP-11: negotiated controller bounds admit exact images and reject mismatches', () => {
+  const bounds={width:1920,height:1080};
+  const png=encodePng(bounds.width,bounds.height,Buffer.alloc(bounds.width*bounds.height*4,255));
+  assert.throws(()=>decodePng(png),/frame format/,'display defaults remain bounded');
+  const frame=decodePng(maskPng(png,[[100,100,20,20]],1,bounds),1,bounds);
+  assert.deepEqual([...frame.pixels.subarray((110*frame.width+110)*4,(110*frame.width+110)*4+4)],[0,0,0,255]);
+  assert.throws(()=>maskPng(png,[],1,{width:1921,height:1080}),/frame/);
+  assert.throws(()=>decodePng(png,1,{width:1920,height:1079}),/frame/);
+  for(const width of [0,-1,NaN,Infinity,1.5])assert.throws(()=>decodePng(png,1,{width,height:1080}),/frame/);
+});
+
+test('MP-08/MP-11: controller byte bounds preserve host limits and bounded inflation', () => {
+  const viewport={width:1800,height:1000,maxBytes:MAX_BROWSER_ARTIFACT_BYTES};
+  const pixels=randomBytes(viewport.width*viewport.height*4);
+  const png=encodePng(viewport.width,viewport.height,pixels);
+  const size=Buffer.from(png,'base64').length;
+  assert(size>4*1024*1024&&size<MAX_BROWSER_ARTIFACT_BYTES);
+  assert.throws(()=>decodePng(png,2),/unsupported frame/,'host-display byte cap stays 4 MiB');
+  assert.throws(()=>decodePng(png,1,{width:viewport.width,height:viewport.height}),/unsupported frame/);
+  assert.deepEqual(decodePng(png,1,viewport).pixels,pixels);
+  assert.equal(decodePng(maskPng(png,[],1,viewport),1,viewport).width,viewport.width);
+  assert.throws(()=>decodePng(png,1,{...viewport,maxBytes:size-1}),/unsupported frame/);
+  for(const maxBytes of [0,-1,NaN,Infinity,1.5])assert.throws(()=>decodePng(png,1,{...viewport,maxBytes}),/frame/);
+  const oversized=encodePng(1800,1200,randomBytes(1800*1200*4));
+  assert(Buffer.from(oversized,'base64').length>MAX_BROWSER_ARTIFACT_BYTES);
+  assert.throws(()=>decodePng(oversized,1,{...viewport,height:1200}),/unsupported frame/);
+  const header=Buffer.alloc(13);header.writeUInt32BE(1);header.writeUInt32BE(1,4);header[8]=8;header[9]=6;
+  const chunk=(type,body)=>{const bytes=Buffer.concat([Buffer.from(type),body]),result=Buffer.alloc(body.length+12);result.writeUInt32BE(body.length);bytes.copy(result,4);result.writeUInt32BE(crc32(bytes),result.length-4);return result;};
+  const bomb=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.alloc(1024))),chunk('IEND',Buffer.alloc(0))]);
+  assert.throws(()=>decodePng(bomb.toString('base64'),1,{width:1,height:1,maxBytes:MAX_BROWSER_ARTIFACT_BYTES}),/larger than/,'inflation remains bound to exact dimensions');
 });
 
 // MD-DISPLAY-02/04: arbitrary RGB/RGBA rows exercise every PNG predictor,

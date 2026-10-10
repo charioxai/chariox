@@ -136,7 +136,7 @@ test("shared allocator coordination helper is packaged and writable to the broke
   assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
-test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by union protocol 443", async () => {
+test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by union protocol 472", async () => {
   const [rust, client, snapshot] = await Promise.all([
     read("../src/local/api/types.rs"),
     read("../../../packages/kernel-client/src/kernel-types.ts"),
@@ -145,7 +145,7 @@ test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by union protocol 
   const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
   const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
   const snapshotVersion = Number(snapshot.match(/assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, (\d+)\)/)?.[1])
-  assert.equal(runtimeVersion, 443)
+  assert.equal(runtimeVersion, 472)
   assert.equal(clientVersion, runtimeVersion)
   assert.equal(snapshotVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)

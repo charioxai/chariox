@@ -81,6 +81,7 @@ impl KernelRuntimeState {
             ..
         } = command
         {
+            self.require_room_computer_actor(actor_id)?;
             let room = self
                 .room_environment_snapshot(session_id)
                 .map_err(|_| admission_error("Room input state is unavailable before dispatch"))?;

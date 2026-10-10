@@ -307,6 +307,7 @@ impl KernelRuntimeOwnedState {
         let mut sessions = self.session_store.write();
         let destroyed = self.agent_store.destroy_agent(agent_id, &mut sessions)?;
         drop(sessions);
+        self.forget_room_computer_access(agent_id);
         self.external_provider_sessions
             .detach_agent(&session_id, agent_id);
         self.attached_provider_transcript_cursors

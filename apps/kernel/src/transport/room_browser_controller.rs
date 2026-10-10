@@ -161,6 +161,11 @@ impl RoomComputerSecretTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
+    TargetAction {
+        tree_revision: u64,
+        target_id: String,
+        action: String,
+    },
     PointerMove {
         x: u32,
         y: u32,

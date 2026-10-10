@@ -1,3 +1,4 @@
+import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
@@ -125,6 +126,8 @@ export class BrowserCdpClient {
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
+    this.fillTargets = new Map();
+    this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
     this.cookieWriterFence = null;
@@ -235,6 +238,7 @@ export class BrowserCdpClient {
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
         this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
         this.cookieWriterFence = null;
@@ -263,6 +267,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
@@ -382,6 +387,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget.clear();
+    this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
@@ -516,6 +522,11 @@ export class BrowserCdpClient {
       );
     } catch (error) {
       this.focusWorldsByTarget.delete(targetId);
+      // MP-08/MP-10: a navigation (e.g. a native viewer click) destroyed the
+      // world between the frame read and this poll; callers retry stale reads.
+      if (/Cannot find context with specified id|Execution context was destroyed/.test(error?.message ?? "")) {
+        throw new BrowserSnapshotError("stale_document_reference", "browser document changed during focus read");
+      }
       throw error;
     }
     // This read may have begun just before input enabled emulation.
@@ -693,7 +704,16 @@ export class BrowserCdpClient {
         timeoutMs: rawRequest?.timeout_ms,
         signal,
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
-      }, performBrowserAction);
+      }, async options => {
+        if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
+          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+          this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+          const result=await performBrowserAction(options);
+          await finishBrowserFill(connection,target);
+          return result;
+        }
+        return performBrowserAction(options);
+      });
       return {
         browser_generation: this.browserGeneration,
         ...result,
@@ -940,7 +960,7 @@ export class BrowserCdpClient {
       if (request.kind === "identity") {
         artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
       } else if (request.kind === "image") {
-        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues });
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
         artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
         redaction = captured.redaction;
       } else if (request.kind === "network") {
@@ -999,6 +1019,9 @@ export class BrowserCdpClient {
       throw normalizeControllerError(error);
     }
   }
+
+  // MP-11: region protection inspects isolated frames through these sessions.
+  frameSession(frameId, connection) { return this.frameSessions.sessionFor(frameId, connection); }
 
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
@@ -1149,6 +1172,7 @@ export class BrowserCdpClient {
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
     }
     if (message?.method === "Browser.downloadWillBegin") {

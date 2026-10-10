@@ -163,10 +163,15 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
         }
-        if self.sudo_for_auth_token(auth_token).is_ok() {
+        // Official provider harnesses cache MCP discovery before sudo begins.
+        // Advertising an interface conveys no authority: dispatch still checks
+        // the live exact sudo prompt on every invocation.
+        if matches!(provider_runs.as_slice(), [run]
+            if run.state() != crate::provider::ProviderRunState::Ended)
+        {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: "chariox_kernel_request".into(),
-                description: "Act as the host on this kernel for this sudo turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
+                description: "Requires a live human-authorized sudo turn; ordinary turns are denied. Act as the host on this kernel during that turn. Submit a LocalDaemonRequest in request. Can answer critical approvals across sessions. Cannot grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at yield or revocation.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
         }
@@ -726,6 +731,8 @@ fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> 
             PASTE_SECRET_TO_SLICE_TOOL
                 | SLICE_SCREEN_STATUS_TOOL
                 | SLICE_OCR_TOOL
+                | SLICE_ACCESSIBILITY_TOOL
+                | SLICE_TARGET_ACTION_TOOL
                 | SLICE_FIND_TEXT_TOOL
                 | SLICE_BROWSER_STATUS_TOOL
                 | SLICE_BROWSER_TAB_TOOL

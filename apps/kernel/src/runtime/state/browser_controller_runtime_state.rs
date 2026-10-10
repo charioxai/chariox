@@ -435,63 +435,6 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(crate) async fn capture_browser_environment_snapshot(
-        &self,
-        session_id: &str,
-        tab_id: &str,
-    ) -> Result<
-        crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot,
-        DaemonError,
-    > {
-        let environment = self
-            .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        let binding = self
-            .room_environment_controller_tab_binding(session_id, tab_id)
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        let RoomBrowserControllerResult::Snapshot {
-            snapshot: Some(controller_snapshot),
-        } = self
-            .room_browser_controller_command(
-                session_id,
-                RoomBrowserControllerCommand::Snapshot {
-                    target_id: binding.runtime_target_id.clone(),
-                    document_id: binding.document_id.clone(),
-                },
-            )
-            .await?
-        else {
-            return Err(controller_route_error(
-                "browser controller did not return a snapshot",
-            ));
-        };
-        controller_snapshot
-            .validate(&binding.runtime_target_id, &binding.document_id)
-            .map_err(|message| controller_route_error(&message))?;
-        let references = self
-            .register_room_environment_element_references(
-                session_id,
-                tab_id,
-                environment.runtime_generation,
-                binding.document_revision,
-                controller_snapshot.controller_node_refs(),
-            )
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        controller_snapshot
-            .into_room_snapshot(
-                session_id.to_string(),
-                environment.environment_id,
-                environment.runtime_generation,
-                tab_id.to_string(),
-                binding.document_revision,
-                &references,
-            )
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "browser_controller.snapshot",
-                message,
-            })
-    }
-
     pub(crate) async fn manage_browser_environment_tab(
         &self,
         session_id: &str,
@@ -1399,7 +1342,10 @@ fn controller_generation_error(message: &str) -> DaemonError {
     }
 }
 
-fn environment_runtime_error(operation: &'static str, error: EnvironmentError) -> DaemonError {
+pub(super) fn environment_runtime_error(
+    operation: &'static str,
+    error: EnvironmentError,
+) -> DaemonError {
     match error {
         EnvironmentError::RoomNotFound { session_id } => {
             DaemonError::SessionNotFound { session_id }

@@ -62,7 +62,13 @@ async fn revoked_input_helper(kind: &str) {
     let authorized = state.with_external_command_authority(Some((&grant, &request)));
     let command = Command::ComputerInput {
         action_id: "input-action".into(),
-        actor_id: crate::session::agent_environment_actor_id(&room.agent_id),
+        // MP-11 #904: agent clipboard writes are refused before queueing; the
+        // queued-helper recheck still covers a human clipboard write.
+        actor_id: if kind == "clipboard" {
+            crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID)
+        } else {
+            crate::session::agent_environment_actor_id(&room.agent_id)
+        },
         runtime_generation: 1,
         viewport_revision: 1,
         desktop_pixel_width: 1280,

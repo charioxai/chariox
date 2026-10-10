@@ -18,8 +18,8 @@ fn browser_import_peer_contract_is_private_redacted_bounded_and_versioned() {
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
     use zeroize::Zeroizing;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
     let payload_json = serde_json::json!([{"name":"session","value":generated_value}]).to_string();
     let command = RoomBrowserControllerCommand::ImportCookies {
@@ -94,8 +94,8 @@ fn browser_history_peer_contract_is_document_bound_and_versioned() {
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     let command = RoomBrowserControllerCommand::History {
         execution_id: "00000000000000000000000000000001".into(),
         target_id: "target-a".into(),
@@ -136,8 +136,8 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
         BrowserControllerDownloadCancellationResult, BrowserDownloadCancellation,
     };
     use crate::transport::room_browser_controller::RoomBrowserControllerResult;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     let command = RoomBrowserControllerCommand::CancelDownload {
         cancellation: BrowserDownloadCancellation::new(2, "download-a".into()).unwrap(),
     };
@@ -169,7 +169,7 @@ fn download_cancellation_peer_contract_is_versioned_and_does_not_require_a_live_
 
 #[test]
 fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
 
     let request = RelayPeerRequest::ReadRoomScreenshotChunk {
         session_id: "session-1".to_string(),
@@ -211,7 +211,7 @@ fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
 
 #[test]
 fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     let request = RelayPeerRequest::ObserveRoomComputer {
         session_id: "room-1".to_string(),
         slice_id: "slice-1".to_string(),
@@ -303,8 +303,8 @@ fn room_computer_observation_peer_protocol_is_typed_redacted_and_versioned() {
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -980,8 +980,8 @@ fn efix5_computer_secret_input_requires_an_approved_display_target() {
 // MP-08 / MP-11: exact required-target wire and hash, including peer focus query.
 #[test]
 fn computer_secret_target_protocol_374_peer_67_is_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     let wire = serde_json::json!({"kind":"secret_text", "input":"synthetic",
         "expected_target":{"focus_window":101,"active_window":100,
             "geometry":[20,30,200,40],"window_geometry":[0,0,800,600]}});
@@ -1025,8 +1025,8 @@ fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
         RoomBrowserControllerResult, SecretObservationDisposition,
     };
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 86);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
     for (disposition, wire, hash) in [
         (
             SecretObservationDisposition::Retire,
@@ -1085,5 +1085,40 @@ fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
             Sha256::digest(serde_json::to_vec(&response).unwrap())
         ),
         "793d616c37292c4b5ccdfe4e5d3c71b89ed89615fc5d0b32f8ae43f972de51f9"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: allocated local449 / peer92, red-capable shape guard.
+#[test]
+fn mp08_room_computer_449_peer92_shapes() {
+    use crate::local::{KernelBrowserCommand, KernelBrowserRequest};
+    use crate::transport::relay_peer::RemoteRoomComputerObservationCall;
+    use crate::transport::room_browser_controller::RoomComputerInputAction;
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 92);
+    let values = serde_json::json!([
+        serde_json::to_value(KernelBrowserRequest {
+            command: KernelBrowserCommand::GrantRoomComputer {
+                agent_id: Some("agent-a".into())
+            }
+        })
+        .unwrap(),
+        serde_json::to_value(RemoteRoomComputerObservationCall::Snapshot {
+            observer: "agent:agent-a".into()
+        })
+        .unwrap(),
+        serde_json::to_value(RoomComputerInputAction::TargetAction {
+            tree_revision: 7,
+            target_id: "atspi-a".into(),
+            action: "click".into()
+        })
+        .unwrap()
+    ]);
+    let expected = serde_json::json!([{ "command":{"op":"grant_room_computer","agent_id":"agent-a"}},{"kind":"snapshot","observer":"agent:agent-a"},{"kind":"target_action","tree_revision":7,"target_id":"atspi-a","action":"click"}]);
+    assert_eq!(values, expected);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
+        "c4e8985c29cfd4a19c858e84b756de7ebe1555659f0ae042acad481858206f65"
     );
 }

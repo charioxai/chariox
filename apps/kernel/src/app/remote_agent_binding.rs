@@ -706,7 +706,11 @@ impl DaemonApp {
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
-            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
+            let destroyed = self.agents.destroy_agent(agent.id(), &mut sessions);
+            drop(sessions);
+            if destroyed.is_ok() {
+                self.forget_room_computer_access(agent.id());
+            }
         }
         remote_setup
     }
@@ -2291,7 +2295,7 @@ mod tests {
         };
         assert!(!pre_artifact.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
-            relay_peer_protocol_version: Some(73),
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());

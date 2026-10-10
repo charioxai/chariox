@@ -7,6 +7,7 @@ use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
 const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
+
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
 const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
@@ -133,6 +134,23 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
                 .map(ToOwned::to_owned)
         })
         .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+    write_claude_native_marker(
+        context_file,
+        &format!(
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            unix_epoch_ms()
+        ),
+    );
+}
+
+pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
+    claude_headless_workspace_trust_interaction_id(context_file)?
+        .strip_prefix("select-yes:")?
+        .parse()
+        .ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
@@ -478,6 +496,28 @@ pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
     (normalized.contains("Do you want to proceed?") || compact.contains("Doyouwanttoproceed?"))
         && (normalized.contains("1. Yes") || compact.contains("1.Yes"))
         && (normalized.contains("3. No") || compact.contains("3.No"))
+}
+
+/// Select Yes using the rendered selector, including an explicit highlighted
+/// row. Without a highlight, Claude starts on the first displayed choice.
+pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
+    let compact = normalize_claude_rendered_permission_text(text)
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    // Official releases render this selector both with and without numbers.
+    let choices = compact.replace("1.", "").replace("2.", "");
+    let yes = choices.rfind("yes,itrustthisfolder")?;
+    let no = choices.rfind("no,exit")?;
+    let yes_selected = choices[..yes].ends_with('❯');
+    let no_selected = choices[..no].ends_with('❯');
+    if yes_selected {
+        return Some(b"\r");
+    }
+    if yes < no {
+        Some(if no_selected { b"\x1b[A" } else { b"\r" })
+    } else {
+        Some(b"\x1b[B")
+    }
 }
 
 pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {

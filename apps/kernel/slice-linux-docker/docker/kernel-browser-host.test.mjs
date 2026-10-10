@@ -11,7 +11,16 @@ import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
-import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
+
+test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
+  const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
+  const bounded = chromiumTemporaryEnvironment(environment, 5, 12345);
+  assert.equal(bounded.TMPDIR, '/proc/12345/fd/5');
+  assert.equal(bounded.XAUTHORITY, environment.XAUTHORITY);
+  assert(!bounded.TMPDIR.includes(environment.TMPDIR));
+  for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
+});
 
 function fixture(root) {
   const pages = new Map();
@@ -89,6 +98,11 @@ test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () =>
   assert(!args.some(arg => /remote-debugging-(port|address)/.test(arg)));
   assert(args.includes("--user-data-dir=/tmp/private-profile"));
   assert(!args.some(arg => /no-sandbox|disable-setuid-sandbox/.test(arg)));
+});
+test('MP-08 / MP-11: owned headed Chromium enables its native accessibility tree', () => {
+  assert(launchArguments('/tmp/private-profile', false, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', true, false, true).includes('--force-renderer-accessibility'));
+  assert(!launchArguments('/tmp/private-profile', false).includes('--force-renderer-accessibility'));
 });
 test("MD-2: URL boundary rejects local files, script URLs and credentials", () => {
   for (const url of ["file:///tmp/a", "javascript:alert(1)", "chrome://settings", "https://alice:secret@example.com"]) assert.throws(() => navigationUrl(url));
@@ -178,6 +192,27 @@ test("MD-2: text input uses isolated focus checks and rejects secret fields", ()
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
 }));
 
+test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and reserves a background replacement", () => using(async ({ host, chromium, sent, pages }) => {
+  const initial = await host.request({ op: "start" });
+  const navigatedTarget = host.keepaliveTarget;
+  const creations = sent.filter(call => call.method === "Target.createTarget").length;
+  pages.set(navigatedTarget, { url: "https://www.libreoffice.org/", document_id: "native-navigation" });
+  const state = await host.request({ op: "state" });
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.tabs[0].url, "https://www.libreoffice.org/");
+  assert.notEqual(host.keepaliveTarget, navigatedTarget);
+  const replacement = sent.filter(call => call.method === "Target.createTarget").slice(creations);
+  assert.deepEqual(replacement.map(call => call.params), [{ url: "about:blank", background: true }]);
+  assert.equal((await host.request({ op: "state" })).tabs[0].tab_id, state.tabs[0].tab_id);
+  assert.equal(sent.filter(call => call.method === "Target.createTarget").length, creations + 1);
+  await host.request({ op: "close", tab_id: state.tabs[0].tab_id, generation: state.generation });
+  assert.equal((await host.request({ op: "state" })).tabs.length, 0);
+  assert.equal(state.generation, initial.generation);
+  assert.equal(chromium.child.exitCode, null);
+  assert(pages.has(host.keepaliveTarget));
+  assert(!pages.has(navigatedTarget));
+}));
+
 test("MD-2: closing the last user tab keeps a hidden browser target alive", () => using(async ({ host, chromium, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   await host.request({ op: "close", tab_id: opened.tab_id, generation: opened.generation });
@@ -194,29 +229,18 @@ test("MD-2: failed child spawn has no PID to kill or await", async () => {
   assert.equal(chromium.child, null);
 });
 
-test("MD-5: protection flushes old frames and masks new/retired frames across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  const session = sent.find(call => call.method === "Page.startScreencast").session;
-  const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
-  emit();
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.data_base64, "unsafe-raw-pixels");
-  const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
-  await host.protect(policy);
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame.mime_type, "image/png");
-  emit();
-  await host.protect(policy); // An unchanged policy must not erase every poll.
-  const protectedFrame = (await host.request({ op: "poll", ...subscription })).frame;
-  assert.equal(protectedFrame.mime_type, "image/png");
-  assert.notEqual(protectedFrame.data_base64, "unsafe-raw-pixels");
-  const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(capture.data_base64, protectedFrame.data_base64); // unbound mock layout => full mask
-  const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal((await host.request({ op: "poll", ...second })).frame.mime_type, "image/png"); // no repaint required
-  chromium.child.exitCode = 1;
-  await host.request({ op: "start" });
-  assert(host.browser.protectedValues.has("synthetic-only"));
-  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
+test("MP-08/MP-11 policy retires cached observations without a broad mask", () => using(async ({ host, handlers, sent,connection }) => {
+  const send=connection.send;connection.send=async(method,params,session)=>method==='Page.captureScreenshot'?{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255))}:send(method,params,session);
+  const opened=await host.request({op:'open',url:'about:blank'});
+  const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
+  const session=sent.find(call=>call.method==='Page.startScreencast').session;
+  const emit=()=>{for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:'untrusted-raw',sessionId:1}});};
+  emit();assert.equal((await host.request({op:'poll',...subscription})).frame.data_base64,'untrusted-raw');
+  await host.protect({unknown:false,values:['synthetic-only'],targets:[]});
+  assert.equal((await host.request({op:'poll',...subscription})).frame,null);
+  emit();let frame;
+  for(let n=0;n<100;n++){frame=(await host.request({op:'poll',...subscription})).frame;if(frame)break;await new Promise(r=>setTimeout(r,5));}
+  assert.equal(decodePng(frame.data_base64).pixels[0],255,'value registration without a fill does not mask pixels');
 }));
 
 test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
@@ -493,46 +517,20 @@ for (const kind of ["key", "click"]) {
   }));
 }
 
-for (const change of ["stable", "layout", "metadata"]) {
-  test(`region capture scales ${change} protection to native DPR2 pixels`, () => using(async ({ host, connection }) => {
-    const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
-    process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = "1";
-    const send = connection.send;
-    let captured = false;
-    connection.send = async (method, params, session) => {
-      if (method === "DOM.getDocument") {
-        if (captured && change === "metadata") throw Error("metadata unavailable");
-        return { root: { nodeId: 1 } };
-      }
-      if (method === "DOM.querySelectorAll") return { nodeIds: [2] };
-      if (method === "DOM.getBoxModel") {
-        const x = captured && change === "layout" ? 150 : 100;
-        return { model: { border: [x,100,x+20,100,x+20,120,x,120] } };
-      }
-      if (method === "Page.captureScreenshot") {
-        captured = true;
-        return { data: encodePng(2560,1600,Buffer.alloc(2560*1600*4,255)) };
-      }
-      return send(method, params, session);
-    };
-    try {
-      const opened = await host.request({ op: "open", url: "about:blank" });
-      const binding = { tab_id: opened.tab_id, generation: opened.generation };
-      await host.request({ op: "display_subscribe", ...binding, codecs: ["png"], bitrate: 8_000_000, device_scale_factor: 2 });
-      const frame = await host.request({ op: "screenshot", ...binding, _capture_protection: true });
-      assert.equal(frame.width,2560); assert.equal(frame.height,1600);
-      assert.deepEqual(frame.protected_regions, change === "stable"
-        ? [{x:200,y:200,width:40,height:40}]
-        : [{x:0,y:0,width:2560,height:1600}]);
-      const masked = decodePng(maskPng(frame.data_base64, frame.protected_regions.map(r=>[r.x,r.y,r.width,r.height]),2),2);
-      assert.equal(masked.pixels[(210*2560+210)*4],0,"native protected pixels must be opaque");
-      assert.equal(masked.pixels[(1599*2560+2559)*4],change === "stable" ? 255 : 0,"fallback covers the complete native image");
-    } finally {
-      if (original === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
-      else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = original;
-    }
-  }));
-}
+test('MP-08/MP-11 unfilled password/media metadata never masks DPR2 captures', () => using(async ({host,connection}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});host.scales.set(opened.tab_id,2);
+  const send=connection.send;
+  connection.send=async(method,params,session)=>{
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Runtime.evaluate'&&params.expression.includes('dpr:devicePixelRatio'))return {result:{value:{dpr:2,width:1280,height:800,visible:true}}};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Page.captureScreenshot')return {data:encodePng(2560,1600,Buffer.alloc(2560*1600*4,255))};
+    return send(method,params,session);
+  };
+  const frame=await host.screenshot(host.tabs.get(opened.tab_id),null,true);
+  assert.equal(frame.width,2560);assert.equal(frame.height,1600);assert.deepEqual(frame.protected_regions,[]);
+  assert.equal(decodePng(frame.data_base64,2).pixels[0],255);
+}));
 
 test("display subscription captures the current document after navigation", () => using(async ({host,connection,pages}) => {
   const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
@@ -670,4 +668,39 @@ test('private CDP pipe loss retires the browser generation even while child is l
   assert.equal(after.generation,before.generation+1);
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
+}));
+
+test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
+  await host.request({op:'open',url:'https://example.com'});
+  host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
+  let calls=0;host.nativeComputer.execute=async()=>{calls++;return {};};
+  const result=await host.handle({id:'native-app-denial',method:'host.computer',params:{op:'input',surface_id:'s',generation:'g',input:{kind:'click',x:1,y:1},_agent_input:true,observed_by:'agent:a'}});
+  assert.equal(result.ok,false);assert.equal(calls,0);
+}));
+
+// MP-08/MP-10/MP-11: a human navigation must be visible on the owned desktop.
+test('human navigation foregrounds the requested tab',()=>using(async({host,pages})=>{
+ const first=await host.request({op:'open',url:'https://en.wikipedia.org/wiki/Linux'});
+ const firstTarget=host.tabs.get(first.tab_id).target_id;
+ const second=await host.request({op:'open',url:'https://developer.mozilla.org/en-US/docs/Web/JavaScript'});
+ host.chromium.desktop={};
+ const events=[];
+ host.browser.manageTab=async({target_id,action})=>{
+  assert.equal(action,'activate');assert.equal(target_id,firstTarget);
+  events.push('activate');
+ };
+ const navigate=host.browser.navigate;host.browser.navigate=async p=>{events.push('navigate');await navigate(p)};
+ await host.request({op:'navigate',tab_id:first.tab_id,generation:second.generation,url:'https://www.wikipedia.org/'});
+ assert.deepEqual(events,['activate','navigate']);
+ assert.equal(pages.get(firstTarget).url,'https://www.wikipedia.org/');
+ host.chromium.desktop=null;
+}));
+
+// MP-08/MP-11: background agent navigation cannot acquire the human foreground.
+for (const flags of [{_agent_input:true},{focused_agent:'agent-a'}]) test('MP-08/MP-11 agent navigation preserves physical focus '+Object.keys(flags)[0],()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://en.wikipedia.org/wiki/Linux'});
+ host.chromium.desktop={};
+ host.browser.manageTab=async()=>{throw new Error('agent navigation must not activate a desktop tab')};
+ await host.request({op:'navigate',tab_id:opened.tab_id,generation:opened.generation,url:'https://www.wikipedia.org/',...flags});
+ host.chromium.desktop=null;
 }));

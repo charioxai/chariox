@@ -766,7 +766,8 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    // MP-08 / MP-10 / MP-11: the behavior landed in 435 and remains required
+    // by later protocols; exact shape/version pins live in snapshot tests.
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,
@@ -787,10 +788,10 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
 #[test]
 fn user_domain_refusals_protocol_443_snapshot() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        92
     );
     let values = [
         Reason::NotFocusedAgent,

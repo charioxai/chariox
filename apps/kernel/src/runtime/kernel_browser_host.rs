@@ -36,6 +36,7 @@ struct HostState {
 pub(crate) enum KernelBrowserCapability {
     Browser,
     Notes,
+    Computer,
 }
 
 /// Internal admission bound to one user, agent and retained grant epoch.
@@ -305,6 +306,9 @@ impl KernelBrowserHost {
         params: Value,
         policy: Value,
     ) -> Result<Value, crate::error::HostFailure> {
+        if method == "host.computer" {
+            return self.computer_request(user, admission, params, policy);
+        }
         if admission.is_some_and(|admission| admission.user != user) {
             return Err("MD-3: browser admission belongs to another user".into());
         }
@@ -651,6 +655,26 @@ impl KernelBrowserHost {
                 .unwrap_or_else(|error| error.into_inner())
                 .disconnect(actor);
         }
+        // Retire only this terminal's persistent native input/targets. Cleanup
+        // is serialized behind any cancelled request and never starts a desktop.
+        let backend = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .browsers
+            .get(user)
+            .cloned();
+        let actor = actor.to_string();
+        if let Some(backend) = backend {
+            std::thread::spawn(move || {
+                if let Ok(mut backend) = backend.lock() {
+                    let _ = backend.host_request(
+                        "host.computer.retire",
+                        serde_json::json!({"observer":actor}),
+                    );
+                }
+            });
+        }
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), String> {
@@ -902,3 +926,8 @@ mod actor_tests;
 mod native_input_tests;
 
 mod access;
+
+#[cfg(test)]
+mod computer_tests;
+
+mod computer;

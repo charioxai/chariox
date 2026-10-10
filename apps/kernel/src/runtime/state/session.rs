@@ -420,6 +420,9 @@ impl KernelRuntimeOwnedState {
         }
 
         let removed_agents = self.agent_store.remove_session_agents(session_id);
+        for agent in &removed_agents {
+            self.forget_room_computer_access(agent.id());
+        }
         let removed_agent_ids: Vec<_> = removed_agents
             .iter()
             .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))

@@ -14,13 +14,46 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:1280,height:800,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
   return {host,state,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
+test('MP-08/MP-11: registered and retired matching text uses visible tiles before hashing incremental bases',async()=>{
+ const {service,state,host}=fixture();host.protection.values=['fixture'];
+ state.snapshot.nodes[0].parent='n3';state.snapshot.nodes.unshift({id:'n3',parent:null,children:['n1'],kind:'element',tag:'html',box:{x:0,y:0,width:1280,height:800}});state.snapshot.root='n3';
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const first=await service.next(next(sub.subscription_id),'a');
+ assert.equal(first.nodes.find(n=>n.id==='n1').kind,'tile');
+ assert(!JSON.stringify(first.nodes).includes('fixture'),'MP-11 ordinary matching text never enters the structured wire tree');
+ assert.equal(first.tiles.length,1,'MP-08 ordinary matching pixels stay visible');
+ assert.equal(first.hash,mirrorHash({root:first.root,nodes:first.nodes,fonts:first.fonts,scroll:first.scroll,focused:first.focused,selection:first.selection}));
+ state.snapshot.nodes[2].text='ordinary';
+ const delta=await service.next(next(sub.subscription_id,first.sequence),'a');
+ assert(!delta.reset);assert.equal(delta.base_sequence,first.sequence);assert.equal(delta.nodes.find(n=>n.id==='n1').kind,'element');
+ const records=new Map(first.nodes.map(n=>[n.id,n]));for(const id of delta.removed)records.delete(id);for(const n of delta.nodes)records.set(n.id,n);
+ assert.equal(delta.hash,mirrorHash({root:delta.root,nodes:[records.get('n3'),records.get('n1'),records.get('n2')],fonts:delta.fonts,scroll:delta.scroll,focused:delta.focused,selection:delta.selection}));
+ state.snapshot.nodes[1].attributes={title:'fixture'};state.snapshot.nodes[1].pseudo={'::before':{text:'FIXTURE',style:{color:'black'}}};
+ const retired=await service.next(next(sub.subscription_id,delta.sequence),'a');
+ assert(retired.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'),'MP-08 unmeasured generated text uses full compositor pixels');assert(retired.nodes.every(n=>n.attributes===undefined&&n.pseudo===undefined));
+ clearInterval(service.expiry);service.clear();
+});
+test('MP-08/MP-11: matching styles fonts and overflowing text use protected full compositor fallback',async()=>{
+ for(const seam of ['style','font','overflow','pseudo']) {
+  const {service,state,host}=fixture();host.protection.values=['fixture'];
+  if(seam==='style')state.snapshot.nodes[0].style={'font-family':'fixture'};
+  if(seam==='font')state.snapshot.fonts=[{family:'fixture',resource:'missing'}];
+  if(seam==='pseudo')state.snapshot.nodes[0].pseudo={'::after':{text:'fixture',style:{'white-space':'nowrap','overflow':'visible'}}};
+  if(seam==='overflow')state.snapshot.nodes[1].box={x:70,y:0,width:80,height:40};
+  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+  assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(!JSON.stringify(packet.nodes).includes('fixture'));assert.equal(packet.tiles.length,1);
+  clearInterval(service.expiry);service.clear();
+ }
+});
 test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
  for(const fallback of [false,true]) {
   const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
@@ -66,7 +99,7 @@ test('MP-11: resource service reads only Chromium-loaded resources, strips URL, 
  const connection={async send(method,params){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'frame'},resources:[{url:'https://fixture/image'},{url:'https://fixture/svg'}]}};if(method==='Page.getResourceContent'){reads++;return {base64Encoded:true,content:params.url.endsWith('/svg')?Buffer.from('<svg onload="alert(1)"/>').toString('base64'):png};}throw Error('unexpected');}};
  const descriptors=[{key:'r0',url:'https://fixture/image',kind:'image'},{key:'r1',url:'https://fixture/svg',kind:'image'},{key:'r2',url:'http://private-address/unloaded',kind:'image'}];
  const result=await materializeMirrorResources(connection,'s',descriptors,[]);assert.equal(reads,2);assert.equal(result.resources.size,1);assert.equal(result.mapped.get('r1'),null);assert.equal(result.mapped.get('r2'),null);assert(!JSON.stringify([...result.resources.values()]).includes('https://fixture'));
- await assert.rejects(materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value']),/protected/);
+ assert.equal((await materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value'])).resources.size,1,'MP-11 value registration does not hide media');
 });
 
 test('MP-11: resource cache is epoch bounded and oversized decoded images never reach the client',async()=>{

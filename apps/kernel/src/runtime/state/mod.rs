@@ -139,6 +139,7 @@ mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
 mod room_browser_start_failure;
+mod room_computer_access;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_health;
@@ -196,6 +197,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
@@ -370,6 +372,7 @@ pub(crate) use browser_controller_action_execution_runtime_state::BrowserControl
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
 mod browser_download_cancellation_runtime_state;
+mod browser_snapshot_observation_runtime_state;
 mod browser_upload_runtime_state;
 mod capability_owned_state;
 mod detached_provider_run_owned_state;
@@ -463,6 +466,7 @@ mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
+mod kernel_computer_runtime;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -632,6 +636,8 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            kernel_browser_host,
+            room_computer_revoked,
         ) = {
             let started = Instant::now();
             loop {
@@ -646,6 +652,8 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.kernel_browser_host.clone(),
+                        app.room_computer_revoked.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -806,12 +814,13 @@ impl KernelRuntimeState {
                 attached_provider_transcript_cursors,
                 slice_store,
                 notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
-                kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(config.private_runtime_state_root()),
+                kernel_browser_host,
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                room_computer_revoked,
                 room_secret_observations,
                 kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
                     config.private_runtime_state_root().join("kernel-browser/observations"),

@@ -1,10 +1,11 @@
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
-import { access, mkdir, readlink } from "node:fs/promises";
+import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
+import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 
 function platformPolicy(platform) {
@@ -24,14 +25,23 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
-export function launchArguments(profile, headless, display = false) {
+export function launchArguments(profile, headless, display = false, nativeAccessibility = false) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
     "--disable-session-crashed-bubble", "--disable-background-networking",
     "--window-size=1280,800", ...(headless ? ["--headless=new"] : []),
-    ...(display ? ["--disable-frame-rate-limit"] : []), "about:blank",
+    ...(display ? ["--disable-frame-rate-limit"] : []),
+    ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
   ];
+}
+
+// MP-08 / MP-11: Chromium's singleton socket must fit sockaddr_un even when
+// the owned state path is long. This is the same private directory, held open
+// by the adapter until Chromium and its children have settled.
+export function chromiumTemporaryEnvironment(environment, fd, pid = process.pid) {
+  if (!Number.isSafeInteger(fd) || fd < 0 || !Number.isSafeInteger(pid) || pid <= 1) throw new Error('MP-11: invalid private temporary directory');
+  return { ...environment, TMPDIR: `/proc/${pid}/fd/${fd}` };
 }
 
 export class HostChromium {
@@ -39,13 +49,14 @@ export class HostChromium {
     this.root = root;
     this.environment = environment;
     this.child = null;
+    this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
   }
   async start() {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       if (this.connection?.isOpen()) return this.connection;
       await this.stop();
     }
-    const environment = platformPolicy(process.platform).launchEnvironment(this.environment);
+    let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
     // Refuse a live profile owner before launching Chromium. Never
@@ -63,16 +74,30 @@ export class HostChromium {
       }
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
-    const child = spawn(await executable(environment), launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1"), {
+    const binary = await executable(environment);
+    if (this.desktop && environment.CHARIOX_KERNEL_BROWSER_HEADLESS !== "1") {
+      environment = (await this.desktop.start()).environment;
+    }
+    if (process.platform === 'linux') {
+      this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
+      environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
+    }
+    const args = launchArguments(profile,
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()));
+    const command = this.desktop?.binding() ? desktopCommand(binary, args) : { binary, args };
+    const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;
+    child.on('error', () => {});
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
     this.connection = connection;
     child.once('error', () => { void connection.close(); });
     child.once('exit', () => { void connection.close(); });
-    try { await connection.send('Browser.getVersion'); return connection; }
+    try {
+      if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
+      await connection.send('Browser.getVersion'); return connection;
+    }
     catch {}
     await this.stop();
     throw new Error("MD-2: sandboxed host Chromium did not become ready (check executable, display and profile ownership)");
@@ -83,6 +108,8 @@ export class HostChromium {
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
+      await this.desktop?.stop();
+      await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
       return;
     }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
@@ -99,5 +126,7 @@ export class HostChromium {
     }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
+    await this.desktop?.stop();
+    await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }

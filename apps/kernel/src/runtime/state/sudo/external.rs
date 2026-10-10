@@ -7,10 +7,16 @@ impl KernelRuntimeState {
         grant_id: &str,
         request: RequestKernelSudoRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let session_id = self.authorize_external_request(
+        self.authorize_external_request(
             grant_id,
             &LocalDaemonRequest::RequestKernelSudo(request.clone()),
         )?;
+        let session_id = self
+            .owned
+            .agent_store
+            .get_agent(&request.agent_id)?
+            .session_id()
+            .to_owned();
         let grant = self
             .owned
             .kernel_access
@@ -37,9 +43,10 @@ impl KernelRuntimeState {
                 session_id,
                 attachment_id: attachment.id().into(),
                 target_agent_id: Some(request.agent_id.clone()),
-                prompt: format!("/sudo {}", request.prompt),
+                prompt: request.prompt.clone(),
                 attachments: vec![],
             },
+            &request.prompt,
             &owner,
             "",
             Some(grant.summary),
@@ -48,6 +55,32 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::KernelSudoRequested {
             agent_id: request.agent_id,
         })
+    }
+
+    pub(crate) async fn submit_external_sudo_prompt(
+        &self,
+        grant_id: &str,
+        request: SubmitPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_external_request(
+            grant_id,
+            &LocalDaemonRequest::SubmitPrompt(request.clone()),
+        )?;
+        let grant = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .grants
+            .get(grant_id)
+            .map(|grant| grant.summary.clone())
+            .ok_or_else(|| error("grant revoked or expired"))?;
+        let owner = grant.owner_user_id.clone();
+        let prompt = policy::parse_sudo_prompt(&request.prompt)
+            .unwrap_or_default()
+            .to_owned();
+        self.submit_sudo_entry(request, &prompt, &owner, "", Some(grant))
+            .await
     }
 
     pub(super) fn attach_external_sudo_source(

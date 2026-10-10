@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 pub(crate) struct KernelBrowserActors {
     generation: u64,
+    desktop: Option<(String, String)>,
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
     ledger: EnvironmentActionLedger,
@@ -29,6 +30,7 @@ impl Default for KernelBrowserActors {
     fn default() -> Self {
         Self {
             generation: 0,
+            desktop: None,
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
             ledger: EnvironmentActionLedger::new(256, 0),
@@ -129,7 +131,7 @@ impl KernelBrowserActors {
         params: &Value,
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
         self.register(actor.clone())?;
-        let request = if let Some(host_tab) = params["tab_id"].as_str() {
+        let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
             let binding = self
                 .tabs
@@ -152,7 +154,11 @@ impl KernelBrowserActors {
                 params["op"].as_str().unwrap_or("browser_mutation"),
                 None,
             );
-            request.mode = EnvironmentMode::Browser;
+            request.mode = if params["_native"] == true {
+                EnvironmentMode::Computer
+            } else {
+                EnvironmentMode::Browser
+            };
             if params["op"] == "stop" {
                 request.targets.extend(
                     self.tabs
@@ -164,6 +170,21 @@ impl KernelBrowserActors {
             }
             request
         };
+        if !request.targets.contains(&InputTarget::Desktop) {
+            request.targets.push(InputTarget::Desktop);
+        }
+        // Whole-desktop native input can affect any foreground browser tab.
+        // Honor existing tab-scoped human takeovers without widening ordinary
+        // Browser-to-Browser ownership to unrelated tabs.
+        if params["_native"] == true {
+            request.targets.extend(
+                self.tabs
+                    .snapshot()
+                    .0
+                    .into_iter()
+                    .map(|tab| InputTarget::BrowserTab(tab.tab_id)),
+            );
+        }
         // Store counts and coordinates only; payloads/secret bytes never enter the ledger.
         let outer = &params["input"];
         let input = if outer["kind"] == "mirror" {
@@ -235,6 +256,87 @@ impl KernelBrowserActors {
         let _ = self.ledger.finish(action_id, terminal);
         self.ledger.compact_terminal_actions();
         self.ledger.compact_transient_history(256);
+    }
+    pub(crate) fn reconcile_desktop(&mut self, state: &Value) -> Result<(), String> {
+        let binding = (
+            state["surface_id"]
+                .as_str()
+                .ok_or("MP-11: invalid desktop surface")?
+                .to_string(),
+            state["generation"]
+                .as_str()
+                .ok_or("MP-11: invalid desktop generation")?
+                .to_string(),
+        );
+        if self.desktop.as_ref().is_some_and(|old| old != &binding) {
+            for cancel in self.active.values() {
+                cancel.request_cancel();
+            }
+            // A fresh desktop never adopts prior desktop ownership or pending input.
+            self.ledger.clear_ownership();
+        }
+        self.desktop = Some(binding);
+        Ok(())
+    }
+    fn desktop_current(&self, surface: &str, generation: &str) -> Result<(), String> {
+        if self
+            .desktop
+            .as_ref()
+            .is_none_or(|(s, g)| s != surface || g != generation)
+        {
+            return Err("MP-11: stale native desktop".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn takeover_desktop(
+        &mut self,
+        actor: EnvironmentActor,
+        surface: &str,
+        generation: &str,
+    ) -> Result<TakeoverOutcome, String> {
+        self.desktop_current(surface, generation)?;
+        self.register(actor.clone())?;
+        let effect = self
+            .ledger
+            .request_takeover(
+                &actor.actor_id,
+                InputTarget::Desktop,
+                &self.actors,
+                &self.tabs,
+            )
+            .map_err(|_| "MP-11: desktop takeover denied")?;
+        for action in effect.cancellation_requested_action_ids {
+            if let Some(cancel) = self.active.get(&action) {
+                cancel.request_cancel();
+            }
+        }
+        Ok(effect.outcome)
+    }
+    pub(crate) fn check_desktop_release(
+        &self,
+        actor: &str,
+        surface: &str,
+        generation: &str,
+    ) -> Result<(), String> {
+        self.desktop_current(surface, generation)?;
+        if !self.desktop_owner_is(actor) {
+            return Err("MP-11: only the desktop owner may release".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn desktop_owner_is(&self, actor: &str) -> bool {
+        self.ledger.owner(&InputTarget::Desktop) == Some(actor)
+    }
+    pub(crate) fn release_desktop(
+        &mut self,
+        actor: &str,
+        surface: &str,
+        generation: &str,
+    ) -> Result<(), String> {
+        self.desktop_current(surface, generation)?;
+        self.ledger
+            .release(actor, &InputTarget::Desktop)
+            .map_err(|_| "MP-11: only the desktop owner may release".into())
     }
     pub(crate) fn takeover(
         &mut self,

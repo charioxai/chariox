@@ -296,6 +296,26 @@ interruption diagnostic, and its retained report must still record
 `containerRemoved: true` and `tempRootRemoved: true`. The window is test-only
 and bounded to 60 seconds.
 
+## Room Computer bulk access drill
+
+Use this after changing `revoke_grants`/`grant_room_computer` or the TUI
+`/access` command (local 461). This drill is Linux-only: it requires `/proc`
+and util-linux `script -c`:
+
+```bash
+node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir outside the repo> \
+  [--kernel target/debug/chariox-kernel] [--tui <compiled chariox binary>]
+```
+
+It starts a real kernel with disposable state and two dev-stub agents, drives
+the real TUI in a PTY through `/access revoke all` and `/access grant all`, and
+requires the kernel's grant snapshot to deny and then restore every owned agent
+and the TUI to print both Room Computer notices. While revoked, an omitted
+`agent_id` must be rejected without restoring anyone. Without `--tui` it runs
+`bun apps/cli/dist/index.js`. It is the protocol drill only, not provider or
+desktop acceptance. `result.json` records lingering processes, which are stopped
+before the disposable state is removed.
+
 ## Room clipboard end-to-end drill
 
 Use this after changing the Room clipboard authority, relay route, TUI Action

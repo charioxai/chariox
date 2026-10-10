@@ -18,6 +18,8 @@ import {
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 
+import {RoomNativeAccessibility} from "./room-native-accessibility.mjs";
+import {UserDomainRefusal} from "./kernel-browser-refusal.mjs";
 let browserImportModule;
 
 export async function handleBrowserControllerRequest(request, options = {}) {
@@ -46,6 +48,10 @@ async function handleBrowserControllerRequestInner(
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
   try {
+    if (["computer.snapshot", "computer.target_action"].includes(request.method)) {
+      browser.roomComputer ??= new RoomNativeAccessibility();
+      return successResponse(request.id, await browser.roomComputer.request({...request.params,op:request.method.slice(9)},{signal}));
+    }
     if (request.method === "health") {
       return successResponse(request.id, {
         state: "ready",
@@ -180,6 +186,7 @@ async function handleBrowserControllerRequestInner(
       `unknown browser controller method ${JSON.stringify(request.method)}`,
     );
   } catch (error) {
+    if(error instanceof UserDomainRefusal)return errorResponse(request.id,error.code,error.message);
     const code =
       error instanceof BrowserControllerError
         || error instanceof BrowserActionError
@@ -283,7 +290,7 @@ export class BrowserControllerStdioServer {
         continue;
       }
       let stopAction;
-      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import", "host.browser", "host.secret"].includes(request.method) ? new AbortController() : null;
+      const controller = ["computer.target_action", "browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import", "host.browser", "host.computer", "host.secret"].includes(request.method) ? new AbortController() : null;
       const action = controller ? {controller,method:request.method,response:null,
         stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);
@@ -432,7 +439,7 @@ function classifyScheduling(request, browser) {
   if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
     "browser.downloads.cancel", "browser.permission", "browser.cookies.import",
     "browser.cookies.recover", "shutdown"].includes(method)) return { kind: "barrier" };
-  if (["browser.snapshot", "browser.wait", "browser.artifact"].includes(method)) return targetScheduling(request, "read");
+  if (["computer.snapshot", "browser.snapshot", "browser.wait", "browser.artifact"].includes(method)) return targetScheduling(request, "read");
   if (["browser.action", "browser.navigate", "browser.history", "browser.dialog", "browser.upload"].includes(method)) {
     return targetScheduling(request, "mutation");
   }

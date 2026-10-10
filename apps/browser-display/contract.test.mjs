@@ -1,4 +1,4 @@
-// MD-DISPLAY-04: pin actual adapter packet metadata together with protocol 443.
+// MD-DISPLAY-04: pin actual adapter packet metadata together with protocol 461.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -15,9 +15,9 @@ export async function contract() {
  const sanitize=value=>JSON.parse(JSON.stringify(value,(key,value)=>key==='data_base64'?'<opaque>':value));
  return [first,settled,patch].map(sanitize);
 }
-test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 443', async()=>{
+test('MD-DISPLAY actual video/PNG/tile packet contract at protocol 461', async()=>{
  const version=await readFile(new URL('../../packages/kernel-client/src/kernel-types.ts',import.meta.url),'utf8');
- assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 443\b/);
+ assert.match(version,/LOCAL_DAEMON_PROTOCOL_VERSION = 472\b/);
  const frames=await contract();
  assert.equal(createHash('sha256').update(JSON.stringify(frames)).digest('hex'),'2ee8a6385402e07acc6ea78752e7f6832ea269faa9646362475c6f5705c672a6');
 });

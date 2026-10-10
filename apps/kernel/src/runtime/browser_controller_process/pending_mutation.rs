@@ -41,7 +41,7 @@ impl BrowserTabMutationLanes {
 }
 
 impl BrowserControllerProcessStdioBackend {
-    fn begin_cancellable_mutation(
+    pub(super) fn begin_cancellable_mutation(
         &mut self,
         method: &str,
         params: &serde_json::Value,

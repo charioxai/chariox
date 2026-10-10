@@ -21,7 +21,7 @@ struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable password field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -89,14 +89,14 @@ impl KernelRuntimeState {
         let host = self.owned.kernel_browser_host.clone();
         let admission = admission.cloned();
         let (user, method) = (user.to_string(), method.to_string());
-        let pixels =
-            method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let pixels = matches!(method.as_str(), "host.browser" | "host.computer")
+            && (params["op"] == "screenshot" || params["op"] == "poll");
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
         let at = std::time::Instant::now();
-        let mut result = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
         .await
@@ -106,60 +106,7 @@ impl KernelRuntimeState {
         if !protect {
             return Ok(result);
         }
-        // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
-        // corrupt images for short Vault values. All metadata still gets scrubbed.
-        let pixel_path = if display {
-            "/display_frame"
-        } else if result.get("frame").is_some() {
-            "/frame/data_base64"
-        } else {
-            "/data_base64"
-        };
-        let data = if pixels {
-            result.pointer_mut(pixel_path).map(Value::take)
-        } else {
-            None
-        };
-        // MP-11: mirror media has already passed protected compositor/resource
-        // admission. Scrubbing opaque base64 can corrupt bytes for short secrets.
-        let mirror_resources = if mirror {
-            result.as_object_mut().and_then(|r| r.remove("resources"))
-        } else {
-            None
-        };
-        let mirror_tiles = if mirror {
-            result.as_object_mut().and_then(|r| r.remove("tiles"))
-        } else {
-            None
-        };
-        let mut result = protection.scrub(&scope, result)?;
-        if let Some(resources) = mirror_resources {
-            result["resources"] = resources;
-        }
-        if let Some(tiles) = mirror_tiles {
-            result["tiles"] = tiles;
-        }
-        if let Some(mut data) = data {
-            if display && !data.is_null() {
-                // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
-                let frame = data
-                    .as_object_mut()
-                    .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
-                let payload = frame.remove("data_base64");
-                let tiles = frame.remove("tiles");
-                data = protection.scrub(&scope, data)?;
-                if let Some(payload) = payload {
-                    data["data_base64"] = payload;
-                }
-                if let Some(tiles) = tiles {
-                    data["tiles"] = tiles;
-                }
-            }
-            if let Some(slot) = result.pointer_mut(pixel_path) {
-                *slot = data;
-            }
-        }
-        Ok(result)
+        scrub_browser_result(protection, &scope, result, pixels, display, mirror)
     }
 
     pub(super) async fn revoke_kernel_browser_observation_values(
@@ -308,17 +255,20 @@ impl KernelRuntimeState {
             .dom_nodes
             .iter()
             .find(|node| node.node_ref == args.node_ref)
-            .ok_or_else(|| host_error("MD-5: rediscover the password field".into()))?;
-        if !node.node_name.eq_ignore_ascii_case("input")
-            || node
-                .attributes
-                .get("type")
-                .is_none_or(|kind| !kind.eq_ignore_ascii_case("password"))
+            .ok_or_else(|| host_error("MD-5: rediscover the fill field".into()))?;
+        let editable = node.node_name.eq_ignore_ascii_case("input")
+            || node.node_name.eq_ignore_ascii_case("textarea")
+            || node.attributes.get("contenteditable").is_some_and(|value| {
+                value.is_empty()
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("plaintext-only")
+            });
+        if !editable
             || node.attributes.contains_key("disabled")
             || node.attributes.contains_key("readonly")
         {
             return Err(host_error(
-                "MD-5: Vault input requires an editable password field".into(),
+                "MD-5: Vault input requires an editable text field".into(),
             ));
         }
         snapshot
@@ -326,6 +276,62 @@ impl KernelRuntimeState {
             .map(str::to_string)
             .map_err(host_error)
     }
+}
+
+// MP-08/MP-11: one boundary for protected host observations.
+fn scrub_browser_result(
+    protection: &super::room_secret_observation::RoomSecretObservations,
+    scope: &str,
+    mut result: Value,
+    pixels: bool,
+    display: bool,
+    mirror: bool,
+) -> Result<Value, DaemonError> {
+    if mirror {
+        // MP-08/MP-11: the protected host converts matching page text and
+        // metadata to compositor tiles before hashing its final wire tree.
+        // A second generic scrub would invalidate that hash/incremental base
+        // (and can corrupt protocol IDs/digests for short values). The caller
+        // holds the policy/input barrier across the protected host request.
+        protection.require(scope, false)?;
+        return Ok(result);
+    }
+    // Trusted masked pixel bytes are opaque; scrubbing base64 as text would
+    // corrupt images for short Vault values. All metadata still gets scrubbed.
+    let pixel_path = if display {
+        "/display_frame"
+    } else if result.get("frame").is_some() {
+        "/frame/data_base64"
+    } else {
+        "/data_base64"
+    };
+    let data = if pixels {
+        result.pointer_mut(pixel_path).map(Value::take)
+    } else {
+        None
+    };
+    let mut result = protection.scrub(scope, result)?;
+    if let Some(mut data) = data {
+        if display && !data.is_null() {
+            // Opaque bytes are protected by the host; textual document/tab metadata is scrubbed.
+            let frame = data
+                .as_object_mut()
+                .ok_or_else(|| host_error("MD-DISPLAY: invalid protected frame".into()))?;
+            let payload = frame.remove("data_base64");
+            let tiles = frame.remove("tiles");
+            data = protection.scrub(scope, data)?;
+            if let Some(payload) = payload {
+                data["data_base64"] = payload;
+            }
+            if let Some(tiles) = tiles {
+                data["tiles"] = tiles;
+            }
+        }
+        if let Some(slot) = result.pointer_mut(pixel_path) {
+            *slot = data;
+        }
+    }
+    Ok(result)
 }
 
 fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
@@ -341,6 +347,55 @@ fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("mirror-wire-boundary");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        let scope = "mirror-wire";
+        // Short credentials must not corrupt protocol keys, node IDs or hashes.
+        store.register(scope, "a").unwrap();
+        let packet = json!({"hash":"a".repeat(64),"root":"n1","nodes":[{"id":"n1","parent":null,"children":[],"kind":"tile","tag":"div","reason":"protected_text"}],"resources":[],"tiles":[]});
+        let wire = scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap();
+        assert!(
+            wire == packet,
+            "MP-11: the final host mirror tree/hash must reach the client unchanged"
+        );
+        let ordinary =
+            scrub_browser_result(&store, scope, json!({"text":"a"}), false, false, false).unwrap();
+        assert!(
+            ordinary["text"] != "a",
+            "MP-11: ordinary observations must still pass through the kernel scrubber"
+        );
+        // Optional actual Chromium packets are produced by the companion browser
+        // regression. Replay the same production boundary before client.apply.
+        if let Ok(path) = std::env::var("CHARIOX_MIRROR_WIRE_FIXTURE") {
+            let fixture: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            store
+                .register(scope, fixture["value"].as_str().unwrap())
+                .unwrap();
+            let packets = fixture["packets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|packet| {
+                    scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                packets
+                    .iter()
+                    .zip(fixture["packets"].as_array().unwrap())
+                    .all(|(wire, host)| wire == host),
+                "MP-11: registration/fill and incremental packets changed at the kernel boundary"
+            );
+            std::fs::write(
+                format!("{path}.wire.json"),
+                serde_json::to_vec(&packets).unwrap(),
+            )
+            .unwrap();
+        }
+    }
     #[test]
     fn host_vault_is_owner_only_and_tool_never_accepts_secret_bytes() {
         assert!(require_vault_owner(crate::session::DEFAULT_LOCAL_USER_ID).is_ok());

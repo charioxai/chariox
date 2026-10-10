@@ -8,12 +8,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
+import { NativeAccessibility } from './native-accessibility.mjs';
+import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureRegionMasks } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { captureRegionMasks,regionProtectionChanged,protectionDeclared } from "./kernel-browser-region-protection.mjs";
+import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { DisplayStream } from "./kernel-browser-display.mjs";
@@ -52,23 +54,27 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
+    if (this.chromium.desktop) this.chromium.desktop.browser = () => this.browser;
+    this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
+    this.nativeComputer = new NativeComputer({ placement: 'host',
+      binding: () => this.chromium.desktop?.binding(),
+      wakeCapture: event => this.onNativeInput?.(event),
+    });
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    this.nativeAccessibility.clear();
     this.mirror.invalidate();
     for (const stream of this.displays.values()) stream.invalidate();
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
-      stream.latest = policy.unknown || policy.values.length ? this.maskedStreamFrame(stream) : null;
+      stream.latest = null;
     }
     return {};
-  }
-  maskedStreamFrame(stream) {
-    return { generation: this.generation, tab_id: stream.tabId, mime_type: "image/png", data_base64: wholeFrameMask(),
-      width: viewport.css_width, height: viewport.css_height, sequence: ++stream.sequence };
   }
   async save() {
     const name = path.join(this.root, "tabs.json");
@@ -84,6 +90,10 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    // MP-11: retire helpers on the old display before Chromium recovery can
+    // replace it. A failed key release still requires owned desktop teardown.
+    try { await this.nativeComputer.close(); }
+    finally { await this.chromium.stop(); this.nativeAccessibility.clear(); }
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
@@ -102,6 +112,7 @@ export class KernelBrowserHost {
     }
     assertNotCancelled(signal);
     const connection = await this.chromium.start();
+    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
@@ -131,6 +142,10 @@ export class KernelBrowserHost {
     finally { this.restoring = false; }
   }
   async stop() {
+    this.nativeAccessibility.clear();
+    // A dead X server can make release fail; retirement still destroys the
+    // owned desktop before acknowledging stop.
+    await this.nativeComputer.close().catch(() => {});
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -151,6 +166,15 @@ export class KernelBrowserHost {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
       }
+    }
+    // Native address-bar navigation turns the initial blank target into a user
+    // tab. Replace the reserve without taking focus before adopting that tab.
+    const keepalive = state.tabs.find(tab => tab.target_id === this.keepaliveTarget);
+    if (keepalive && keepalive.url !== "about:blank") {
+      const connection = await this.browser.ensureConnection();
+      this.keepaliveTarget = (await connection.send("Target.createTarget", {
+        url: "about:blank", background: true,
+      })).targetId;
     }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
@@ -211,7 +235,7 @@ export class KernelBrowserHost {
     const scale = this.scales.get(tab.tab_id) ?? 1;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId) : null;
+    const regionMasks = protectedCapture ? await captureRegionMasks(connection, sessionId, {targetId:tab.target_id,policy:this.protection}) : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
         const at = timestamp();
@@ -233,19 +257,22 @@ export class KernelBrowserHost {
     const id = `host-stream-${randomUUID()}`;
     const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
     const captureProtected = () => {
-      stream.latest ??= this.maskedStreamFrame(stream);
       if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
       stream.capturing = true;
       stream.nextCapture = Date.now() + 200;
-      const policy = this.protection, generation = this.generation;
+      const policy = this.protection, generation = this.generation, epoch=stream.regionEpoch??0;
       void this.screenshot(tab).then(frame => {
-        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream) {
+        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream && epoch===(stream.regionEpoch??0)) {
           if (!stream.boundFrames) delete frame.document_id;
           stream.latest = { ...frame, sequence: ++stream.sequence };
         }
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
+      if(regionProtectionChanged(message,sessionId)){
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=null;}
+        captureProtected();return;
+      }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;
       if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {
@@ -387,6 +414,11 @@ export class KernelBrowserHost {
       return this.reconcile();
     }
     if (command.op === "navigate") {
+      // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
+      // Retire native claims before physical focus can show a different page.
+      if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
+        await this.browser.manageTab({...binding,action:'activate'},{signal});
+      }
       await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
       return this.observe(await this.reconcile(), null, scope);
     }
@@ -431,6 +463,7 @@ export class KernelBrowserHost {
       if (request.method === "host.revoke_subscriptions") {
         const ids = new Set(request.params.subscription_ids ?? []);
         const owners = new Set(request.params.subscription_owners ?? []);
+        for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
         return { id: request.id, ok: true, result: { revoked: true } };
       }
@@ -444,7 +477,38 @@ export class KernelBrowserHost {
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }
+      if (request.method === "host.computer") {
+        const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
+        if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
+        const nativeParams={...request.params,observed_by:observer};
+        if (request.params.op === 'snapshot') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.snapshot(observer,this.protection,{signal})};
+        }
+        if (request.params.op === 'target_action') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native target surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.action(observer,request.params,this.protection,{signal})};
+        }
+        if (request.params.op === 'start') {
+          if(!this.chromium.desktop || this.chromium.environment?.CHARIOX_KERNEL_BROWSER_HEADLESS==='1')throw new Error('MP-08: owned Computer desktop requires headed Linux');
+          await this.start({ signal });
+          return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };
+        }
+        return { id: request.id, ok: true, result: await this.nativeComputer.request(nativeParams, this.protection, {signal}) };
+      }
+      if (request.method === 'host.computer.retire') {
+        await this.nativeComputer.retire(request.params.observer);
+        this.nativeAccessibility.retire(request.params.observer);
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
+      if (request.method === "host.computer.reset") {
+        await this.nativeComputer.reset();
+        return { id: request.id, ok: true, result: { released: true } };
+      }
       if (request.method === "host.browser") {
+        if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         const result = await this.request(request.params, { signal });
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
@@ -478,7 +542,7 @@ export class KernelBrowserHost {
     } catch (error) {
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
-      if (error?.code === "browser_action_cancelled") await this.stop();
+      if (error?.code === "browser_action_cancelled" && request.method !== "host.computer") await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

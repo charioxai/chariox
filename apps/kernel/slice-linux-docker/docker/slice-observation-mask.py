@@ -17,7 +17,7 @@ class ObservationRedacted(Exception):
     pass
 
 
-def mask_image(image, regions):
+def mask_image(image, regions, margin=8):
     # Copy pixels, not PNG metadata that may itself contain pre-redaction text.
     masked = Image.new('RGB', image.size)
     masked.paste(image.convert('RGB'))
@@ -28,25 +28,35 @@ def mask_image(image, regions):
         x, y, width, height = region
         if width <= 0 or height <= 0:
             raise ObservationRedacted(RETRY_MESSAGE)
-        left, top = max(0, math.floor(x) - 8), max(0, math.floor(y) - 8)
-        right = min(image.width - 1, math.ceil(x + width) + 8)
-        bottom = min(image.height - 1, math.ceil(y + height) + 8)
+        left, top = max(0, math.floor(x) - margin), max(0, math.floor(y) - margin)
+        right = min(image.width - 1, math.ceil(x + width) + margin - (1 if margin == 0 else 0))
+        bottom = min(image.height - 1, math.ceil(y + height) + margin - (1 if margin == 0 else 0))
         if left > right or top > bottom:
             continue  # A known offscreen region contributes no captured pixels.
         draw.rectangle((left, top, right, bottom), fill='black')
     return masked
 
 
-def capture_masked(policy, locate, capture):
+def capture_masked(policy, locate, capture, native=None):
     for _ in range(MAX_ATTEMPTS):
         try:
             before = locate(policy)
+            coverage = native() if native else None
             image = capture()
             try:
                 after = locate(policy)
-                if before != after:
+                next_coverage = native() if native else None
+                if before != after or coverage != next_coverage:
                     continue  # Drop only this frame. Re-locate and re-capture.
-                return mask_image(image, before)
+                registered = mask_image(image, before)
+                if coverage is None:
+                    return registered
+                try:
+                    # Native masks already include window borders and stacking
+                    # subtraction. Do not pad into an accessible window above.
+                    return mask_image(registered, coverage.get('masks', []), margin=0)
+                finally:
+                    registered.close()
             finally:
                 image.close()
         except Exception:
@@ -59,37 +69,24 @@ def locate_regions(policy):
     if policy.get('unknown'):
         raise ObservationRedacted(RETRY_MESSAGE)
     regions = []
-    for target in list(policy.get('targets', [])):
-        if target['kind'] == 'native':
+    native_targets = [target for target in policy.get('targets', []) if target['kind'] == 'native']
+    if native_targets:
+        try:
+            from Xlib import display, error
+        except ModuleNotFoundError:
             from selkies.Xlib import display, error
-            connection = display.Display()
-            try:
-                # Re-locate this exact approved control even if focus now differs.
-                window = connection.create_resource_object('window', target['target']['focus_window'])
-                root = connection.screen().root
-                if window.get_attributes().map_state != 2:
-                    continue  # A confirmed unmapped control contributes no desktop pixels.
-                geometry = window.get_geometry()
-                translated = root.translate_coords(window, 0, 0)
-                ancestors = []
-                for _ in range(64):
-                    ancestors.append(window.id)
-                    parent = window.query_tree().parent
-                    if parent.id == root.id:
-                        break
-                    window = parent
-                if target['target']['active_window'] not in ancestors:
-                    raise ObservationRedacted(RETRY_MESSAGE)
-                regions.append([translated.x, translated.y, geometry.width, geometry.height])
-            except error.BadWindow:
-                # X confirms that this exact approved window no longer exists.
-                policy['targets'].remove(target)
-            finally:
-                connection.close()
-        elif target['kind'] != 'browser':
-            raise ObservationRedacted(RETRY_MESSAGE)
+        connection = display.Display()
+        try:
+            for target in native_targets:
+                try: connection.create_resource_object('window', target['target']['focus_window']).get_attributes()
+                except error.BadWindow: policy['targets'].remove(target)
+        finally: connection.close()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+    native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+    regions.extend(native.regions())
     browser_targets = [target for target in policy.get('targets', []) if target['kind'] == 'browser']
-    if browser_targets or policy.get('values'):
+    if browser_targets:
         result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs'))],
                                 input=json.dumps({'targets': browser_targets, 'values': policy.get('values', [])}), text=True, capture_output=True,
                                 timeout=2, check=True)
@@ -106,13 +103,20 @@ def capture_pixels():
             return image.copy()
 
 
+def native_coverage():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+    fills = importlib.util.module_from_spec(spec); spec.loader.exec_module(fills)
+    return {'available': True, 'complete': True, 'protected': False, 'masks': fills.regions()}
+
+
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
-            run=subprocess.run, scratch=None):
+            run=subprocess.run, scratch=None, native=None):
     native_ids = {target['target']['focus_window'] for target in policy.get('targets', [])
                   if target.get('kind') == 'native'}
     image = None
     try:
-        image = capture_masked(policy, locate, capture)
+        image = capture_masked(policy, locate, capture, native or native_coverage)
         if mode == 'screenshot':
             image.save(argument, format='PNG')
             return

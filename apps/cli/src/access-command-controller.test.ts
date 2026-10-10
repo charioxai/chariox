@@ -3,9 +3,9 @@ import test from "node:test"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { parseSlashCommand } from "./commands.js"
 const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "note", note_id: "note" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
-function fixture() {
+function fixture(version = 443) {
   const requests: any[] = [], lines: string[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
+  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: version, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
   return { controller, requests, lines }
 }
 test("access parser has a word boundary and passes revoke arguments", () => {
@@ -45,4 +45,23 @@ test("retained-use feed prints the shared notice once and stops after cleanup", 
   controller.stop()
   pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 4, notice: { ...notice, at_ms: 600 } } } }); await tick()
   assert.equal(lines.length, 1)
+})
+test("MP-08 / MP-10 / MP-11 owner re-grants Room Computer through Access", async()=>{
+  const h=fixture(449)
+  await h.controller.handle(["grant","holder"])
+  assert.deepEqual(h.requests.find(r=>r.KernelBrowser.command.op==="grant_room_computer"),{KernelBrowser:{command:{op:"grant_room_computer",agent_id:"holder"}}})
+  assert.match(h.lines.at(-1)!,/Granted Room Computer control/)
+  h.controller.stop()
+})
+test("MP-08 / MP-11 bulk revoke and bulk restore print visible notices", async()=>{
+  const old=fixture(460)
+  await assert.rejects(old.controller.handle(["grant","all"]),/461/)
+  assert(!old.requests.some(r=>r.KernelBrowser.command.op==="grant_room_computer")); old.controller.stop()
+  const h=fixture(461)
+  await h.controller.handle(["revoke","all"])
+  assert.match(h.lines.at(-1)!,/^Revoked access and Room Computer control for all agents\./)
+  await h.controller.handle(["grant","all"])
+  assert.deepEqual(h.requests.at(-1),{KernelBrowser:{command:{op:"grant_room_computer",agent_id:null}}})
+  assert.match(h.lines.at(-1)!,/^Restored Room Computer control for all agents\./)
+  h.controller.stop()
 })

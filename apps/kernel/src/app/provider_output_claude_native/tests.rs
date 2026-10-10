@@ -1463,6 +1463,41 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 
 #[test]
 fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    workspace_trust_approval_fixture("1. No, exit\n2. Yes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_workspace_trust_accepts_yes_first_without_selecting_no() {
+    workspace_trust_approval_fixture("❯ 1. Yes, I trust this folder\n2. No, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_highlighted_yes_second() {
+    workspace_trust_approval_fixture("1. No, exit\n❯ 2. Yes, I trust this folder", "\n");
+}
+
+// MP-08/MP-10/MP-11: captured official Claude 2.1.292 uses unnumbered choices.
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_no_first() {
+    workspace_trust_approval_fixture("❯ No, exit\nYes, I trust this folder", "\x1b[B\n");
+}
+
+#[test]
+fn claude_workspace_trust_accepts_unnumbered_yes_first() {
+    workspace_trust_approval_fixture("❯ Yes, I trust this folder\nNo, exit", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_keeps_unnumbered_highlighted_yes() {
+    workspace_trust_approval_fixture("No, exit\n❯ Yes, I trust this folder", "\n");
+}
+
+#[test]
+fn claude_workspace_trust_selects_yes_above_highlighted_no() {
+    workspace_trust_approval_fixture("1. Yes, I trust this folder\n❯ 2. No, exit", "\x1b[A\n");
+}
+
+fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1536,15 +1571,14 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         steering: false,
     };
     let bridge = StartupTrustBridge::default();
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
+    let trust_frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_terminal_output(
             session.id(),
             run.id(),
             &run,
             Some(std::sync::Arc::new(bridge.clone())),
-            trust_frame,
+            &trust_frame,
         )
         .expect("startup trust should enter the native interaction path");
 
@@ -1596,6 +1630,29 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(approved, "explicit approval should reach startup wait");
+    for _ in 0..100 {
+        if fs::read_to_string(&capture_file)
+            .unwrap_or_default()
+            .contains(expected_input)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        fs::read_to_string(&capture_file)
+            .expect("PTY should capture workspace approval")
+            .contains(expected_input),
+        "approval must select Yes for the rendered choices"
+    );
+    if expected_input == "\n" {
+        assert!(
+            !fs::read_to_string(&capture_file)
+                .unwrap()
+                .contains("\x1b[B"),
+            "an already selected Yes must not move to No"
+        );
+    }
 
     std::thread::sleep(std::time::Duration::from_millis(4_100));
     fs::write(
@@ -1738,6 +1795,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
+    let other_worktree = crate::test_support::TestWorktree::new("claude-native-unrelated");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
@@ -1759,7 +1817,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unrelated-agent",
-            root.display().to_string(),
+            other_worktree.path().display().to_string(),
         ))
         .expect("unrelated session should be created");
     let other_agent = crate::app::KernelSessionService::new(&mut app)
@@ -2924,6 +2982,7 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
                     &run,
                     &context,
                     std::sync::Arc::new(RefusedPermissionBridge),
+                    "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder",
                 )
                 .unwrap();
         } else {

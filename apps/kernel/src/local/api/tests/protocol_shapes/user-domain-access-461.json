@@ -33,6 +33,22 @@
   },
   {
     "KernelBrowser": {
+      "command": {
+        "op": "grant_room_computer",
+        "agent_id": "a"
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
+      "command": {
+        "agent_id": null,
+        "op": "grant_room_computer"
+      }
+    }
+  },
+  {
+    "KernelBrowser": {
       "result": {
         "cursor": 4,
         "event": "user_domain_grants_changed",
@@ -73,7 +89,14 @@
             "kind": "browser_tab",
             "tab_id": "t"
           }
-        }
+        },
+        "room_computer": [
+          {
+            "agent_id": "a",
+            "session_id": "s",
+            "allowed": false
+          }
+        ]
       }
     }
   },

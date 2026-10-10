@@ -13,6 +13,18 @@ impl KernelRuntimeState {
         use crate::transport::runtime_tools::*;
 
         let result = match tool_name {
+            SLICE_ACCESSIBILITY_TOOL => {
+                let args = parse_controller_tool_arguments::<serde_json::Map<String, serde_json::Value>>(arguments, "slice_accessibility")?;
+                if !args.is_empty() { return Err(DaemonError::LocalTransport {operation:"slice_accessibility",message:"snapshot accepts no arguments".into()}); }
+                self.observe_room_computer_for_agent(session_id, slice_id, agent_id, crate::transport::relay_peer::RemoteRoomComputerObservationCall::Snapshot { observer: crate::session::agent_environment_actor_id(agent_id) }).await
+            }
+            SLICE_TARGET_ACTION_TOOL => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { tree_revision:u64, target_id:String, action:String }
+                let args = parse_controller_tool_arguments::<Args>(arguments, "slice_target_action")?;
+                self.controller_computer_input_tool_result(session_id, slice_id, agent_id, crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { tree_revision:args.tree_revision,target_id:args.target_id,action:args.action }).await
+            }
             PASTE_SECRET_TO_SLICE_TOOL => {
                 let args = parse_controller_tool_arguments::<PasteSecretToSliceArgs>(
                     arguments,
