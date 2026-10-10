@@ -550,3 +550,22 @@ test("MP-08: review #320-2 modified deletion keys edit the focused control (Ctrl
       assert.equal(await evaluate(`document.getElementById("${name}").value`), expected, `MP-08: ${keys.join(" ")} in #${name}`);
     }
   }));
+
+test("MP-10: review #941-2 a select that becomes multiple (and back) keeps every selected option in the viewer after property-only selections", () => mirrored(
+  '<select id="s"><option>a</option><option>b</option><option>c</option></select><button id="b">b</button>', async ({ next, evaluate }) => {
+    // What the viewer records for #s: the newest select record, its options' selectedness (multiple) or its index.
+    const forms = new Map(); let select = null, options = [];
+    const absorb = nodes => { let current = null; for (const r of rows(nodes)) { if (r.form) forms.set(r.id, { ...r.form }); if (r.tag === "select" && r.attrs.id === "s") { select = r; options = []; current = r; } else if (r.tag === "option" && current) options.push(r.id); else current = null; } };
+    const apply = packet => { if (packet.nodes) absorb(packet.nodes); for (const op of packet.ops) { if (op.op === "children") absorb(op.nodes); if (op.op === "form") forms.set(op.id, { ...forms.get(op.id), ...op.form }); if (op.op === "attr" && select && op.id === select.id) { if (op.value === null) delete select.attrs[op.name]; else select.attrs[op.name] = op.value; } } };
+    const viewer = () => Object.hasOwn(select.attrs, "multiple") ? options.map(id => forms.get(id)?.checked ?? null) : forms.get(select.id)?.selected_index;
+    const source = () => evaluate("s.multiple ? [...s.options].map(o => o.selected) : s.selectedIndex");
+    apply(await next());
+    assert.equal(viewer(), 0);
+    // Property-only writes after each switch: no input or change event.
+    for (const script of ["s.multiple=true;s.options[2].selected=true", "s.multiple=false;s.selectedIndex=1", "s.multiple=true;s.options[0].selected=true"]) {
+      await evaluate(`document.querySelector('#b').focus();${script};true`);
+      const expected = await source();
+      for (let i = 0; i < 4 && JSON.stringify(viewer()) !== JSON.stringify(expected); i++) apply(await next(1500));
+      assert.deepEqual(viewer(), expected, `MP-10: the viewer matches the source after ${script}`);
+    }
+  }));

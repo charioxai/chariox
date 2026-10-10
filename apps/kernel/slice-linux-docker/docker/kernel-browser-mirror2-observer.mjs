@@ -411,7 +411,8 @@ export function installMirror2(sanitizeMirrorCss) {
         if (kind === 'mask' || kind === 'tile') { if (kind === 'tile') dirty.masks.add(node); continue; }
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
         if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
-        if (node.localName === 'input' && names.has('type')) { dirty.replace.add(node); continue; }
+        // A new input type, or a select gaining/losing `multiple` (its options become/stop being form controls), re-serializes.
+        if (node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
         for (const name of names) {
           if (!keepAttr(node.namespaceURI === HTML, name.toLowerCase()) && name !== 'href') continue;
