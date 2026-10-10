@@ -522,6 +522,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
+    handleProviderAccountRecoveryKey: (event) => deps.handleProviderAccountRecoveryKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
     requestExit: () => {
@@ -533,11 +534,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
   useKeyboard(event => {
-    if (!deps.kernelApprovalOwnsInput?.() && deps.handleProviderAccountRecoveryKey?.(event)) {
-      event.preventDefault()
-      event.stopPropagation()
-      return
-    }
     globalKeyboardShortcutController.handleKey(event)
   })
   const handleSigint = globalKeyboardShortcutController.handleSigint
