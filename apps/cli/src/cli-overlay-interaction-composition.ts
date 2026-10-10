@@ -25,6 +25,7 @@ import { createWaitingRoomManagedMachineDialogController } from "./waiting-room-
 type AnyFn = (...args: any[]) => any
 
 export type CliOverlayInteractionCompositionDeps = {
+  selectedLinkUrl?: () => string | null
   client: any
   renderer: any
   dimensions: AnyFn
@@ -195,6 +196,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const clipboardController = createClipboardController({
     renderer: deps.renderer,
+    selectedLinkUrl: deps.selectedLinkUrl ?? (() => null),
     promptInput: deps.promptInputRefController.currentOrNull,
     flashFooter: deps.flashFooter,
     logWarning: (message, fields) => deps.appLogger?.warn(message, fields),
@@ -210,7 +212,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     },
   })
   const handleSelection = (selection: Selection) => {
-    promptSurfaceMouseController.handleSelection(selection.getSelectedText())
+    promptSurfaceMouseController.handleSelection(deps.selectedLinkUrl?.() ?? selection.getSelectedText())
   }
   deps.renderer.on("selection", handleSelection)
   onCleanup(() => deps.renderer.off("selection", handleSelection))

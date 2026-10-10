@@ -1,6 +1,6 @@
 import { createNativeSelectionController } from "./native-selection-controller.js"
 import { createSelectionTextView } from "./selection-text-view.js"
-import { createProviderLoginLinkPresenter } from "./provider-login-link.js"
+import { createTranscriptLinkController } from "./transcript-link-controller.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { AppDevLoop } from "./app-dev-loop.js"
@@ -11,7 +11,7 @@ import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type KeyEvent, type TextareaRenderable } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, TextBufferRenderable, TextRenderable, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createSignal, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
@@ -218,6 +218,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client_id: options.clientId,
   })
   const renderer = useRenderer()
+  const transcriptLinks = createTranscriptLinkController({ renderer, flashFooter: (message, tone) => flashFooter(message, tone) })
   const [nativeSelectionHint, setNativeSelectionHint] = createSignal<string | null>(null)
   const selectionTextView = createSelectionTextView(renderer, error => {
     appLogger?.warn("selection text view failed", { error: formatError(error) })
@@ -229,7 +230,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     selectionTextViewActive: selectionTextView.isActive,
     presentSelectionText: () => {
       const selection = renderer.getSelection()
-      return !selection?.isDragging && selectionTextView.present(selection?.getSelectedText() ?? "")
+      return !selection?.isDragging && selectionTextView.present(transcriptLinks.selectedUrl() ?? selection?.getSelectedText() ?? "")
     },
   })
   const nativeSelectionInput = (event: KeyEvent) => {
@@ -250,7 +251,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     if (!renderer.isDestroyed) nativeSelection.dispose()
   })
   const secretInput = createCliSecretInput(renderer)
-  const providerLoginLink = createProviderLoginLinkPresenter(renderer)
   onCleanup(secretInput.cancel)
   const dimensions = useTerminalDimensions()
   const setCenterMode = (_mode: "transcript") => {}
@@ -566,6 +566,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
+    selectedLinkUrl: transcriptLinks.selectedUrl,
     client, renderer, dimensions, appLogger,
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
@@ -928,13 +929,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
-    shortcutInputEnabled: () => !renderer.isDestroyed && !providerLoginLink.isActive() && !selectionTextView.isActive(),
+    shortcutInputEnabled: () => !renderer.isDestroyed && !selectionTextView.isActive(),
     discardShortcutInput: () => { nativeSelection.discardInput(); discardCopyInput() },
     handleNativeSelectionKey: nativeSelection.handleKey,
     handleNativeSelectionPaste: nativeSelection.handlePaste,
     flushTextSelectionRebuild: flushDeferredRebuild,
     hasPromptSelection: () => promptInputRefController.isFocused() && Boolean(promptInputRefController.current()?.hasSelection()),
-    showProviderLoginLink: providerLoginLink,
+    openProviderLoginLink: transcriptLinks.activate,
     attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
@@ -1065,7 +1066,12 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
-      handleRootMouseUp={() => {
+      handleRootMouseDrag={transcriptLinks.handleMouseDrag}
+      handleRootMouseDown={(event) => {
+        if (event.target instanceof TextBufferRenderable && event.target !== promptInputRefController.currentOrNull()) transcriptLinks.handleMouseDown(event)
+      }}
+      handleRootMouseUp={(event) => {
+        transcriptLinks.handleMouseUp(event)
         if (!kernelApprovals.ownsInput()) retainPromptFocus()
         // OpenTUI finishes or clears the selection after this handler returns.
         startTimeout(flushDeferredRebuild, 0)

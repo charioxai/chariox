@@ -213,7 +213,7 @@ try {
     : ['--detached', '--kernel-url', `ws://127.0.0.1:${fixture.address().port}/kernel`]
   if (options.attached) sessionDeleted = false
   tui = Bun.spawn(['bun', ...(options['mouse-observer'] ? ['--preload', options['mouse-observer']] : []), cli, ...tuiArgs], {
-    cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', SSH_CONNECTION: 'fixture 1 fixture 2',
+    cwd: process.cwd(), env: { ...runtimeEnv, TERM: options.term ?? 'xterm-256color', TERM_PROGRAM: 'xterm.js', SSH_CONNECTION: 'fixture 1 fixture 2',
       ...(options['no-mouse'] ? { CHARIOX_TUI_MOUSE: 'off' } : {}),
       ...(options.attached || options['waiting-room-paste'] ? { CHARIOX_HOME: process.env.CHARIOX_HOME } : {}) },
     terminal: { cols: 100, rows: 35, data(_terminal, chunk) { const data = new TextDecoder().decode(chunk); output += data; for (const c of clients) c.send(data) } },
@@ -474,7 +474,8 @@ try {
   } else if (options.attached) {
     // MP-08/MP-11 attached transcript: real provider turns, then the user's
     // select/click-then-type, Meta+C with a queued prompt, and deletion elsewhere.
-    const marker = 'TUIFIX MARKER SEVEN'
+    const liveUrl = 'https://www.wikipedia.org/?state=' + 'abcdef0123456789'.repeat(25)
+    const marker = options['links-review'] ? 'https://www.wikipedia.org/' : 'TUIFIX MARKER SEVEN'
     await waitFor(async () => (await page.evaluate(() => terminalScreen().trim().length)) > 0, 60_000)
     await sleep(8000)
     await capture('a01-attached')
@@ -485,7 +486,7 @@ try {
       timingClient = new KernelClient(options['fleet-kernel-url'], {})
       timingObserver = await observeProviderTiming({client:timingClient, alias:sessionAlias, evidence, stop, kernelPid:kernel?.pid??Number(options['timing-kernel-pid'])})
     }
-    await typeText('Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
+    await typeText(options['links-review'] ? 'Reply with exactly this URL and no other text: ' + liveUrl : 'Reply with exactly one line: the words tuifix marker seven alpha, written in uppercase.')
     timingObserver?.dispatch()
     await press('\r')
     await capture('a01b-prompt-sent')
@@ -505,6 +506,56 @@ try {
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
     if (options['timing-only']) {
       result = {items:['MP-08','MP-10'], source:options.source, provider:options.provider, dpr:Number(options.dpr??1), providerTiming}
+    } else if (options['links-review']) {
+      const at = await page.evaluate(needle => {
+        const rows = terminalScreen().split('\n')
+        const y = rows.findIndex(row => row.includes(needle))
+        return { x: rows[y].indexOf(needle), y }
+      }, marker)
+      assert.ok(at.y >= 0)
+      // A normal reported click never switches buffers. F6 snapshots the
+      // complete URL instead of only the clicked cell.
+      const mark = output.length
+      await mouse(`\x1b[<0;${at.x+5};${at.y+1}M\x1b[<0;${at.x+5};${at.y+1}m`)
+      await press(copySequence)
+      const exactCopy = (await copiedTexts()).includes(liveUrl)
+      assert.ok(!/\x1b\[\?1049l/.test(output.slice(mark)), 'click must keep the TUI visible')
+      assert.ok(exactCopy, 'F6 must copy the complete clicked URL including state')
+      const coords = await page.evaluate(() => {
+        const r = document.querySelector('.xterm-screen').getBoundingClientRect()
+        return { x:r.x, y:r.y, cw:r.width/term.cols, ch:r.height/term.rows }
+      })
+      await page.keyboard.down('Control'); await page.keyboard.down('Shift')
+      await page.mouse.move(coords.x+coords.cw*(at.x+10.5), coords.y+coords.ch*(at.y+.5))
+      await sleep(300)
+      await page.mouse.click(coords.x+coords.cw*(at.x+10.5), coords.y+coords.ch*(at.y+.5))
+      await page.keyboard.up('Shift'); await page.keyboard.up('Control')
+      const hyperlinkActivated = await page.evaluate(url => openedLinks.includes(url), liveUrl)
+      await capture('inline-url-click')
+      assert.ok(options['mouse-observer'], 'inline hyperlink drill requires terminal capability evidence')
+      const events = (await readFile(path.join(evidence, 'mouse-events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse)
+      const hyperlinksSupported = events.find(event => event.kind === 'mouse-before')?.hyperlinks
+      assert.equal(typeof hyperlinksSupported, 'boolean')
+      let explicitFallback = false
+      if (hyperlinksSupported) assert.ok(hyperlinkActivated, 'OSC 8 target must retain the complete URL')
+      else {
+        // The renderer declined hyperlinks for this terminal. The explicit
+        // fallback remains native-selectable and keeps the complete URL.
+        await press('\x1b[18~')
+        await waitFor(() => page.evaluate(() => terminalScreen().includes('Selected text')))
+        const row = await rowOf(marker)
+        await page.keyboard.down('Control')
+        await page.mouse.move(coords.x+coords.cw*10,coords.y+coords.ch*(row.y+.5)); await sleep(300)
+        await page.mouse.click(coords.x+coords.cw*10,coords.y+coords.ch*(row.y+.5))
+        await page.keyboard.up('Control')
+        explicitFallback = await page.evaluate(url => openedLinks.includes(url), liveUrl)
+        await capture('explicit-url-fallback')
+        assert.ok(explicitFallback, 'fallback hyperlink keeps the entire URL')
+        await press('\r')
+      }
+      result = {items:['MP-08','MP-10'],source:options.source,provider:options.provider,dpr:Number(options.dpr??1),
+        cliSha256:await hashClient(path.dirname(cli)),url:liveUrl,exactCopy,hyperlinkActivated,hyperlinksSupported,explicitFallback,noHandoff:true,
+        acceptance:'real-provider inline hyperlink and full URL copy; local OS opener and physical Mac tested separately'}
     } else if (options['clean-selection-review']) {
       // MP-08 / MP-10: explicit SSH fallback displays logical selected text,
       // without the surrounding layout. Native terminal selection owns it.
@@ -803,65 +854,47 @@ try {
   await waitFor(() => requests.includes('GetProviderLoginStatus'))
   await sleep(600)
   await capture('04-claude-link')
-  let nativeSelection = false
-  let hyperlinkActivated = false
-  if (output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)) {
-    const coords = await page.evaluate(length => {
-      const y = terminalScreen().split('\n').findIndex(line => line.startsWith('https://claude.ai/'))
-      const rect = document.querySelector('.xterm-screen').getBoundingClientRect()
-      return { x: rect.x, y: rect.y, cw: rect.width/term.cols, ch: rect.height/term.rows, row: y, endRow: y+Math.floor(length/term.cols), endCol: length%term.cols }
-    }, url.length)
-    assert.ok(coords.row >= 0)
-    await page.mouse.move(coords.x+coords.cw*0.2, coords.y+coords.ch*(coords.row+0.5))
-    await page.mouse.down()
-    await page.mouse.move(coords.x+coords.cw*(coords.endCol+0.2), coords.y+coords.ch*(coords.endRow+0.5), { steps: 20 })
-    await page.mouse.up()
-    nativeSelection = await page.evaluate(expected => term.getSelection() === expected, url)
-    await capture('04b-native-url-selection')
-    await page.keyboard.down('Control')
-    await page.mouse.move(coords.x+coords.cw*10, coords.y+coords.ch*(coords.row+0.5))
-    await sleep(300)
-    await page.mouse.click(coords.x+coords.cw*10, coords.y+coords.ch*(coords.row+0.5))
-    await page.keyboard.up('Control')
-    hyperlinkActivated = await page.evaluate(expected => openedLinks.includes(expected), url)
-  }
+  const at = await rowOf('https://claude.ai/oauth/authorize?client_id=fixture')
+  assert.ok(at, 'authorization link remains inline in the TUI')
   const linkMark = output.length
-  await press('c'); await sleep(300)
-  await capture('05-copy-link')
-  const linkText = `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
-  const singleLink = output.split(linkText).length === 2
-  const fullLink = output.includes(`\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`)
-  const exactCopy = (await page.evaluate(() => copies)).some(payload => Buffer.from(payload,'base64').toString() === url)
-  // A terminal OpenTUI reports without OSC 52: honest guidance, no raw request.
+  await mouse(`\x1b[<0;${at.x+5};${at.y+1}M\x1b[<0;${at.x+5};${at.y+1}m`)
+  await press(copySequence)
+  const exactCopy = (await copiedTexts()).includes(url)
+  const fullLink = output.includes(`\x1b]8;;${url}\x1b\\`)
+  const inline = !/\x1b\[\?1049l/.test(output.slice(linkMark))
+  const singleLink = inline
   const osc52Declined = options['expect-osc52'] === 'declined'
-  const honest = !output.slice(copyMark).includes('selection copied to clipboard') && (osc52Declined
-    ? output.slice(linkMark).includes('Drag-select the URL, then press Cmd-C') && !output.includes('\x1b]52;')
-    : output.slice(linkMark).includes('Drag-select the URL, then press Cmd-C'))
-  let deviceLink = false
-  let transcriptLink = false
-  let linkViewOnce = false
-  if (fullLink) {
-  await press(options['return-key'] === 'ctrl-c' ? '\x03' : '\r')
-  // The same prompt regains focus after the handoff, with mouse mode restored.
-  await sleep(600)
-  await capture('05b-returned')
-  transcriptLink = await page.evaluate(() => terminalScreen().includes('https://claude.ai/oauth/authorize?client_id=fixture'))
-  // A second status check of the same waiting login must not hand off again.
+  const honest = !output.includes('selection copied to clipboard') && (osc52Declined ? !output.includes('\x1b]52;') : true)
+  // The plain view is available only after this explicit fallback key.
+  await press('\x1b[18~')
+  await waitFor(() => page.evaluate(() => terminalScreen().includes('Selected text')))
+  const coords = await page.evaluate(length => {
+    const y = terminalScreen().split('\n').findIndex(line => line.startsWith('https://claude.ai/'))
+    const r = document.querySelector('.xterm-screen').getBoundingClientRect()
+    return {x:r.x,y:r.y,cw:r.width/term.cols,ch:r.height/term.rows,row:y,endRow:y+Math.floor(length/term.cols),endCol:length%term.cols}
+  }, url.length)
+  assert.ok(coords.row >= 0)
+  await page.mouse.move(coords.x+coords.cw*.2, coords.y+coords.ch*(coords.row+.5))
+  await page.mouse.down()
+  await page.mouse.move(coords.x+coords.cw*(coords.endCol+.2),coords.y+coords.ch*(coords.endRow+.5),{steps:20})
+  await page.mouse.up()
+  const nativeSelection = await page.evaluate(expected => term.getSelection() === expected, url)
+  await page.keyboard.down('Control')
+  await page.mouse.move(coords.x+coords.cw*10,coords.y+coords.ch*(coords.row+.5));await sleep(300)
+  await page.mouse.click(coords.x+coords.cw*10,coords.y+coords.ch*(coords.row+.5))
+  await page.keyboard.up('Control')
+  const hyperlinkActivated = await page.evaluate(expected => openedLinks.includes(expected), url)
+  await capture('05-explicit-url-fallback')
+  await press('\r'); await sleep(600)
+  const transcriptLink = await page.evaluate(() => terminalScreen().includes('https://claude.ai/oauth/authorize?client_id=fixture'))
   const statusMark = output.length
   await press('\x15'); await typeText('/provider login-status fixture'); await press('\r')
   await waitFor(() => requests.filter(request => request === 'GetProviderLoginStatus').length >= 2)
   await sleep(800)
-  await capture('05c-status-again')
-  linkViewOnce = !output.slice(statusMark).includes('Provider authorization link')
-  if (!linkViewOnce) { await press('\r'); await sleep(600) }
-  await press('\x15')
-  for (const c of '/provider login codex') { tui.terminal.write(c); await sleep(15) }
-  await press('\r')
-  await sleep(700)
-  await capture('06-codex-link')
-  deviceLink = output.includes(`\x1b]8;;${deviceUrl}\x1b\\${deviceUrl}\x1b]8;;\x1b\\`)
-  await press('\r')
-  }
+  const linkViewOnce = !/\x1b\[\?1049l/.test(output.slice(statusMark))
+  await press('\x15'); await typeText('/provider login codex'); await press('\r'); await sleep(700)
+  const deviceLink = output.slice(statusMark).includes(`\x1b]8;;${deviceUrl}\x1b\\`)
+  await capture('06-inline-device-link')
   result = { items: ['MP-08','MP-10','MP-11'], cli, cliSha256: await hashClient(path.dirname(cli)), kernelBinary: options['kernel-binary'] ?? null, kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null, source: options.source, dpr: Number(options.dpr ?? 1), mouse: !options['no-mouse'], fragmentMouse: Boolean(options['fragment-mouse']), nativeCopy, singleLink, retained, keyboardCopy, fullLink, exactCopy, nativeSelection, hyperlinkActivated, honest, deviceLink, requests, upstreamResponses, transcriptLink, linkViewOnce, themes, term: options.term ?? 'xterm-256color', expectOsc52: options['expect-osc52'] ?? 'supported', selectionColors: {before,during,after}, acceptance: 'fixture login payloads; macOS Terminal.app clipboard/Cmd-click require the coordinator desktop check' }
   await writeFile(path.join(evidence, 'terminal.pty'), output)
   console.log(JSON.stringify(result))

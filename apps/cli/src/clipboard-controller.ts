@@ -19,6 +19,7 @@ export type ClipboardPromptInput = {
 }
 
 export type ClipboardControllerDeps = {
+  selectedLinkUrl?: () => string | null
   renderer: ClipboardControllerRenderer
   promptInput: () => ClipboardPromptInput | null
   flashFooter: (message: string, tone: "info" | "error") => void
@@ -63,7 +64,7 @@ export function createClipboardController(deps: ClipboardControllerDeps) {
     const selection = deps.renderer.getSelection()
     if (selection?.isDragging) return null
     // Keep the highlight and native-copy fallback until the next selection/edit.
-    return selection?.getSelectedText() ?? null
+    return deps.selectedLinkUrl?.() ?? selection?.getSelectedText() ?? null
   }
 
   // MP-08 / MP-10: snapshot at decoded key dispatch, before a later key or

@@ -1,4 +1,4 @@
-import { providerLoginUrl, providerLoginUrls, type ProviderLoginLinkOptions } from "./provider-login-link.js"
+import { providerLoginUrl, providerLoginUrls } from "./provider-login-link.js"
 import type {
   ProviderAuthStatus,
   ProviderAccountProfile,
@@ -21,7 +21,7 @@ export type ProviderCommandHandlerDeps = {
   currentProviderId: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
-  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  openProviderLoginLink?: (url: string) => Promise<boolean | void>
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (
@@ -258,9 +258,8 @@ async function showProviderLoginStatus(
   let summary = output
   for (const url of urls) summary = summary.replaceAll(url, "[authorization link below]")
   if (summary) deps.appendNotice(summary)
-  // Status output is cumulative; only a waiting login hands off, and links
-  // scraped from provider output are never opened automatically.
-  for (const url of urls) await presentUrl(deps, url, login.state === "running" ? { autoOpen: false } : null)
+  // Status output is cumulative; scraped URLs stay inline and never auto-open.
+  for (const url of urls) await presentUrl(deps, url, false)
   const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
   deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login ${login.state}`, login.state === "failed" ? "error" : "info")
 }
@@ -505,13 +504,13 @@ function formatProviderLoginNotice(
 async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart): Promise<void> {
   const url = login.verification_url ?? login.auth_url
   if (!url || !providerLoginUrl(url)) return
-  await presentUrl(deps, url, { userCode: login.user_code, autoOpen: true })
+  await presentUrl(deps, url, true)
 }
 
-async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, handoff: ProviderLoginLinkOptions | null): Promise<void> {
-  // The transcript keeps the complete link after the link view closes.
+async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, open: boolean): Promise<void> {
+  // Keep the complete clickable link in the TUI; native view is an explicit fallback.
   deps.appendNotice(`\n${url}\n`)
-  if (handoff) await deps.showProviderLoginLink?.(url, handoff)
+  if (open) await deps.openProviderLoginLink?.(url)
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {

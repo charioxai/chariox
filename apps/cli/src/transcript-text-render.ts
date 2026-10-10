@@ -3,12 +3,39 @@ import {
   TextAttributes,
   TextNodeRenderable,
   type TextRenderable,
+  type TextChunk,
 } from "@opentui/core"
 
+import { providerLoginUrlRanges } from "./provider-login-link.js"
 import type { TranscriptEntry } from "./cli-types.js"
 import { theme } from "./theme.js"
 import { splitInlineCodeSpans } from "./transcript.js"
 import { transcriptInlineCodeColor } from "./transcript-render-theme.js"
+
+/** Preserve syntax styles while linking bare URLs across highlighted chunks. */
+export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
+  const ranges = providerLoginUrlRanges(chunks.map(chunk => chunk.text).join(""))
+  if (!ranges.length) return chunks
+  let offset = 0
+  return chunks.flatMap(chunk => {
+    const start = offset
+    const end = offset += chunk.text.length
+    const parts: TextChunk[] = []
+    const cuts = new Set([start, end])
+    for (const range of ranges) {
+      if (range.start > start && range.start < end) cuts.add(range.start)
+      if (range.end > start && range.end < end) cuts.add(range.end)
+    }
+    const sorted = [...cuts].sort((a, b) => a - b)
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const from = sorted[i]!, to = sorted[i + 1]!
+      const range = ranges.find(range => from >= range.start && to <= range.end)
+      parts.push({ ...chunk, text: chunk.text.slice(from - start, to - start),
+        ...(range && !chunk.link ? { link: { url: range.url } } : {}) })
+    }
+    return parts
+  })
+}
 
 export function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
   text.clear()
@@ -149,17 +176,14 @@ function tokenMime(kind: string) {
 
 function appendTranscriptSpans(text: TextRenderable, entry: TranscriptEntry, value: string) {
   for (const span of splitInlineCodeSpans(value)) {
-    text.add(
-      TextNodeRenderable.fromString(
-        span.text,
-        span.code
-          ? {
-              fg: transcriptInlineCodeColor(entry),
-              attributes: TextAttributes.BOLD,
-            }
-          : undefined,
-      ),
-    )
+    const style = span.code ? { fg: transcriptInlineCodeColor(entry), attributes: TextAttributes.BOLD } : undefined
+    let offset = 0
+    for (const { url, start, end } of providerLoginUrlRanges(span.text)) {
+      if (start > offset) text.add(TextNodeRenderable.fromString(span.text.slice(offset, start), style))
+      text.add(TextNodeRenderable.fromString(url, { ...style, link: { url } }))
+      offset = end
+    }
+    if (offset < span.text.length) text.add(TextNodeRenderable.fromString(span.text.slice(offset), style))
   }
 }
 

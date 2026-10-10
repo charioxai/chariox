@@ -16,7 +16,9 @@ export type WorkspaceLayoutProps = {
   promptInputMaxHeight: number
   promptKeyBindings: KeyBinding[]
   promptAreaBackground: RGBA
-  onRootMouseUp: () => void
+  onRootMouseDrag?: (event: any) => void
+  onRootMouseDown?: (event: any) => void
+  onRootMouseUp: (event: any) => void
   onResponseSurfaceMouseUp: (event: any) => void
   onFooterMouseUp: (event: any) => void
   onResponseLayoutBoxRef: RefHandler
@@ -247,6 +249,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       height={props.height}
       flexDirection="column"
       backgroundColor={palette().background}
+      {...(props.onRootMouseDown ? { onMouseDown: props.onRootMouseDown } : {})}
+      {...(props.onRootMouseDrag ? { onMouseDrag: props.onRootMouseDrag } : {})}
       onMouseUp={props.onRootMouseUp}
     >
       <box

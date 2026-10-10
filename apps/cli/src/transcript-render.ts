@@ -1,5 +1,6 @@
 import {
   BoxRenderable,
+  CodeRenderable,
   MarkdownRenderable,
   MouseButton,
   TextAttributes,
@@ -38,7 +39,7 @@ import {
   transcriptUsesSeparator,
   type TranscriptSurfaceTone,
 } from "./transcript-render-theme.js"
-import { applyTranscriptTextContent } from "./transcript-text-render.js"
+import { applyTranscriptTextContent, linkifyTranscriptChunks } from "./transcript-text-render.js"
 
 export {
   transcriptRenderMode,
@@ -212,6 +213,14 @@ function buildExpandedTranscriptContent(
       conceal: true,
       concealCode: false,
       streaming: true,
+      renderNode: (_token, context) => {
+        const node = context.defaultRender()
+        if (node instanceof CodeRenderable) {
+          const original = node.onChunks
+          node.onChunks = async (chunks, context) => linkifyTranscriptChunks(await original?.(chunks, context) ?? chunks)
+        }
+        return node
+      },
     })
     body.add(markdown)
     markdown.requestRender()
