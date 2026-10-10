@@ -257,3 +257,16 @@ test("MP-07/MP-08/MP-11 signed ownership predecessor 478 publishes no service, r
   await assert.rejects(readFile(join(h.home, ".chariox/dev/ssh-machines/byom-test/ssh-install-owner.json")), { code: "ENOENT" })
   assert.ok(!h.calls.some(args => ["daemon-reload", "enable", "start"].includes(args[0])))
 })
+
+test("MP-07/MP-08/MP-11 repair restores the original service after PATH changes", async t => {
+  const h = await harness(t); await runMachine(h.request, h.options)
+  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const original = await readFile(unit)
+  const previousPath = process.env.PATH
+  try {
+    process.env.PATH = `${h.home}/.local/bin:${previousPath}`
+    await rm(unit)
+    assert.equal((await runMachine({ ...h.request, action: "repair" }, h.options)).status, "installed")
+    assert.deepEqual(await readFile(unit), original)
+  } finally { process.env.PATH = previousPath }
+})

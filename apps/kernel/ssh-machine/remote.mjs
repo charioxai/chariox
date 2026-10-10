@@ -223,7 +223,8 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
         await verify(join(root, "releases", marker.releaseDigest.slice(7)), marker.releaseDigest, root, stage)
       }
       if (!await metadata(unitPath) && r.action === "repair") {
-        const unit = renderUnit()
+        const unit = marker.unitContent ?? renderUnit()
+        if (typeof unit !== "string" || Buffer.byteLength(unit) > 65536) fail("invalid retained service definition")
         if (digestOf(Buffer.from(unit)) !== marker.unitDigest) fail("repair cannot change service policy")
         await writeFile(unitPath, unit, { mode: 0o600, flag: "wx" })
         await serviceManager(["daemon-reload"])
@@ -294,7 +295,7 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     }
     await rename(image, join(pending, "releases", r.releaseDigest.slice(7)))
     await symlink(`releases/${r.releaseDigest.slice(7)}`, join(pending, "current"))
-    await writeFile(join(pending, "install.json"), JSON.stringify({ format: FORMAT, installId: r.installId, service, port: r.port, releaseDigest: r.releaseDigest, unitDigest: digestOf(Buffer.from(unit)), sourceCommit: manifest.sourceCommit, sourceTree: manifest.sourceTree }), { mode: 0o600, flag: "wx" })
+    await writeFile(join(pending, "install.json"), JSON.stringify({ format: FORMAT, installId: r.installId, service, port: r.port, releaseDigest: r.releaseDigest, unitDigest: digestOf(Buffer.from(unit)), unitContent: unit, sourceCommit: manifest.sourceCommit, sourceTree: manifest.sourceTree }), { mode: 0o600, flag: "wx" })
     // Exclusively claim the unit before publishing the marked root. Refuse a competing unit/root.
     await writeFile(unitPath, unit, { mode: 0o600, flag: "wx" })
     try {

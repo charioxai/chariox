@@ -13,7 +13,7 @@ export async function setupFixture(root, { version = "0.3.0", platform = "linux-
     await mkdir(dirname(target), { recursive: true }); await writeFile(target, bytes, { mode }); await chmod(target, mode)
     entries.push({ path, sha256: sha(bytes), size: bytes.length, mode: mode.toString(8).padStart(4, "0") })
   }
-  await put("bin/chariox-kernel", kernel ?? '#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then echo 444; exit 0; fi\nexit 64\n', 0o755)
+  await put("bin/chariox-kernel", kernel ?? '#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then echo 479; exit 0; fi\nexit 64\n', 0o755)
   await put("bin/chariox", '#!/bin/sh\nexit 0\n', 0o755)
   await put("bin/chariox-setup", '#!/bin/sh\nexit 0\n', 0o755)
   const bytes = Buffer.from("synthetic runtime; never executed\n")

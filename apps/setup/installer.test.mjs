@@ -218,3 +218,28 @@ test("MP-08/MP-11 launchd preserves independent active/enabled state during roll
   assert.match(await manager(show), /ActiveState=active\nUnitFileState=enabled/)
   assert.ok(calls.filter(args => ["bootout", "bootstrap", "disable", "enable"].includes(args[0])).every(args => args.includes(`${domain}/${label}`) || args.includes(`${home}/Library/LaunchAgents/${label}.plist`)))
 })
+
+for (const platform of ["linux-x64", "darwin-arm64"]) {
+  test(`MP-07/MP-08/MP-11 ${platform} repairs the original service after PATH changes`, async t => {
+    const h = await harness(t, { platform })
+    await installLocal(h.options)
+    const unit = platform === "linux-x64"
+      ? join(h.home, ".config/systemd/user/chariox-ssh-local.service")
+      : join(h.home, "Library/LaunchAgents/com.chariox.kernel.local.plist")
+    const previous = await readFile(unit)
+    const oldPath = process.env.PATH
+    try {
+      process.env.PATH = `${h.home}/.local/bin:${oldPath}`
+      await rm(unit)
+      assert.equal((await installLocal({ ...h.options, action: "repair" })).status, "installed")
+      assert.deepEqual(await readFile(unit), previous)
+      await rm(unit)
+      const markerPath = join(h.root, "install.json")
+      const marker = JSON.parse(await readFile(markerPath))
+      marker.unitContent += "tampered policy"
+      await writeFile(markerPath, JSON.stringify(marker))
+      await assert.rejects(installLocal({ ...h.options, action: "repair" }), /repair cannot change service policy/)
+      await assert.rejects(readFile(unit), { code: "ENOENT" })
+    } finally { process.env.PATH = oldPath }
+  })
+}
