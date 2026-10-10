@@ -45,30 +45,51 @@ export function createOwnedSignalGuard({ snapshot = processSnapshot, send = (id,
   const matches = row => row && typeof row.start === 'string' && row.start.length > 0
     && owned.get(row.pid)?.start === row.start
   function refresh(rows = snapshot()) {
+    const byPid = new Map(rows.map(row => [row.pid, row]))
     // Retire missing/reused identities before discovering new descendants.
     for (const [id, entry] of owned) {
-      if (!rows.some(row => row.pid === id && row.start === entry.start)) owned.delete(id)
+      if (byPid.get(id)?.start !== entry.start) owned.delete(id)
     }
     for (const [id, root] of roots) {
-      if (!rows.some(row => row.pid === id && row.start === root.start)) root.retired = true
+      if (byPid.get(id)?.start !== root.start) root.retired = true
     }
+    const survivingGenerations = new Set([...owned.values()].map(entry => entry.generation))
     for (const [id, root] of roots) {
-      if (root.retired && ![...owned.values()].some(entry => entry.generation === root)) roots.delete(id)
+      if (root.retired && !survivingGenerations.has(root)) roots.delete(id)
     }
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const row of rows) {
-        if (owned.has(row.pid) || row.pid <= 1 || !row.start) continue
-        const parent = rows.find(parent => parent.pid === row.ppid && matches(parent))
-        const root = [...roots.values()].find(root => !root.retired
-          && rows.some(leader => leader.pid === root.pid && leader.start === root.start
-            && ((leader.sid === leader.pid && leader.sid === row.sid)
-              || (root.session && root.session === row.session))))
-        const generation = root ?? (parent && owned.get(parent.pid)?.generation)
-        if (generation) {
-          owned.set(row.pid, { start: row.start, generation }); changed = true
-        }
+    // MP-11: index this snapshot once; polling must not scan the entire host
+    // process table again for every unrelated process or descendant.
+    const bySid = new Map(), bySession = new Map(), rank = new Map()
+    for (const root of roots.values()) {
+      if (root.retired) continue
+      const leader = byPid.get(root.pid)
+      rank.set(root, rank.size)
+      if (leader.sid === leader.pid && !bySid.has(leader.sid)) bySid.set(leader.sid, root)
+      if (root.session && !bySession.has(root.session)) bySession.set(root.session, root)
+    }
+    const descendants = new Map()
+    const queue = [...owned.keys()]
+    for (const row of rows) {
+      if (owned.has(row.pid) || row.pid <= 1 || !row.start) continue
+      const sidRoot = bySid.get(row.sid), sessionRoot = bySession.get(row.session)
+      const root = !sidRoot ? sessionRoot : !sessionRoot ? sidRoot
+        : rank.get(sidRoot) < rank.get(sessionRoot) ? sidRoot : sessionRoot
+      if (root) {
+        owned.set(row.pid, { start: row.start, generation: root })
+        queue.push(row.pid)
+      } else {
+        const children = descendants.get(row.ppid) ?? []
+        children.push(row)
+        descendants.set(row.ppid, children)
+      }
+    }
+    for (let index = 0; index < queue.length; index++) {
+      const parentId = queue[index]
+      if (!matches(byPid.get(parentId))) continue
+      for (const row of descendants.get(parentId) ?? []) {
+        if (owned.has(row.pid)) continue
+        owned.set(row.pid, { start: row.start, generation: owned.get(parentId).generation })
+        queue.push(row.pid)
       }
     }
     return rows
@@ -108,7 +129,11 @@ export function createOwnedSignalGuard({ snapshot = processSnapshot, send = (id,
   function processes(value) {
     const { root } = target(value)
     return refresh().filter(row => matches(row) && owned.get(row.pid)?.generation === root)
-      .map(row => pidHandle(value, row.pid))
+      .map(row => {
+        const handle = Object.freeze({ pid: validId(row.pid) })
+        handles.set(handle, { id: row.pid, root, start: row.start })
+        return handle
+      })
   }
   function groupHandle(value, id) {
     validId(id)
@@ -125,7 +150,13 @@ export function createOwnedSignalGuard({ snapshot = processSnapshot, send = (id,
     const { root } = target(value)
     const ids = [...new Set(refresh().filter(row => matches(row)
       && owned.get(row.pid)?.generation === root).map(row => row.pgid))]
-    return ids.map(id => groupHandle(value, id))
+    // MP-11: collection uses one snapshot; a member may exit immediately after
+    // collection. group() still verifies every live member afresh before send.
+    return ids.map(id => {
+      const handle = Object.freeze({ pid: validId(id) })
+      handles.set(handle, { id, root })
+      return handle
+    })
   }
   function group(value, signal) {
     const { id, root } = target(value)

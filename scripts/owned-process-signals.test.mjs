@@ -5,6 +5,47 @@ import { once } from 'node:events'
 import { createOwnedSignalGuard, spawnOwned, signalOwnedProcessGroup } from '../apps/kernel/slice-linux-docker/owned-process-signals.mjs'
 
 const row = (pid, ppid = 9, pgid = 50, start = `start-${pid}`) => ({ pid, ppid, pgid, start })
+for (const collection of ['groups', 'processes']) {
+  test(`MP-11 ${collection} captures one snapshot while children exit before signalling`, () => {
+    let reads = 0
+    const sent = []
+    const guard = createOwnedSignalGuard({
+      snapshot: () => ++reads <= 2 ? [row(50), row(51, 50, 51)] : [row(50)],
+      send: (...args) => sent.push(args),
+    })
+    const root = guard.record(50)
+    const handles = guard[collection](root)
+    assert.equal(reads, 2, 'collecting handles must not take another snapshot per child')
+    assert.deepEqual(handles.map(handle => handle.pid), [50, 51])
+    assert.equal(guard[collection === 'groups' ? 'group' : 'pid'](handles[1], 'SIGTERM'), false)
+    assert.equal(reads, 3, 'signalling must still take a fresh ownership snapshot')
+    assert.deepEqual(sent, [])
+  })
+}
+test('MP-11 refreshing a large unrelated process table uses bounded metadata inspection', () => {
+  let reads = 0
+  const rows = Array.from({ length: 1000 }, (_, i) => new Proxy(row(100 + i, 1, 100 + i), {
+    get(target, key) { reads++; return target[key] },
+  }))
+  rows.push(row(50))
+  const guard = createOwnedSignalGuard({ snapshot: () => rows, send: () => assert.fail('no signal expected') })
+  guard.record(50)
+  reads = 0
+  guard.refresh()
+  assert(reads < rows.length * 100, `MP-11 refresh inspected ${reads} metadata fields`)
+})
+test('MP-11 indexed discovery owns reversed descendant chains and preserves session generation priority', () => {
+  let rows = [{ ...row(50), sid: 50 }, row(70, 9, 70)]
+  const sent = []
+  const guard = createOwnedSignalGuard({ snapshot: () => rows, send: (...args) => sent.push(args) })
+  const session = guard.record(50), other = guard.record(70)
+  rows = [row(73, 72, 73), row(72, 71, 72), { ...row(71, 70, 71), sid: 50 }, ...rows]
+  const handles = guard.processes(session)
+  assert.deepEqual(handles.map(handle => handle.pid).sort((a, b) => a - b), [50, 71, 72, 73])
+  assert.deepEqual(guard.processes(other).map(handle => handle.pid), [70])
+  assert.equal(guard.pid(handles.find(handle => handle.pid === 73), 'SIGTERM'), true)
+  assert.deepEqual(sent, [[73, 'SIGTERM']])
+})
 function fixture() {
   let rows = [row(50)]
   const sent = []
