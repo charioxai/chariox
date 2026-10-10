@@ -840,16 +840,20 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let connect_timeout = response_timeout
         .map(|deadline| deadline.min(transport_timeout))
         .unwrap_or(transport_timeout);
-    let (mut socket, _) = timeout(connect_timeout, connect_async(&relay_url))
-        .await
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: format!("timed out after {}ms", connect_timeout.as_millis()),
-        })?
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
-            message: error.to_string(),
-        })?;
+    let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
+    let (mut socket, _) = timeout(
+        connect_timeout,
+        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: format!("timed out after {}ms", connect_timeout.as_millis()),
+    })?
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "connect temporary relay peer socket",
+        message: error.to_string(),
+    })?;
     #[cfg(test)]
     test_trace.record(
         "registered_peer_socket_connected",
@@ -930,7 +934,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         })?;
     let read_response = async {
         loop {
-            match socket.next().await {
+            match chariox_relay::frame_transport::read_message(&mut socket, &mut relay_frames).await
+            {
                 Some(Ok(Message::Text(text))) => {
                     let envelope =
                         serde_json::from_str::<RelayEnvelope>(&text).map_err(|error| {

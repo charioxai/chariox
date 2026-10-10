@@ -75,7 +75,7 @@ fn status() -> ProjectEnvironmentSetupStatus {
 
 #[test]
 fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 490);
     let start =
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: "setup-1".to_string(),
