@@ -716,7 +716,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.setWorkingAnimationFrame((value: number) => value + 1)
     },
     sessionStatusMode: deps.sessionStatusMode,
-    hasWaitingDeadline: () => deps.getSessionState().agent_tasks?.some((task: { state: string }) => task.state === "waiting") ?? false,
+    hasWaitingDeadline: () => deps.sessionState().agent_tasks?.some((task: { state: string }) => task.state === "waiting") ?? false,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     updateSessionChrome: deps.updateSessionChrome,
     renderSplitPaneFooters: deps.renderSplitPaneFooters,
