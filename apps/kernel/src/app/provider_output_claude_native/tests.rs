@@ -246,6 +246,26 @@ fn startup_readiness_run(
     events_file: &std::path::Path,
     pty_command: String,
 ) -> RuntimeProviderRun {
+    startup_readiness_run_at(
+        session_id,
+        agent_id,
+        provider_run_id,
+        context_file,
+        events_file,
+        pty_command,
+        None,
+    )
+}
+
+fn startup_readiness_run_at(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: &str,
+    context_file: &std::path::Path,
+    events_file: &std::path::Path,
+    pty_command: String,
+    working_directory: Option<PathBuf>,
+) -> RuntimeProviderRun {
     let request = crate::provider::LaunchProviderRequest::new(
         session_id,
         "claude",
@@ -275,7 +295,7 @@ fn startup_readiness_run(
                 ),
             ]),
             pty_env_remove: Vec::new(),
-            working_directory: None,
+            working_directory,
             structured_endpoint: None,
         },
     )
@@ -3237,7 +3257,7 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
                     run.id(),
                     &run,
                     &context,
-                    std::sync::Arc::new(RefusedPermissionBridge),
+                    Some(std::sync::Arc::new(RefusedPermissionBridge)),
                     "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder",
                 )
                 .unwrap();
@@ -3270,4 +3290,79 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: user-selected workspace trust uses the official native selector.
+#[test]
+fn claude_selected_workspace_trust_does_not_project_an_interaction() {
+    let worktree = crate::test_support::TestWorktree::new("claude-chosen-trust");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "claude-chosen-trust-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    let capture = root.join("pty-input.log");
+    fs::write(&context, "").unwrap();
+    fs::write(&events, "").unwrap();
+    let mut run = startup_readiness_run_at(
+        session.id(),
+        agent.id(),
+        "provider-run-chosen-trust",
+        &context,
+        &events,
+        format!("tee {} >/dev/null", capture.display()),
+        Some(PathBuf::from(session.worktree_id())),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    let bridge = RecordingPermissionBridge::default();
+    let rendered = format!("Accessing workspace:\n{}\nQuick safety check\nDo you trust this folder?\n❯ No, exit\nYes, I trust this folder", session.worktree_id());
+    let context = context.display().to_string();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            session.id(),
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &rendered,
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Capture the assertion after cleanup: a red run must not leak its PTY or scratch.
+    let projected = bridge.interaction_ids.lock().unwrap().clone();
+    let mut approved = false;
+    for _ in 0..100 {
+        let resolution = ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_pending_claude_workspace_trust(run.id(), &context)
+            .unwrap();
+        approved |= resolution == Some(ClaudeWorkspaceTrustResolution::Approved);
+        if approved {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let input = fs::read_to_string(&capture).unwrap_or_default();
+    app.pty.remove_process(run.id()).unwrap();
+    app.shutdown_cleanup().unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        projected.is_empty(),
+        "selected workspace must not ask twice: {projected:?}"
+    );
+    assert!(
+        approved,
+        "native trust must complete before prompt injection"
+    );
+    assert!(
+        input.contains("\x1b[B\n"),
+        "must select Yes before submitting: {input:?}"
+    );
 }

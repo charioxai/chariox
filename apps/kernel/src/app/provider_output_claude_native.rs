@@ -23,6 +23,7 @@ mod permission;
 #[cfg(test)]
 mod tests;
 mod transcript;
+mod workspace_trust;
 
 pub(crate) use permission::format_claude_permission_message;
 
@@ -931,16 +932,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 if !startup_waiting
                     && claude_headless_workspace_trust_interaction_id(context_file).is_none()
                 {
-                    if let Some(bridge) = native_interaction_bridge.clone() {
-                        self.request_claude_workspace_trust(
-                            session_id,
-                            provider_run_id,
-                            provider_run,
-                            context_file,
-                            bridge,
-                            &recent,
-                        )?;
-                    }
+                    self.request_claude_workspace_trust(
+                        session_id,
+                        provider_run_id,
+                        provider_run,
+                        context_file,
+                        native_interaction_bridge.clone(),
+                        &recent,
+                    )?;
                 }
                 return Ok(());
             }
@@ -1785,7 +1784,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         context_file: &str,
-        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+        bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
         rendered: &str,
     ) -> Result<(), DaemonError> {
         // PTY output can split the header from its choices. Wait for a
@@ -1794,6 +1793,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         };
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(());
+        };
+        // MP-08 / MP-10 / MP-11: opening a workspace through Chariox already
+        // selects it. Route that exact trust decision through Claude's native
+        // selector; never change permission mode or provider-owned profile JSON.
+        let session = self.app.sessions.get_session(session_id)?;
+        let agent = self.app.agents.get_agent(&agent_id)?;
+        let selected =
+            std::path::Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()));
+        if provider_run.session_id() == session_id
+            && agent.session_id() == session_id
+            && workspace_trust::selected_workspace_is_trust_target(
+                selected,
+                provider_run.working_directory().map(PathBuf::as_path),
+                rendered,
+            )
+        {
+            let interaction_id = format!("kernel-selected-workspace-{provider_run_id}");
+            write_claude_headless_workspace_trust_interaction_marker(context_file, &interaction_id);
+            write_claude_permission_input(context_file, &interaction_id, approval_input);
+            clear_claude_permission_recent(context_file);
+            crate::logging::info_with_fields(
+                "daemon.provider_output",
+                "approving Claude trust for the selected workspace",
+                serde_json::json!({ "session_id": session_id, "provider_run_id": provider_run_id }),
+            );
+            return Ok(());
+        }
+        let Some(bridge) = bridge else {
             return Ok(());
         };
         let interaction_id = format!(
