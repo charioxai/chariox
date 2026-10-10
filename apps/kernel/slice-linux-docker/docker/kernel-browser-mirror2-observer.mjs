@@ -79,6 +79,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
+    let selectedDoc = null; // the document whose selection changed last
     let newResources = [], pendingSheets = [], lastSheetCheck = 0, lastFormCheck = 0, formCursor = 0, cssAttrs = null;
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
@@ -149,7 +150,7 @@ export function installMirror2(sanitizeMirrorCss) {
         // The composed target: a control inside an open shadow root, not its retargeted host.
         const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
         listen('input', formEvent); listen('change', formEvent); listen('reset', event => { for (const control of event.target.elements ?? []) changedForm(control); wake(); });
-        listen('focusin', wake); listen('selectionchange', wake);
+        listen('focusin', wake); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; wake(); });
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
@@ -304,9 +305,14 @@ export function installMirror2(sanitizeMirrorCss) {
     const header = () => {
       let focused = document.activeElement;
       for (let i = 0; i < 128; i++) { let child = focused?.shadowRoot?.activeElement; try { child ??= focused?.localName === 'iframe' ? focused.contentDocument?.activeElement : null; } catch {} if (!child || child === focused) break; focused = child; }
+      // Same-origin child documents have their own selection: the one changed last, else any observed one (top first).
       let selection = null;
-      const selected = document.getSelection();
-      if (selected && !selected.isCollapsed) { const anchor = mirrored(selected.anchorNode), focus = mirrored(selected.focusNode); if (anchor && focus && kindOf.get(anchor) === 'text' && kindOf.get(focus) === 'text') selection = { anchor_id: anchor, anchor_offset: selected.anchorOffset, focus_id: focus, focus_offset: selected.focusOffset }; }
+      for (const doc of new Set([selectedDoc, document, ...roots.values()])) {
+        const selected = doc?.nodeType === 9 ? doc.getSelection() : null;
+        if (!selected || selected.isCollapsed) continue;
+        const anchor = mirrored(selected.anchorNode), focus = mirrored(selected.focusNode);
+        if (anchor && focus && kindOf.get(anchor) === 'text' && kindOf.get(focus) === 'text') { selection = { anchor_id: anchor, anchor_offset: selected.anchorOffset, focus_id: focus, focus_offset: selected.focusOffset }; break; }
+      }
       const focusId = focused ? mirrored(focused) : null;
       return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, revision };
     };

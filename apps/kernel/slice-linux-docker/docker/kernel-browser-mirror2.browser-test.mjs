@@ -585,3 +585,22 @@ test("MP-10: review #941-3 an adopted stylesheet keeps its media condition (snap
       assert.deepEqual(await adoptedColors(evaluate, [...roots.values()]), expected, `MP-10: the viewer follows ${script}`);
     }
   }));
+
+test("MP-10: review #941-4 a text selection inside a mirrored same-origin child frame reaches every viewer (another viewer's selection, page script, clearing)", () => mirrored(
+  '<p id="top">top words</p><iframe id="f" src="/child"></iframe>', async ({ evaluate, subscribe }) => {
+    for (let i = 0; i < 80 && !await evaluate("!!document.getElementById('f').contentDocument?.getElementById('c')"); i++) await new Promise(resolve => setTimeout(resolve, 25));
+    const a = await subscribe(), b = await subscribe();
+    const snapshotA = await a.next(), idsA = texts(snapshotA), child = texts(await b.next()).get("child words here");
+    // Viewer B's view of the kernel selection (headers travel only when they change).
+    let seen = null;
+    const follow = async expected => { for (let i = 0; i < 4 && JSON.stringify(seen) !== JSON.stringify(expected); i++) { const packet = await b.next(1000); if (Object.hasOwn(packet, "selection")) seen = packet.selection; } return seen; };
+    await a.input(snapshotA.sequence, { kind: "selection", anchor_id: idsA.get("child words here"), anchor_offset: 0, focus_id: idsA.get("child words here"), focus_offset: 5 });
+    assert.equal(await evaluate("String(document.getElementById('f').contentDocument.getSelection())"), "child");
+    const selected = { anchor_id: child, anchor_offset: 0, focus_id: child, focus_offset: 5 };
+    assert.deepEqual(await follow(selected), selected, "MP-10: viewer A's selection in the child reaches viewer B");
+    await evaluate("document.getElementById('f').contentDocument.getSelection().removeAllRanges();true");
+    assert.equal(await follow(null), null, "MP-10: its clearing reaches viewer B");
+    await evaluate("(()=>{const d=document.getElementById('f').contentDocument,t=d.getElementById('c').firstChild;d.getSelection().setBaseAndExtent(t,11,t,6);return true})()");
+    const scripted = { anchor_id: child, anchor_offset: 11, focus_id: child, focus_offset: 6 };
+    assert.deepEqual(await follow(scripted), scripted, "MP-10: a page script's selection in the child reaches viewer B");
+  }, { "/child": { type: "text/html", body: '<p id="c">child words here</p>' } }));
