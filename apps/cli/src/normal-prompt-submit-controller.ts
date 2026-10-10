@@ -82,6 +82,13 @@ export function createNormalPromptSubmitController(
       const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
+        if (!deps.getAttachment()) {
+          deps.flashFooter("No session attached.", "error")
+          deps.clearPromptText()
+          return
+        }
+        // Consume this Enter before focus or attachment preparation can yield.
+        submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
         await deps.waitForPendingAgentFocusTransition()
         const requestedTargetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
         const targetAgentId = resolvePromptSubmissionTargetAgentId({
@@ -98,19 +105,19 @@ export function createNormalPromptSubmitController(
         const attachment = deps.getAttachment()
         if (!attachment) {
           deps.flashFooter("No session attached.", "error")
-          deps.clearPromptText()
+          deps.restoreFailedPromptUi(submissionUi)
           return
         }
         if (!targetAgentId && !aliasRoute && !requestedTargetAgentId) {
           // The prompt area addresses the focus agent, and there is none:
           // keep the prompt and say how to pick or create one.
           deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
+          deps.restoreFailedPromptUi(submissionUi)
           return
         }
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
-        submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
         const submission = await deps.submitPrompt(attachment.id, targetAgentId, prompt, attachments)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
