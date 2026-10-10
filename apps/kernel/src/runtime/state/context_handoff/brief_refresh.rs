@@ -350,12 +350,16 @@ mod tests {
     use super::*;
 
     fn run(account: &str, model: &str) -> RuntimeProviderRun {
+        provider_run("codex", account, model)
+    }
+
+    fn provider_run(provider: &str, account: &str, model: &str) -> RuntimeProviderRun {
         RuntimeProviderRun::new(
             "run",
-            &crate::provider::LaunchProviderRequest::new("s", "codex", "codex", account, model),
+            &crate::provider::LaunchProviderRequest::new("s", provider, provider, account, model),
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "codex".into(),
+                process_label: provider.into(),
                 pty_target: None,
                 pty_program: None,
                 pty_args: vec![],
@@ -457,8 +461,10 @@ mod tests {
     async fn claude_native_model_rejection_retries_once_and_is_remembered() {
         let store = super::super::PendingAgentContextHandoffStore::default();
         let override_model = "ctxfix-unsupported-brief-model-mp08";
-        let target = run("work", "haiku");
-        let mut utility = run("work", override_model);
+        let target = provider_run("claude", "work", "haiku");
+        let mut utility = provider_run("claude", "work", override_model);
+        utility
+            .set_metadata_only_discovery(std::env::temp_dir().join("ctxfix-native-model-fallback"));
         let mut models = Vec::new();
         let result = call_with_model_fallback(
             &store,
@@ -470,8 +476,11 @@ mod tests {
             },
             true,
             |run, _| {
-                models.push(run.model().to_string());
-                std::future::ready(if run.model() == override_model {
+                // Exercise the actual CLI selection, not just the logical run field.
+                let native_model = run.pty_args().windows(2)
+                    .find(|args| args[0] == "--model").unwrap()[1].clone();
+                models.push(native_model.clone());
+                std::future::ready(if native_model == override_model {
                     Err(brief_error("There's an issue with the selected model (ctxfix-unsupported-brief-model-mp08). It may not exist or you may not have access to it. Run --model to pick a different model."))
                 } else {
                     Ok("folded".into())
@@ -481,11 +490,15 @@ mod tests {
         .await;
         assert_eq!(result.unwrap(), ("folded".into(), 2));
         assert_eq!(models, [override_model, "haiku"]);
-        assert!(store.brief_model_is_unavailable(&run("work", override_model)));
-        assert!(!store.brief_model_is_unavailable(&run("personal", override_model)));
+        assert!(store.brief_model_is_unavailable(&provider_run("claude", "work", override_model)));
+        assert!(!store.brief_model_is_unavailable(&provider_run(
+            "claude",
+            "personal",
+            override_model
+        )));
         assert!(!fallback_after_unavailable_model(
             &store,
-            &run("work", "another-model"),
+            &provider_run("claude", "work", "another-model"),
             &target,
             &brief_error(
                 "There's an issue with the selected model (another-model): network timeout"

@@ -317,6 +317,9 @@ impl RuntimeProviderRun {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+        if self.metadata_only_discovery && self.adapter_key() == "claude" {
+            self.pty_args = self.metadata_only_claude_args();
+        }
     }
 
     pub fn set_variant(&mut self, variant: Option<String>) {
@@ -514,32 +517,39 @@ impl RuntimeProviderRun {
             )
         });
         if self.adapter_key() == "claude" {
-            self.pty_args = vec![
-                "-p".into(),
-                "--input-format".into(),
-                "stream-json".into(),
-                "--output-format".into(),
-                "stream-json".into(),
-                "--verbose".into(),
-                "--tools".into(),
-                "".into(),
-                "--strict-mcp-config".into(),
-                "--setting-sources".into(),
-                "".into(),
-                "--disable-slash-commands".into(),
-                "--permission-mode".into(),
-                "plan".into(),
-            ];
-            if self.model != "default" {
-                self.pty_args.extend([
-                    "--model".into(),
-                    self.model
-                        .strip_prefix("claude/")
-                        .unwrap_or(&self.model)
-                        .to_string(),
-                ]);
-            }
+            self.pty_args = self.metadata_only_claude_args();
         }
+    }
+
+    // Metadata utilities own a fresh CLI command. Keep that executable
+    // selection aligned when a definite model rejection triggers a retry.
+    fn metadata_only_claude_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "-p".into(),
+            "--input-format".into(),
+            "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--tools".into(),
+            "".into(),
+            "--strict-mcp-config".into(),
+            "--setting-sources".into(),
+            "".into(),
+            "--disable-slash-commands".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+        ];
+        if self.model != "default" {
+            args.extend([
+                "--model".into(),
+                self.model
+                    .strip_prefix("claude/")
+                    .unwrap_or(&self.model)
+                    .to_string(),
+            ]);
+        }
+        args
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {
