@@ -30,7 +30,7 @@ pub(in crate::durable_state::agent_lifecycle) fn control(
             if t.state != ExecutionState::Blocked {
                 return Err(error("only a blocked or paused goal can resume"));
             }
-            let Outcome::Task(mut resumed) = super::super::supervision::apply(
+            let Outcome::Task(resumed) = super::super::supervision::apply(
                 tx,
                 Operation::OwnerResponse {
                     task,
@@ -42,9 +42,6 @@ pub(in crate::durable_state::agent_lifecycle) fn control(
             else {
                 unreachable!()
             };
-            resumed.goal = t.goal;
-            resumed.goal.as_mut().unwrap().paused = false;
-            save(tx, &resumed)?;
             return Ok(Outcome::Task(resumed));
         }
         "cancel" => super::super::supervision::cancel_intent(tx, &mut t)?,

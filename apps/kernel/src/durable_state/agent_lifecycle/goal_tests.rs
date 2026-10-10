@@ -210,6 +210,10 @@ fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
         now: 6,
     });
     let resumed = f.task();
+    assert_eq!(
+        resumed.goal.as_ref().unwrap().continuation_sequence,
+        edited.goal.as_ref().unwrap().continuation_sequence + 1
+    );
     assert!(resumed.pending_prompt_id.is_some());
     assert!(f
         .store

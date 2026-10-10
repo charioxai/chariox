@@ -68,36 +68,42 @@ try {
   for (;;) {
     try { client = new LocalIpcClient(url, { localAuthEnvironment:env }); await client.send({ ListSessions:null }); break } catch { await client?.close().catch(()=>{}); if (Date.now()>until) throw new Error('kernel unavailable'); await sleep(1000) }
   }
+  if (args.has('--pair-gate')) {
+    await writeFile(path.join(evidence,'live-runtime.json'),JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid}))
+    await waitUntil(async()=>{try { await readFile(required('--pair-gate')); return true } catch { return false }},Boolean,'normal hosted pairing before session ownership',600_000)
+  }
   const linked = await client.send(linkProviderAccountProfileRequest('codex','amgoal-live',profile))
   const payload = Object.values(linked)[0]
-  const account = payload.profile ?? payload.account_profile
-  assert(account?.id, 'product linking must return a profile id')
-  await writeFile(path.join(evidence,'account-status.json'),JSON.stringify({provider:'codex',profile_id:account.id,auth_state:account.auth_state}))
-  const ptyDriver = path.join(stateRoot,'pty.py')
+  let account = payload.profile ?? payload.account_profile
+  assert(account?.profile_id, 'product linking must return a profile id')
+  const refreshed = await client.send({RefreshProviderAccountProfile:{provider:'codex',account_profile:account.profile_id}})
+  account = refreshed.ProviderAccountProfile?.profile ?? account
+  assert.equal(account.auth_state,'authenticated','documented product refresh must verify the linked account')
+  await writeFile(path.join(evidence,'account-status.json'),JSON.stringify({provider:'codex',profile_id:account.profile_id,auth_state:account.auth_state}))
+  const ptyDriver = path.join(stateRoot,'terminal_driver.py')
   await writeFile(ptyDriver, `import os,pty,fcntl,termios,struct,subprocess,select,sys\nm,s=pty.openpty()\nfcntl.ioctl(s,termios.TIOCSWINSZ,struct.pack('HHHH',55,160,0,0))\np=subprocess.Popen(sys.argv[1:],stdin=s,stdout=s,stderr=s)\nos.close(s)\nwhile p.poll() is None:\n if select.select([m],[],[],0.2)[0]:\n  try: os.write(1,os.read(m,65536))\n  except OSError: break\np.wait()\n`)
-  tui = spawn('python3',[ptyDriver,'bun',cliEntry,'--kernel-url',url,'--create-session','--workspace',workspace,'--worktree',workspace,'--provider','codex','--account-profile',account.id,'--model','codex/gpt-6.1-sol','--automation-socket',socketPath],{cwd:workspace,env,stdio:['ignore','pipe','pipe']})
+  tui = spawn('python3',[ptyDriver,'bun',cliEntry,'--kernel-url',url,'--create-session','--workspace',workspace,'--worktree',workspace,'--provider','codex','--account-profile',account.profile_id,'--model','codex/gpt-6.1-sol','--automation-socket',socketPath],{cwd:workspace,env,stdio:['ignore','pipe','pipe']})
   processRoots.push(tui.pid); tui.stdout.pipe(ptyLog); tui.stderr.pipe(ptyLog,{end:false})
   await waitUntil(async()=>{try { automation = await connectAutomation(); return true } catch { return false }},Boolean,'real TUI startup')
   const initial = await waitUntil(()=>automation.send('snapshot'),s=>s.session?.id && s.session?.agentCount===1,'real TUI attached')
   sessionId = initial.session.id
-  await automation.send('submit_prompt',{prompt:`/goal --interval 1 ${objective.trim()}`})
+  await writeFile(path.join(evidence,'live-runtime.json'), JSON.stringify({kernel_url:url,chariox_home:env.CHARIOX_HOME,host_home:env.HOME,kernel_pid:kernel.pid,tui_pid:tui.pid,session_id:sessionId}))
+  if (args.has('--start-gate')) await waitUntil(async()=>{try { await readFile(required('--start-gate')); return true } catch { return false }},Boolean,'owner-driven hosted client attachment',600_000)
+  const submitted = await automation.send('submit_prompt',{prompt:`/goal --interval 1 ${objective.trim()}`})
+  await writeFile(path.join(evidence,'submit-status.json'),JSON.stringify({statusLine:submitted.statusLine,footer:submitted.footer}))
   const deadline = Date.now()+timeoutMs; let lastSignature, sawWaiting=false, sawCheckIn=false
   while (Date.now()<deadline) {
     await resourceSample()
     const session = unwrap(await client.send(getSessionStateRequest(sessionId)))
-    if (!db) {
-      const kernels = await readdir(path.join(env.CHARIOX_HOME,'kernels'))
-      assert.equal(kernels.length,1,'own state must bind exactly one kernel')
-      db = new DatabaseSync(path.join(env.CHARIOX_HOME,'kernels',kernels[0],'state.db'),{readOnly:true})
-    }
     const task = session.agent_tasks?.find(t=>t.goal)
     if (before) {
-      if (session.workflow_runs?.length) { assert(!task,'legacy TUI must not create a native goal'); result={status:'EXPECTED RED',reason:'legacy planner/worker/reviewer route',workflow_count:session.workflow_runs.length,agent_count:session.agents.length}; break }
+      if (session.workflow_runs?.length) { assert(!task,'legacy TUI must not create a native goal'); result={status:'EXPECTED RED',ansi_bytes:ptyLog.bytesWritten,reason:'legacy planner/worker/reviewer route',workflow_count:session.workflow_runs.length,agent_count:session.agents.length}; break }
     } else if (task) {
+      if (!db) db = new DatabaseSync(path.join(env.CHARIOX_HOME,'state','kernel.db'),{readOnly:true})
       const signature = JSON.stringify([task.revision,task.state,task.prompt_id,task.goal.check_count])
       if (signature!==lastSignature) {
         const screen = await automation.send('snapshot')
-        await writeFile(path.join(evidence,`goal-${task.revision}.json`),JSON.stringify({date:new Date().toISOString(),task,tui:{statusLine:screen.statusLine,agents:screen.session.agents}},null,2))
+        await writeFile(path.join(evidence,`goal-${task.revision}.json`),JSON.stringify({date:new Date().toISOString(),ansi_bytes:ptyLog.bytesWritten,task,tui:{statusLine:screen.statusLine,agents:screen.session.agents}},null,2))
         lastSignature=signature
       }
       sawWaiting ||= task.state==='waiting'
@@ -119,8 +125,8 @@ try {
   assert(result,'goal drill did not reach its required disposition')
 } catch(error) { failure=error; result={status:'FAIL',first_failing_seam:error.message} }
 finally {
-  if (client && sessionId) await Promise.race([client.send(endSessionRequest(sessionId)).catch(()=>{}),sleep(3000)])
   const owned = await ownProcesses()
+  if (client && sessionId) await Promise.race([client.send(endSessionRequest(sessionId)).catch(()=>{}),sleep(3000)])
   if (automation) await Promise.race([automation.send('exit').catch(()=>{}),sleep(3000)])
   automation?.close(); db?.close(); await client?.close().catch(()=>{})
   for (const row of owned.slice().reverse()) await signalOwn(row,'SIGTERM')
