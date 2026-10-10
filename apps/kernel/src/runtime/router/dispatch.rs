@@ -16,9 +16,9 @@ impl CommandRouter {
     pub(crate) async fn dispatch(
         &self,
         command: KernelCommand,
-        mut request: LocalDaemonRequest,
+        request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.authorize_external_request(&command, &mut request)?;
+        self.authorize_external_request(&command, &request)?;
         let grant_id = command.external_grant_id();
         let mut router = self.clone();
         router.runtime_state = self
@@ -29,7 +29,11 @@ impl CommandRouter {
                 router.runtime_state.clone(),
             );
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
-        Box::pin(router.dispatch_authorized(command, request)).await
+        let response_command = command.clone();
+        crate::runtime::external_response::finish_response(
+            &response_command,
+            Box::pin(router.dispatch_authorized(command, request)).await,
+        )
     }
 
     async fn dispatch_authorized(
@@ -60,6 +64,32 @@ impl CommandRouter {
             return Ok(response);
         }
         self.audit_access_terminal_attempt(&command, &request)?;
+        if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
+            if answer.session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
+                if command.caller.connection_class
+                    != Some(crate::local::KernelConnectionClass::Terminal)
+                {
+                    return Err(crate::runtime::kernel_access::error(
+                        "only a terminal can answer access decisions",
+                    ));
+                }
+                self.runtime_state
+                    .answer_terminal_runtime_interaction(
+                        &answer.session_id,
+                        &answer.interaction_id,
+                        &answer.choice_id,
+                        answer.custom_reply.as_deref(),
+                        Some(&crate::runtime::command::command_caller_user_id(&command)),
+                        answer.passkey.as_ref(),
+                        answer.passkey_remember_minutes,
+                        command.caller.connection_class,
+                    )
+                    .await?;
+                return Ok(LocalDaemonResponse::KernelAccessDecisionResponded {
+                    interaction_id: answer.interaction_id.clone(),
+                });
+            }
+        }
         let command_trace = CommandTrace::from_command(&command);
         log_command_received(&command_trace);
         if let Err(error) =
@@ -117,6 +147,14 @@ impl CommandRouter {
         if let LocalDaemonRequest::SubmitPrompt(prompt) = &request {
             if crate::runtime::state::is_sudo_prompt(&prompt.prompt) {
                 if command.caller.connection_class
+                    == Some(crate::local::KernelConnectionClass::ExternalAgent)
+                {
+                    return self
+                        .runtime_state
+                        .submit_external_sudo_prompt(&command.caller.caller_id, prompt.clone())
+                        .await;
+                }
+                if command.caller.connection_class
                     != Some(crate::local::KernelConnectionClass::Terminal)
                 {
                     return Err(crate::runtime::kernel_access::error(
@@ -156,7 +194,7 @@ impl CommandRouter {
                         return result;
                     }
                 }
-                let result = self.filter_external_response(&command, Ok(response));
+                let result = Ok(response);
                 log_command_completed(&command_trace, &result);
                 return result;
             }
@@ -168,7 +206,6 @@ impl CommandRouter {
             }
         }
 
-        let response_caller = command.clone();
         let session_refresh = session_projection_refresh(&request);
         let result = self.dispatch_refresh_tracked(command, request).await;
         refresh_command_response_state(
@@ -189,7 +226,6 @@ impl CommandRouter {
         )
         .await;
         let result = self.redact_result_for_user(result, &caller_user_id);
-        let result = self.filter_external_response(&response_caller, result);
         log_command_completed(&command_trace, &result);
         result
     }

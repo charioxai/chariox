@@ -286,7 +286,7 @@ async fn check_live() {
         assert!(router.dispatch(terminal_command("MD-N5-stale-selection",&stale_request),stale_request).await.is_err());
         receipts.push(json!({"browser_restart_reanchored":true,"stale_selection_denied":true}));
         assert!(!router.runtime_state.session_snapshot(session.id()).await.unwrap().has_active_prompt());
-        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":443,"checks":receipts})).unwrap()).unwrap();
+        std::fs::write(root.join("MD-N5-RECEIPT.json"),serde_json::to_vec_pretty(&json!({"MD":"MD-N5","MP":["MP-08","MP-10","MP-11"],"topology":"native user browser, local Room tab and App view; no Docker/relay/provider model or App package admission","protocol":466,"checks":receipts})).unwrap()).unwrap();
     })).catch_unwind().await;
     router.runtime_state.shutdown_cleanup().await.unwrap();
     if let Err(panic) = assertions {

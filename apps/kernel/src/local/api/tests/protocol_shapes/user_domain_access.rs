@@ -1,14 +1,14 @@
-//! MP-08/MP-11: reserved 443/78 grant and reachability shape guard.
+//! MP-08/MP-11: reserved 447/78 grant and reachability shape guard.
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};
 
 #[test]
 fn mdaccess_protocol_443_grant_shapes_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 443);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 475);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        96
     );
     let mut values = Vec::new();
     for command in [

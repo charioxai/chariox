@@ -57,7 +57,9 @@ async fn live_display() {
         },
         allowed_targets: Some(vec![config.daemon_id.clone()]),
         issued_at_ms: now,
-        expires_at_ms: now + 300_000,
+        // MP-08/MP-10/MP-11: the disposable grant must outlive the 600s
+        // server watchdog plus startup; expired grants still fail closed.
+        expires_at_ms: now + 900_000,
         token_id: if client {
             "md-display-client".into()
         } else {
@@ -149,14 +151,21 @@ async fn live_display() {
         let stop = root.join("STOP");
         let probe_router = router.clone();
         crate::runtime_transport::run_kernel_websocket_server_with_router_on_listener(router.clone(), listener, async move {
-            let deadline = Instant::now() + Duration::from_secs(240);
+            // MP-08/MP-10/MP-11: DPR2 masking campaigns can exceed four
+            // minutes. STOP still ends the owned drill immediately; keep a
+            // finite watchdog without truncating the unchanged 70-cycle gate.
+            let deadline = Instant::now() + Duration::from_secs(600);
             while !stop.exists() && Instant::now() < deadline {
                 for name in ["PROBE_TAKEOVER", "PROBE_RELEASE"] {
                     let result_file = root.join(format!("{name}.json"));
                     if root.join(name).exists() && !result_file.exists() {
-                        let observed = probe_router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"command":{"op":"screenshot","tab_id":opened["tab_id"],"generation":opened["generation"]}})).await.unwrap().payload;
-                        let result = probe_router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":observed["document_id"],"command":{"op":"input","tab_id":opened["tab_id"],"generation":opened["generation"],"input":{"kind":"key","key":"Tab"}}})).await;
-                        let fenced = result.as_ref().err().is_some_and(|error| error.to_string().contains("human owns"));
+                        // MP-08/MP-10: a viewer-scale Chromium restart (DPR2) rotates
+                        // the generation; an agent probe refreshes state like an agent.
+                        let state = probe_router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"command":{"op":"state"}})).await.unwrap().payload;
+                        let generation = state["generation"].clone();
+                        let observed = probe_router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"command":{"op":"screenshot","tab_id":opened["tab_id"],"generation":generation}})).await.unwrap().payload;
+                        let result = probe_router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":observed["document_id"],"command":{"op":"input","tab_id":opened["tab_id"],"generation":generation,"input":{"kind":"key","key":"Tab"}}})).await;
+                        let fenced = result.as_ref().err().is_some_and(|error| matches!(error, crate::error::DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted }));
                         std::fs::write(result_file, serde_json::to_vec(&json!({"rejected":result.is_err(),"takeover_fenced":fenced,"observed_document":observed["document_id"].is_string()})).unwrap()).unwrap();
                     }
                 }

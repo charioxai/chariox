@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><title>MP-08/MP-10 Selkies baseline</title>
+<canvas width="1920" height="1080" style="width:1920px;height:1080px"></canvas>
+<script type="module">
+import {wheelMessages} from "./baseline-input.mjs";
+import {MotionSamples} from "./motion-samples.mjs";const motionSamples=new MotionSamples();
+import {videoPacket} from "./baseline-packet.mjs";
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+window.mdFrames=[];window.mdWireBytes=0;window.mdPresentations=[];window.mdErrors=[];window.mdPacketMetadata=[];window.mdControlKinds=[];
+let socket,decoder,sequence=0,needKey=true;
+const stamp=()=>performance.timeOrigin+performance.now();
+function present(frame,id){ctx.drawImage(frame,0,0,1920,1080);frame.close();const sample={sequence:++sequence,drawn_ms:stamp(),content_changed:motionSamples.sample(canvas)};mdPresentations.push(sample);requestAnimationFrame(()=>{let n=0;for(let i=0;i<5;i++)if(ctx.getImageData((window.mdProbeLeft??1868)+4+i*8,28,1,1).data[0]>128)n|=1<<i;sample.step=n;sample.presented_ms=stamp();window.mdPresentation=sample;if(socket?.readyState===1)socket.send('CLIENT_FRAME_ACK '+id)});}
+window.mdAttach=async({url,bitrate,gpu=false})=>{
+ socket=new WebSocket(url);socket.binaryType='arraybuffer';
+ socket.onmessage=({data})=>{
+  if(typeof data==='string'){mdWireBytes+=new TextEncoder().encode(data).length;mdControlKinds.push(data.split(/[ ,]/)[0]);return;}
+  mdWireBytes+=data.byteLength;const bytes=new Uint8Array(data),v=new DataView(data);if(mdPacketMetadata.length<8)mdPacketMetadata.push({type:bytes[0],flags:bytes[1],length:bytes.length,width:bytes.length>10?v.getUint16(6):null,height:bytes.length>10?v.getUint16(8):null});if(bytes[0]!==4)return;
+  let packet;try{packet=videoPacket(data)}catch(e){mdErrors.push(e.message);return;}const {key,id,payload,codec}=packet;mdFrames.push({bytes:bytes.length,key,id});
+  if(!decoder){if(!key)return;
+   decoder=new VideoDecoder({output:f=>present(f,Number(f.timestamp)),error:e=>mdErrors.push(e.message)});decoder.configure({codec,optimizeForLatency:true});window.mdCodec=codec;
+  }
+  if(needKey&&!key)return;needKey=false;
+  decoder.decode(new EncodedVideoChunk({type:key?'key':'delta',timestamp:id,data:payload}));
+ };
+ await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});
+ socket.send('SETTINGS,'+JSON.stringify({displayId:'primary',encoder:'h264enc',use_cpu:!gpu,manual_resolution:true,manual_width:1920,manual_height:1080,initialClientWidth:1920,initialClientHeight:1080,framerate:60,rate_control_mode:'cbr',video_bitrate:bitrate/1000,audioRedundancy:false}));socket.send('START_VIDEO');
+};
+window.mdInput=({kind,x,y,delta_y,text})=>{if(kind==='click'){socket.send(`m,${x},${y},1,0`);socket.send(`m,${x},${y},0,0`)}else if(kind==='scroll'){for(const message of wheelMessages(x,y,delta_y))socket.send(message)}else if(kind==='text')for(const ch of text){socket.send('kd,'+ch.codePointAt(0));socket.send('ku,'+ch.codePointAt(0));}};
+window.mdStats=async()=>({bytes:mdWireBytes,frames:mdFrames.slice(),presentations:mdPresentations.slice()});
+window.mdSnapshot=()=>({png:canvas.toDataURL('image/png'),presentation:{...mdPresentation}});
+window.mdClose=()=>{socket?.close();decoder?.close();};
+</script>

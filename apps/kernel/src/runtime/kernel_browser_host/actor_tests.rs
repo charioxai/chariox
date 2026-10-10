@@ -934,6 +934,126 @@ done
 }
 
 #[test]
+fn md_display_held_capture_does_not_hold_input_ownership_or_steal_its_response() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-md-display-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"screenshot"'*)
+   printf 'started\n' > "$root/capture"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"frame_sent":false,"display_frame":null}}\n' "$id") & ;;
+ *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    // MP-11: observations cannot implicitly start a stopped controller.
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"screenshot","display_subscription_id":"s"}),
+                policy.clone(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !root.join("capture").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capture").exists());
+        let input=scope.spawn(|| { let result=host.protected_request("alice",None,"host.browser",json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"click","x":1,"y":1}}),policy.clone());tx.send(result).unwrap();});
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(capture.join().unwrap().unwrap()["frame_sent"], false);
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early.expect("input waited behind display work").unwrap()["input_completed"],
+        true
+    );
+}
+
+#[test]
+fn mp08_display_held_input_does_not_starve_capture_or_steal_its_response() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-input-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"input"'*)
+   printf 'started\n' > "$root/capture"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id") & ;;
+ *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"frame_sent":false,"display_frame":null}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    // MP-11: observations cannot implicitly start a stopped controller.
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"scroll","x":1,"y":1,"delta_x":0,"delta_y":120}}),
+                policy.clone(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !root.join("capture").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capture").exists());
+        let input=scope.spawn(|| { let result=host.protected_request("alice",None,"host.browser",json!({"op":"screenshot","display_subscription_id":"s"}),policy.clone());tx.send(result).unwrap();});
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert_eq!(capture.join().unwrap().unwrap()["input_completed"], true);
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early.expect("capture waited behind input work").unwrap()["frame_sent"],
+        false
+    );
+}
+
+#[test]
 fn mirror_reads_and_cleanup_never_start_a_stopped_controller() {
     let root = std::env::temp_dir().join(format!(
         "chariox-mirror-no-start-{:032x}",

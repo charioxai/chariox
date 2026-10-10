@@ -44,11 +44,22 @@ pub(crate) enum KernelBrowserDisplayRequest {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+        /// MP-08/MP-10: set only by the kernel push pump.
+        push: Option<KernelBrowserPushCredit>,
     },
     Attach {
         subscription_id: String,
         generation: u64,
     },
+}
+
+/// MP-08/MP-10: a kernel push-pump credit. `reset` retires the stream's
+/// reference chain (lost frame or lifted gate); `congested` reports a closed
+/// ACK gate to the motion bitrate budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct KernelBrowserPushCredit {
+    pub(crate) reset: bool,
+    pub(crate) congested: bool,
 }
 
 const LOADER: &str = "chariox.load_kernel_browser";
@@ -77,6 +88,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayCapture { .. }
             | KernelBrowserCommand::DisplaySubscribe { .. }
             | KernelBrowserCommand::DisplayNext { .. }
+            | KernelBrowserCommand::DisplayAck { .. }
             | KernelBrowserCommand::DisplayInput { .. }
             | KernelBrowserCommand::DisplayTakeover { .. }
             | KernelBrowserCommand::DisplayRelease { .. }
@@ -151,7 +163,15 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 after_sequence,
+                push: None,
             },
+            // MP-08/MP-10: acknowledgements belong to a relay display
+            // subscription's push pump; no other transport owns one.
+            KernelBrowserCommand::DisplayAck { .. } => {
+                return Err(host_error(
+                    "MP-08: display acknowledgements require a relay display subscription".into(),
+                ))
+            }
             KernelBrowserCommand::DisplayInput {
                 tab_id,
                 generation,
@@ -336,8 +356,14 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 after_sequence,
+                push,
             } => {
-                serde_json::json!({"op":"screenshot","display_subscription_id":subscription_id,"generation":generation,"after_sequence":after_sequence,"bound_frames":true})
+                let mut params = serde_json::json!({"op":"screenshot","display_subscription_id":subscription_id,"generation":generation,"after_sequence":after_sequence,"bound_frames":true});
+                if let Some(push) = push {
+                    params["push"] =
+                        serde_json::json!({"reset":push.reset,"congested":push.congested});
+                }
+                params
             }
             KernelBrowserDisplayRequest::Attach {
                 subscription_id,
@@ -358,7 +384,9 @@ impl KernelRuntimeState {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
                     return Err(host_error("MD-3: observed document required".into()));
                 }
-                serde_json::json!({"op":"input","tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
+                // MP-08/MP-10/MP-11: only this admitted human display path may
+                // use asynchronous wheel dispatch; agent calls keep their ack.
+                serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
             }
             KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
                 let outcome = host

@@ -1415,3 +1415,56 @@ async fn concurrent_subscription_admission_has_one_owner() {
     }).count();
     assert_eq!(conflict_count, 1);
 }
+
+#[tokio::test]
+async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let routes = registry.read().await.route_index();
+    let daemon = DaemonKey::new("realm", "kernel");
+    let (sender, mut receiver) = mpsc::channel(2);
+    routes.set_subscription(
+        "sub".into(),
+        ActiveEventRoute {
+            daemon_key: daemon.clone(),
+            client_sender: sender,
+        },
+    );
+    let header = crate::binary_event::EventHeader {
+        kind: "daemon_event".into(),
+        subscription_id: "sub".into(),
+        event_id: 31,
+        sender_public_key: "opaque-key".into(),
+        nonce: "abcdefghijklmnop".into(),
+    };
+    let bytes = crate::binary_event::encode(&header, &[37; 1024]).unwrap();
+    let counter = AtomicU64::new(0);
+    for wrong in [
+        DaemonKey::new("other-realm", "kernel"),
+        DaemonKey::new("realm", "other-kernel"),
+    ] {
+        assert!(
+            !route_daemon_binary_event(&registry, &routes, &wrong, &counter, &bytes)
+                .await
+                .unwrap()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &bytes)
+            .await
+            .unwrap()
+    );
+    let Message::Binary(delivered) = receiver.recv().await.unwrap() else {
+        panic!("expected binary event");
+    };
+    let (header, ciphertext) = crate::binary_event::decode(&delivered).unwrap();
+    assert_eq!(header.kind, "client_event");
+    assert_eq!(header.subscription_id, "sub");
+    assert_eq!(header.event_id, 31);
+    assert_eq!(ciphertext, &[37; 1024]);
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &delivered)
+            .await
+            .is_err()
+    );
+}
