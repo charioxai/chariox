@@ -491,12 +491,10 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS));
-        assert!(specs
+        // MP-08/MP-10/MP-11 A06: generation is sudo-only (`chariox.vault.generate`).
+        assert!(!specs
             .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS));
+            .any(|spec| spec.name.contains("generated_credential")));
         assert!(specs
             .iter()
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL));
@@ -505,8 +503,8 @@ mod workspace_live_sync_tests {
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
         let create = specs
             .iter()
-            .find(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL)
-            .expect("generated credential tool spec");
+            .find(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .expect("requested credential tool spec");
         assert!(
             create.input_schema["properties"]["credential"]["properties"]["allowed_uses"]["items"]
                 ["enum"]
@@ -673,7 +671,7 @@ mod workspace_live_sync_tests {
     fn canonical_credential_tool_name_accepts_browser_paste_aliases() {
         assert_eq!(
             canonical_credential_tool_name("mcp__chariox__chariox_create_generated_credential"),
-            Some(CREATE_GENERATED_CREDENTIAL_TOOL)
+            None
         );
         assert_eq!(
             canonical_credential_tool_name("request_credential_secret"),

@@ -99,7 +99,6 @@ async fn a02_r8_blocked_subscriber_does_not_suppress_waiting_subscriber() {
             occurrence: "finished".into(),
             success: true,
             public_answer: Some(serde_json::json!({"excerpt":"Real source result"})),
-            now,
         })
         .unwrap();
     let blocked = store
@@ -296,7 +295,6 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
                 occurrence: "finished".into(),
                 success: true,
                 public_answer: Some(serde_json::json!({"excerpt":"Real source result"})),
-                now,
             })
             .unwrap();
     }

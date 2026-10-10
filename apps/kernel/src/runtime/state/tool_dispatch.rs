@@ -177,6 +177,7 @@ impl KernelRuntimeState {
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
+            specs.push(super::sudo::vault_generate_spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -308,6 +309,9 @@ impl KernelRuntimeState {
             Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
         {
             return result;
+        }
+        if tool_name == super::sudo::VAULT_GENERATE {
+            return Box::pin(self.vault_generate(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;
@@ -738,7 +742,6 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
-            | crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
             | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
@@ -917,7 +920,6 @@ mod tests {
             );
         }
         for name in [
-            CREATE_GENERATED_CREDENTIAL_TOOL,
             REQUEST_CREDENTIAL_SECRET_TOOL,
             MANAGE_CREDENTIAL_VAULT_TOOL,
             PASTE_SECRET_TO_COMPUTER_TOOL,

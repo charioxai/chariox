@@ -81,7 +81,6 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
                     public_answer: answer
                         .map(|v| decode::<serde_json::Value>(&v))
                         .transpose()?,
-                    now: crate::session::unix_epoch_ms(),
                 },
             )?;
         }

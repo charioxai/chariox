@@ -48,6 +48,9 @@ pub(crate) struct KernelBrowserAdmission {
     cancellation: Arc<BrowserCancellation>,
     terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
     capability: KernelBrowserCapability,
+    /// MP-08/MP-10/MP-11 A06: a live sudo window, re-evaluated by `cancellation`,
+    /// stands in for focus on sensitive actions within the retained grant.
+    elevated: bool,
 }
 
 impl KernelBrowserAdmission {
@@ -70,6 +73,12 @@ impl KernelBrowserAdmission {
             self.epoch.clone(),
             authority,
         ));
+        self
+    }
+
+    /// Pair only with `with_authority` that checks the same sudo window.
+    pub(crate) fn elevated(mut self) -> Self {
+        self.elevated = true;
         self
     }
 }
@@ -236,6 +245,7 @@ impl KernelBrowserHost {
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
             terminal_lifetime: None,
+            elevated: false,
         })
     }
     pub(crate) fn admit_terminal(
@@ -250,6 +260,7 @@ impl KernelBrowserHost {
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
             terminal_lifetime: Some(lifetime.clone()),
+            elevated: false,
             cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || {
                 lifetime.is_live()
             })),

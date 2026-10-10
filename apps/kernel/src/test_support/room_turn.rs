@@ -25,11 +25,19 @@ pub(crate) fn admit_room_test_turn(app: &mut DaemonApp, room: &str, agent: &str)
             .unwrap();
         app.update_provider_run_projection(run);
     }
+    // The fixture turn stands in for the room owner's own request.
+    let owner = app
+        .sessions()
+        .get_session(room)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
     let attachment = crate::app::KernelSessionService::new(app)
-        .attach(crate::attachment::AttachRequest::new(
+        .attach(crate::attachment::AttachRequest::for_user(
             room,
             format!("room-fixture:{agent}"),
             crate::attachment::ClientCapabilityLevel::FullTerminal,
+            owner,
         ))
         .unwrap();
     app.submit_prompt(

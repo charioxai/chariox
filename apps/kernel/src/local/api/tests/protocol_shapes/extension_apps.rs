@@ -93,10 +93,10 @@ fn app_bindings_use_the_shared_extension_request_contract() {
 #[test]
 fn capability_app_authority_protocol_462_shape_and_hash() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 462);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let mut grant = crate::extension::ExtensionGrant::app("installed");
     grant.app_grant = Some(crate::extension::AppCapabilityGrant {

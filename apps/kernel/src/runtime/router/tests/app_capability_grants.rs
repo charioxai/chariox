@@ -63,6 +63,12 @@ fn room() -> Room {
     let parent = spawn(&mut app, None);
     let child = spawn(&mut app, Some(&parent.0));
     let peer = spawn(&mut app, None);
+    // MP-11: acquisition provenance belongs to the test's explicit prompt,
+    // not the synthetic owner turn admitted by launch_test_provider.
+    for (agent, _) in [&parent, &child, &peer] {
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent)
+            .unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     Room {
         _scratch: scratch,

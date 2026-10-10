@@ -100,9 +100,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
+/// Version 82 adds owner-private workflow notifications to the Browser/Computer peer union (MP-08/MP-11).
 /// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
+/// Version 87 combines 82 and 86 (MP-08/MP-10/MP-11 A04 + A05).
 /// Older worker contracts are rejected before dispatch.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 86;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 87;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -2078,7 +2080,7 @@ mod workflow_notification_82_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_82_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 82);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 87);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),

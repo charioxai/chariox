@@ -253,7 +253,6 @@ pub(crate) enum Operation {
         source: String,
         occurrence: String,
         success: bool,
-        now: u64,
     },
     Sweep {
         now: u64,

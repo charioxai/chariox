@@ -850,10 +850,10 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
 #[test]
 fn user_domain_refusals_protocol_443_snapshot() {
     use crate::error::UserDomainRefusalReason as Reason;
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 462);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 481);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        86
+        87
     );
     let values = [
         Reason::NotFocusedAgent,

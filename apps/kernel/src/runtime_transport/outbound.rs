@@ -153,7 +153,7 @@ macro_rules! public_events {
         fn classify_event(event: &KernelEvent) {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
-                KernelEvent::PasskeyPromptsChanged { .. } => {},
+                KernelEvent::PasskeyPromptsChanged { .. } | KernelEvent::KernelBrowserFrame { .. } => {},
             }
         }
         fn public_event(name: &str) -> bool { matches!(name, $($wire)|*) }

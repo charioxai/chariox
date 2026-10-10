@@ -65,6 +65,14 @@ impl KernelRuntimeState {
     /// The live window bound to `run`'s current turn. The provider bearer never
     /// changes: each use resolves the exact agent, running turn and window.
     fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
+        self.sudo_for_run_checked(run_id, true)
+    }
+
+    fn sudo_for_run_checked(
+        &self,
+        run_id: &str,
+        sweep: bool,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         let denied = || error("this provider turn has no sudo authority");
         let run = self
             .owned
@@ -81,7 +89,9 @@ impl KernelRuntimeState {
         {
             return Err(denied());
         }
-        self.sweep_sudo();
+        if sweep {
+            self.sweep_sudo();
+        }
         let session = self.owned.session_store.get_session(run.session_id())?;
         let (entry, prompt) = self
             .owned
@@ -103,6 +113,16 @@ impl KernelRuntimeState {
         turn.prompt_id = Some(prompt);
         turn.provider_run_id = Some(run_id.into());
         Ok(turn)
+    }
+
+    /// MP-11: recheck the original turn without sweeping inside browser input authority.
+    pub(crate) fn sudo_turn_live(&self, original: &KernelSudoTurn) -> bool {
+        let (Some(run), Some(prompt)) = (&original.provider_run_id, &original.prompt_id) else {
+            return false;
+        };
+        self.sudo_for_run_checked(run, false).is_ok_and(|current| {
+            current.entry_id == original.entry_id && current.prompt_id.as_ref() == Some(prompt)
+        })
     }
 
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
@@ -304,6 +324,11 @@ pub(super) fn requester_grant_live(
                 && grant.holder.alive()
         })
     })
+}
+
+// MP-08/MP-10/MP-11: main uses the same complete sudo-window grammar.
+pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
+    is_sudo_prompt(prompt).then(|| sudo_arguments(prompt).expect("sudo prefix").trim())
 }
 
 #[cfg(test)]
