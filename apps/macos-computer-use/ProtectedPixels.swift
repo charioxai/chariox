@@ -10,7 +10,7 @@ func protectedRaster(_ image: CGImage, surface: NativeSurface, masks: [CGRect], 
     var pixels = [UInt8](repeating: 0, count: surface.width * surface.height * 4)
     let protectedImage: CGImage = try pixels.withUnsafeMutableBytes { data in
             guard let context = CGContext(data: data.baseAddress, width: surface.width, height: surface.height,
-                bitsPerComponent: 8, bytesPerRow: surface.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitsPerComponent: 8, bytesPerRow: surface.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
                 throw tagged(.native, "capture-bitmap")
             }

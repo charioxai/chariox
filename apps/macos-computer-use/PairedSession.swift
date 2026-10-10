@@ -20,13 +20,13 @@ import Darwin
     func checkAuthority() throws {
         guard !revoked else { throw tagged(.disabled, "grant-revoked") }
         if let scope, let surface, try nativeSurface(scope) != surface {
-            revoked = true; throw tagged(.target, "surface-geometry-changed")
+            revoked = true; capture.clear(); throw tagged(.target, "surface-geometry-changed")
         }
         var byte: UInt8 = 0
         let count = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
         guard count != 0, count >= 0 || errno == EAGAIN || errno == EWOULDBLOCK,
               ProcessInfo.processInfo.systemUptime - lastKernelRequest < 2 else {
-            revoked = true
+            revoked = true; capture.clear()
             throw tagged(.disabled, "grant-revoked")
         }
     }
@@ -56,6 +56,39 @@ import Darwin
                 return (["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false,
                          "error": ["code": "user_domain_stale_epoch"]], false)
             }
+        }
+        if method == "host.display" {
+            var reply: [String: Any] = ["id": request["id"] ?? NSNull(), "epoch": epoch, "ok": false]
+            do {
+                try checkAuthority()
+                guard !scope.ownerWindow, let surface,
+                      params["surface_id"] as? String == "macos-seat", params["generation"] as? String == epoch,
+                      let owner = params["_attachment_owner"] as? String else { throw tagged(.arguments, "invalid-capture-binding") }
+                switch params["op"] as? String {
+                case "subscribe":
+                    let id = try capture.attachment.subscribe(owner: owner, generation: epoch)
+                    reply["result"] = ["subscription_id": id, "surface_id": "macos-seat", "generation": epoch,
+                        "width": surface.width, "height": surface.height, "device_scale_factor": surface.scale, "codec": "png"]
+                case "sample":
+                    guard let id = params["subscription_id"] as? String else { throw Refusal.arguments }
+                    let frame = try await capture.attachment.sample(id: id, owner: owner,
+                        after: params["after_sequence"] as? UInt64, repair: params["repair"] as? Bool == true,
+                        authority: { try self.checkAuthority() }, capture: {
+                            try await self.capture.raster(scope, surface: surface, generation: self.epoch,
+                                                          authority: { try self.checkAuthority() })
+                        })
+                    reply["result"] = ["frame_sent": frame != nil, "display_frame": frame as Any? ?? NSNull()]
+                case "close":
+                    guard let id = params["subscription_id"] as? String else { throw Refusal.arguments }
+                    capture.attachment.close(id: id, owner: owner); reply["result"] = ["closed": true]
+                default: throw Refusal.arguments
+                }
+                try checkAuthority(); reply["ok"] = true
+            } catch {
+                reply["error"] = ["code": revoked ? "browser_action_cancelled" : "unsupported",
+                                  "reason": (error as? RefusalDetail)?.reason ?? "native-refused"]
+            }
+            return (reply, false)
         }
         guard method == "host.computer", ["input", "screenshot"].contains(params["op"] as? String ?? "") else {
             return pairedReply(request, epoch: epoch)

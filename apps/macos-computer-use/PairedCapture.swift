@@ -6,34 +6,33 @@ import ScreenCaptureKit
     private var allowed = false
     private var wholeWindowMask = true
     private var protection: UInt64 = 0
-    private let damage = CaptureDamage()
+    let attachment = CaptureAttachment()
 
     func protect(_ value: [String: Any]) {
         // Retain only a policy comparison token in memory, never in evidence.
         let next = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         if next == policy { return }
-        damage.invalidate(); protection &+= 1; policy = next
+        attachment.invalidate(); protection &+= 1; policy = next
         allowed = value["unknown"] as? Bool == false
         // Existing Linux behavior masks all native pixels when registry targets
         // or values exist. Unknown policy withholds capture before the OS call.
         wholeWindowMask = !(value["values"] as? [Any] ?? []).isEmpty || !(value["targets"] as? [Any] ?? []).isEmpty
     }
-    func clear() { damage.invalidate(); policy = nil; allowed = false; wholeWindowMask = true }
+    func clear() { attachment.close(); policy = nil; allowed = false; wholeWindowMask = true }
 
     func screenshot(_ scope: Request, surface: NativeSurface, generation: String,
                     authority: @escaping () throws -> Void) async throws -> [String: Any] {
-        let frame = try await capture(scope, surface: surface, generation: generation,
-                                      after: nil, repair: true, authority: authority)
-        return ["mime_type": "image/png", "data_base64": frame.png.base64EncodedString(),
+        let frame = try await raster(scope, surface: surface, generation: generation, authority: authority)
+        let png = try encodeProtectedPNG(frame, rect: DamageRect(x: 0, y: 0, width: surface.width, height: surface.height))
+        try authority()
+        guard frame.stamp.protection == protection, allowed else { throw tagged(.secure, "capture-protection-changed") }
+        return ["mime_type": "image/png", "data_base64": png.base64EncodedString(),
                 "width": surface.width, "height": surface.height, "protected": frame.masked,
                 "surface_id": "macos-seat", "generation": generation]
     }
 
-    // Private source/attachment seam. Public display registration and encrypted
-    // viewer delivery must reuse the kernel display service in the next M2 slice.
-    func capture(_ scope: Request, surface: NativeSurface, generation: String,
-                 after: UInt64?, repair: Bool, authority: @escaping () throws -> Void)
-        async throws -> (png: Data, publication: CapturePublication, masked: Bool) {
+    func raster(_ scope: Request, surface: NativeSurface, generation: String,
+                authority: @escaping () throws -> Void) async throws -> ProtectedFrame {
         guard allowed, !scope.ownerWindow else { throw tagged(.secure, "capture-protection-unproven") }
         guard #available(macOS 14.0, *), surface.width * surface.height <= 4 * 1024 * 1024 else {
             throw tagged(.native, "capture-budget")
@@ -56,6 +55,7 @@ import ScreenCaptureKit
         }
         let config = SCStreamConfiguration()
         config.width = surface.width; config.height = surface.height
+        config.colorSpaceName = CGColorSpace.sRGB
         config.showsCursor = false; config.capturesAudio = false
         if #available(macOS 15.0, *) { config.captureMicrophone = false }
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
@@ -64,17 +64,14 @@ import ScreenCaptureKit
         guard revision == protection, allowed, try nativeSurface(scope) == surface,
               try secureRegions(source, scope: scope) == masks,
               image.width == surface.width, image.height == surface.height else {
-            damage.invalidate(); throw tagged(.secure, "capture-protection-changed")
+            attachment.invalidate(); throw tagged(.secure, "capture-protection-changed")
         }
-        let (protectedImage, pixels) = try protectedRaster(image, surface: surface,
+        let (_, pixels) = try protectedRaster(image, surface: surface,
                                                          masks: masks, wholeWindowMask: wholeWindowMask)
-        // Mask before PNG encoding or damage comparison. No raw frame is written.
-        guard let png = NSBitmapImageRep(cgImage: protectedImage).representation(using: .png, properties: [:]),
-              png.count <= 512 * 1024 else { throw tagged(.native, "capture-encoded-budget") }
         try authority()
-        let stamp = CaptureStamp(generation: generation, surface: surface, protection: revision)
-        let publication = try damage.next(pixels, stamp: stamp, after: after, repair: repair)
-        return (png, publication, wholeWindowMask || !masks.isEmpty)
+        guard revision == protection, allowed else { throw tagged(.secure, "capture-protection-changed") }
+        return ProtectedFrame(pixels: pixels, stamp: CaptureStamp(generation: generation, surface: surface, protection: revision),
+                              masked: wholeWindowMask || !masks.isEmpty)
     }
 
     private func secureRegions(_ source: MacSource, scope: Request) throws -> [CGRect] {
