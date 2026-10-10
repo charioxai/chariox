@@ -579,14 +579,44 @@ try {
       const nativeText = await page.evaluate(() => term.getSelection())
       await capture('clean-selection-native')
       assert.equal(nativeText, expected, 'native fallback excludes panel and cursor cells')
-      await press('\r')
-      await waitFor(() => page.evaluate(() => !terminalScreen().includes('Selected text')), 5000)
+      const returnCases = []
+      if (options['clean-return-review']) {
+        // MP-08 / MP-10: real suspended stdin, fragmented/coalesced as on SSH.
+        const cases = [
+          ...Array.from({ length: 4 }, (_, i) => ({ name: `F7-split-${i + 1}`, parts: ['\x1b[18~'.slice(0, i + 1), '\x1b[18~'.slice(i + 1)] })),
+          ...['\r', '\n', '\x03', '\x1b[18~'].map((key, i) => ({ name: `coalesced-${i}`, parts: ['before' + key + 'z\x1b['] })),
+          { name: 'unrelated-CSI', parts: ['\x1b', '[1;', '5A', '\r'] },
+          { name: 'standalone-Escape', parts: ['\x1b'] },
+        ]
+        for (const [i, entry] of cases.entries()) {
+          if (i) {
+            await dragSelect(await settledRowOf(marker), 14)
+            await press('\x1b[18~')
+            await waitFor(() => page.evaluate(() => terminalScreen().includes('Selected text')), 5000)
+          }
+          await capture(`return-${entry.name}-before`)
+          for (const [j, part] of entry.parts.entries()) {
+            tui.terminal.write(part); await sleep(30)
+            if (j < entry.parts.length - 1) {
+              assert.ok(await page.evaluate(() => terminalScreen().includes('Selected text')), `${entry.name}: partial key must stay in view`)
+            }
+          }
+          await waitFor(() => page.evaluate(() => !terminalScreen().includes('Selected text')), 5000)
+          await sleep(350) // Pending input/timers cannot edit the restored prompt.
+          assert.equal(await promptShows('z'), false, `${entry.name}: trailing view input is consumed`)
+          await capture(`return-${entry.name}-restored`)
+          returnCases.push({ name: entry.name, status: 'PASS' })
+        }
+      } else {
+        await press('\r')
+        await waitFor(() => page.evaluate(() => !terminalScreen().includes('Selected text')), 5000)
+      }
       await typeText('z'); await sleep(500)
       const restored = await promptShows('z')
       await capture('clean-selection-restored')
       assert.ok(restored, 'return restores ordinary prompt typing')
       result = { items: ['MP-08', 'MP-10'], source: options.source, provider: options.provider,
-        dpr: Number(options.dpr ?? 1), expected, nativeText, restored, cliSha256: await hashClient(path.dirname(cli)),
+        dpr: Number(options.dpr ?? 1), expected, nativeText, restored, returnCases, cliSha256: await hashClient(path.dirname(cli)),
         acceptance: 'real provider and built TUI; physical Terminal.app remains an owner observation' }
     } else if (options['release-edit-review']) {
       // MP-08 / MP-10: real provider text, followed immediately by an edit in

@@ -1,3 +1,4 @@
+import { StdinParser } from "@opentui/core"
 import type { EventEmitter } from "node:events"
 import { writeSync } from "node:fs"
 import { stripVTControlCharacters } from "node:util"
@@ -46,13 +47,30 @@ export function createSelectionTextView(
         const url = providerLoginUrl(content)
         writeSync(output.fd, url ? providerLoginLinkText(url) : content + "\r\n")
         await new Promise<void>(resolve => {
+          // MP-08 / MP-10: reuse the TUI decoder while its renderer is suspended.
+          // The shared 250 ms Escape timeout distinguishes standalone Escape from a split sequence.
+          let returned = false
+          const drain = () => {
+            parser.drain(event => {
+              if (event.type !== "key" || event.key.eventType === "release") return
+              const key = event.key
+              if (key.name === "return" || key.name === "linefeed" || key.name === "escape"
+                || key.name === "f7" || (key.name === "c" && key.ctrl)) returned = true
+            })
+            if (returned) finish?.()
+          }
+          const parser = new StdinParser({ timeoutMs: 250, armTimeouts: true, onTimeoutFlush: drain, useKittyKeyboard: true })
           const onData = (chunk: Buffer | string) => {
-            if (/^(?:[\r\n\x03\x1b]|\x1b\[18~)$/.test(chunk.toString())) finish?.()
+            parser.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+            drain()
           }
           finish = () => {
             input.removeListener("data", onData)
             input.removeListener("end", finish!)
             finish = undefined
+            // Consume the return key and all remaining view input, including a
+            // pending prefix. Never replay it into the restored prompt.
+            parser.destroy()
             resolve()
           }
           input.on("data", onData)
