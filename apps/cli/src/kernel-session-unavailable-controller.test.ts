@@ -155,3 +155,15 @@ function createHarness(options: {
     >
   }
 }
+
+// MP-08 / MP-10 / MP-11 G03: output/notices can discover the same lost attachment together.
+test("lost attachment recovery coalesces concurrent poller failures", async () => {
+  let release!: (session: TestSession) => void
+  const session = new Promise<TestSession>(resolve => {release = resolve})
+  const harness = createHarness({getSessionState: () => session})
+  const first = harness.controller.handle("lost attachment")
+  const second = harness.controller.handle("same lost attachment")
+  release({id: "session-1"})
+  await Promise.all([first, second])
+  assert.equal(harness.calls.filter(call => call.startsWith("attach:")).length, 1)
+})

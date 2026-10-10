@@ -92,10 +92,15 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         if (!attachment) {
           return
         }
+        const sessionId = deps.getSession().id
+        const bindingStillCurrent = () => deps.isAttached()
+          && deps.getSession().id === sessionId
+          && deps.getAttachment()?.id === attachment.id
         let records: TerminalOutputRecord[]
         try {
-          records = await deps.pumpTerminalOutput(deps.getSession().id, attachment.id)
+          records = await deps.pumpTerminalOutput(sessionId, attachment.id)
         } catch (error) {
+          if (!bindingStillCurrent()) return
           const message = deps.formatError(error)
           if (
             /has no active provider run/i.test(message)
@@ -107,6 +112,7 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
           }
           throw error
         }
+        if (!bindingStillCurrent()) return
         if (records.length > 0) {
           deps.recordDaemonActivity("terminal_output")
         }
@@ -125,7 +131,18 @@ export function createCliPollingController(deps: CliPollingControllerDeps) {
         if (!attachment) {
           return
         }
-        const notices = await deps.pollRuntimeNotices(deps.getSession().id, attachment.id)
+        const sessionId = deps.getSession().id
+        const bindingStillCurrent = () => deps.isAttached()
+          && deps.getSession().id === sessionId
+          && deps.getAttachment()?.id === attachment.id
+        let notices: RuntimeNoticeRecord[]
+        try {
+          notices = await deps.pollRuntimeNotices(sessionId, attachment.id)
+        } catch (error) {
+          if (!bindingStillCurrent()) return
+          throw error
+        }
+        if (!bindingStillCurrent()) return
         deps.recordDaemonActivity("runtime_notices")
         for (const notice of notices) {
           if (!runtimeNoticeShouldRenderInAgentPane(notice.message)) {

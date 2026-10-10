@@ -457,3 +457,20 @@ test("MP-08 / MP-10 / MP-11 G03 drops an old provider refresh after room selecti
   assert.equal(harness.sessionState.id, "session-2")
   assert.equal(harness.providerRun, nextRun)
 })
+
+for (const kind of ["output", "notices"] as const) {
+  test(`MP-08 / MP-10 / MP-11 G03 ignores a stale ${kind} poll error after recovery changed attachment`, async () => {
+    let fail!: (error: Error) => void
+    let begin!: () => void
+    const started = new Promise<void>(resolve => {begin = resolve})
+    const pending = new Promise<never>((_resolve, reject) => {fail = reject})
+    const failedPoll = () => {begin(); return pending}
+    const harness = createHarness({pumpTerminalOutput: failedPoll, pollRuntimeNotices: failedPoll})
+    const polling = kind === "output" ? harness.controller.pollOutput() : harness.controller.pollNotices()
+    await started
+    harness.attachment = {id: "attachment-2", session_id: "session-1"}
+    fail(new Error("Attachment not found"))
+    await polling
+    assert.equal(harness.calls.includes("sessionUnavailable"), false)
+  })
+}
