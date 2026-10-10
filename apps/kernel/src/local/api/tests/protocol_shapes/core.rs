@@ -973,3 +973,49 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
         "637abb74695e5c45c4a510bf3c82a96e01e293016fa4a9335e0890a840226add"
     );
 }
+
+// MP-08/MP-10/MP-11: socket-local framing is part of the versioned contract.
+#[test]
+fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
+    use chariox_relay::frame_transport::TransportFrame;
+    use sha2::{Digest, Sha256};
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 490);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        100
+    );
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../relay/src/frame_transport.rs"
+    ));
+    let schema = source
+        .split("#[derive(Serialize, Deserialize)]")
+        .nth(1)
+        .unwrap()
+        .split("pub fn transport_url")
+        .next()
+        .unwrap();
+    let schema = format!("#[derive(Serialize, Deserialize)]{schema}")
+        .split_whitespace()
+        .collect::<String>();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(schema.as_bytes())),
+        "f08f89c438e3abf2131fe639821e3d0c4372bbc30ce347c0b34cda56375a32ac"
+    );
+    let wire = serde_json::json!([
+        {"kind":"transport_chunk","transfer_id":1,"offset":0,"total_bytes":32768,"payload":"opaque"},
+        {"kind":"transport_ack","transfer_id":1,"offset":6}
+    ]);
+    for frame in wire.as_array().unwrap() {
+        let typed: TransportFrame = serde_json::from_value(frame.clone()).unwrap();
+        assert_eq!(&serde_json::to_value(typed).unwrap(), frame);
+    }
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "79e18ecc6745ceb6cc51771e23f053fbce62777c5ca3889f05cccb85a12e1f5b"
+    );
+    assert!(serde_json::from_value::<TransportFrame>(serde_json::json!(
+        {"kind":"transport_ack","transfer_id":1,"offset":6,"allowed_targets":["other-kernel"]}
+    ))
+    .is_err());
+}
