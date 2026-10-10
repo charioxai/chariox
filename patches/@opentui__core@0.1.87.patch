@@ -1,8 +1,38 @@
 diff --git a/index-0wbvecnk.js b/index-0wbvecnk.js
-index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736d5a2711b 100644
 --- a/index-0wbvecnk.js
 +++ b/index-0wbvecnk.js
-@@ -13684,6 +13684,10 @@
+@@ -7073,7 +7073,9 @@
+     if (this.paste || this.pendingSinceMs === null || this.pending.length === 0) {
+       return;
+     }
+-    if (nowMsValue < this.pendingSinceMs || nowMsValue - this.pendingSinceMs < this.timeoutMs) {
++    if (this.state.tag === "csi" || this.state.tag === "esc" && this.mouseParser.mouseButtonsPressed.size > 0) return;
++    const delay = this.state.tag === "esc" ? Math.max(this.timeoutMs, 250) : this.timeoutMs;
++    if (nowMsValue < this.pendingSinceMs || nowMsValue - this.pendingSinceMs < delay) {
+       return;
+     }
+     this.forceFlush = true;
+@@ -7611,7 +7613,9 @@
+     if (!this.armTimeouts) {
+       return;
+     }
+-    if (this.paste || this.pendingSinceMs === null || this.pending.length === 0) {
++    // MP-08 / MP-10: CSI framing ends at its final byte, not an event-loop
++    // deadline. Overflow and a new ESC still bound/recover malformed input.
++    if (this.paste || this.state.tag === "csi" || this.state.tag === "esc" && this.mouseParser.mouseButtonsPressed.size > 0 || this.pendingSinceMs === null || this.pending.length === 0) {
+       this.clearTimeout();
+       return;
+     }
+@@ -7627,7 +7631,7 @@
+       } catch (error) {
+         console.error("stdin parser timeout flush failed", error);
+       }
+-    }, this.timeoutMs);
++    }, this.state.tag === "esc" ? Math.max(this.timeoutMs, 250) : this.timeoutMs);
+   }
+   clearTimeout() {
+     if (!this.timeoutId) {
+@@ -13684,6 +13688,10 @@
    }
    setText(text) {
      this.guard();
@@ -13,7 +43,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._textBytes = this.lib.encoder.encode(text);
      if (this._memId === undefined) {
        this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false);
-@@ -13718,7 +13722,13 @@
+@@ -13718,7 +13726,13 @@
    }
    setStyledText(text) {
      this.guard();
@@ -28,7 +58,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._length = this.lib.textBufferGetLength(this.bufferPtr);
      this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr);
      this._lineInfo = undefined;
-@@ -13822,7 +13832,9 @@
+@@ -13822,7 +13836,9 @@
    }
    clear() {
      this.guard();
@@ -39,7 +69,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._length = 0;
      this._byteSize = 0;
      this._lineInfo = undefined;
-@@ -14842,6 +14854,7 @@
+@@ -14842,6 +14858,7 @@
          obj.parent = null;
          this._ctx.unregisterLifecyclePass(obj);
          this.renderableMapById.delete(id);
@@ -47,7 +77,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
          const index = this._childrenInLayoutOrder.findIndex((obj2) => obj2.id === id);
          if (index !== -1) {
            this._childrenInLayoutOrder.splice(index, 1);
-@@ -14963,6 +14976,9 @@
+@@ -14963,6 +14980,9 @@
      }
      this._childrenInLayoutOrder = [];
      this.renderableMapById.clear();

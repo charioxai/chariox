@@ -58,7 +58,7 @@ test("MP-08 / MP-10 a lone legacy ESC is still decoded as escape after the timeo
   const { controller, counts } = selectionController()
   controller.handleData("\x1b")
   assert.deepEqual(counts, { clears: 0, shortcuts: 0 })
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  await new Promise((resolve) => setTimeout(resolve, 300))
   assert.deepEqual(counts, { clears: 1, shortcuts: 1 })
 })
 
@@ -158,7 +158,7 @@ test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearin
   controller.handleData("\x1b[200~paste\x1b[201~")
   controller.handleData("x")
   controller.handleData("\x1b")
-  await new Promise(resolve => setTimeout(resolve, 50))
+  await new Promise(resolve => setTimeout(resolve, 300))
   assert.equal(active, false)
   assert.deepEqual(counts, { clears: 0, shortcuts: 0, nativeKeys: ["f7", "escape"] })
 })
