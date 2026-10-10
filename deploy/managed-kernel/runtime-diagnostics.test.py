@@ -25,7 +25,8 @@ class Diagnostics(unittest.TestCase):
         events = ('builder_pin_journal_start', 'builder_pin_journal_returned',
                   'builder_pin_runtime_start', 'builder_pin_runtime_returned',
                   'builder_pin_compare_start', 'builder_pin_compare_returned',
-                  'builder_pin_atomic_start', 'builder_pin_atomic_returned', 'builder_pin_failed')
+                  'builder_pin_atomic_start', 'builder_pin_atomic_returned', 'builder_pin_failed',
+                  *sorted(event for event in diag.EVENTS if event.startswith('builder_pin_') and event.endswith('_failed')))
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             guest, observer = pathlib.Path(a), pathlib.Path(b)
             for event in events:
