@@ -135,6 +135,10 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+#[path = "local_prompt_dispatch_runtime/workflow_account_revision_tests.rs"]
+mod workflow_account_revision_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::CreateAgentRequest;
@@ -4456,6 +4460,16 @@ impl KernelRuntimeState {
                     }
                 }
             }
+            let run = match state
+                .owned
+                .provider_store
+                .bind_current_launch_credential_revision(
+                    &run,
+                    provider_credential_env.registration_revision,
+                ) {
+                Ok(run) => run,
+                Err(_) => return,
+            };
             let started = crate::app::StartedProviderLaunch {
                 run: run.clone(),
                 previous_active_run_id: None,

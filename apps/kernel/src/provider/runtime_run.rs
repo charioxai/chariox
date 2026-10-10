@@ -634,6 +634,10 @@ impl RuntimeProviderRun {
         self.account_credential_revision
     }
 
+    pub(super) fn set_account_credential_revision(&mut self, revision: Option<u64>) {
+        self.account_credential_revision = revision;
+    }
+
     pub fn terminal_diagnostic(&self) -> Option<&str> {
         self.terminal_diagnostic.as_deref()
     }

@@ -147,6 +147,34 @@ impl ProviderProcessServiceStore {
         action(&current).map(Some)
     }
 
+    // MP-08 / MP-10 / MP-11: bind the registration actually resolved by an
+    // asynchronous launch while the same starting run still owns the agent.
+    pub(crate) fn bind_current_launch_credential_revision(
+        &self,
+        expected: &RuntimeProviderRun,
+        revision: Option<u64>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let mut service = self.write();
+        let current = service.get_run(expected.id())?;
+        if current.state() != crate::provider::ProviderRunState::Starting
+            || current.started_at_ms() != expected.started_at_ms()
+            || expected.agent_instance_id().is_some_and(|agent| {
+                service
+                    .get_run_for_agent(expected.session_id(), agent)
+                    .is_none_or(|run| run.id() != expected.id())
+            })
+        {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: expected.id().into(),
+                state: current.state(),
+                operation: "bind current launch credential revision",
+            });
+        }
+        let current = service.get_run_mut(expected.id())?;
+        current.set_account_credential_revision(revision);
+        Ok(current.clone())
+    }
+
     pub(crate) fn finish_current_launch(
         &self,
         expected: &RuntimeProviderRun,
