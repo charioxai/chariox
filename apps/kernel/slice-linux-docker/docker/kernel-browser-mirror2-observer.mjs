@@ -137,7 +137,9 @@ export function installMirror2(sanitizeMirrorCss) {
         listened.add(root);
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
-        listen('input', event => { dirty.form.add(event.target); wake(); }); listen('change', event => { dirty.form.add(event.target); wake(); });
+        // The composed target: a control inside an open shadow root, not its retargeted host.
+        const formEvent = event => { dirty.form.add(event.composedPath()[0] ?? event.target); wake(); };
+        listen('input', formEvent); listen('change', formEvent);
         listen('focusin', wake); listen('selectionchange', wake);
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
@@ -421,7 +423,8 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const node of dirty.masks) { const id = mirrored(node); if (id && node.isConnected) { const [, , width, height] = node.nodeType === 1 ? box(node) : textBox(node); ops.push({ op: 'size', id, size: [width, height] }); } }
       for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && ['input', 'textarea', 'select'].includes(node.localName)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
       // Live focus may change a value without input events (programmatic writes).
-      const active = document.activeElement, activeId = active && mirrored(active);
+      let active = document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      const activeId = active && mirrored(active);
       if (activeId && kindOf.get(activeId) === 'element' && ['input', 'textarea'].includes(active.localName) && !dirty.form.has(active)) formOp(active, activeId, ops);
       for (const node of dirty.scroll) { const id = node && mirrored(node); if (id && node !== document.documentElement && kindOf.get(id) === 'element') ops.push({ op: 'scroll', id, scroll: [node.scrollLeft, node.scrollTop] }); }
       // CSSOM edits (insertRule/replaceSync) produce no mutation record.

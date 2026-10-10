@@ -285,3 +285,16 @@ test("MP-10: review #941-2 a resource whose final packet the viewer never applie
     assert.equal((await next(0, true)).reset, true);
     for (let i = 0; i < 3; i++) assert(!(await next(600)).resources.some(wanted), "MP-10: an applied image is not re-sent");
   }, { "/one.svg": { type: "image/svg+xml", body: svg("#0d0e0f") } }));
+
+const shadowForm = '<x-box></x-box><script>customElements.define("x-box",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<input id=s><input id=c type=checkbox>"}})</script>';
+test("MP-10: review #941-3 typing and checkbox changes inside an open shadow root echo as form ops", () => mirrored(shadowForm, async ({ next, input }) => {
+  const snapshot = await next();
+  const [field] = elements(snapshot).find(([, tag, attrs]) => tag === "input" && attrs.id === "s") ?? [], [box] = elements(snapshot).find(([, tag, attrs]) => tag === "input" && attrs.id === "c") ?? [];
+  assert(field && box, "MP-10: the shadow controls are mirrored");
+  await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
+  await input(snapshot.sequence, { kind: "click", node_id: box, x: 5, y: 5 });
+  const forms = new Map();
+  for (let i = 0; i < 4 && forms.size < 2; i++) for (const op of (await next(1000)).ops) if (op.op === "form") forms.set(op.id, { ...forms.get(op.id), ...op.form });
+  assert.equal(forms.get(field)?.value, "hi"); assert.equal(forms.get(box)?.checked, true);
+}));
+
