@@ -146,3 +146,28 @@ test('MP-08: review #941-1 a text control\'s own range (select-all, mouse drag) 
     }
   } finally { await page.close(); }
 });
+
+test('MP-10: review #320-1 the viewer clears the kernel\'s selection once the kernel clears it (top-level and nested documents); a focused text control keeps its own range', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'p' }, { id: 'n5', parent: 'n4', kind: 'text', text: 'top level text' },
+      { id: 'n6', parent: 'n3', kind: 'element', tag: 'input', form: { value: 'field', checked: false, selected_index: -1, selection_start: 1, selection_end: 4 } },
+      { id: 'n7', parent: 'n3', kind: 'frame', tag: 'iframe' }, { id: 'n8', parent: 'n7', kind: 'document' }, { id: 'n9', parent: 'n8', kind: 'element', tag: 'html' }, { id: 'n10', parent: 'n9', kind: 'element', tag: 'body' },
+      { id: 'n11', parent: 'n10', kind: 'element', tag: 'p' }, { id: 'n12', parent: 'n11', kind: 'text', text: 'nested text' }]));
+    const shown = () => page.evaluate(() => { const top = window.r.frame.contentDocument, nested = top.querySelector('iframe').contentDocument, field = top.querySelector('input'); return [String(top.getSelection()), String(nested.getSelection()), [field.selectionStart, field.selectionEnd]]; });
+    const range = (anchor, from, to) => ({ anchor_id: anchor, anchor_offset: from, focus_id: anchor, focus_offset: to });
+    await apply(page, delta(2, [], { selection: range('n5', 0, 3) }));
+    assert.deepEqual((await shown()).slice(0, 2), ['top', ''], 'MP-10: the kernel selection is shown');
+    await apply(page, delta(3, [], { selection: null }));
+    assert.deepEqual((await shown()).slice(0, 2), ['', ''], 'MP-10: a kernel removeAllRanges clears the top-level range');
+    await apply(page, delta(4, [], { selection: range('n12', 0, 6) }));
+    assert.deepEqual((await shown()).slice(0, 2), ['', 'nested'], 'MP-10: the kernel selection inside a frame document is shown');
+    await apply(page, delta(5, [], { selection: null }));
+    assert.deepEqual((await shown()).slice(0, 2), ['', ''], 'MP-10: a cleared kernel selection clears the nested range');
+    // The kernel's focus moves into the field (its own range 1..4) as its document selection clears.
+    await apply(page, delta(6, [], { selection: range('n5', 4, 9) }));
+    await apply(page, delta(7, [], { selection: null, focused: 'n6' }));
+    assert.deepEqual((await shown())[2], [1, 4], 'MP-10: clearing does not drop a focused text control\'s own range');
+  } finally { await page.close(); }
+});

@@ -246,6 +246,12 @@ export class BrowserMirror2Renderer {
   private caret(field: HTMLInputElement, form: Mirror2Form): void {
     if (form.selection_start !== null && form.selection_end !== null) try { field.setSelectionRange(form.selection_start, form.selection_end); this.ranges.set(field, this.rangeOf(field)) } catch { /* not a text control */ }
   }
+  private selectionDoc: Document | null = null // the document showing the kernel's selection
+  private editing(doc: Document): boolean {
+    let element = doc.activeElement
+    for (let depth = 0; depth < 64 && element?.shadowRoot?.activeElement; depth++) element = element.shadowRoot.activeElement
+    return ['input', 'textarea'].includes(element?.localName ?? '')
+  }
   // The focused leaf across open shadow roots and mirrored frame documents.
   private active(): Element | null {
     let element = this.doc?.activeElement ?? null
@@ -358,7 +364,13 @@ export class BrowserMirror2Renderer {
         const focused = packet.focused ? this.dom.get(packet.focused) as HTMLElement | undefined : undefined
         // A control built while detached could not take its caret: restore it once focused.
         if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(packet.focused!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
-        if (packet.selection) { const s = packet.selection, a = this.dom.get(s.anchor_id), b = this.dom.get(s.focus_id); if (a && b) a.ownerDocument?.getSelection()?.setBaseAndExtent(a, s.anchor_offset, b, s.focus_offset) }
+        // Once the kernel's selection clears (or moves to another document) its old range goes too.
+        // Only there: a viewer's own range the kernel never had stays, and so does a focused text
+        // control's range (removeAllRanges would collapse it).
+        const s = packet.selection, a = s && this.dom.get(s.anchor_id), b = s && this.dom.get(s.focus_id), doc = a && b ? a.ownerDocument : null
+        if (this.selectionDoc && this.selectionDoc !== doc && !this.editing(this.selectionDoc)) this.selectionDoc.getSelection()?.removeAllRanges()
+        if (doc) doc.getSelection()?.setBaseAndExtent(a!, s!.anchor_offset, b!, s!.focus_offset)
+        this.selectionDoc = doc
       }
     } finally { this.applying = false }
     Object.assign(this.frame.dataset, { mirrorSequence: String(packet.sequence), mirrorRegions: String(this.counts.tile), mirrorMasks: String(this.counts.mask) })
