@@ -12,12 +12,12 @@ import { makeHarness, put } from "./lib/managed-kernel-upgrade-fixture.mjs"
 
 const updateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
 
-async function path1Harness(context) {
+async function path1Harness(context, options = {}) {
   const targetTransitionPolicy = JSON.parse(await readFile(
     new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
   const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true,
     currentProtocol: 370, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
-    currentAppArtifacts: false,
+    currentAppArtifacts: false, ...options,
   })
   const home = join(harness.installRoot, "home/chariox")
   const state = join(home, ".chariox")
@@ -231,3 +231,40 @@ test("MP-04/MP-07/MP-08/MP-10 signed B-to-new-to-B-to-new fixture preserves stat
     assert.deepEqual(evidence, ["1", id, from.digest, target.digest, "environment-1", "machine-1", "kernel-1", "committed"])
   }
 })
+
+// MP-07/MP-11: reproduce the F same-identity inputs with LF and signed pins
+// without LF. These are supplementary transaction checks, not live Cloud proof.
+for (const scenario of ["forward", "forced-pin-failure", "stopped-reboot", "reboot-wrong-key"]) {
+  test(`MP-07 F newline journal settlement ${scenario}`, async context => {
+    const harness = await path1Harness(context, { rotateBuilder: false, builderInputLF: true })
+    const before = await snapshot(harness)
+    if (scenario === "forced-pin-failure") {
+      const nodeWrapper = join(harness.root, "bin/node")
+      let source = await readFile(nodeWrapper, "utf8")
+      source = source.replace('set -eu\n', `set -eu\nif [ "\${2:-}" = atomic-file ] && [ "\${3##*/}" = target-builder-public-key ]; then exit 29; fi\n`)
+      await put(nodeWrapper, source, 0o755)
+    }
+    if (scenario.startsWith("stopped") || scenario.startsWith("reboot")) {
+      await put(join(harness.state, "crash-after-phase-stopped"), "crash\n")
+      assert.equal(harness.run(harness.env).signal, "SIGKILL")
+      if (scenario === "reboot-wrong-key") {
+        await put(harness.runtimePin, Buffer.alloc(32, 77).toString("base64") + "\n", 0o644)
+        const calls = await serviceMutations(harness)
+        const recovered = await recoverWithoutImage(harness)
+        assert.equal(recovered.status, 1)
+        assert.match(recovered.stderr, /runtime builder pin does not belong/)
+        assert.ok(!(await serviceMutations(harness)).slice(calls.length).some(call => call.startsWith("start ")))
+        assert.equal((await readFile(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade/phase"), "utf8")).trim(), "stopped")
+        await assert.rejects(stat(join(harness.installRoot, "usr/lib/chariox/.managed-kernel-upgrade-result")), { code: "ENOENT" })
+        return
+      }
+      const recovered = await recoverWithoutImage(harness)
+      assert.equal(recovered.status, 0, recovered.stderr)
+      await assertSettled(harness, "previous", "rolled_back", before)
+    } else {
+      const result = harness.run(harness.env)
+      assert.equal(result.status, scenario === "forward" ? 0 : 1, result.stderr)
+      await assertSettled(harness, scenario === "forward" ? "target" : "previous", scenario === "forward" ? "committed" : "rolled_back", before)
+    }
+  })
+}

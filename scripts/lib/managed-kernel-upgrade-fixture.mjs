@@ -251,6 +251,7 @@ async function makeHarness(context, {
   targetManifestSchema = 3,
   currentAppArtifacts = true,
   updaterPath = upgrade,
+  builderInputLF = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   await mkdir(join(root, "tmp"), { mode: 0o700 })
@@ -260,10 +261,10 @@ async function makeHarness(context, {
   await put(trustedKey, rawPublicKey(publicKey).toString("base64"), 0o600)
   const builderKeys = path1Release ? generateKeyPairSync("ed25519") : null
   const trustedBuilderKey = join(root, "trusted-builder-public-key")
-  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64"), 0o600)
+  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
   const targetBuilderKeys = rotateBuilder ? generateKeyPairSync("ed25519") : builderKeys
   const nextTrustedBuilderKey = join(root, "next-trusted-builder-public-key")
-  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
+  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
@@ -500,7 +501,7 @@ if [ "$1" = "start" ]; then
     printf '{"schemaVersion":2}\n' > "$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-grant-binding.json"
   fi
   if [ -f "$HARNESS_STATE/check-builder-pin-on-start" ]; then
-    cmp -s "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
+    "${process.execPath}" "${repositoryRoot}/deploy/managed-kernel/managed-kernel-upgrade-state.mjs" compare-builder-pins "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
       "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/lib/chariox/builder-public-key" || exit 1
     printf 'matched\n' >> "$HARNESS_STATE/builder-pin-starts"
   fi
