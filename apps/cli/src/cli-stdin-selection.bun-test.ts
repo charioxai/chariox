@@ -15,7 +15,7 @@ function selectionController() {
   const counts = { clears: 0, shortcuts: 0 }
   const controller = createCliStdinKeyController({
     createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
-    clearTextSelection: () => { counts.clears++ },
+    flushTextSelectionRebuild: () => { counts.clears++ },
     dialogOverlayOpen: () => false,
     handleSessionBrowserKey: () => { counts.shortcuts++; return true },
   } as unknown as CliStdinKeyControllerDeps)
@@ -77,7 +77,7 @@ test("MP-08 / MP-10 terminal theme notifications retain selection and deferred r
     const controller = createCliStdinKeyController({
       createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       handleNativeSelectionKey: (event: CliStdinKeyEvent) => { replayed.push(event.name); return false },
-      clearTextSelection: () => { retained = false; rebuilds++ },
+      flushTextSelectionRebuild: () => { retained = false; rebuilds++ },
       dialogOverlayOpen: () => false,
       handleSessionBrowserKey: (event: CliStdinKeyEvent) => { shortcuts.push(event.name); return event.name !== "f6" },
       promptFocused: () => false,
@@ -115,7 +115,7 @@ test("MP-08 / MP-10 F6 is distinct from Ctrl+C with the legacy keyboard protocol
 })
 
 // MP-08 / MP-10: real input must release retained selection so the root's
-// clearTextSelection callback can flush waiting-room rebuilds.
+// flushTextSelectionRebuild callback can flush waiting-room rebuilds.
 test("MP-08 / MP-10 bracketed paste clears retained selection before returning", () => {
   for (const chunk of ["\x1b[200~pasted text\x1b[201~", Buffer.from("\x1b[200~pasted text\x1b[201~")]) {
     const { controller, counts } = selectionController()
@@ -146,7 +146,7 @@ test("MP-08 / MP-10 native copy owns F7 and Esc before dialogs/selection clearin
         }
         return active
       },
-      clearTextSelection: () => { counts.clears++ },
+      flushTextSelectionRebuild: () => { counts.clears++ },
       dialogOverlayOpen: () => true,
       closeActiveDialogOverlay: () => { counts.shortcuts++ },
       handleSessionBrowserKey: () => { counts.shortcuts++; return true },
@@ -177,7 +177,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       handleNativeSelectionKey: native.handleKey,
       handleNativeSelectionPaste: native.handlePaste,
-      clearTextSelection: () => { clears++ },
+      flushTextSelectionRebuild: () => { clears++ },
       dialogOverlayOpen: () => false,
       handleSessionBrowserKey: (event: { name: string }) => { rawKeys.push(event.name); return true },
     } as unknown as CliStdinKeyControllerDeps)
@@ -252,8 +252,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
     const raw = createCliStdinKeyController({
       createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
       hasPromptSelection: () => prompt.hasSelection(),
-      clearTextSelection: () => {
-        harness.renderer.clearSelection()
+      flushTextSelectionRebuild: () => {
         if (rebuildDeferred) { rebuildDeferred = false; rebuilds++ }
       },
       dialogOverlayOpen: () => false,
@@ -313,7 +312,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) {
       replayCopyKey: clipboard.replayCopyKey,
       copyPromptSelection: clipboard.copyCapturedSelection ?? clipboard.copyPromptSelection,
       hasPromptSelection: () => prompt.hasSelection(),
-      clearTextSelection: () => harness.renderer.clearSelection(),
+      flushTextSelectionRebuild: () => {},
       dialogOverlayOpen: () => false, handleSessionBrowserKey: (event: CliStdinKeyEvent) => event.name !== "f6",
       commandCenterOpen: () => false, commandCenterQuery: () => "", isAttached: () => false,
       promptFocused: () => true, focusedInteractionActive: () => false,
@@ -354,7 +353,7 @@ for (const rawFirst of [false, true]) for (const buffer of [false, true]) for (c
       replayCopyKey: clipboard.replayCopyKey,
       copyPromptSelection: clipboard.copyCapturedSelection,
       hasPromptSelection: () => prompt.hasSelection(),
-      clearTextSelection: () => { harness.renderer.clearSelection(); rebuilds++ },
+      flushTextSelectionRebuild: () => { rebuilds++ },
       dialogOverlayOpen: () => false, handleSessionBrowserKey: (event: CliStdinKeyEvent) => event.name !== "f6",
       commandCenterOpen: () => false, commandCenterQuery: () => "", isAttached: () => false,
       promptFocused: () => true, focusedInteractionActive: () => false,

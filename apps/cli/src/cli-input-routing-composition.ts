@@ -210,7 +210,7 @@ export type CliInputRoutingCompositionDeps = {
   handleCycleAgentFocus: AnyFn
   replayCopyKey?: import("./cli-stdin-key-controller.js").CliStdinKeyControllerDeps["replayCopyKey"]
   copyPromptSelection: AnyFn
-  clearTextSelection?: () => void
+  flushTextSelectionRebuild?: () => void
   hasPromptSelection?: () => boolean
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
@@ -706,7 +706,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     ...(deps.replayCopyKey ? { replayCopyKey: deps.replayCopyKey } : {}),
     copyPromptSelection: deps.copyPromptSelection,
     ...(deps.hasPromptSelection ? { hasPromptSelection: deps.hasPromptSelection } : {}),
-    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
+    ...(deps.flushTextSelectionRebuild ? { flushTextSelectionRebuild: deps.flushTextSelectionRebuild } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()
