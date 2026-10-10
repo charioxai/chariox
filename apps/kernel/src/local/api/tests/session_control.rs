@@ -2015,3 +2015,72 @@ fn envp02b_workspace_update_waits_for_environment_lock() {
     holder.join().unwrap();
     harness.block_on_test_task(task).unwrap().unwrap();
 }
+
+// MP-08 / MP-10 / MP-11: P03 selections are measured by the owner kernel, not trusted from a client.
+#[test]
+fn envp03_manual_ignored_file_is_digest_tracked_and_credentials_are_blocked() {
+    use crate::project_environment::*;
+    let source = crate::test_support::TestWorktree::new("envp03-manual-files");
+    assert!(std::process::Command::new("git").args(["init","--quiet"]).arg(source.path()).status().unwrap().success());
+    std::fs::write(source.path().join(".gitignore"), "AGENTS.md\n").unwrap();
+    std::fs::write(source.path().join("AGENTS.md"), "Use the project formatter.\n").unwrap();
+    std::fs::write(source.path().join("private.txt"), "api_key=protected-test-input\n").unwrap();
+    let harness = envp02b_harness();
+    harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![crate::session::RuntimeProject::new(
+        "edit-project", "local", source.path().to_str().unwrap(), "Edit", crate::session::RuntimeProjectKind::Named,
+    )]));
+    let before = envp02b_read(&harness);
+    let folder = &before.folders[0];
+    let mut request = serde_json::to_value(envp02b_save(&before, "Node")).unwrap();
+    request["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["requirements"] = serde_json::json!([{
+        "requirement_id":"manual-instructions", "title":"Instructions", "scope":{"kind":"folder","folder_id":folder.folder_id},
+        "origins":[], "depends_on":[], "platform_variants":[], "required":true, "legacy_entry":null,
+        "spec":{"kind":"files","folder_id":folder.folder_id,"entries":[{
+            "relative_path":"AGENTS.md","kind":"file","folder_id":folder.folder_id,"user_selected":true,
+            "content_digest":null,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked",
+            "transfer_inclusion":"include","reason":null,"secret_looking":false
+        }]}
+    }]);
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff } = harness.dispatch(serde_json::from_value(request.clone()).unwrap()).unwrap() else { panic!("saved expected") };
+    let RequirementSpec::Files { entries, .. } = &environment.folders[0].requirements[0].spec else { panic!("files expected") };
+    assert_eq!(entries[0].git_ignored, Some(true));
+    assert_eq!(entries[0].credential_filter_verdict, EnvironmentCredentialFilterVerdict::Clear);
+    assert!(entries[0].content_digest.is_some());
+    assert_eq!(entries[0].byte_count, Some(27));
+    assert!(diff.requirements.iter().any(|r| r.after.as_ref().is_some_and(|r| r.requirement_id == "manual-instructions")));
+    assert_eq!(envp02b_read(&harness).content_digest, environment.content_digest);
+    request["SaveProjectEnvironmentRevision"]["expectedRevision"] = environment.revision.into();
+    request["SaveProjectEnvironmentRevision"]["expectedContentDigest"] = environment.content_digest.clone().into();
+    request["SaveProjectEnvironmentRevision"]["draft"] = serde_json::to_value(environment_draft(&environment)).unwrap();
+    request["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["requirements"][0]["spec"]["entries"][0]["relative_path"] = "private.txt".into();
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } = harness.dispatch(serde_json::from_value(request).unwrap()).unwrap() else { panic!("safe blocked selection expected") };
+    let RequirementSpec::Files { entries, .. } = &environment.folders[0].requirements[0].spec else { panic!("files expected") };
+    assert_eq!(entries[0].credential_filter_verdict, EnvironmentCredentialFilterVerdict::NeedsVault);
+    assert_eq!(entries[0].transfer_inclusion, EnvironmentTransferInclusion::Exclude);
+    assert_eq!(entries[0].content_digest, None);
+    assert_eq!(entries[0].byte_count, None);
+    assert!(entries[0].reason.as_ref().unwrap().contains("Vault"));
+}
+
+// MP-08 / MP-10 / MP-11: declarations neither execute Setup nor admit a capability.
+#[test]
+fn envp03_typed_references_save_without_execution_and_scope_conflicts_fail_atomically() {
+    let harness=envp02b_harness();
+    let before=envp02b_read(&harness);
+    let mut request=serde_json::to_value(envp02b_save(&before,"Node")).unwrap();
+    let spec=serde_json::json!({"kind":"services","identity":"preview","target_binding":null,"probe":{"kind":"tcp","host":"127.0.0.1","port":3000,"timeout_ms":5000},"health_expectation":{"kind":"reachable"},"depends_on":[]});
+    request["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"][0]["spec"]=spec;
+    let LocalDaemonResponse::ProjectEnvironmentSaved{environment,..}=harness.dispatch(serde_json::from_value(request.clone()).unwrap()).unwrap() else{panic!("typed save expected")};
+    assert!(environment.operations.is_empty()); assert!(environment.observations.is_empty());
+    assert_eq!(envp02b_read(&harness).revision,1);
+    request["SaveProjectEnvironmentRevision"]["expectedRevision"]=environment.revision.into();
+    request["SaveProjectEnvironmentRevision"]["expectedContentDigest"]=environment.content_digest.clone().into();
+    request["SaveProjectEnvironmentRevision"]["draft"]=serde_json::to_value(crate::project_environment::environment_draft(&environment)).unwrap();
+    let mut contradictory=request["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"][0].clone();
+    contradictory["requirement_id"]="folder-preview".into();contradictory["origins"]=serde_json::json!([]);
+    contradictory["scope"]=serde_json::json!({"kind":"folder","folder_id":environment.folders[0].folder_id});
+    contradictory["spec"]["probe"]["port"]=3001.into();
+    request["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["requirements"]=serde_json::json!([contradictory]);
+    let error=harness.dispatch(serde_json::from_value(request).unwrap()).unwrap_err().to_string();
+    assert!(error.contains("Conflict")); assert_eq!(envp02b_read(&harness).revision,1);
+}

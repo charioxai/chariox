@@ -168,6 +168,7 @@ fn validate_draft(
                     "requirement specification exceeds bounds",
                 ));
             }
+            super::specification_validation::validate_typed_requirement(r)?;
             match &r.spec {
                 RequirementSpec::Software {
                     identity,
@@ -221,31 +222,37 @@ fn validate_draft(
                     {
                         return Err(environment_error("File scope mismatch"));
                     }
-                    // P03 owns new selection and credential scanning. P02b can review detected Files only.
-                    if !known
-                        .get(r.requirement_id.as_str())
-                        .is_some_and(|old| old.spec == r.spec)
-                    {
-                        return Err(environment_error("manual File editing is not delivered"));
-                    }
                     for entry in entries {
+                        if entry.folder_id != *folder_id
+                            || !super::detect_index::safe_metadata(&entry.relative_path)
+                        {
+                            return Err(environment_error("invalid or protected File metadata"));
+                        }
                         relative_environment_path(&entry.relative_path)
                             .map_err(environment_error)?;
                     }
                 }
-                RequirementSpec::SetupChecks { .. }
-                | RequirementSpec::AgentTools { .. }
-                | RequirementSpec::CharioxApps { .. }
-                | RequirementSpec::Accounts { .. }
-                | RequirementSpec::Services { .. } => {
-                    // References/commands require the later typed editor and admission reviews.
-                    if !known
-                        .get(r.requirement_id.as_str())
-                        .is_some_and(|old| old.spec == r.spec)
+                RequirementSpec::SetupChecks { legacy, .. } => {
+                    let old_legacy =
+                        known
+                            .get(r.requirement_id.as_str())
+                            .and_then(|old| match &old.spec {
+                                RequirementSpec::SetupChecks { legacy, .. } => Some(legacy),
+                                _ => None,
+                            });
+                    if legacy.is_some()
+                        && (old_legacy != Some(legacy)
+                            || known
+                                .get(r.requirement_id.as_str())
+                                .is_none_or(|old| old.spec != r.spec))
                     {
-                        return Err(environment_error("this reference edit is not delivered"));
+                        return Err(environment_error("legacy recipe evidence cannot be edited"));
                     }
                 }
+                RequirementSpec::AgentTools { .. }
+                | RequirementSpec::CharioxApps { .. }
+                | RequirementSpec::Accounts { .. }
+                | RequirementSpec::Services { .. } => {}
                 RequirementSpec::Secrets { name, vault } => {
                     text(name, 128)?;
                     if let Some(v) = vault {
@@ -265,6 +272,7 @@ fn validate_draft(
             return Err(environment_error("invalid requirement dependency"));
         }
     }
+    super::scope_conflicts::validate_scopes(draft)?;
     Ok(())
 }
 
@@ -445,7 +453,6 @@ impl ProjectEnvironmentStore {
         let mut draft = request.draft.clone();
         validate_draft(current, &draft)?;
         let mut selected = BTreeSet::new();
-        let mut accepted_requirements = BTreeSet::new();
         if request.accepted_proposal_ids.len() + request.excluded_proposal_ids.len() > 4096 {
             return Err(environment_error("proposal decisions exceed bounds"));
         }
@@ -476,7 +483,6 @@ impl ProjectEnvironmentStore {
                     return Err(environment_error("proposal already present in draft"));
                 }
                 if decision == EnvironmentOptInDecision::Accepted {
-                    accepted_requirements.insert(proposal.requirement.requirement_id.clone());
                     let mut requirement = proposal.requirement.clone();
                     requirement.required = true;
                     match &requirement.scope {
@@ -497,6 +503,23 @@ impl ProjectEnvironmentStore {
             }
         }
         validate_draft(current, &draft)?;
+        for proposal in &current.proposals {
+            if requirements(&draft).any(|r| r.requirement_id == proposal.requirement.requirement_id)
+            {
+                if request
+                    .excluded_proposal_ids
+                    .contains(&proposal.proposal_id)
+                {
+                    return Err(environment_error("edited proposal cannot also be excluded"));
+                }
+                history.decisions.insert(
+                    proposal.requirement.requirement_id.clone(),
+                    EnvironmentOptInDecision::Accepted,
+                );
+            }
+        }
+        super::manual_files::verify_manual_files(current, &mut draft)?;
+        let mut diff = environment_revision_diff(current, &draft)?;
         for r in draft
             .project_requirements
             .iter_mut()
@@ -533,17 +556,18 @@ impl ProjectEnvironmentStore {
                 .decisions
                 .contains_key(&p.requirement.requirement_id)
         });
-        let mut diff = environment_revision_diff(current, &request.draft)?;
         diff.target_digest = saved.content_digest.clone();
-        // Include server-accepted proposals in the same review diff as field edits.
-        for r in requirements(&draft).filter(|r| accepted_requirements.contains(&r.requirement_id))
-        {
-            diff.requirements.push(EnvironmentRequirementDiff {
-                requirement_id: r.requirement_id.clone(),
-                kind: EnvironmentDiffKind::Added,
-                before: None,
-                after: Some(r.clone()),
-            });
+        for change in &mut diff.requirements {
+            if let Some(after) = &mut change.after {
+                if let Some(authoritative) = saved
+                    .project_requirements
+                    .iter()
+                    .chain(saved.folders.iter().flat_map(|f| &f.requirements))
+                    .find(|r| r.requirement_id == after.requirement_id)
+                {
+                    *after = authoritative.clone();
+                }
+            }
         }
         let mut persisted = saved.clone();
         persisted.proposals.clear();

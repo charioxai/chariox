@@ -389,14 +389,14 @@ fn walk(
 
 // MP-11: Retain the source directory FD while enumerating. A rename/symlink race cannot
 // change the directory behind the view or redirect a subsequent content read.
-struct EvidenceRoot {
+pub(super) struct EvidenceRoot {
     #[cfg(not(unix))]
     path: std::path::PathBuf,
     #[cfg(unix)]
     anchor: std::fs::File,
 }
 impl EvidenceRoot {
-    fn open(path: &Path) -> Result<Self, DaemonError> {
+    pub(super) fn open(path: &Path) -> Result<Self, DaemonError> {
         #[cfg(unix)]
         {
             use std::os::fd::{AsRawFd, FromRawFd};
@@ -466,7 +466,7 @@ impl EvidenceRoot {
         }
         Ok(anchor)
     }
-    fn file(&self, relative: &str) -> Result<std::fs::File, DaemonError> {
+    pub(super) fn file(&self, relative: &str) -> Result<std::fs::File, DaemonError> {
         #[cfg(unix)]
         let file = self.open_relative(relative, false)?;
         #[cfg(not(unix))]
@@ -480,7 +480,7 @@ impl EvidenceRoot {
         }
         Ok(file)
     }
-    fn directory(
+    pub(super) fn directory(
         &self,
         relative: &str,
     ) -> Result<(Option<std::fs::File>, std::path::PathBuf), DaemonError> {

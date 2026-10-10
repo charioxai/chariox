@@ -16,6 +16,9 @@ mod index;
 mod launch;
 mod materialization_transaction;
 mod materialize;
+mod manual_files;
+mod specification_validation;
+mod scope_conflicts;
 mod model;
 mod private_overlay;
 mod refresh;
@@ -41,6 +44,7 @@ pub(crate) use resolver::open_workspace_file;
 pub use resolver::*;
 pub use review::*;
 pub use revisions::*;
+pub(crate) use manual_files::verify_manual_files;
 pub use store::*;
 pub use transfer::*;
 
