@@ -25,7 +25,7 @@ extension MacSource {
         }
     }
     func performTextClick(_ request: Request, element: AXUIElement,
-                          geometry: ClickGeometry) async throws -> String? {
+                          geometry: ClickGeometry) async throws -> String {
         func checked() throws {
             try checkPermission(.click)
             try fence(request, element: element, typing: false,
@@ -37,7 +37,7 @@ extension MacSource {
         try checked()
         let resolution = try resolved()
         try checked()
-        guard case .selection(let index) = resolution else { return nil }
+        guard case .selection(let index) = resolution else { throw Refusal.target }
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable) == .success,
               settable.boolValue else { throw Refusal.target }

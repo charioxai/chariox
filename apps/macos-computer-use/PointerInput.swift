@@ -3,7 +3,7 @@ import AppKit
 enum InputPath: String { case axPress, axScrollValue, axTextClick, pidText }
 
 enum TextClickResolution: Equatable {
-    case selection(Int), hid
+    case selection(Int)
 }
 
 func visibleWindowFrame(window: CGRect, element: CGRect, displays: [CGRect], point: CGPoint?) throws -> CGRect {
@@ -23,7 +23,9 @@ func visibleWindowFrame(window: CGRect, element: CGRect, displays: [CGRect], poi
 
 func resolveTextClick(at point: CGPoint, rangeAtPoint: (CGPoint) throws -> CFRange?) throws -> TextClickResolution {
     guard point.x.isFinite, point.y.isFinite else { throw Refusal.target }
-    guard let range = try rangeAtPoint(point) else { return .hid }
+    // App-scoped AX hit-testing cannot detect a foreign covering window.
+    // Refuse unavailable range metadata; no global mouse fallback is admitted.
+    guard let range = try rangeAtPoint(point) else { throw Refusal.target }
     // AX returns the composed-character range. Collapse at its start, never
     // split a surrogate pair or select the character under the pointer.
     guard range.location >= 0, range.length >= 0,
@@ -86,24 +88,6 @@ func inputPath(_ operation: Operation, role: String) throws -> InputPath {
     case .text where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .pidText
     case .click, .scroll, .text: throw Refusal.target
     default: throw Refusal.arguments
-    }
-}
-
-func hidClickEvents(window: UInt32, location: CGPoint, windowBounds: CGRect,
-                       eventNumber: Int) throws -> [CGEvent] {
-    guard window > 0, eventNumber > 0, location.x.isFinite, location.y.isFinite,
-          windowBounds.contains(location) else { throw Refusal.target }
-    let source = CGEventSource(stateID: .privateState)
-    return try [CGEventType.leftMouseDown, .leftMouseUp].map { type in
-        guard let event = CGEvent(mouseEventSource: source, mouseType: type,
-                                  mouseCursorPosition: location, mouseButton: .left)
-        else { throw Refusal.native }
-        event.setIntegerValueField(.mouseEventNumber, value: Int64(eventNumber))
-        event.setIntegerValueField(.mouseEventClickState, value: 1)
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window))
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window))
-        event.flags = []
-        return event
     }
 }
 

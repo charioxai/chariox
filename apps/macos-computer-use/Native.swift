@@ -166,24 +166,6 @@ struct MacSource: NativeSource {
         }
         throw Refusal.target
     }
-    func mouseReleaseFence(_ request: Request, application: NSRunningApplication,
-                           launchDate: Date, window: AXUIElement, event: CGEvent) throws {
-        // Only the already owned up may bypass saved geometry and hit-testing.
-        guard event.type == .leftMouseUp, !application.isTerminated,
-              application.processIdentifier == request.pid,
-              let current = NSRunningApplication(processIdentifier: request.pid),
-              current.launchDate == launchDate,
-              event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == Int64(request.window),
-              event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == Int64(request.window)
-        else { throw Refusal.target }
-        try validateTarget(request)
-        let app = AXUIElementCreateApplication(request.pid)
-        let selected = try selectedWindow(request, app: app)
-        guard CFEqual(selected, window) else { throw Refusal.target }
-        try bind(window, to: selected, pid: request.pid)
-        _ = try focusedElement(app: app, window: selected)
-        try checkPermission(.click)
-    }
     func fixtureCounter(_ request: Request, element: AXUIElement) -> Int? {
         guard !request.ownerWindow, request.target == "button",
               let title = try? attribute(element, kAXTitleAttribute) as? String,
@@ -274,48 +256,29 @@ struct MacSource: NativeSource {
         if path == .axPress || path == .axScrollValue {
             return try await performAX(path, operation: operation, request: request, element: element)
         }
+        if operation == .click {
+            return try await performTextClick(request, element: element,
+                                              geometry: geometry(request, element: element))
+        }
+        guard case .text(let text) = operation else { throw Refusal.arguments }
         let source = CGEventSource(stateID: .privateState)
+        let units = try textUnits(text)
         var events: [CGEvent] = []
-        var clickGeometry: ClickGeometry?
-        switch operation {
-        case .click:
-            let geometry = try geometry(request, element: element)
-            if let receipt = try await performTextClick(request, element: element, geometry: geometry) { return receipt }
-            clickGeometry = geometry
-            events = try hidClickEvents(window: request.window, location: geometry.location,
-                                          windowBounds: geometry.windowBounds, eventNumber: Int.random(in: 1...Int(Int32.max)))
-        case .text(let text):
-            let units = try textUnits(text)
-            for down in [true, false] {
-                // Keycode 0 is experimental; inertness is an owner-session gate.
-                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { throw Refusal.native }
-                units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
-                events.append(event)
-            }
-        default: throw Refusal.arguments
+        for down in [true, false] {
+            // Keycode 0 is experimental; inertness is an owner-session gate.
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { throw Refusal.native }
+            units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress) }
+            events.append(event)
         }
         guard CGPreflightPostEventAccess() else { throw Refusal.permission }
-        let typing: Bool = { if case .text = operation { return true }; return false }()
-        guard let admittedApp = NSRunningApplication(processIdentifier: request.pid),
-              !admittedApp.isTerminated, let admittedLaunchDate = admittedApp.launchDate else { throw Refusal.target }
-        let admittedWindow = try selectedWindow(request, app: AXUIElementCreateApplication(request.pid))
-        try dispatchInputEvents(events, fence: { event in
-            try fence(request, element: element, typing: typing,
-                      clickGeometry: clickGeometry, eventLocation: event.location)
-        }, releaseFence: { event in
-            if typing {
-                try fence(request, element: element, typing: true)
-                try checkPermission(operation)
-            } else {
-                try mouseReleaseFence(request, application: admittedApp, launchDate: admittedLaunchDate,
-                                      window: admittedWindow, event: event)
-            }
-        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: {
-            if typing { $0.postToPid(request.pid) } else { $0.post(tap: .cghidEventTap) }
-        })
-        try fence(request, element: element, typing: typing,
-                  clickGeometry: clickGeometry, eventLocation: events.last?.location)
-        return inputReceipt(path: typing ? "CGEventPIDText" : "CGEventHID")
+        try dispatchInputEvents(events, fence: { _ in
+            try fence(request, element: element, typing: true)
+        }, releaseFence: { _ in
+            try fence(request, element: element, typing: true)
+            try checkPermission(operation)
+        }, releaseAllowed: { CGPreflightPostEventAccess() }, post: { $0.postToPid(request.pid) })
+        try fence(request, element: element, typing: true)
+        return inputReceipt(path: "CGEventPIDText")
     }
 }
 

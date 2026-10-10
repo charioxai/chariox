@@ -37,41 +37,32 @@ test('AX mutation and observation keep permission, ownership and hit-test fences
   assert.doesNotMatch(ax, /postToPid|post\(tap:|kAXFocusedAttribute|kAXRaiseAction/);
 });
 
-test('posting fences retain click geometry and hit-test the actual event location', () => {
-  assert.match(native, /clickGeometry = geometry[\s\S]*hidClickEvents\(window: request.window, location: geometry.location,\s*windowBounds: geometry.windowBounds/);
-  assert.match(native, /dispatchInputEvents\(events, fence: \{ event in[\s\S]*clickGeometry: clickGeometry, eventLocation: event.location/);
+test('AX text clicks retain saved geometry and hit-test the resolved point', () => {
   assert.match(native, /location = try clickGeometry.checkedLocation\(eventLocation, current: geometry\)[\s\S]*AXUIElementCopyElementAtPosition\(app, Float\(location.x\), Float\(location.y\)/);
   assert.match(native, /guard matched else[\s\S]*clickGeometry.checkedLocation\(location, current:/);
   assert.match(pointer, /guard current == self, eventLocation == location/);
 });
 
-test('owned mouse release validates original process and window without stale geometry', () => {
-  const release = native.slice(native.indexOf('func mouseReleaseFence('), native.indexOf('func fixtureCounter('));
-  assert.match(release, /event.type == .leftMouseUp, !application.isTerminated/);
-  assert.match(release, /application.processIdentifier == request.pid[\s\S]*current.launchDate == launchDate/);
-  assert.match(release, /mouseEventWindowUnderMousePointer\) == Int64\(request.window\)/);
-  assert.match(release, /mouseEventWindowUnderMousePointerThatCanHandleThisEvent\) == Int64\(request.window\)/);
-  assert.match(release, /validateTarget\(request\)[\s\S]*selectedWindow\(request, app: app\)[\s\S]*CFEqual\(selected, window\)/);
-  assert.match(release, /bind\(window, to: selected, pid: request.pid\)[\s\S]*focusedElement\(app: app, window: selected\)[\s\S]*checkPermission\(.click\)/);
-  assert.doesNotMatch(release, /checkedLocation|clickGeometry|AXUIElementCopyElementAtPosition/);
-  assert.match(native, /let admittedLaunchDate = admittedApp.launchDate[\s\S]*let admittedWindow = try selectedWindow/);
-  assert.match(native, /releaseFence: \{ event in[\s\S]*mouseReleaseFence\(request, application: admittedApp, launchDate: admittedLaunchDate,\s*window: admittedWindow, event: event\)/);
+test('owned text releases retain permission and target fences', () => {
+  assert.match(native, /releaseFence: \{ _ in\s*try fence\(request, element: element, typing: true\)\s*try checkPermission\(operation\)/);
   assert.match(pointer, /guard let release else \{ throw error \}[\s\S]*try releaseFence\(release\)[\s\S]*guard releaseAllowed\(\)[\s\S]*catch \{ throw Refusal.ownedInput \}/);
   assert.match(policy, /unresolved owned input; owner reset required/);
   const helper = readFileSync(new URL('./Helper.swift', import.meta.url), 'utf8');
   assert.match(helper, /fputs\("\\\(refusalMessage\(error\)\)\\n", stderr\)/);
 });
 
-test('HID posting is confined to unresolved text clicks; text typing stays per-PID', () => {
-  assert.match(native, /if path == .axPress \|\| path == .axScrollValue \{\s*return try await performAX/);
-  assert.match(native, /if let receipt = try await performTextClick[\s\S]*return receipt[\s\S]*hidClickEvents/);
-  assert.match(native, /if typing \{ \$0.postToPid\(request.pid\) \} else \{ \$0.post\(tap: .cghidEventTap\) \}/);
+test('unresolved text clicks refuse; only typing reaches per-PID event posting', () => {
+  assert.match(pointer, /guard let range = try rangeAtPoint\(point\) else \{ throw Refusal.target \}/);
+  assert.match(native, /if operation == .click \{\s*return try await performTextClick[\s\S]*guard case .text\(let text\) = operation/);
+  assert.match(native, /post: \{ \$0.postToPid\(request.pid\) \}/);
+  assert.doesNotMatch(native + pointer + textClick, /post\(tap:|cghidEventTap|hidClickEvents|mouseEventWindowUnderMousePointer/);
   assert.doesNotMatch(native, /CGWarpMouseCursorPosition|activate\(ignoringOtherApps/);
 });
 
 test('AX caret mutation and readback keep the saved-point fences and never post', () => {
   assert.match(textClick, /checkPermission\(.click\)[\s\S]*clickGeometry: geometry, eventLocation: geometry.location/);
-  assert.match(textClick, /guard case .selection\(let index\) = resolution else \{ return nil \}/);
+  assert.match(textClick, /guard case .selection\(let index\) = resolution else \{ throw Refusal.target \}/);
+  assert.doesNotMatch(textClick.slice(textClick.indexOf('func performTextClick(')), /return nil|async throws -> String\?/);
   assert.match(textClick, /guard try resolved\(\) == resolution else[\s\S]*try checked\(\)[\s\S]*AXUIElementSetAttributeValue\(element, kAXSelectedTextRangeAttribute/);
   assert.match(textClick, /CFRange\(location: index, length: 0\)/);
   assert.match(textClick, /Task.sleep[\s\S]*try checked\(\)[\s\S]*rangeValue\(attribute\(element, kAXSelectedTextRangeAttribute\)\)/);

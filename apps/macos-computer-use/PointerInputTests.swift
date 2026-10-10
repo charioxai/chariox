@@ -1,5 +1,14 @@
 import AppKit
 
+// Construct inert events for dispatch/geometry tests. These are never posted.
+private func testPointerEvents(at location: CGPoint) throws -> [CGEvent] {
+    try [CGEventType.leftMouseDown, .leftMouseUp].map { type in
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                                  mouseCursorPosition: location, mouseButton: .left) else { throw Refusal.native }
+        return event
+    }
+}
+
 func testPointerInput() throws {
     let oversized = ClickGeometry(windowBounds: CGRect(x: 100, y: 100, width: 500, height: 300),
                                   elementBounds: CGRect(x: 120, y: 120, width: 400, height: 1200))
@@ -36,8 +45,30 @@ func testPointerInput() throws {
         }
         precondition(resolution == .selection(12))
     }
-    let fallback = try resolveTextClick(at: requested) { _ in nil }
-    precondition(fallback == .hid)
+    // A nonactivating foreign panel can cover this point while the admitted
+    // app, focus, geometry and application-scoped hit all remain unchanged.
+    // Missing AX range metadata must refuse regardless of the desktop owner.
+    let admittedPID: Int32 = 42
+    let unchanged = ClickGeometry(windowBounds: oversized.windowBounds,
+                                  elementBounds: oversized.elementBounds,
+                                  requestedPoint: requested)
+    for desktopPID in [43, admittedPID] {
+        let fallbackEvents = try testPointerEvents(at: requested)
+        var postedTo: [Int32] = []
+        do {
+            _ = try unchanged.checkedLocation(requested, current: unchanged)
+            _ = try resolveTextClick(at: requested) { _ in nil }
+            try dispatchInputEvents(fallbackEvents, fence: { event in
+                // The app-scoped hit and geometry stay admitted even when
+                // the actual desktop owner changes to the covering panel.
+                _ = try unchanged.checkedLocation(event.location, current: unchanged)
+            }, releaseFence: { _ in }, releaseAllowed: { true }, post: { _ in postedTo.append(desktopPID) })
+            print("FAIL unresolved text click admitted with desktop PID=\(desktopPID), posted=\(postedTo.count)")
+            exit(1)
+        } catch Refusal.target { }
+        precondition(postedTo.isEmpty, "unresolved click posted outside its AX target")
+    }
+    print("PASS unresolved text clicks refuse with unchanged geometry and a foreign covering window; zero posted events")
     for range in [CFRange(location: kCFNotFound, length: 0), CFRange(location: 1, length: -1),
                   CFRange(location: Int.max, length: 1)] {
         do {
@@ -61,12 +92,11 @@ func testPointerInput() throws {
         do { _ = try Request.parse(args); preconditionFailure("invalid point arguments admitted") }
         catch Refusal.arguments { }
     }
-    print("PASS range-at-point preserves composed-character start; only unresolved AX range selects HID")
+    print("PASS range-at-point preserves composed-character start; unavailable AX range refuses")
     var failures = 0
     let saved = ClickGeometry(windowBounds: CGRect(x: 160, y: 100, width: 540, height: 360),
                               elementBounds: CGRect(x: 200, y: 140, width: 100, height: 80))
-    let staleEvents = try hidClickEvents(window: 123, location: saved.location,
-                                           windowBounds: saved.windowBounds, eventNumber: 7)
+    let staleEvents = try testPointerEvents(at: saved.location)
     var posted: [CGEventType] = []
     let changed = [
         ClickGeometry(windowBounds: saved.windowBounds, elementBounds: CGRect(x: 400, y: 140, width: 100, height: 80)),
@@ -165,29 +195,10 @@ func testPointerInput() throws {
     }
     if failures > 0 { exit(1) }
     print("PASS stale presses refused; geometry changes clean up owned releases or require owner reset")
-    let events = try hidClickEvents(window: 123, location: CGPoint(x: 250, y: 180),
-                                       windowBounds: CGRect(x: 160, y: 100, width: 540, height: 360), eventNumber: 7)
-    for event in events {
-        guard event.getIntegerValueField(.mouseEventClickState) == 1,
-              event.getIntegerValueField(.mouseEventNumber) == 7,
-              event.location == CGPoint(x: 250, y: 180), event.flags.isEmpty,
-              event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == 123,
-              event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == 123 else {
-            print("FAIL HID click has no selected window/single-click/pair number"); failures += 1; continue
-        }
-    }
     for (operation, role) in [(Operation.click, kAXWindowRole), (.scroll, kAXTextAreaRole),
                               (.text("public"), kAXButtonRole), (.click, kAXUnknownRole)] {
         do { _ = try inputPath(operation, role: role); print("FAIL unsupported role admitted"); failures += 1 }
         catch Refusal.target { }
-    }
-    for (window, location, number) in [(UInt32(0), CGPoint(x: 250, y: 180), 7),
-                                      (123, CGPoint(x: 159, y: 180), 7), (123, CGPoint(x: 250, y: 180), 0)] {
-        do {
-            _ = try hidClickEvents(window: window, location: location,
-                windowBounds: CGRect(x: 160, y: 100, width: 540, height: 360), eventNumber: number)
-            print("FAIL invalid click target admitted"); failures += 1
-        } catch Refusal.target { }
     }
     let firstStep = try nextScrollValue(0), lastStep = try nextScrollValue(0.99)
     precondition(firstStep == 0.05 && lastStep == 1)
@@ -195,7 +206,7 @@ func testPointerInput() throws {
         do { _ = try nextScrollValue(value); print("FAIL invalid scroll value admitted"); failures += 1 }
         catch Refusal.target { }
     }
-    precondition(inputReceipt(path: "CGEventHID") == "dispatched; path=CGEventHID; application completion unproven")
+    precondition(inputReceipt(path: "CGEventPIDText") == "dispatched; path=CGEventPIDText; application completion unproven")
     precondition(inputReceipt(path: "AXPress", observed: "observed fixture counter increment") ==
         "dispatched; path=AXPress; observed fixture counter increment")
     for (operation, role, expected) in [(Operation.click, kAXButtonRole, InputPath.axPress),
@@ -207,5 +218,5 @@ func testPointerInput() throws {
         }
     }
     if failures > 0 { exit(1) }
-    print("PASS HID click pair and AX-first role-selected primary input paths")
+    print("PASS AX-only pointer paths and per-PID text input path")
 }

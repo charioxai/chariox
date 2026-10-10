@@ -13,7 +13,7 @@ Run in Terminal:
 ```bash
 cu_build="$HOME/.chariox/dev/cumac/build"
 cu_helper="$cu_build/Chariox Computer Helper.app"
-cu_evidence="$HOME/.codex/evidence/browser-computer-use-macos/owner-recheck-20261010-axtext"
+cu_evidence="$HOME/.codex/evidence/browser-computer-use-macos/owner-recheck-20261010-nohid"
 mkdir -p "$cu_evidence"
 codesign --verify --strict "$cu_helper"
 codesign -dvv "$cu_helper" 2> "$cu_evidence/signature.txt"
@@ -83,7 +83,9 @@ During the five-second countdown, click at the beginning of **line 01**, which
 has text. Then move the pointer, without clicking, over the middle of the
 letter **r** in **caret** on **line 05**. Leave TextEdit frontmost and keep the
 pointer there until the helper finishes. `--click-at-pointer` snapshots that
-requested global point once; the AX path posts no mouse events.
+requested global point once; the helper posts no mouse events. If TextEdit
+cannot supply the AX position range, expect `refused: target` and record FAIL
+for the caret cell. Stop without retries or a fallback click.
 
 Expected second stdout line, with the point's actual coordinates:
 
@@ -118,14 +120,16 @@ cells in the same recheck, previously PASS on October 9.
 
 The center of a partly visible text element now uses its element/window/active-
 display intersection; a fully invisible element still refuses. Unit tests cover
-that clamp, composed-character range mapping, fallback selection, stale-point
-refusal and owned mouse-up cleanup. AX range lookup uses Apple's public
+that clamp, composed-character range mapping, unavailable-range refusal,
+stale-point refusal and owned-input cleanup. AX range lookup uses Apple's public
 [AXRangeForPosition](https://developer.apple.com/documentation/applicationservices/kaxrangeforpositionparameterizedattribute)
 and [AXSelectedTextRange](https://developer.apple.com/documentation/applicationservices/kaxselectedtextrangeattribute).
-Only an unsupported/unavailable position range selects
-[HID posting](https://developer.apple.com/documentation/coregraphics/cgeventtaplocation/cghideventtap).
-Permission errors, malformed ranges and failed AX mutations stop the operation.
-HID retains window ownership, frontmost, secure-input, permission and saved-
-geometry fences plus the original-process owned release cleanup. It may move
-the system pointer; live HID delivery and fatal cleanup remain unproven and are
-not extra owner operations in this recheck.
+An unsupported or unavailable position range now returns `refused: target`.
+The global HID fallback has been removed because an application-scoped AX hit
+cannot establish that a foreign window is not covering the requested point.
+Permission errors, malformed ranges and failed AX mutations also stop the
+operation. The regression models an unchanged admitted app and geometry with
+a foreign covering window and requires zero posted events. Successful AX
+caret placement retains the permission, ownership and saved-point checks.
+Unicode typing stays per-PID with owned key-up cleanup. Fatal cleanup remains
+unproven; this recheck adds no further owner operations.
