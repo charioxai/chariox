@@ -416,3 +416,12 @@ test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loade
     "/themes/icon.svg": { type: "image/svg+xml", body: svg("#030104") },
   }));
 
+test("MP-10: review #941-5 property-only changes of controls beyond the first reconciliation batch reach the viewer; unchanged ones stay silent", () => mirrored(
+  '<button id="f">f</button>' + Array.from({ length: 2100 }, (_, i) => `<input type="checkbox" id="c${i}">`).join(""), async ({ next, evaluate }) => {
+    const snapshot = await next();
+    const late = elements(snapshot).find(([, , attrs]) => attrs.id === "c2050")[0];
+    await evaluate("document.querySelector('#f').focus();document.querySelector('#c2050').checked=true;true");
+    const forms = []; for (let i = 0; i < 4 && !forms.length; i++) forms.push(...(await next(1900)).ops.filter(op => op.op === "form"));
+    assert.deepEqual(forms.map(op => [op.id, op.form]), [[late, { checked: true }]]);
+    for (let i = 0; i < 2; i++) assert.deepEqual((await next(1900)).ops.filter(op => op.op === "form"), [], "MP-10: unchanged controls stay silent");
+  }));

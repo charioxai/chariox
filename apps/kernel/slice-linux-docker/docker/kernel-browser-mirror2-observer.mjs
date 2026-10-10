@@ -79,7 +79,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
-    let newResources = [], pendingSheets = [], lastSheetCheck = 0, lastFormCheck = 0, cssAttrs = null;
+    let newResources = [], pendingSheets = [], lastSheetCheck = 0, lastFormCheck = 0, formCursor = 0, cssAttrs = null;
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
     // New attribute names in CSS mean earlier records lack attributes: resnapshot.
@@ -424,8 +424,10 @@ export function installMirror2(sanitizeMirrorCss) {
         childList(node, out, ops);
       }
       for (const node of dirty.masks) { const id = mirrored(node); if (id && node.isConnected) { const [, , width, height] = node.nodeType === 1 ? box(node) : textBox(node); ops.push({ op: 'size', id, size: [width, height] }); } }
-      // Bounded reconciliation: unchanged controls stay silent (formOp compares with the last sent state).
-      const formNow = performance.now(); if (formNow - lastFormCheck > 2000) { lastFormCheck = formNow; let n = 0; for (const node of formNodes.values()) { if (++n > 2000) break; dirty.form.add(node); } }
+      // Bounded reconciliation, 2000 controls per check from a rotating cursor (every control is
+      // eventually sampled); unchanged controls stay silent (formOp compares with the last sent state).
+      const formNow = performance.now();
+      if (formNow - lastFormCheck > 2000 && formNodes.size) { lastFormCheck = formNow; const list = [...formNodes.values()]; formCursor %= list.length; for (let i = 0; i < Math.min(2000, list.length); i++) dirty.form.add(list[(formCursor + i) % list.length]); formCursor += 2000; }
       for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && ['input', 'textarea', 'select'].includes(node.localName)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
       // Live focus may change a value without input events (programmatic writes).
       let active = document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
