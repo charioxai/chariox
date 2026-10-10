@@ -5,6 +5,20 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
 
 impl DaemonApp {
+    pub(crate) fn require_prompt_agent_authenticated(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        self.provider_account_profiles
+            .require_agent_authenticated_in_scope(
+                &self.config,
+                agent,
+                operation,
+                self.provider_account_launch_scope_for_agent(agent),
+            )
+    }
+
     pub(crate) fn ensure_prompt_provider_run_for_agent(
         &mut self,
         session_id: &str,
@@ -12,11 +26,7 @@ impl DaemonApp {
     ) -> Result<String, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config,
-            &agent,
-            "ensure prompt provider run for agent",
-        )?;
+        self.require_prompt_agent_authenticated(&agent, "ensure prompt provider run for agent")?;
 
         if agent.remote_execution().is_some() {
             return Err(DaemonError::LocalTransport {
