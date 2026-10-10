@@ -1037,3 +1037,65 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
         assert_eq!(input.matches("request after source compact").count(), 1);
     }
 }
+
+// MP-08 / MP-10 / MP-11: a native summary can omit an early named proposal.
+// The next turn must also receive protected kernel history, even with the same SID.
+#[tokio::test]
+async fn profile_compaction_preserves_history_for_the_next_native_session_turn() {
+    let (root, _, runtime, session, agent, run) = compact_fixture().await;
+    let prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &session,
+        "attachment",
+        &agent,
+        "Review continuity without changing the accepted decision.",
+    );
+    let proposal = crate::history::SessionHistoryEntry::provider_output(
+        &session,
+        run.id(),
+        Some(&agent),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "Assistant proposal: Continuity Ledger. This is not an accepted user decision.",
+    );
+    for entry in [&prompt, &proposal] {
+        runtime
+            .owned
+            .operational_history_store
+            .append_transcript(
+                entry,
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some("audit-prompt".into()),
+                    turn_id: Some("audit-turn".into()),
+                    provider: Some(run.provider().into()),
+                    model: Some(run.model().into()),
+                    provider_run_id: Some(run.id().into()),
+                    provider_session_id: Some("same-native-session".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let agent_snapshot = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    runtime
+        .compact_before_window_downshift(&session, &agent_snapshot, None, None, Some("haiku"))
+        .await;
+    let mut target = run.clone();
+    target.set_model("haiku");
+    target.set_provider_session_id(Some("same-native-session".into()));
+    let handoff = runtime
+        .owned
+        .pending_agent_context_handoffs
+        .peek_matching(&session, &agent, &target)
+        .expect(
+            "successful native compaction must preserve authoritative history for the next turn",
+        );
+    let packet = handoff.render_hidden(24_000);
+    assert!(packet.contains("Continuity Ledger"));
+    assert!(packet.contains("not an accepted user decision"));
+    runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&session, run.id())
+        .unwrap();
+}

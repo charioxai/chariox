@@ -270,6 +270,31 @@ impl super::KernelRuntimeOwnedState {
             target_provider,
             target_account_profile,
             target_model,
+            false,
+        );
+    }
+
+    /// Native compaction can drop early records without changing the session
+    /// identity. Recover those records through the normal protected handoff
+    /// and brief path on the next turn, just as at a provider session boundary.
+    pub(super) fn prepare_compacted_session_context_handoff(
+        &self,
+        source_run: &RuntimeProviderRun,
+        target_model: &str,
+    ) {
+        let Some(agent_id) = source_run.agent_instance_id() else {
+            return;
+        };
+        self.prepare_context_handoff_for_target(
+            source_run,
+            source_run.session_id(),
+            agent_id,
+            agent_id,
+            None,
+            source_run.provider(),
+            source_run.account_profile(),
+            Some(target_model),
+            true,
         );
     }
 
@@ -292,6 +317,7 @@ impl super::KernelRuntimeOwnedState {
             target_run.provider(),
             target_run.account_profile(),
             Some(target_run.model()),
+            false,
         );
     }
 
@@ -305,6 +331,7 @@ impl super::KernelRuntimeOwnedState {
         target_provider: &str,
         target_account_profile: &str,
         target_model: Option<&str>,
+        derived: bool,
     ) {
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
@@ -323,7 +350,7 @@ impl super::KernelRuntimeOwnedState {
                     target_model: target_model.map(str::to_string),
                     target_1m_context_disabled: false,
                     conversation,
-                    derived: false,
+                    derived,
                 },
             );
         }

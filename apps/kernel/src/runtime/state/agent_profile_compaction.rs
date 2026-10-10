@@ -74,11 +74,15 @@ impl KernelRuntimeState {
             "elapsed_ms": started.elapsed().as_millis() as u64,
         });
         match result {
-            Ok(_) => crate::logging::info_with_fields(
-                "daemon.provider_context_handoff",
-                "compacted the session before a smaller context window",
-                fields,
-            ),
+            Ok(_) => {
+                self.owned
+                    .prepare_compacted_session_context_handoff(&run, target_model);
+                crate::logging::info_with_fields(
+                    "daemon.provider_context_handoff",
+                    "compacted the session before a smaller context window",
+                    fields,
+                );
+            }
             Err(error) => crate::logging::warn_with_fields(
                 "daemon.provider_context_handoff",
                 "failed to compact the session before a smaller context window",
