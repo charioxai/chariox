@@ -94,8 +94,12 @@ impl ProjectEnvironmentStore {
         }
         snapshot
             .delivered_capabilities
-            .enabled_environment_operations =
-            vec![EnvironmentCapability::Get, EnvironmentCapability::Detect];
+            .enabled_environment_operations = vec![
+            EnvironmentCapability::Get,
+            EnvironmentCapability::Detect,
+            EnvironmentCapability::PreviewDiff,
+            EnvironmentCapability::Save,
+        ];
         refresh_environment_content_digest(snapshot);
         Ok(())
     }

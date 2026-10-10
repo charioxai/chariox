@@ -264,10 +264,17 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
-        match fs::remove_file(self.path(project).with_extension("detect.json")) {
+        match fs::remove_file(self.path(project).with_extension("revisions.json")) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(environment_error("remove detection cache failed")),
+            Err(_) => return Err(environment_error("remove revision history failed")),
+        }
+        for extension in ["detect.json", "detect-model.json"] {
+            match fs::remove_file(self.path(project).with_extension(extension)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(environment_error("remove detection cache failed")),
+            }
         }
         match fs::remove_file(self.path(project).with_extension("identity.json")) {
             Ok(()) => {}
@@ -314,12 +321,54 @@ impl ProjectEnvironmentStore {
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         self.acquire_lock(project, false, "identity.lock")
     }
+    /// Saves and mutation snapshots queue behind each other for a bounded time,
+    /// while a longer Detect, export or adjustment holder reports busy.
+    pub(crate) fn lock_briefly(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, "lock")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(ProjectEnvironmentLock { _file: file }),
+                Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
+                    return Err(environment_error("environment refresh lock failed"))
+                }
+                Err(_) if std::time::Instant::now() >= deadline => return Err(environment_error(
+                    "Project environment is busy with Detect, export or adjustment; retry shortly",
+                )),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+    }
+    pub(crate) async fn lock_briefly_async(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let (store, project) = (self.clone(), project.to_owned());
+        tokio::task::spawn_blocking(move || store.lock_briefly(&project))
+            .await
+            .map_err(|_| environment_error("environment lock task failed"))?
+    }
     fn acquire_lock(
         &self,
         project: &str,
         nonblocking: bool,
         extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, extension)?;
+        if nonblocking {
+            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
+                environment_error("Project environment already has an active export or adjustment")
+            })?;
+        } else {
+            fs2::FileExt::lock_exclusive(&file)
+                .map_err(|_| environment_error("environment refresh lock failed"))?;
+        }
+        Ok(ProjectEnvironmentLock { _file: file })
+    }
+    fn lock_file(&self, project: &str, extension: &str) -> Result<File, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
         #[cfg(unix)]
@@ -350,15 +399,7 @@ impl ProjectEnvironmentStore {
                 "environment refresh lock must be a regular file",
             ));
         }
-        if nonblocking {
-            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
-                environment_error("Project environment already has an active export or adjustment")
-            })?;
-        } else {
-            fs2::FileExt::lock_exclusive(&file)
-                .map_err(|_| environment_error("environment refresh lock failed"))?;
-        }
-        Ok(ProjectEnvironmentLock { _file: file })
+        Ok(file)
     }
 }
 

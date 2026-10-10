@@ -21,6 +21,7 @@ mod private_overlay;
 mod refresh;
 mod resolver;
 mod review;
+mod revisions;
 mod store;
 mod transfer;
 
@@ -39,6 +40,7 @@ pub use refresh::*;
 pub(crate) use resolver::open_workspace_file;
 pub use resolver::*;
 pub use review::*;
+pub use revisions::*;
 pub use store::*;
 pub use transfer::*;
 

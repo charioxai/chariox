@@ -61,9 +61,13 @@ pub(crate) struct TestWorktree {
 
 impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
+        // MP-08 / MP-10 / MP-11: ordinary workspaces must stay outside protected service scratch.
+        let parent = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = parent.join(format!(
             "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));

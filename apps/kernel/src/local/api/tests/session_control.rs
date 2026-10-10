@@ -1311,10 +1311,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
 fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
     let harness = LocalRouterTestHarness::new();
     let target = serde_json::json!({"machine_id":"machine","target_instance_generation":"generation","slice_ref":null});
-    let draft = serde_json::json!({"project_requirements":[],"folders":[]});
     let future = vec![
-        serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"project","expectedRevision":0,"draft":draft}}),
-        serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"project","expectedRevision":0,"expectedContentDigest":"digest","draft":draft,"acceptedProposalIds":[],"excludedProposalIds":[]}}),
         serde_json::json!({"PlanProjectEnvironment":{"projectId":"project","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[]}}),
         serde_json::json!({"ApplyProjectEnvironment":{"projectId":"project","operationId":"op","planId":"plan","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[],"perItemOptIns":[]}}),
         serde_json::json!({"CheckProjectEnvironment":{"projectId":"project","operationId":"op","revisionDigest":"digest","target":target,"selectedItems":[]}}),
@@ -1458,4 +1455,669 @@ fn envp02a_detect_rejects_foreign_owner_and_wrong_source_without_side_effects() 
             .join("project-environments")
             .exists());
     });
+}
+// MP-08 / MP-10 / MP-11: P02b fail-first shared revision/CAS seam.
+fn envp02b_read(
+    harness: &LocalRouterTestHarness,
+) -> crate::project_environment::ProjectEnvironment {
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetProjectEnvironment(
+            crate::local::GetProjectEnvironmentRequest {
+                project_id: "edit-project".into(),
+            },
+        ))
+        .unwrap();
+    let LocalDaemonResponse::ProjectEnvironment { environment } = response else {
+        panic!("snapshot expected")
+    };
+    environment
+}
+fn envp02b_harness() -> LocalRouterTestHarness {
+    let harness = LocalRouterTestHarness::new();
+    harness.with_app_mut(|app| {
+        app.sessions_mut()
+            .restore_projects(vec![crate::session::RuntimeProject::new(
+                "edit-project",
+                "local",
+                "/plain/folder",
+                "Edit",
+                crate::session::RuntimeProjectKind::Named,
+            )])
+    });
+    harness
+}
+fn envp02b_save(
+    environment: &crate::project_environment::ProjectEnvironment,
+    title: &str,
+) -> LocalDaemonRequest {
+    serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{
+        "projectId":"edit-project", "expectedRevision":environment.revision, "expectedContentDigest":environment.content_digest,
+        "draft":{"project_requirements":[{"requirement_id":"user-node", "title":title,"scope":{"kind":"project"},"origins":environment.project_requirements.iter().find(|r|r.requirement_id=="user-node").map(|r|r.origins.clone()).unwrap_or_default(),"spec":{"kind":"software","identity":"node","version_constraint":">=22","platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null}],
+        "folders":environment.folders.iter().map(|f|serde_json::json!({"folder_id":f.folder_id,"portable_folder_key":f.portable_folder_key,"label":f.label,"optional_git":f.optional_git,"requirements":f.requirements})).collect::<Vec<_>>()},
+        "acceptedProposalIds":[],"excludedProposalIds":[]}})).unwrap()
+}
+#[test]
+fn envp02b_save_and_reopen_revision_preserves_first_edit_and_rejects_stale_writer() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: saved,
+        diff,
+    } = harness.dispatch(envp02b_save(&before, "Editor A")).unwrap()
+    else {
+        panic!("P02b Save must be delivered")
+    };
+    assert_eq!(saved.revision, 1);
+    assert_eq!(
+        saved.parent_revision_digest.as_ref(),
+        Some(&before.content_digest)
+    );
+    assert_eq!(diff.expected_revision, 0);
+    assert_eq!(saved.reviewed_by.as_deref(), Some("local"));
+    assert!(harness
+        .dispatch(envp02b_save(&before, "Editor B"))
+        .unwrap_err()
+        .to_string()
+        .contains("revision conflict"));
+    assert_eq!(
+        envp02b_read(&harness).project_requirements[0].title,
+        "Editor A"
+    );
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: second,
+        ..
+    } = harness
+        .dispatch(envp02b_save(&saved, "Editor A + B"))
+        .unwrap()
+    else {
+        panic!("save expected")
+    };
+    assert_eq!(second.revision, 2);
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let project =
+        harness.with_app(|app| app.sessions().get_project("edit-project").unwrap().clone());
+    assert_eq!(
+        crate::project_environment::ProjectEnvironmentStore::new(&root)
+            .snapshot(&project)
+            .unwrap(),
+        second
+    );
+    harness
+        .dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+            project_id: "edit-project".into(),
+        }))
+        .unwrap();
+    assert!(!root
+        .join("project-environments")
+        .read_dir()
+        .unwrap()
+        .any(|e| e.unwrap().path().extension().is_some_and(|s| s == "json")));
+}
+// MP-08 / MP-10 / MP-11: concurrent editors, the TUI and Detect share one Project lock.
+// A short read in progress must delay, not reject, another reader or a Save.
+fn envp02b_hold_lock(
+    harness: &LocalRouterTestHarness,
+    held: std::time::Duration,
+) -> std::thread::JoinHandle<()> {
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let lock = crate::project_environment::ProjectEnvironmentStore::new(&root)
+        .try_lock("edit-project")
+        .unwrap();
+    std::thread::spawn(move || {
+        std::thread::sleep(held);
+        drop(lock);
+    })
+}
+#[test]
+fn envp02b_short_concurrent_read_delays_instead_of_rejecting_save_and_read() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let reader = envp02b_hold_lock(&harness, std::time::Duration::from_millis(300));
+    let saved = harness.dispatch(envp02b_save(&before, "Editor A"));
+    reader.join().unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } =
+        saved.expect("Save waits for a short concurrent read")
+    else {
+        panic!("save expected")
+    };
+    assert_eq!(environment.revision, 1);
+    let reader = envp02b_hold_lock(&harness, std::time::Duration::from_millis(300));
+    let read = envp02b_read(&harness);
+    reader.join().unwrap();
+    assert_eq!(read.revision, 1);
+}
+#[test]
+fn envp02b_long_lock_holder_fails_save_as_busy_without_mutation() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let detect = envp02b_hold_lock(&harness, std::time::Duration::from_secs(5));
+    let error = harness
+        .dispatch(envp02b_save(&before, "Editor A"))
+        .unwrap_err()
+        .to_string();
+    detect.join().unwrap();
+    assert!(error.contains("busy"), "{error}");
+    assert_eq!(envp02b_read(&harness).revision, 0);
+}
+#[test]
+fn envp02b_edits_authorize_owner_before_any_revision_mutation() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    assert!(harness
+        .dispatch_as_user("foreign", envp02b_save(&before, "Foreign"))
+        .unwrap_err()
+        .to_string()
+        .contains("does not own"));
+    assert_eq!(before, envp02b_read(&harness));
+}
+#[test]
+fn envp02b_invalid_edits_fail_atomically_and_unknown_proposals_cannot_be_accepted() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    for patch in [
+        "scope",
+        "duplicate",
+        "folder",
+        "proposal",
+        "origin",
+        "bounds",
+    ] {
+        let mut value = serde_json::to_value(envp02b_save(&before, "Valid")).unwrap();
+        let request = &mut value["SaveProjectEnvironmentRevision"];
+        match patch {
+            "scope" => {
+                request["draft"]["project_requirements"][0]["scope"] =
+                    serde_json::json!({"kind":"folder","folder_id":"foreign"})
+            }
+            "duplicate" => {
+                let r = request["draft"]["project_requirements"][0].clone();
+                request["draft"]["project_requirements"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(r);
+            }
+            "folder" => request["draft"]["folders"][0]["folder_id"] = serde_json::json!("foreign"),
+            "proposal" => request["acceptedProposalIds"] = serde_json::json!(["unknown"]),
+            "origin" => {
+                request["draft"]["project_requirements"][0]["origins"] = serde_json::json!([{"kind":"detected","folder_id":"foreign","relative_path":"invented","line":1,"evidence_digest":"fake"}])
+            }
+            "bounds" => {
+                request["draft"]["project_requirements"][0]["title"] =
+                    serde_json::json!("x".repeat(1025))
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            harness
+                .dispatch(serde_json::from_value(value).unwrap())
+                .is_err(),
+            "must reject {patch}"
+        );
+        assert_eq!(before, envp02b_read(&harness));
+    }
+}
+#[test]
+fn envp02b_preview_is_read_only_and_stale_preview_shows_current_kernel_revision() {
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let mut value = serde_json::to_value(envp02b_save(&before, "Editor B")).unwrap();
+    harness.dispatch(envp02b_save(&before, "Editor A")).unwrap();
+    let saved = envp02b_read(&harness);
+    value["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"][0]["origins"] =
+        serde_json::to_value(&saved.project_requirements[0].origins).unwrap();
+    let request=serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":0,"draft":value["SaveProjectEnvironmentRevision"]["draft"]}})).unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(request).unwrap()
+    else {
+        panic!("P02b Preview must be delivered")
+    };
+    assert_eq!(diff.expected_revision, saved.revision);
+    assert_eq!(diff.source_digest, saved.content_digest);
+    assert!(diff
+        .requirements
+        .iter()
+        .any(|r| r.kind == crate::project_environment::EnvironmentDiffKind::Changed));
+    assert_eq!(saved, envp02b_read(&harness));
+}
+
+#[test]
+fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history() {
+    use crate::project_environment::*;
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let store = ProjectEnvironmentStore::new(&root);
+    let mut cache:EnvironmentDetectionCache=serde_json::from_value(serde_json::json!({
+        "project_id":"edit-project","evidence_digest":"a".repeat(64),"proposals":(["accept","exclude"].iter().map(|id|serde_json::json!({"proposal_id":format!("proposal-{id}"),"requirement":{"requirement_id":id,"title":id,"scope":{"kind":"folder","folder_id":before.folders[0].folder_id},"origins":[{"kind":"detected_metadata","source":"test-metadata","reference":"safe"}],"spec":{"kind":"software","identity":id,"version_constraint":null,"platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":false,"legacy_entry":null}})).collect::<Vec<_>>()),
+        "operation":{"operation_id":"detect-test","attempt":1,"local_project_id":"edit-project","revision_digest":before.content_digest,"target":{"machine_id":"machine","target_instance_generation":"generation","slice_ref":null},"kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}}})).unwrap();
+    store.save_detection(&cache).unwrap();
+    let detected = envp02b_read(&harness);
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":[detected.proposals.iter().find(|p|p.requirement.requirement_id=="accept").unwrap().proposal_id],"excludedProposalIds":[detected.proposals.iter().find(|p|p.requirement.requirement_id=="exclude").unwrap().proposal_id]}})).unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: saved,
+        diff,
+    } = harness.dispatch(request).unwrap()
+    else {
+        panic!("proposal review Save expected")
+    };
+    assert!(saved.proposals.is_empty());
+    assert!(
+        diff.requirements
+            .iter()
+            .any(|row| row.requirement_id == "accept" && row.kind == EnvironmentDiffKind::Added),
+        "accepted proposal must be in review diff even when proposal ID differs"
+    );
+    assert_eq!(saved.folders[0].requirements[0].requirement_id, "accept");
+    assert!(saved.folders[0].requirements[0].required);
+    let history_path = root
+        .join("project-environments")
+        .read_dir()
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("revisions.json")
+        })
+        .expect("immutable history");
+    let history: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    cache.evidence_digest = "b".repeat(64);
+    cache.proposals[0].requirement.title = "Changed evidence".into();
+    store.save_detection(&cache).unwrap();
+    let refreshed = envp02b_read(&harness);
+    assert!(refreshed.proposals.is_empty());
+    assert_eq!(refreshed.content_digest, saved.content_digest);
+    assert_eq!(refreshed.folders[0].requirements[0].title, "accept");
+    let mut draft = environment_draft_for_test(&refreshed);
+    draft["folders"][0]["requirements"][0]["title"] = serde_json::json!("Reviewed title");
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":saved.revision,"expectedContentDigest":saved.content_digest,"draft":draft,"acceptedProposalIds":[],"excludedProposalIds":[]}})).unwrap();
+    harness.dispatch(request).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    assert_eq!(after["revisions"][0], history["revisions"][0]);
+    assert_eq!(after["revisions"][1], history["revisions"][1]);
+}
+fn environment_draft_for_test(
+    e: &crate::project_environment::ProjectEnvironment,
+) -> serde_json::Value {
+    serde_json::json!({"project_requirements":e.project_requirements,"folders":e.folders.iter().map(|f|serde_json::json!({"folder_id":f.folder_id,"portable_folder_key":f.portable_folder_key,"label":f.label,"optional_git":f.optional_git,"requirements":f.requirements})).collect::<Vec<_>>()})
+}
+
+// MP-08 / MP-10 / MP-11: first Save retains old recipe bytes and records only its digest.
+#[test]
+fn envp02b_first_save_records_legacy_digests_without_rewriting_recipe_or_values() {
+    let harness = envp02b_harness();
+    let definition:crate::session::ProjectEnvironmentDefinition=serde_json::from_value(serde_json::json!({"schema_version":1,"origin":"user_authored","source":"commands","target_platform":"linux-x86_64","source_path":null,"setup_steps":[{"kind":"command","command":"echo private-source-only"}],"validation_commands":["true"]})).unwrap();
+    harness.with_app_mut(|app| {
+        let mut project = app.sessions().get_project("edit-project").unwrap().clone();
+        project.set_environment_definition(definition.clone());
+        app.sessions_mut().restore_projects(vec![project]);
+    });
+    let before = envp02b_read(&harness);
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":0,"expectedContentDigest":before.content_digest,"draft":environment_draft_for_test(&before),"acceptedProposalIds":[],"excludedProposalIds":[]}})).unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } =
+        harness.dispatch(request).unwrap()
+    else {
+        panic!("first Save expected")
+    };
+    assert_eq!(environment.revision, 1);
+    assert_eq!(
+        harness.with_app(|app| app
+            .sessions()
+            .get_project("edit-project")
+            .unwrap()
+            .environment_definition()
+            .cloned()),
+        Some(definition.clone())
+    );
+    let history = root
+        .join("project-environments")
+        .read_dir()
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("revisions.json")
+        })
+        .unwrap();
+    let bytes = std::fs::read(history).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        stored["legacy_digests"],
+        serde_json::json!([definition.digest()])
+    );
+    assert!(!String::from_utf8(bytes)
+        .unwrap()
+        .contains("private-source-only"));
+}
+
+// MP-08 / MP-10 / MP-11: a newer Detect must never authorize an unseen proposal.
+#[test]
+fn envp02b_stale_proposal_review_is_rejected_without_a_new_protocol_field() {
+    use crate::project_environment::*;
+    let harness = envp02b_harness();
+    let before = envp02b_read(&harness);
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let store = ProjectEnvironmentStore::new(&root);
+    let mut cache:EnvironmentDetectionCache=serde_json::from_value(serde_json::json!({
+        "project_id":"edit-project","evidence_digest":"a".repeat(64),"proposals":(["accept","exclude"].iter().map(|id|serde_json::json!({"proposal_id":format!("proposal-{id}"),"requirement":{"requirement_id":id,"title":id,"scope":{"kind":"folder","folder_id":before.folders[0].folder_id},"origins":[{"kind":"detected_metadata","source":"test-metadata","reference":"safe"}],"spec":{"kind":"software","identity":id,"version_constraint":null,"platform":null,"install_scope":"project","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":false,"legacy_entry":null}})).collect::<Vec<_>>()),
+        "operation":{"operation_id":"detect-test","attempt":1,"local_project_id":"edit-project","revision_digest":before.content_digest,"target":{"machine_id":"machine","target_instance_generation":"generation","slice_ref":null},"kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":1,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}}})).unwrap();
+    store.save_detection(&cache).unwrap();
+    let viewed = envp02b_read(&harness);
+    let viewed_id = viewed.proposals[0].proposal_id.clone();
+    cache.proposals[0].requirement.title = "New unseen detection".into();
+    cache.evidence_digest = "c".repeat(64);
+    store.save_detection(&cache).unwrap();
+    let current = envp02b_read(&harness);
+    let request=serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":viewed.revision,"expectedContentDigest":viewed.content_digest,"draft":environment_draft_for_test(&viewed),"acceptedProposalIds":[viewed_id],"excludedProposalIds":[]}})).unwrap();
+    assert!(
+        harness.dispatch(request).is_err(),
+        "must reject unseen changed proposal"
+    );
+    assert_eq!(current, envp02b_read(&harness));
+}
+
+// MP-08 / MP-10 / MP-11: normalized response order must match immutable content identity.
+#[test]
+fn envp02b_saved_digest_matches_returned_folder_order() {
+    let harness = envp02b_harness();
+    harness.with_app_mut(|app| {
+        let mut project = app.sessions().get_project("edit-project").unwrap().clone();
+        project.replace_workspace_ids(vec!["/plain/one".into(), "/plain/two".into()]);
+        app.sessions_mut().restore_projects(vec![project]);
+    });
+    let before = envp02b_read(&harness);
+    let mut request = serde_json::to_value(envp02b_save(&before, "Reviewed")).unwrap();
+    request["SaveProjectEnvironmentRevision"]["draft"]["folders"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: saved, ..
+    } = harness
+        .dispatch(serde_json::from_value(request).unwrap())
+        .unwrap()
+    else {
+        panic!("Save expected")
+    };
+    let request=serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":saved.revision,"draft":environment_draft_for_test(&saved)}})).unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(request).unwrap()
+    else {
+        panic!("Preview expected")
+    };
+    assert_eq!(
+        saved.content_digest, diff.target_digest,
+        "saved digest must represent returned canonical folder order"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: topology affects local bindings, never saved specification bytes.
+#[test]
+fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
+    for (initial, workspaces) in [
+        (vec!["/plain/folder"], vec!["/plain/folder", "/plain/other"]),
+        (vec!["/plain/folder", "/plain/other"], vec!["/plain/other"]),
+        (
+            vec!["/plain/folder", "/plain/other"],
+            vec!["/plain/other", "/plain/folder"],
+        ),
+    ] {
+        let harness = envp02b_harness();
+        harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":initial}})).unwrap()).unwrap();
+        let before = envp02b_read(&harness);
+        let LocalDaemonResponse::ProjectEnvironmentSaved {
+            environment: saved, ..
+        } = harness.dispatch(envp02b_save(&before, "Saved")).unwrap()
+        else {
+            panic!("Save expected")
+        };
+        harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":workspaces}})).unwrap()).unwrap();
+        let current = envp02b_read(&harness);
+        assert_eq!(
+            environment_draft_for_test(&current),
+            environment_draft_for_test(&saved),
+            "workspace mutation must not alter saved specification"
+        );
+        assert_eq!(current.revision, saved.revision);
+        assert_eq!(current.content_digest, saved.content_digest);
+        for (folder, original) in current.folders.iter().zip(&saved.folders) {
+            assert_eq!(
+                folder.local_workspace_binding.as_str(),
+                if workspaces.contains(&original.local_workspace_binding.as_str()) {
+                    original.local_workspace_binding.as_str()
+                } else {
+                    ""
+                }
+            );
+        }
+        let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":current.revision,"draft":environment_draft_for_test(&current)}})).unwrap()).unwrap() else { panic!("Preview expected") };
+        assert_eq!(diff.target_digest, current.content_digest);
+    }
+}
+
+// MP-08 / MP-10 / MP-11: a queued save validates the Project it actually locks.
+#[test]
+fn envp02b_detect_uses_attached_folders_after_saved_folder_detach() {
+    for select_attached in [false, true] {
+        let a = crate::test_support::TestWorktree::new("envp02b-detect-attached");
+        let b = crate::test_support::TestWorktree::new("envp02b-detect-detached");
+        let harness = envp02b_harness();
+        let paths = [
+            a.path().to_string_lossy().into_owned(),
+            b.path().to_string_lossy().into_owned(),
+        ];
+        let update = |paths: &[String]| {
+            serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":paths}})).unwrap()
+        };
+        harness.dispatch(update(&paths)).unwrap();
+        let before = envp02b_read(&harness);
+        harness.dispatch(envp02b_save(&before, "Saved")).unwrap();
+        harness.dispatch(update(&paths[..1])).unwrap();
+        let saved = envp02b_read(&harness);
+        let attached = &before.folders[0].folder_id;
+        let detached = &before.folders[1].folder_id;
+        let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
+        let detect = |folders: Vec<&str>| {
+            serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"attached-detect","folderIds":folders,"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()
+        };
+        let response = harness
+            .dispatch(detect(if select_attached {
+                vec![attached]
+            } else {
+                vec![]
+            }))
+            .expect("Detect must not preflight a detached historical folder");
+        let LocalDaemonResponse::ProjectEnvironment { environment } = response else {
+            panic!("Environment expected")
+        };
+        assert_eq!(
+            environment.operations[0].selected_items,
+            vec![attached.clone()]
+        );
+        assert_eq!(
+            environment.operations[0].phase,
+            crate::project_environment::EnvironmentOperationPhase::Ready
+        );
+        assert_eq!(
+            environment_draft_for_test(&environment),
+            environment_draft_for_test(&saved)
+        );
+        assert_eq!(environment.content_digest, saved.content_digest);
+        assert!(harness
+            .dispatch(detect(vec![detached]))
+            .unwrap_err()
+            .to_string()
+            .contains("folder does not belong"));
+    }
+}
+
+// MP-08 / MP-10 / MP-11: a queued save validates the Project it actually locks.
+#[test]
+fn envp02b_waiting_save_reloads_topology_at_zero_and_saved_revision() {
+    for save_first in [false, true] {
+        let harness = envp02b_harness();
+        let initial = envp02b_read(&harness);
+        if save_first {
+            harness.dispatch(envp02b_save(&initial, "Saved")).unwrap();
+        }
+        let before = envp02b_read(&harness);
+        let mut value = serde_json::to_value(envp02b_save(&before, "Queued")).unwrap();
+        value["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["label"] =
+            serde_json::json!("Detached edit");
+        let LocalDaemonRequest::SaveProjectEnvironmentRevision(request) =
+            serde_json::from_value(value).unwrap()
+        else {
+            panic!("Save request")
+        };
+        let runtime = harness.runtime_state();
+        let holder = envp02b_hold_lock(&harness, std::time::Duration::from_millis(400));
+        let task = harness.spawn_test_task(async move {
+            runtime
+                .save_project_environment_revision(request, "local")
+                .await
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Fixture mutation represents a topology update completed before Save owns the lock.
+        harness.with_app_mut(|app| {
+            let mut project = app.sessions().get_project("edit-project").unwrap().clone();
+            project.replace_workspace_ids(vec!["/plain/other".into()]);
+            app.sessions_mut().restore_projects(vec![project]);
+        });
+        holder.join().unwrap();
+        assert!(
+            harness.block_on_test_task(task).unwrap().is_err(),
+            "queued save must reject detached folder edits"
+        );
+        assert_eq!(envp02b_read(&harness).revision, before.revision);
+    }
+}
+
+// MP-08 / MP-10 / MP-11: user topology mutation shares save admission.
+#[test]
+fn envp02b_workspace_update_waits_for_environment_lock() {
+    let harness = envp02b_harness();
+    let holder = envp02b_hold_lock(&harness, std::time::Duration::from_millis(400));
+    let runtime = harness.runtime_state();
+    let task = harness.spawn_test_task(async move {
+        runtime
+            .update_project_workspaces("edit-project", vec!["/plain/other".into()], "local")
+            .await
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !task.is_finished(),
+        "workspace mutation must wait for save admission"
+    );
+    holder.join().unwrap();
+    harness.block_on_test_task(task).unwrap().unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: accepting a detected item explicitly reviews a new live folder.
+#[test]
+fn envp02b_accept_detected_requirement_from_new_attachment_preserves_history() {
+    let a = crate::test_support::TestWorktree::new("envp02b-attach-review-a");
+    let b = crate::test_support::TestWorktree::new("envp02b-attach-review-b");
+    std::fs::write(b.path().join(".env.example"), "PUBLIC_SAMPLE=example\n").unwrap();
+    let harness = envp02b_harness();
+    let paths = [
+        a.path().to_string_lossy().into_owned(),
+        b.path().to_string_lossy().into_owned(),
+    ];
+    let update = |paths: &[String]| {
+        serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":paths}})).unwrap()
+    };
+    harness.dispatch(update(&paths[..1])).unwrap();
+    let initial = envp02b_read(&harness);
+    harness.dispatch(envp02b_save(&initial, "Saved A")).unwrap();
+    let saved_a = envp02b_read(&harness);
+    harness.dispatch(update(&paths)).unwrap();
+    let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
+    let LocalDaemonResponse::ProjectEnvironment {environment:detected} = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"attach-b-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
+    assert_eq!(
+        environment_draft_for_test(&detected),
+        environment_draft_for_test(&saved_a)
+    );
+    let proposal = detected.proposals.iter().find(|p| matches!(&p.requirement.scope,crate::project_environment::RequirementScope::Folder {folder_id} if folder_id != &saved_a.folders[0].folder_id)).expect("new B must have a static proposal");
+    let mut request = serde_json::to_value(envp02b_save(&detected, "Saved A")).unwrap();
+    request["SaveProjectEnvironmentRevision"]["acceptedProposalIds"] =
+        serde_json::json!([proposal.proposal_id]);
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: reviewed,
+        ..
+    } = harness
+        .dispatch(serde_json::from_value(request).unwrap())
+        .expect("accepting a current B proposal must create a reviewed B folder")
+    else {
+        panic!("Save expected")
+    };
+    assert_eq!(reviewed.revision, saved_a.revision + 1);
+    assert_eq!(reviewed.folders.len(), 2);
+    assert!(reviewed
+        .folders
+        .iter()
+        .flat_map(|f| &f.requirements)
+        .any(|r| r.requirement_id == proposal.requirement.requirement_id));
+    assert_eq!(
+        reviewed.parent_revision_digest.as_deref(),
+        Some(saved_a.content_digest.as_str())
+    );
+    assert_eq!(envp02b_read(&harness).folders, reviewed.folders);
+}
+
+// MP-08 / MP-10 / MP-11: explicit restoration trusts only immutable kernel history.
+#[test]
+fn envp02b_restores_deleted_requirement_with_trusted_history_and_rejects_forgery() {
+    let harness = envp02b_harness();
+    let initial = envp02b_read(&harness);
+    harness
+        .dispatch(envp02b_save(&initial, "Original Node"))
+        .unwrap();
+    let saved = envp02b_read(&harness);
+    let mut removal = serde_json::to_value(envp02b_save(&saved, "Original Node")).unwrap();
+    removal["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"] =
+        serde_json::json!([]);
+    harness
+        .dispatch(serde_json::from_value(removal).unwrap())
+        .unwrap();
+    let deleted = envp02b_read(&harness);
+    let mut restoration = serde_json::to_value(envp02b_save(&saved, "Reviewed Node")).unwrap();
+    let body = &mut restoration["SaveProjectEnvironmentRevision"];
+    body["expectedRevision"] = serde_json::json!(deleted.revision);
+    body["expectedContentDigest"] = serde_json::json!(deleted.content_digest);
+    let preview = serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":deleted.revision,"draft":body["draft"]}});
+    let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness
+        .dispatch(serde_json::from_value(preview).unwrap())
+        .expect("reviewed restoration must retain trusted historical provenance")
+    else {
+        panic!("Diff expected")
+    };
+    assert!(diff
+        .requirements
+        .iter()
+        .any(|row| row.requirement_id == "user-node"
+            && row.kind == crate::project_environment::EnvironmentDiffKind::Added));
+    let mut forged = restoration.clone();
+    forged["SaveProjectEnvironmentRevision"]["draft"]["project_requirements"][0]["origins"][0]
+        ["user_id"] = serde_json::json!("forged");
+    assert!(harness
+        .dispatch(serde_json::from_value(forged).unwrap())
+        .unwrap_err()
+        .to_string()
+        .contains("provenance"));
+    let LocalDaemonResponse::ProjectEnvironmentSaved { environment, .. } = harness
+        .dispatch(serde_json::from_value(restoration).unwrap())
+        .unwrap()
+    else {
+        panic!("Save expected")
+    };
+    assert_eq!(environment.project_requirements[0].title, "Reviewed Node");
+    assert_eq!(
+        environment.project_requirements[0].origins,
+        saved.project_requirements[0].origins
+    );
+    assert_eq!(environment.revision, deleted.revision + 1);
 }

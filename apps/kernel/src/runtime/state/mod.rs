@@ -94,6 +94,7 @@ mod project_environment_manifest;
 mod project_environment_placement;
 mod project_environment_remote;
 mod project_environment_review;
+mod project_environment_revision;
 mod project_environment_worker_export;
 mod project_environment_workspaces;
 mod project_prompt_promotion;

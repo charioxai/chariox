@@ -2,7 +2,7 @@
 use super::*;
 #[test]
 fn envp01_aggregate_protocol_471_request_rejects_session_and_agent_context() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 471);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "project-1".into(),
@@ -20,7 +20,7 @@ fn envp01_aggregate_protocol_471_request_rejects_session_and_agent_context() {
 #[test]
 fn envp01_full_environment_shapes_require_protocol_bump() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 471);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let contract = include_str!("../../../../project_environment/aggregate.rs");
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(
@@ -37,7 +37,7 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
 fn envp01_get_response_snapshot_hash() {
     use crate::project_environment::*;
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 471);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 472);
     let project = crate::session::RuntimeProject::new(
         "project-1",
         "local",

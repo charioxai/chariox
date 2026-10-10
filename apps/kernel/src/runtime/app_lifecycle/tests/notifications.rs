@@ -458,6 +458,25 @@ fn configuration_change_carries_effective_grants_and_skips_idempotent_writes() {
         frames(&observations, 0)[2]["params"]["data"]["current"],
         json!({"connections":[]})
     );
+    // Receipt of the revocation frame precedes settlement of its callback.
+    // Wait for a subsequent acknowledged request on the same owner thread so
+    // normal shutdown does not race cancellation of the revocation callback.
+    let entry = control
+        .lifecycle()
+        .0
+        .entries
+        .lock()
+        .unwrap()
+        .get(&("alice".to_string(), "installed".to_string()))
+        .unwrap()
+        .clone();
+    entry
+        .control
+        .notify(
+            "prepare_update",
+            json!({"request_id":"configuration-settled"}),
+        )
+        .unwrap();
     control.lifecycle().shutdown_blocking().unwrap();
     assert_eq!(
         names(&frames(&observations, 0)),
@@ -465,6 +484,7 @@ fn configuration_change_carries_effective_grants_and_skips_idempotent_writes() {
             "startup",
             "configuration_change",
             "configuration_change",
+            "prepare_update",
             "shutdown"
         ]
     );
