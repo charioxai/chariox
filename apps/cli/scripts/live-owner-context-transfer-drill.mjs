@@ -44,10 +44,10 @@ async function port() {
   const server = net.createServer(); await new Promise(r=>server.listen(0,'127.0.0.1',r))
   const value = server.address().port; await new Promise(r=>server.close(r)); return value
 }
-function start(name, command, args, env) {
+function start(name, command, args, env, captureOutput = true) {
   const child = spawnOwned(command,args,{cwd:repo,env,detached:true,retainLeader:true,stdio:['pipe','pipe','pipe']})
   child.output = ''; child.name = name; child.command = command; child.args = args; children.push(child)
-  child.stdout.on('data',b=>{child.output+=sanitize(b.toString())})
+  if (captureOutput) child.stdout.on('data',b=>{child.output+=sanitize(b.toString())})
   child.stderr.on('data',b=>{child.output+=sanitize(b.toString())})
   child.done = new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}))})
   return child
@@ -228,6 +228,8 @@ try {
   await writeFile(path.join(workspace,'bootstrap.sh'),ordinary)
   const encodedMode=scenario.startsWith('utf16-')
   const duplicateJson=scenario.startsWith('duplicate-json-')
+  const vaultTransfer=encodedMode||duplicateJson
+  secrets.push('synthetic-canary')
   const duplicateBytes=Buffer.from('{"api_key":"synthetic-canary","api_key":""}')
   const kernelOnly=scenario==='kernel-only'
   const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
@@ -294,6 +296,31 @@ try {
     source.identity=[...ownerProfiles.values()].find(actor=>actor.profile.kernelId!==target.identity.kernelId).profile
     await capture('01-legacy-project-enrolled')
     steps.push({name:'local-project-and-session-created-before-distinct-cloud-owner-link',mpItems:['MP-08','MP-10','MP-11'],sessionOwner:session.owner_user_id,enrolledOwner:user})
+  }
+  if(vaultTransfer) {
+    // MP-08/MP-10/MP-11: files and history now require the owner's Vault at
+    // both ends. Supply disposable passphrases through the real masked TUI.
+    async function unlock(kernel,label) {
+      const passphrase=randomBytes(32).toString('base64url');secrets.push(passphrase)
+      const submitted=automation({action:'submit_prompt',prompt:'/credential vault manage'}).catch(()=>null)
+      const prompt=await until(async()=> (await automation({action:'snapshot'})).interactions?.find(i=>i.customChoice?.input_kind==='secret'||i.customChoice?.inputKind==='secret'),label+' masked Vault prompt')
+      await automation({action:'interaction_custom_reply',interactionId:prompt.id,reply:passphrase})
+      await automation({action:'interaction_submit',choiceIndex:prompt.choices.length})
+      const lease=await until(async()=> (await automation({action:'snapshot'})).interactions?.find(i=>i.choices?.some(c=>c.id==='unlock_kernel')),label+' Vault lease')
+      await automation({action:'interaction_submit',choiceIndex:lease.choices.findIndex(c=>c.id==='unlock_kernel')})
+      await submitted
+      assert((await rpc(kernel,{GetCredentialVaultStatus:null})).CredentialVaultStatus.status.unlocked)
+      steps.push({name:label+'-Vault-unlocked-through-masked-TUI',mpItems:['MP-08','MP-10','MP-11']})
+    }
+    await unlock(source,'source')
+    const sourceSocket=automationSocket,sourceTui=tui
+    const control=path.join(workRoot,'target-control');await mkdir(control)
+    automationSocket=path.join(root,'target-automation.sock')
+    tui=start('target-tui','python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),path.join(binaryDir,'chariox-cli'),
+      '--kernel-url',target.url,'--automation-socket',automationSocket,'--create-session','--workspace',control,'--worktree',control,'--provider','codex','--model','gpt-5.5'],target.env)
+    await until(async()=> (await automation({action:'snapshot'})).session?.id,'target TUI')
+    await unlock(target,'target')
+    automationSocket=sourceSocket;tui=sourceTui
   }
   const selection={target:{relayRealmId:realm,machineId:target.identity.machineId,kernelId:target.identity.kernelId,
     relayPublicKey:presences.get(target.identity.kernelId).metadata.relay_public_key,keyThumbprint:target.identity.publicKeyThumbprint},
@@ -389,12 +416,34 @@ try {
       assert.equal(await readFile(path.join(launch.development.repositories[0].workspacePath,'bootstrap.sh'),'utf8'),ordinary)
       steps.push({name:'owner-repeat-copy-adds-distinct-target-project',mpItems:['MP-07','MP-08','MP-10'],first:launch.development.projectId,repeated:again.development.projectId})
     }
-  } else if(encodedMode || packagedAttack || duplicateJson) {
-    const refused=await copy('02-encoded-refusal')
-    assert.equal(refused.phase,'failed','MP-11 credential-bearing context must be refused on real copy path')
+  } else if(vaultTransfer) {
+    const cancelled=await copy('02-vault-cancel',false,true)
+    assert.equal(cancelled.failureCode,'managed_context_review_cancelled')
+    assert.equal(cancelled.acceptedBytes,0);assert.equal(cancelled.receipt??null,null)
+    const approved=await copy('03-vault-approved')
+    assert.equal(approved.phase,'completed');assert(approved.receipt)
+    const launch=(await cli('04-vault-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
+    const imported=launch.development.repositories[0].workspacePath
+    const file=duplicateJson?'settings.json':'bootstrap.ps1'
+    const expected=scenario.endsWith('-history')?(duplicateJson?Buffer.from('{}'):safeScript):(duplicateJson?duplicateBytes:canary)
+    assert((await readFile(path.join(imported,file))).equals(expected),'MP-11 Vault restored exact workspace bytes')
+    if(scenario.endsWith('-history')) {
+      // Compare without printing the historical secret to helper output/logs.
+      const historical=start('verify-history','git',['-C',imported,'show','HEAD~1:'+file],target.env,false)
+      const chunks=[];historical.stdout.on('data',b=>chunks.push(b));historical.stdin.end()
+      assert.equal((await historical.done).code,0)
+      assert(Buffer.concat(chunks).equals(duplicateJson?duplicateBytes:canary),'MP-11 Vault preserved secret-bearing Git history')
+    }
+    await assert.rejects(access(path.join(source.outbound,approved.contextId)))
+    const targetVault=(await rpc(target,{GetCredentialVaultStatus:null})).CredentialVaultStatus.status
+    assert(targetVault.unlocked)
+    steps.push({name:'owner-approved-credential-files-and-history-restored-through-Vault',mpItems:['MP-08','MP-10','MP-11'],mode,contextId:approved.contextId})
+  } else if(packagedAttack) {
+    const refused=await copy('02-packaged-refusal')
+    assert.equal(refused.phase,'failed','MP-11 Extension secret admission remains separate')
     assert.match(JSON.stringify(refused.error??refused),/credential-free context/)
     assert.equal(refused.receipt??null,null,'MP-11 no destination receipt on source refusal')
-    steps.push({name:duplicateJson?'duplicate-json-source-refusal-before-transfer':'encoded-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
+    steps.push({name:'packaged-extension-source-refusal-before-transfer',mpItems:['MP-08','MP-10','MP-11'],mode})
   } else {
   // MP-08/MP-10: inject on the first copy into a fresh target.
   const broken=await copy('02-storage-fault',true);assert.equal(broken.phase,'failed');assert(broken.retryable&&broken.receipt);assert(faultInjected)
@@ -463,7 +512,7 @@ finally {
     harnessSha256:await sha256(fileURLToPath(import.meta.url)),
     binaries:Object.fromEntries(await Promise.all(['chariox-kernel','chariox-cli','chariox-relay'].map(async name=>[name,await sha256(path.join(binaryDir,name))]))),
     client:Object.fromEntries(await Promise.all(['index.js','cli-main.js','context-command.js','kernel-feature-minimum.js'].map(async name=>[name,await sha256(path.join(repo,'apps/cli/dist',name))]))),
-    limits:['Cloud control plane is loopback fixture; Cloud web flow is unavailable','No provider run or credential transfer is part of this credential-free copy drill','PNG captures render the real TUI PTY screen']}
+    limits:['Supplementary regression: Cloud control plane is loopback fixture; hosted web/provider acceptance is separate','Project file/history Vault transfer is exercised only by UTF-16/duplicate-JSON scenarios; provider account credentials are excluded','PNG captures render the real TUI PTY screen']}
   await writeFile(path.join(evidence,'report.json'),JSON.stringify(report,null,2))
   console.log('MP-05/MP-08/MP-10/MP-11 owner context real-path drill',report.result,'cleanup',cleanup)
   if(failed)console.log(failed)
