@@ -22,6 +22,8 @@ import {
   createCliWaitingRoomComposition,
   type CliWaitingRoomCompositionDeps,
 } from "./cli-waiting-room-composition.js"
+import { CloudClient } from "./cloud-client.js"
+import { createHash } from "node:crypto"
 import { LocalIpcClient } from "./ipc.js"
 import {
   createMutableLocalIpcClient,
@@ -112,7 +114,8 @@ reimageTest("keeps destructive admission local and launches the exact replacemen
         const completed = await harness.composition.reimageManagedEnvironment("environment-1", "confirm")
 
         assert.match(completed.message, /pivoted to the fresh kernel, and passed Project setup/)
-        assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 1)
+        assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 0)
+        assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage")).length, 1)
         assert.equal(requestCount(harness.old, "RequestManagedEnvironmentReimage"), 0)
         assert.equal(requestCount(harness.replacement, "RequestManagedEnvironmentReimage"), 0)
         assert.deepEqual(resolveTargets(harness.local), [
@@ -188,7 +191,8 @@ reimageTest("MP-02/MP-08/MP-11 stopped enrolled launch retains the selected seco
     assert.equal(harness.state().selectedKernelRef, "kernel-selected")
     assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
     assert.equal(requestCount(harness.local, "CreateSession"), 0)
-    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentLifecycle"), 1)
+    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentLifecycle"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/lifecycle")).length, 1)
     assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 0)
     assert.deepEqual(harness.attachments, [{ sessionId: "session-new", created: true }])
   } finally { harness.cleanup() }
@@ -228,12 +232,14 @@ reimageTest("selecting a ready managed machine browses its workspace without rep
         session_count: 0, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
     })
     assert.equal(harness.projects()[0]?.workspace_id, "/home/managed")
-    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage/preflight")).length, 1)
     assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
     assert.equal(harness.observedThroughEndpoint, OLD_ENDPOINT)
     assert.equal(harness.client.currentClient(), harness.local.client)
     await harness.composition.reimageManagedEnvironment("environment-1", "confirm")
-    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 1)
+    assert.equal(requestCount(harness.local, "RequestManagedEnvironmentReimage"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage")).length, 1)
     assert.equal(requestCount(harness.old, "RequestManagedEnvironmentReimage"), 0)
     assert.equal(requestCount(harness.replacement, "RequestManagedEnvironmentReimage"), 0)
     assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
@@ -256,7 +262,8 @@ reimageTest("remote to local return restores local inventory scope and managed r
     harness.selectManagedWithoutReconcile()
     const prepared = await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
     assert.match(prepared.message, /Destructive confirmation required/)
-    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 1)
+    assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
+    assert.equal(harness.cloudPaths.filter(path => path.endsWith("/reimage/preflight")).length, 1)
     assert.equal(requestCount(harness.old, "GetManagedEnvironmentReimagePreflight"), 0)
     assert.equal(harness.client.currentClient().socketPath, LOCAL_ENDPOINT)
   } finally { harness.cleanup() }
@@ -297,9 +304,9 @@ reimageTest("ready managed to New machine restores home source before Current Pr
       managedDevelopmentMode: "current_project", managedKernelContext: "empty",
     })
     await harness.composition.startSessionFromWaitingRoomDefaults()
-    assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 1)
-    const request = harness.local.requests.find(request => requestKind(request) === "CreateManagedEnvironment")
-    assert.deepEqual(requestPayload(request, "CreateManagedEnvironment").contextPlan, {
+    assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 0)
+    const request = harness.cloudRequests.find(request => request.path === "/managed-environments" && request.body)
+    assert.deepEqual(request?.body.contextPlan, {
       sourceTargetId: "kernel-local", kernelContext: "empty", developmentSetup: contextPlan.developmentSetup,
       providerAccounts: { kind: "none" }, gitCredentials: { kind: "none" },
     })
@@ -354,6 +361,43 @@ reimageTest("returning to the original home does not grant local authority to a 
     await assert.rejects(harness.composition.reimageManagedEnvironment("environment-1", "prepare"), /Return to the local kernel/)
     assert.equal(requestCount(harness.local, "GetManagedEnvironmentReimagePreflight"), 0)
   } finally { harness.cleanup() }
+})
+
+reimageTest("MP-08 / MP-11 signed-in catalog and creation use human HTTP with kernel-owned launch", async router => {
+  const harness = createHarness(router)
+  try {
+    await harness.initialize()
+    assert.equal(harness.composition.waitingRoomTargets().managedEnvironmentCatalog?.computeClasses[0]?.computeClass, "agent-small")
+    await harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {sourceTargetId: null, kernelContext: "empty", developmentSetup: {kind: "empty"}, providerAccounts: {kind: "none"}, gitCredentials: {kind: "none"}}})
+    assert.ok(harness.cloudPaths.includes("/managed-environments"))
+    assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 0)
+    assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 1)
+    assert.equal(requestCount(harness.replacement, "CreateSession"), 1)
+  } finally {harness.cleanup()}
+})
+
+// MP-08 / MP-11: exercise the production callbacks with enrollment-only status
+// and terminal-private human authority, including rejection before STOP.
+for (const action of ["create", "reimage"] as const) for (const denied of [false, true]) reimageTest(`MP-08 / MP-11 selected-provider ${action} ${denied ? "fails before Cloud mutation" : "preflights on the source kernel"}`, async router => {
+  const plan = {...emptyPlan(), providerAccounts: {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "fixture"}]}}
+  const harness = createHarness(router, {contextPlan: plan, ...(denied ? {portabilityFailure: new Error("no transferable credentials")} : {})})
+  try {
+    await harness.initialize()
+    if (action === "reimage") await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
+    const before = harness.cloudPaths.length
+    const request = action === "reimage"
+      ? harness.composition.reimageManagedEnvironment("environment-1", "confirm")
+      : harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {sourceTargetId: null, kernelContext: plan.kernelContext, developmentSetup: plan.developmentSetup, providerAccounts: plan.providerAccounts, gitCredentials: plan.gitCredentials}})
+    if (denied) await assert.rejects(request, /no transferable credentials/)
+    else await request
+    assert.equal(requestCount(harness.local, "PreflightProviderAccountPortability"), 1)
+    const preflightRequest = harness.local.requests.find(request => requestKind(request) === "PreflightProviderAccountPortability")
+    assert.deepEqual(preflightRequest, {PreflightProviderAccountPortability: {providerAccounts: plan.providerAccounts}})
+    assert.equal(requestCount(harness.old, "PreflightProviderAccountPortability"), 0)
+    assert.equal(requestCount(harness.replacement, "PreflightProviderAccountPortability"), 0)
+    if (denied) assert.equal(harness.cloudPaths.length, before, "no STOP/provisioning after failed preflight")
+    else assert.ok(harness.cloudPaths.slice(before).some(path => action === "reimage" ? path.endsWith("/reimage") : path === "/managed-environments"))
+  } finally {harness.cleanup()}
 })
 
 type TestEndpoint = {
@@ -507,6 +551,7 @@ function createHarness(router: TestRouter, options: {
   contextPlan?: ManagedEnvironmentContextPlan
   setupFailure?: Error
   attachFailure?: Error
+  portabilityFailure?: Error
   stoppedEnrolled?: boolean
   interactivePlacement?: boolean
   managedWorktrees?: Promise<unknown>
@@ -540,7 +585,12 @@ function createHarness(router: TestRouter, options: {
   let observedThroughEndpoint: string | null = null
   let environmentReads = 0
   const local = router.endpoint(LOCAL_ENDPOINT, async (request) => {
+    if (/^(ListManagedEnvironmentCatalog|GetManagedEnvironment|CreateManagedEnvironment|RequestManagedEnvironment|PrepareManagedEnvironment)/.test(requestKind(request))) throw new Error("Cloud session is unavailable: kernel has enrollment authority only")
+    if (requestKind(request) === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: "http://127.0.0.1:44123", account_id: "account-1", user_id: "user-1", kernel_id: "kernel-local", kernel_enrolled: true}}}
     switch (requestKind(request)) {
+      case "PreflightProviderAccountPortability":
+        if (options.portabilityFailure) throw options.portabilityFailure
+        return {ProviderAccountPortabilityPreflightPassed: {}}
       case "GetWaitingRoomPublicSnapshot":
         if (options.localLaunchTarget) {
           const response = snapshotResponse("kernel-local", "machine-local", contextPlan)
@@ -605,6 +655,7 @@ function createHarness(router: TestRouter, options: {
     if (["ListWorkspaceWorktrees", "GetWorkspaceGitOverview"].includes(requestKind(request)) && options.managedFilesystemRequest) {
       return options.managedFilesystemRequest(request)
     }
+    if (requestKind(request) === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: "http://127.0.0.1:44123", account_id: "account-1", user_id: "user-1", kernel_enrolled: true}}}
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
         if (options.managedInventory) return options.managedInventory
@@ -645,6 +696,7 @@ function createHarness(router: TestRouter, options: {
   })
   const session = runtimeSession(contextPlan)
   const replacement = router.endpoint(REPLACEMENT_ENDPOINT, async (request) => {
+    if (requestKind(request) === "CloudRelayStatus") return {CloudRelayStatus: {profile: {api_url: "http://127.0.0.1:44123", account_id: "account-1", user_id: "user-1", kernel_enrolled: true}}}
     switch (requestKind(request)) {
       case "GetWaitingRoomPublicSnapshot":
         return snapshotResponse(options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
@@ -720,7 +772,30 @@ function createHarness(router: TestRouter, options: {
     typeof update === "function" ? (update as (value: T) => T)(current) : update
   )
   const noop = () => {}
+  // MP-08 / MP-11: terminal authority never enters the enrolled kernel.
+  const cloudPaths: string[] = []
+  const cloudRequests: Array<{path: string; body: any}> = []
+  const previousFetch = globalThis.fetch
+  const credential = {profile: {apiUrl: "http://127.0.0.1:44123", accountId: "account-1", userId: "user-1", clientId: "terminal"}, accessToken: "synthetic-human-access", publicKeyThumbprint: "a".repeat(64)}
+  const cloudClient = new CloudClient({load: async () => credential, session: async () => credential} as any, () => ({publicKeyThumbprint: credential.publicKeyThumbprint}) as any)
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input)), body = init?.body ? JSON.parse(String(init.body)) : null
+    cloudPaths.push(url.pathname)
+    cloudRequests.push({path: url.pathname, body})
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-human-access")
+    if (body) {assert.equal(body.accountId, "account-1"); assert.equal(body.kernelCredential, undefined)}
+    if (url.pathname.endsWith("/options")) return Response.json({computeClasses: catalog.computeClasses, contextSources: catalog.contextSources})
+    if (url.pathname === "/managed-environments" && !body) return Response.json({environments: catalog.environments})
+    if (url.pathname === "/managed-environments" && body) return Response.json({...reimageResult(replacementEnvironment, body.clientRequestId), operation: {...reimageResult(replacementEnvironment, body.clientRequestId).operation, kind: "create"}})
+    if (url.pathname.endsWith("/reimage/preflight")) return Response.json(preflight())
+    if (url.pathname.endsWith("/reimage/stop")) return Response.json({environment: {...oldEnvironment, runtimeGeneration: 3, desiredState: "stopped", observedState: "stopped", desiredRevision: 8, observedRevision: 8}, operation: {...reimageResult(replacementEnvironment, body.idempotencyKey).operation, kind: "stop", idempotencyKey: `reimage-stop:${createHash("sha256").update(body.idempotencyKey).digest("hex")}`}})
+    if (url.pathname.endsWith("/reimage")) return Response.json(reimageResult(replacementEnvironment, body.idempotencyKey))
+    if (url.pathname.endsWith("/lifecycle")) return Response.json({...reimageResult(replacementEnvironment, body.idempotencyKey), operation: {...reimageResult(replacementEnvironment, body.idempotencyKey).operation, kind: body.action}})
+    if (url.pathname === "/managed-environments/environment-1") return Response.json({environment: options.stoppedEnrolled && environmentReads++ === 0 ? oldEnvironment : replacementEnvironment})
+    throw new Error(`unexpected Cloud route ${url.pathname}`)
+  }
   const deps: CliWaitingRoomCompositionDeps = {
+    cloudClient,
     client: mutableClient,
     options: { clientId: "client-1", provider: "opencode", model: "opencode/gpt-5.4", effort: "high", targetDaemonId: options.initialTargetKernelId,
       ...(options.initialTargets ? { detached: true, ...options.initialTargets } : {}),
@@ -806,6 +881,8 @@ function createHarness(router: TestRouter, options: {
 
   return {
     composition,
+    cloudPaths,
+    cloudRequests,
     initialize: () => composition.refreshWaitingRoomDataNow(),
     workspaceCommand: async (path: string) => {
       const commands = createCliCommandActionComposition({ ...deps, ...composition,
@@ -833,6 +910,8 @@ function createHarness(router: TestRouter, options: {
     selectKernel: (kernel: string) => { waitingRoomState = { ...waitingRoomState, selectedKernelRef: kernel }; ownershipRevision += 1 },
     get observedThroughEndpoint() { return observedThroughEndpoint },
     cleanup() {
+      cloudClient.stop()
+      globalThis.fetch = previousFetch
       __setWaitingRoomWorktreeInventoryForTest(null)
       if (previousCacheDirectory === undefined) {
         delete process.env.CHARIOX_WAITING_ROOM_INVENTORY_CACHE_DIR
@@ -1017,7 +1096,7 @@ function reimageResult(
       requestedByUserId: "user-1",
       kind: "reimage",
       idempotencyKey,
-      requestDigest: "sha256:request",
+      requestDigest: `sha256:${"a".repeat(64)}`,
       desiredRevision: 8,
       status: "succeeded",
       attempt: 1,

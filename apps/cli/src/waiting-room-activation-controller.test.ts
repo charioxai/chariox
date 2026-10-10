@@ -21,7 +21,7 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 
-test("waiting room activation connects detached kernel before control actions", async () => {
+test("detached waiting room Login does not require a kernel connection", async () => {
   const harness = createHarness({
     kernelConnected: false,
     controlDecision: { action: "cloud" },
@@ -30,7 +30,6 @@ test("waiting room activation connects detached kernel before control actions", 
   await harness.controller.activate()
 
   assert.deepEqual(harness.calls, [
-    "connectKernel",
     "handleCloudCommand",
   ])
 })

@@ -97,6 +97,9 @@ mod tests {
 
     fn profile(api_url: String) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url,
             account_id: "account-fixture".into(),
             user_id: "user-fixture".into(),
@@ -198,7 +201,7 @@ mod tests {
     async fn shared_relay_inventory_still_prefers_machine_auth_with_exact_metadata_scope() {
         let (api_url, server) = token_server();
         let profile = profile(api_url);
-        super::super::issue_cloud_relay_inventory_discovery_token(&profile, "owner-kernel")
+        super::super::issue_cloud_relay_inventory_discovery_token(&profile, "owner-kernel", None)
             .await
             .unwrap();
         let body = server.join().unwrap().unwrap();

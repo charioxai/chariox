@@ -1,3 +1,4 @@
+import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
@@ -9,7 +10,6 @@ import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
-import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
@@ -33,12 +33,8 @@ import {
   updateAgentSubstitutes,
 } from "./agent-api.js"
 import {
-  acceptCloudSessionInvite,
-  createCloudSessionInvite,
   createSessionInvite,
   joinSessionInvite,
-  listCloudCollaborators,
-  listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import {
   getUserConfig,
@@ -105,6 +101,8 @@ import {
   saveRelayCloudProfile,
   saveUiPreferences,
 } from "./preferences.js"
+import type { CloudClient } from "./cloud-client.js"
+import { createCloudClientCommands } from "./cloud-client-command.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -141,6 +139,7 @@ import {
 import {
   configureRelay,
   connectKernelCloudRelay,
+  getKernelCloudRelayProfile,
   getRelayStatus,
   logoutCloudRelay,
   pairKernelCloudRelayClient,
@@ -195,6 +194,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  cloudClient?: CloudClient
+  kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
@@ -579,17 +580,25 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
-    getCloudRelayProfile: () => relayCloudProfile(preferencesState()),
+    ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      client: deps.cloudClient,
+      isKernelConnected: () => deps.kernelConnected?.() ?? true,
+      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
+      notice: appendCloudNotice,
+      saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
+      refresh: refreshWaitingRoomData,
+      openUrl: openExternalUrl,
+    }) } : {}),
+    getCloudRelayProfile: async () => deps.kernelConnected?.() === false
+      ? await deps.cloudClient?.profile() ?? null
+      : await getKernelCloudRelayProfile(client),
+    getCloudControlProfile: () => getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected?.() === false ? undefined : client),
+    getCloudCollaborationProfile: () => getCloudClientControlProfile(deps.cloudClient),
+    connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)
       setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile))
     },
-    bootstrapCloudRelay: (apiUrl, email, accountSlug) =>
-      bootstrapCloudRelayProfile({
-        apiUrl,
-        email,
-        ...(accountSlug ? { accountSlug } : {}),
-      }),
     startCloudDeviceLogin: (apiUrl, input) => startCloudRelayLogin(client, apiUrl, input),
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
@@ -598,14 +607,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayClient(client, clientId, alias),
     pairCloudRelayMachine: (_profile, machineId, alias) =>
       pairKernelCloudRelayMachine(client, machineId, alias),
-    issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
-    createCloudSessionInvite: (sessionId, inviteOptions) =>
-      createCloudSessionInvite(client, sessionId, inviteOptions),
-    acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
-    listCloudSessionMembers: (sessionId) => listCloudSessionMembers(client, sessionId),
-    listCloudCollaborators: () => listCloudCollaborators(client),
+    ...(deps.cloudClient ? {
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
+      listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
+      listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
+    } : {}),
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),

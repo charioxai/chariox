@@ -15,7 +15,6 @@ import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { listSlices } from "./slice-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
-import { listManagedEnvironmentCatalog } from "./managed-environment-api.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 export type RemoteMachineView = WaitingRoomRemoteMachineView
@@ -50,14 +49,14 @@ export type WaitingRoomInventory = {
   managedEnvironmentCatalog?: ManagedEnvironmentCatalog
 }
 
-export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<WaitingRoomInventory> {
+export async function getWaitingRoomInventory(client: LocalIpcClient, getManagedCatalog?: () => Promise<ManagedEnvironmentCatalog | undefined>): Promise<WaitingRoomInventory> {
   const response = await client.send<Record<string, unknown>>(getWaitingRoomPublicSnapshotRequest())
   const payload = expectVariant<{
     snapshot: WaitingRoomPublicSnapshot
   }>(response, "WaitingRoomPublicSnapshot").snapshot
   const [slices, managedEnvironmentCatalog] = await Promise.all([
     listSlices(client).catch(() => []),
-    listManagedEnvironmentCatalog(client).catch(() => undefined),
+    getManagedCatalog?.(),
   ])
   const externalProviderSessions = externalProviderSessionPage({
     ...(payload.external_provider_sessions !== undefined ? { sessions: payload.external_provider_sessions } : {}),

@@ -61,6 +61,11 @@ impl CommandRouter {
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
         }
+        crate::runtime::cloud_relay_authorization::authorize_kernel_cloud_request(
+            &self.config_projection.snapshot(),
+            &command,
+            &request,
+        )?;
         self.audit_access_terminal_attempt(&command, &request)?;
         if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
             if answer.session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {

@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_protocol_435_snapshot_and_hash() {
+fn mp08_mp10_mp11_browser_artifact_protocol_478_snapshot_and_hash() {
     use sha2::{Digest, Sha256};
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 487);
     let wire = serde_json::json!({"RoomBrowserArtifact": {

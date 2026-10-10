@@ -115,3 +115,16 @@ test("alias-scoped and ambiguous client tokens preserve the requested alias", as
     assert.equal(issued.targetDaemonId, undefined)
   }
 })
+
+test("a second terminal obtains public enrollment status directly from its attached kernel", async () => {
+  const { getKernelCloudRelayProfile, connectKernelCloudRelay } = await import("./relay-api.js")
+  const privateResponse = tokenResponse().CloudRelayClientTokenIssued.profile
+  const profile = {...privateResponse, kernel_id: "kernel-a", kernel_enrolled: true, machine_credential: "synthetic-machine", cloud_session_token: "synthetic-session", kernel_credential: "synthetic-kernel"}
+  const client = fakeClient(async request => "CloudRelayStatus" in (request as object) ? {CloudRelayStatus: {profile}} : {CloudRelayConnected: {profile, status: {configured: true, connected: true}}})
+  const publicProfile = await getKernelCloudRelayProfile(client)
+  assert.equal(publicProfile?.kernelId, "kernel-a")
+  assert.ok(!JSON.stringify(publicProfile).includes("synthetic"))
+  const connected = await connectKernelCloudRelay(client)
+  assert.equal(connected.profile.kernelEnrolled, true)
+  assert.ok(!("relayToken" in connected))
+})

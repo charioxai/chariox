@@ -259,6 +259,9 @@ pub use workspace::*;
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 478 adds kernel-owned Cloud ownership, Cloud-free kernel-owned
+/// key-bound terminal admission and provider account portability preflight
+/// (MP-08/MP-10/MP-11).
 /// Version 487 adds value-free Project Environment aggregates and reserves the
 /// complete Environment operation contract on top of 472 (developed as 471;
 /// MP-02/MP-03/MP-08/MP-10/MP-11).

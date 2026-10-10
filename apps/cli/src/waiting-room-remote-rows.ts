@@ -31,8 +31,8 @@ export function waitingRoomRemoteRows(
   const rows: WaitingRoomRow[] = [
     {
       id: "relay-header",
-      title: "Relay",
-      value: relayStatus,
+      title: remote.collaborationBackend === "cloud" && !relay?.configured ? "My kernels" : "Relay",
+      value: remote.collaborationBackend === "cloud" && !relay?.configured ? remote.inventoryStatus === "error" ? "directory unavailable" : inventoryLoading ? loadingText : "Cloud directory" : relayStatus,
       titleWidth,
       indent: 0,
       focused: false,
