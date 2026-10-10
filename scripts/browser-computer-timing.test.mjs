@@ -2,10 +2,12 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import{packetSignature,transportHops}from'./browser-computer-timing.mjs';
 test('MP-10 opaque ciphertext joins JSON and binary routing forms',()=>{
- const ciphertext=Buffer.alloc(16,7),json=JSON.stringify({kind:'client_event',encrypted_event:{ciphertext:ciphertext.toString('base64')}});
- const header=Buffer.from(JSON.stringify({kind:'client_event'})),prefix=Buffer.alloc(8);prefix.write('CXR1');prefix.writeUInt32BE(header.length,4);
+ const ciphertext=Buffer.alloc(16,7),json=JSON.stringify({kind:'client_event',event_id:7,encrypted_event:{ciphertext:ciphertext.toString('base64')}});
+ const header=Buffer.from(JSON.stringify({kind:'client_event',event_id:7})),prefix=Buffer.alloc(8);prefix.write('CXR1');prefix.writeUInt32BE(header.length,4);
  assert.equal(packetSignature(1,json),packetSignature(2,Buffer.concat([prefix,header,ciphertext]).toString('base64')));
  assert(Number.isSafeInteger(packetSignature(1,json)));
+ assert.equal(packetSignature(1,json,true).sequence,7);
+ assert.deepEqual(packetSignature(1,json,true),packetSignature(2,Buffer.concat([prefix,header,ciphertext]).toString('base64'),true));
  for(const payload of ['{"kind":"client_hello","auth_token":"synthetic"}','{"kind":"daemon_register"}','invalid'])assert.equal(packetSignature(1,payload),null);
 });
 test('MP-10 hop decomposition only joins the same packet and rejects reversed clocks',()=>{

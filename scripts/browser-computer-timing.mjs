@@ -2,9 +2,9 @@
 import {createHash} from 'node:crypto';
 import {appendFileSync} from 'node:fs';
 
-export function packetSignature(opcode,payload) {
+export function packetSignature(opcode,payload,withSequence=false) {
   try {
-    let bytes;
+    let bytes,sequence;
     if(opcode===2){
       const wire=Buffer.from(payload,'base64');
       if(wire.length<8||wire.toString('ascii',0,4)!=='CXR1')return null;
@@ -12,15 +12,16 @@ export function packetSignature(opcode,payload) {
       if(length<2||length>4096||wire.length<8+length+16)return null;
       const header=JSON.parse(wire.toString('utf8',8,8+length));
       if(!['daemon_event','client_event'].includes(header.kind))return null;
-      bytes=wire.subarray(8+length);
+      bytes=wire.subarray(8+length);sequence=header.event_id;
     }else if(opcode===1){
       const envelope=JSON.parse(payload);
       if(!['client_request','daemon_request','daemon_event','client_event'].includes(envelope.kind))return null;
       const encrypted=envelope.encrypted_request??envelope.encrypted_event;
       if(typeof encrypted?.ciphertext!=='string')return null;
-      bytes=Buffer.from(encrypted.ciphertext,'base64');
+      bytes=Buffer.from(encrypted.ciphertext,'base64');sequence=envelope.event_id;
     }else return null;
-    return Number(createHash('sha256').update(bytes).digest().readBigUInt64BE(0)>>12n);
+    const packet=Number(createHash('sha256').update(bytes).digest().readBigUInt64BE(0)>>12n);
+    return withSequence?{packet,...(Number.isSafeInteger(sequence)?{sequence}:{})}:packet;
   }catch{return null;}
 }
 
@@ -36,8 +37,8 @@ export async function attachComputerTiming(page,file) {
   const offset=(before+after)/2-clock*1000;
   record({stage:'viewer_clock',at_ms:(before+after)/2,uncertainty_ms:(after-before)/2});
   for(const [event,stage]of [['Network.webSocketFrameSent','viewer_send'],['Network.webSocketFrameReceived','viewer_receive']])cdp.on(event,event=>{
-    const packet=packetSignature(event.response.opcode,event.response.payloadData);
-    if(packet!==null)record({stage,packet,at_ms:offset+event.timestamp*1000,observed_ms:Date.now()});
+    const packet=packetSignature(event.response.opcode,event.response.payloadData,true);
+    if(packet!==null)record({stage,...packet,at_ms:offset+event.timestamp*1000,observed_ms:Date.now()});
   });
   await page.exposeBinding('__cuTimingRecord',(_,row)=>{
     if(!['viewer_input','viewer_paint'].includes(row?.stage)||!Number.isFinite(row.at_ms))return;
