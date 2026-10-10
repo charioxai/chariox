@@ -2053,8 +2053,30 @@ mod tests {
         .unwrap();
         let result = prepare_managed_context_package(&config, &store, &profiles, &ticket)
             .expect("MP-08 shared Copy must seal detected secrets instead of refusing them");
+        let extracted = crate::managed_context::package::extract_managed_context_package(
+            crate::managed_context::package::ManagedContextPackageImportRequest {
+                package_path: result.package.package_path.clone(),
+                expected_package_sha256: result.package.package_sha256.clone(),
+                expected_binding: crate::managed_context::package::ManagedContextPackageBinding {
+                    plan: result.package.plan.clone(),
+                    target_environment_id: ticket.environment_id.clone(),
+                    source_kernel_id: config.daemon_id.clone(),
+                    source_key_thumbprint: public_key_thumbprint(&config.relay_public_key),
+                    target_kernel_id: ticket.target.kernel_id.clone(),
+                    target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                },
+            },
+        )
+        .expect("MP-08 inspect the actual packaged archive after source staging is retired");
+        let crate::managed_context::package::ExtractedManagedContextDevelopment::FromSource {
+            archive_path,
+            ..
+        } = &extracted.development
+        else {
+            panic!("MP-08 selected Project component missing")
+        };
         let manifest = super::super::development::extract_verified_development_archive(
-            &result.artifact_root.join("development.tar.gz"),
+            archive_path,
             "project",
             None,
             &fixture.root.join("inspect"),
