@@ -42,6 +42,7 @@ export type SessionFocusedStatusBadge = {
 }
 
 export type SessionAgentPaneStatusBadge = {
+  deadline_ms?: number
   label: string
   tone: SessionStatusBadgeTone
 }
@@ -93,8 +94,13 @@ export function sessionFocusedStatusBadge(options: {
   }
 
   const agents = options.agents
-  if (options.taskStatus && (!agents || agents.length <= 1)) {
-    return sessionStatusBadge([options.taskStatus])
+  if (options.taskStatus) {
+    const task = options.taskStatus
+    // MP-08/MP-09/MP-10/MP-11 G13: reserve footer space for the actual deadline.
+    const label = task.deadline_ms !== undefined
+      ? `WAITING UNTIL ${new Date(task.deadline_ms).toISOString().slice(11, 19)}Z`
+      : task.label.length > 24 ? `${task.label.slice(0, 23)}…` : task.label
+    return sessionStatusBadge([{ label, tone: task.tone }])
   }
   if (!agents || agents.length <= 1) {
     if (!options.focusedBusy) {
@@ -338,5 +344,5 @@ function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | 
 // MP-08 / MP-09 / MP-10 / MP-11 A02: older unfinished tasks survive newer answers.
 export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string): SessionAgentPaneStatusBadge | null {
   const status = agentTaskStatus(session, agentId)
-  return status ? { label: status.label, tone: status.tone } : null
+  return status ? { label: status.label, tone: status.tone, ...(status.deadline_ms !== undefined ? { deadline_ms: status.deadline_ms } : {}) } : null
 }

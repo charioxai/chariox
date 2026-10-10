@@ -35,5 +35,14 @@ test("focused footer does not call a durable waiting task idle", () => {
   const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
     focusedBusy: false, agents: [{ id: "agent", busy: false }],
     taskStatus: sessionAgentTaskStatus(session, "agent") }
-  assert.match(sessionFocusedStatusBadge(options).label, /^WAITING ON delegate result UNTIL /)
+  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING UNTIL 00:01:00Z")
+})
+
+// MP-08/MP-09/MP-10/MP-11 G13: long reasons must not consume the terminal footer.
+test("focused waiting deadline stays readable with long reasons and multiple agents", () => {
+  const session = { agent_tasks: [{ ...task("waiting"), reason: "source review ".repeat(100) }] } as RuntimeSession
+  const options = { attached: true, daemonDisconnected: false, activeStatusLabel: null,
+    focusedBusy: false, agents: [{ id: "agent", busy: false }, { id: "peer", busy: true }],
+    taskStatus: sessionAgentTaskStatus(session, "agent") }
+  assert.equal(sessionFocusedStatusBadge(options).label, "WAITING UNTIL 00:01:00Z")
 })
