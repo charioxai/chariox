@@ -5,7 +5,7 @@ build=${CUMAC_BUILD_DIR:-"$HOME/.chariox/dev/cumac/build"}
 mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
-swiftc "${flags[@]}" Policy.swift Signing.swift PointerInput.swift PointerInputTests.swift Tests.swift -o "$build/policy-tests"
+swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift PointerInputTests.swift Tests.swift -o "$build/policy-tests"
 "$build/policy-tests"
 for kind in Helper Fixture; do
   bundle="$build/Chariox Computer $kind.app"
@@ -25,9 +25,9 @@ for kind in Helper Fixture; do
 EOF
   if [[ $kind == Helper ]]; then /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$bundle/Contents/Info.plist"; fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift PointerInput.swift Native.swift TextClick.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift Native.swift TextClick.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
-    swiftc "${flags[@]}" Fixture.swift -o "$bundle/Contents/MacOS/fixture"
+    swiftc "${flags[@]}" Policy.swift Coordinates.swift Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi
   codesign --force --sign - --identifier "ai.chariox.computer-$name" "$bundle"
   codesign --verify --strict "$bundle"

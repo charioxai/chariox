@@ -22,7 +22,7 @@ test('capture completion and event posting retain permission fences', () => {
   assert.match(native, /await SCScreenshotManager.captureImage[\s\S]*guard CGPreflightScreenCaptureAccess\(\)/);
   assert.match(native, /guard CGPreflightPostEventAccess\(\) else[\s\S]*dispatchInputEvents\(events/);
   assert.match(pointer, /for event in events \{\s*try fence\(event\)[\s\S]*post\(event\)/);
-  assert.match(pointer, /try fence\(event\)\s*guard releaseAllowed\(\) else \{ throw Refusal.permission \}/);
+  assert.match(pointer, /try fence\(event\)\s*guard releaseAllowed\(\) else \{ throw tagged\(\.permission, "[^"]+"\) \}/);
   assert.match(native, /releaseAllowed: \{ CGPreflightPostEventAccess\(\) \}/);
 });
 
@@ -45,14 +45,14 @@ test('AX text clicks retain saved geometry and hit-test the resolved point', () 
 
 test('owned text releases retain permission and target fences', () => {
   assert.match(native, /releaseFence: \{ _ in\s*try fence\(request, element: element, typing: true\)\s*try checkPermission\(operation\)/);
-  assert.match(pointer, /guard let release else \{ throw error \}[\s\S]*try releaseFence\(release\)[\s\S]*guard releaseAllowed\(\)[\s\S]*catch \{ throw Refusal.ownedInput \}/);
+  assert.match(pointer, /guard let release else \{ throw error \}[\s\S]*try releaseFence\(release\)[\s\S]*guard releaseAllowed\(\)[\s\S]*catch \{ throw tagged\(\.ownedInput, "owned-release-failed"\) \}/);
   assert.match(policy, /unresolved owned input; owner reset required/);
   const helper = readFileSync(new URL('./Helper.swift', import.meta.url), 'utf8');
   assert.match(helper, /fputs\("\\\(refusalMessage\(error\)\)\\n", stderr\)/);
 });
 
 test('unresolved text clicks refuse; only typing reaches per-PID event posting', () => {
-  assert.match(pointer, /guard let range = try rangeAtPoint\(point\) else \{ throw Refusal.target \}/);
+  assert.match(pointer, /guard let range = try rangeAtPoint\(point\) else \{ throw tagged\(\.target, "[^"]+"\) \}/);
   assert.match(native, /if operation == .click \{\s*return try await performTextClick[\s\S]*guard case .text\(let text\) = operation/);
   assert.match(native, /post: \{ \$0.postToPid\(request.pid\) \}/);
   assert.doesNotMatch(native + pointer + textClick, /post\(tap:|cghidEventTap|hidClickEvents|mouseEventWindowUnderMousePointer/);
@@ -61,11 +61,30 @@ test('unresolved text clicks refuse; only typing reaches per-PID event posting',
 
 test('AX caret mutation and readback keep the saved-point fences and never post', () => {
   assert.match(textClick, /checkPermission\(.click\)[\s\S]*clickGeometry: geometry, eventLocation: geometry.location/);
-  assert.match(textClick, /guard case .selection\(let index\) = resolution else \{ throw Refusal.target \}/);
+  assert.match(textClick, /guard case .selection\(let index\) = resolution else \{ throw tagged\(\.target, "[^"]+"\) \}/);
   assert.doesNotMatch(textClick.slice(textClick.indexOf('func performTextClick(')), /return nil|async throws -> String\?/);
   assert.match(textClick, /guard try resolved\(\) == resolution else[\s\S]*try checked\(\)[\s\S]*AXUIElementSetAttributeValue\(element, kAXSelectedTextRangeAttribute/);
   assert.match(textClick, /CFRange\(location: index, length: 0\)/);
   assert.match(textClick, /Task.sleep[\s\S]*try checked\(\)[\s\S]*rangeValue\(attribute\(element, kAXSelectedTextRangeAttribute\)\)/);
   assert.match(textClick, /selected.location == index && selected.length == 0/);
   assert.doesNotMatch(textClick, /postToPid|post\(tap:|kAXValueAttribute|kAXSelectedTextAttribute|kAXStringForRange/);
+});
+
+test('production refusals carry public reason tags without framework or AX values', () => {
+  for (const file of ['Policy.swift', 'Signing.swift', 'Coordinates.swift', 'PointerInput.swift', 'Native.swift', 'TextClick.swift', 'Helper.swift']) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /throw Refusal\./, file);
+  }
+  assert.ok(policy.includes(String.raw`refused: \(kind) (\(reason))`));
+  assert.match(policy, /frontmostPID == pid else \{ throw tagged\(\.target, "not-frontmost"\)/);
+  assert.match(textClick, /position-range-api-status-\\\(status.rawValue\)/);
+  assert.doesNotMatch(policy, /localizedDescription|String\(describing: error\)/);
+});
+
+test('pointer clicks use one AppKit snapshot and reject a changed live pointer before AX access', () => {
+  const helper = readFileSync(new URL('./Helper.swift', import.meta.url), 'utf8');
+  assert.match(helper, /request.clickPoint = try currentPointerPoint\(\)/);
+  assert.doesNotMatch(helper, /CGEvent\(source: nil\)\?\.location/);
+  const fence = native.slice(native.indexOf('func fence('), native.indexOf('func bind('));
+  assert.match(fence, /checkPointerSnapshot\(request, currentPoint: currentPointerPoint\(\)\)[\s\S]*selectedWindow/);
 });

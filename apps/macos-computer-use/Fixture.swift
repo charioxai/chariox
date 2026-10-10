@@ -10,6 +10,8 @@ final class Fixture: NSObject, NSApplicationDelegate {
     var lastSelection: NSRange?
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "Chariox public fixture"
+        // Close our disposable window even if the runner dies before cleanup.
+        Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
         if CommandLine.arguments.contains("--text-drill") { startTextDrill(); return }
         let ordinary = NSTextField(frame: NSRect(x: 20, y: 295, width: 310, height: 28))
         ordinary.placeholderString = "Public Unicode test text"; ordinary.setAccessibilityIdentifier("ordinary")
@@ -50,14 +52,35 @@ final class Fixture: NSObject, NSApplicationDelegate {
         window.makeFirstResponder(text); text.setSelectedRange(NSRange(location: 0, length: 0))
         guard let layout = text.layoutManager, let container = text.textContainer else { exit(1) }
         layout.ensureLayout(for: container)
-        let expected = 4 * 27 + 17 // Mid-word in "caret" on line 5, UTF-16.
-        let glyph = layout.glyphIndexForCharacter(at: expected)
-        let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
-        let local = NSPoint(x: rect.midX + text.textContainerOrigin.x, y: rect.midY + text.textContainerOrigin.y)
-        let cocoa = window.convertPoint(toScreen: text.convert(local, to: nil))
-        let point = CGPoint(x: cocoa.x, y: CGDisplayBounds(CGMainDisplayID()).height - cocoa.y)
         print("fixturePID=\(getpid()) windowID=\(window.windowNumber)")
-        print("clickX=\(point.x) clickY=\(point.y) expectedLocation=\(expected)")
+        // Known UTF-16 locations in our public document. Each point is inside
+        // the left quarter of its glyph, with an independent AppKit insertion
+        // lookup before publication. No owner pointer placement is needed.
+        for (name, expected) in [("line5-before-r", 125), ("line5-after-r", 126),
+                                 ("line1", 3), ("line9", 233)] {
+            let glyph = layout.glyphIndexForCharacter(at: expected)
+            let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+            let local = NSPoint(x: rect.minX + rect.width * 0.25 + text.textContainerOrigin.x,
+                                y: rect.midY + text.textContainerOrigin.y)
+            let reference = text.characterIndexForInsertion(at: local)
+            guard reference == expected else {
+                print("fixture mapping failed probe=\(name) expectedLocation=\(expected) referenceLocation=\(reference)")
+                fflush(stdout); NSApp.terminate(nil); return
+            }
+            let cocoa = window.convertPoint(toScreen: text.convert(local, to: nil))
+            // AppKit and AX/CG use screen points. Retina scale applies only to
+            // bitmap pixels; it must not enter either side of this conversion.
+            let primaryTop = NSScreen.screens[0].frame.maxY
+            let point = quartzPoint(fromCocoa: cocoa, primaryTop: primaryTop)
+            let roundTrip = text.convert(window.convertPoint(fromScreen:
+                NSPoint(x: point.x, y: primaryTop - point.y)), from: nil)
+            guard text.characterIndexForInsertion(at: roundTrip) == expected else {
+                print("fixture coordinate round-trip failed probe=\(name)")
+                fflush(stdout); NSApp.terminate(nil); return
+            }
+            print("probe=\(name) clickX=\(point.x) clickY=\(point.y) expectedLocation=\(expected) referenceLocation=\(reference)")
+        }
+        print("fixture geometry cocoaFrame=\(window.frame) textFrame=\(text.frame) primaryTop=\(NSScreen.screens[0].frame.maxY) scale=\(window.backingScaleFactor)")
         print("fixture selection location=0 length=0"); fflush(stdout)
         Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] _ in
             let selected = text.selectedRange()
@@ -66,9 +89,6 @@ final class Fixture: NSObject, NSApplicationDelegate {
                 print("fixture selection location=\(selected.location) length=\(selected.length)"); fflush(stdout)
             }
         }
-        // The unattended drill cannot leave a window/process behind, even if
-        // its runner dies before reading a helper refusal.
-        Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in NSApp.terminate(nil) }
     }
     @objc func click(_ sender: NSButton) {
         let count = Int(sender.title.split(separator: " ").last!) ?? 0

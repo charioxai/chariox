@@ -6,7 +6,7 @@ func launchIdentity() throws -> [String: Any] {
     guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
           SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
           SecCodeCopySigningInformation(staticCode, signingInformationFlags(), &info) == errSecSuccess,
-          let data = info as? [String: Any] else { throw Refusal.native }
+          let data = info as? [String: Any] else { throw tagged(.native, "launch-signature-info") }
     return ["path": Bundle.main.executableURL!.resolvingSymlinksInPath().path,
             "identifier": data[kSecCodeInfoIdentifier as String] ?? "unsigned",
             "team": data[kSecCodeInfoTeamIdentifier as String] ?? "none (ad-hoc)",
@@ -27,8 +27,7 @@ func launchIdentity() throws -> [String: Any] {
             var request = try Request.parse(arguments)
             if request.clickAtPointer {
                 // Read the existing pointer once. This does not post a mouse event.
-                guard let point = CGEvent(source: nil)?.location, point.x.isFinite, point.y.isFinite else { throw Refusal.native }
-                request.clickPoint = point
+                request.clickPoint = try currentPointerPoint()
             }
             for receipt in try await run(request, source: MacSource()) { print(receipt) }
         } catch {

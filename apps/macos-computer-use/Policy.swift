@@ -2,9 +2,21 @@ import Foundation
 
 enum Refusal: Error { case disabled, target, secure, text, arguments, permission, native, ownedInput }
 
+struct RefusalDetail: Error {
+    let kind: Refusal
+    let reason: String
+}
+func tagged(_ kind: Refusal, _ reason: String) -> RefusalDetail {
+    RefusalDetail(kind: kind, reason: reason)
+}
+func refusalKind(_ error: Error) -> Refusal {
+    (error as? RefusalDetail)?.kind ?? (error as? Refusal) ?? .native
+}
 func refusalMessage(_ error: Error) -> String {
-    let refusal = error as? Refusal ?? .native
-    return "refused: \(refusal)" + (refusal == .ownedInput ? "; unresolved owned input; owner reset required" : "")
+    let kind = refusalKind(error)
+    let reason = (error as? RefusalDetail)?.reason ?? "unexpected-error"
+    return "refused: \(kind) (\(reason))" +
+        (kind == .ownedInput ? "; unresolved owned input; owner reset required" : "")
 }
 enum Operation: Equatable { case capture(String), read, click, scroll, text(String) }
 struct Request {
@@ -21,13 +33,13 @@ struct Request {
         var ownerPID = false, fixturePID = false
         func value() throws -> String {
             index += 1
-            guard index < arguments.count else { throw Refusal.arguments }
+            guard index < arguments.count else { throw tagged(.arguments, "missing-argument") }
             return arguments[index]
         }
         while index < arguments.count {
             switch arguments[index] {
             case "--enable-fixture", "--enable-owner-window":
-                guard !request.enabled else { throw Refusal.arguments }
+                guard !request.enabled else { throw tagged(.arguments, "duplicate-enable") }
                 request.enabled = true
                 request.ownerWindow = arguments[index] == "--enable-owner-window"
                 if request.ownerWindow { request.target = "focused" }
@@ -39,21 +51,21 @@ struct Request {
             case "--ax-read": request.operations.append(.read)
             case "--click": request.operations.append(.click)
             case "--click-at-pointer":
-                guard !request.clickAtPointer, request.clickPoint == nil else { throw Refusal.arguments }
+                guard !request.clickAtPointer, request.clickPoint == nil else { throw tagged(.arguments, "duplicate-pointer-point") }
                 request.clickAtPointer = true
             case "--click-at":
                 let x = Double(try value()), y = Double(try value())
-                guard let x, let y, x.isFinite, y.isFinite, request.clickPoint == nil, !request.clickAtPointer else { throw Refusal.arguments }
+                guard let x, let y, x.isFinite, y.isFinite, request.clickPoint == nil, !request.clickAtPointer else { throw tagged(.arguments, "invalid-click-point") }
                 request.clickPoint = CGPoint(x: x, y: y)
             case "--scroll": request.operations.append(.scroll)
             case "--text": request.operations.append(.text(try value()))
-            default: throw Refusal.arguments
+            default: throw tagged(.arguments, "unknown-argument")
             }
             index += 1
         }
         guard !(ownerPID && fixturePID), !ownerPID || request.ownerWindow,
-              !fixturePID || !request.ownerWindow else { throw Refusal.arguments }
-        guard (request.clickPoint == nil && !request.clickAtPointer) || request.operations == [.click] else { throw Refusal.arguments }
+              !fixturePID || !request.ownerWindow else { throw tagged(.arguments, "mixed-scope") }
+        guard (request.clickPoint == nil && !request.clickAtPointer) || request.operations == [.click] else { throw tagged(.arguments, "point-needs-single-click") }
         return request
     }
 }
@@ -65,15 +77,15 @@ protocol NativeSource {
 func checkOperationPermissions(_ operation: Operation, screenCaptureAccess: () -> Bool,
                                accessibilityAccess: () -> Bool) throws {
     if case .capture = operation {
-        guard screenCaptureAccess() else { throw Refusal.permission }
+        guard screenCaptureAccess() else { throw tagged(.permission, "screen-recording-denied") }
     }
-    guard accessibilityAccess() else { throw Refusal.permission }
+    guard accessibilityAccess() else { throw tagged(.permission, "accessibility-denied") }
 }
 func run(_ request: Request, source: NativeSource) async throws -> [String] {
-    guard request.enabled else { throw Refusal.disabled }
+    guard request.enabled else { throw tagged(.disabled, "scope-disabled") }
     guard request.pid > 0, request.window > 0,
-          (request.ownerWindow ? ["focused"] : ["ordinary", "secure", "button", "scroll", "text"]).contains(request.target) else { throw Refusal.target }
-    guard request.target != "secure" else { throw Refusal.secure }
+          (request.ownerWindow ? ["focused"] : ["ordinary", "secure", "button", "scroll", "text"]).contains(request.target) else { throw tagged(.target, "invalid-scope") }
+    guard request.target != "secure" else { throw tagged(.secure, "secure-target") }
     for operation in request.operations {
         if case .text(let text) = operation { _ = try textUnits(text) }
     }
@@ -93,12 +105,15 @@ func textUnits(_ text: String) throws -> [UInt16] {
               CharacterSet.newlines.contains($0) ||
               (CharacterSet.controlCharacters.contains($0) && $0.value != 0x200C && $0.value != 0x200D)
           })
-    else { throw Refusal.text }
+    else { throw tagged(.text, "invalid-text") }
     return units
 }
 
 func checkWindowBinding(pid: Int32, frontmostPID: Int32?,
                         axMatches: Int, cgMatches: Int, focused: Bool) throws {
-    guard pid > 0, frontmostPID == pid,
-          axMatches == 1, cgMatches == 1, focused else { throw Refusal.target }
+    guard pid > 0 else { throw tagged(.target, "invalid-pid") }
+    guard frontmostPID == pid else { throw tagged(.target, "not-frontmost") }
+    guard axMatches == 1 else { throw tagged(.target, "ax-window-ambiguous") }
+    guard cgMatches == 1 else { throw tagged(.target, "cg-window-ambiguous") }
+    guard focused else { throw tagged(.target, "window-not-focused") }
 }

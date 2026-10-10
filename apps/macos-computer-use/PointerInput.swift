@@ -11,25 +11,25 @@ func visibleWindowFrame(window: CGRect, element: CGRect, displays: [CGRect], poi
         .filter { !$0.intersection(element).isNull && !$0.intersection(element).isEmpty }
     if let point {
         guard point.x.isFinite, point.y.isFinite,
-              let frame = visible.first(where: { $0.intersection(element).contains(point) }) else { throw Refusal.target }
+              let frame = visible.first(where: { $0.intersection(element).contains(point) }) else { throw tagged(.target, "point-outside-visible-target") }
         return frame
     }
     guard let frame = visible.max(by: {
         let a = $0.intersection(element), b = $1.intersection(element)
         return a.width * a.height < b.width * b.height
-    }) else { throw Refusal.target }
+    }) else { throw tagged(.target, "no-visible-target") }
     return frame
 }
 
 func resolveTextClick(at point: CGPoint, rangeAtPoint: (CGPoint) throws -> CFRange?) throws -> TextClickResolution {
-    guard point.x.isFinite, point.y.isFinite else { throw Refusal.target }
+    guard point.x.isFinite, point.y.isFinite else { throw tagged(.target, "nonfinite-point") }
     // App-scoped AX hit-testing cannot detect a foreign covering window.
     // Refuse unavailable range metadata; no global mouse fallback is admitted.
-    guard let range = try rangeAtPoint(point) else { throw Refusal.target }
+    guard let range = try rangeAtPoint(point) else { throw tagged(.target, "no-range-at-point") }
     // AX returns the composed-character range. Collapse at its start, never
     // split a surrogate pair or select the character under the pointer.
     guard range.location >= 0, range.length >= 0,
-          range.location <= Int.max - range.length else { throw Refusal.target }
+          range.location <= Int.max - range.length else { throw tagged(.target, "malformed-position-range") }
     return .selection(range.location)
 }
 
@@ -51,9 +51,15 @@ struct ClickGeometry: Equatable {
         guard current == self, eventLocation == location,
               eventLocation.x.isFinite, eventLocation.y.isFinite,
               !visibleBounds.isNull, !visibleBounds.isEmpty,
-              visibleBounds.contains(eventLocation) else { throw Refusal.target }
+              visibleBounds.contains(eventLocation) else { throw tagged(.target, "stale-point") }
         return eventLocation
     }
+}
+
+func checkPointerSnapshot(_ request: Request, currentPoint: CGPoint) throws {
+    guard request.clickAtPointer else { return }
+    guard let saved = request.clickPoint else { throw tagged(.target, "pointer-not-snapshotted") }
+    guard saved == currentPoint else { throw tagged(.target, "stale-pointer") }
 }
 
 func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
@@ -63,7 +69,7 @@ func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
     do {
         for event in events {
             try fence(event)
-            guard releaseAllowed() else { throw Refusal.permission }
+            guard releaseAllowed() else { throw tagged(.permission, "post-event-permission") }
             event.flags = []; post(event)
             if event.type == .leftMouseDown || event.type == .keyDown { release = events.last }
             if event.type == .leftMouseUp || event.type == .keyUp { release = nil }
@@ -73,8 +79,8 @@ func dispatchInputEvents(_ events: [CGEvent], fence: (CGEvent) throws -> Void,
         // Cleanup of an owned pair has its own fence. Fatal death remains unproven.
         do {
             try releaseFence(release)
-            guard releaseAllowed() else { throw Refusal.permission }
-        } catch { throw Refusal.ownedInput }
+            guard releaseAllowed() else { throw tagged(.permission, "release-event-permission") }
+        } catch { throw tagged(.ownedInput, "owned-release-failed") }
         release.flags = []; post(release)
         throw error
     }
@@ -86,13 +92,13 @@ func inputPath(_ operation: Operation, role: String) throws -> InputPath {
     case .scroll where role == kAXScrollAreaRole: return .axScrollValue
     case .click where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .axTextClick
     case .text where [kAXTextFieldRole, kAXTextAreaRole].contains(role): return .pidText
-    case .click, .scroll, .text: throw Refusal.target
-    default: throw Refusal.arguments
+    case .click, .scroll, .text: throw tagged(.target, "unsupported-input-role")
+    default: throw tagged(.arguments, "unsupported-input-operation")
     }
 }
 
 func nextScrollValue(_ value: Double) throws -> Double {
-    guard value.isFinite, (0...1).contains(value), value < 1 else { throw Refusal.target }
+    guard value.isFinite, (0...1).contains(value), value < 1 else { throw tagged(.target, "scroll-at-limit") }
     // A single bounded step toward the bottom, independent of natural scrolling.
     return min(1, value + 0.05)
 }

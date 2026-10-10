@@ -39,13 +39,32 @@ final class FakeSource: NativeSource {
 @main struct Tests {
     static func main() async throws {
         try testPointerInput()
+        precondition(refusalMessage(tagged(.target, "not-frontmost")) ==
+            "refused: target (not-frontmost)")
+        precondition(refusalMessage(tagged(.permission, "accessibility-denied")) ==
+            "refused: permission (accessibility-denied)")
+        for (pid, ax, cg, focused, reason) in [
+            (43 as Int32?, 1, 1, true, "not-frontmost"),
+            (42, 0, 1, true, "ax-window-ambiguous"),
+            (42, 1, 2, true, "cg-window-ambiguous"),
+            (42, 1, 1, false, "window-not-focused")
+        ] {
+            do {
+                try checkWindowBinding(pid: 42, frontmostPID: pid, axMatches: ax,
+                                       cgMatches: cg, focused: focused)
+                preconditionFailure("invalid binding admitted")
+            } catch {
+                precondition(refusalMessage(error) == "refused: target (\(reason))")
+            }
+        }
+        print("PASS refusal receipts distinguish permission and window-binding failures")
         let revoked = FakeSource()
         revoked.screenRecording = false; revoked.accessibility = false
         do {
             _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                       operations: [.capture("unused")]), source: revoked)
             print("FAIL revoked capture admitted"); exit(1)
-        } catch Refusal.permission { }
+        } catch where refusalKind(error) == .permission { }
         guard revoked.permissionChecks == ["screen"], revoked.calls == 0 else {
             print("FAIL capture did not check Screen Recording before Accessibility"); exit(1)
         }
@@ -56,7 +75,7 @@ final class FakeSource: NativeSource {
             _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                       operations: [.capture("unused")]), source: revoked)
             print("FAIL Screen Recording revocation admitted capture"); exit(1)
-        } catch Refusal.permission { }
+        } catch where refusalKind(error) == .permission { }
         precondition(revoked.permissionChecks == ["screen"] && revoked.calls == 0)
         revoked.permissionChecks = []
         _ = try await run(Request(enabled: true, pid: 42, window: 1,
@@ -70,7 +89,7 @@ final class FakeSource: NativeSource {
             _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                       operations: [.text("public")]), source: revoked)
             print("FAIL Accessibility revocation admitted input"); exit(1)
-        } catch Refusal.permission { }
+        } catch where refusalKind(error) == .permission { }
         precondition(revoked.permissionChecks == ["accessibility"] && revoked.calls == 1)
         print("PASS subsequent Accessibility revocation refuses input without a capture check")
         guard signingInformationFlags().rawValue & kSecCSSigningInformation != 0 else {
@@ -79,7 +98,7 @@ final class FakeSource: NativeSource {
         do {
             _ = try textUnits(String(repeating: "😀", count: 11))
             print("FAIL 22-unit emoji payload admitted"); exit(1)
-        } catch Refusal.text { }
+        } catch where refusalKind(error) == .text { }
         var identityFailures = 0
         for (bundle, signed) in [("com.apple.Safari", true), ("ai.chariox.computer-fixture", true),
                                  ("com.apple.TextEdit", false)] {
@@ -90,7 +109,7 @@ final class FakeSource: NativeSource {
                                           target: "focused", operations: [.capture("unused"), .text("public")]), source: refused)
                 print("FAIL owner target admitted bundle=\(bundle) appleSigned=\(signed)")
                 identityFailures += 1
-            } catch Refusal.target {
+            } catch where refusalKind(error) == .target {
                 precondition(refused.calls == 0 && refused.permissionChecks.isEmpty)
             }
         }
@@ -101,13 +120,13 @@ final class FakeSource: NativeSource {
                     preconditionFailure("non-allowlisted bundle reached signing check")
                 }
                 print("FAIL discovery identity admitted"); exit(1)
-            } catch Refusal.target { }
+            } catch where refusalKind(error) == .target { }
         }
         // The test process is not Apple TextEdit, even if a caller supplies its bundle ID.
         do {
             try checkOwnerTarget(bundleIdentifier: "com.apple.TextEdit", pid: getpid())
             print("FAIL test process passed Apple TextEdit code requirement"); exit(1)
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         var signingChecks = 0
         try checkOwnerTarget(bundleIdentifier: "com.apple.TextEdit", pid: 42) { pid, requirement in
             precondition(pid == 42 && requirement == "identifier \"com.apple.TextEdit\" and anchor apple")
@@ -131,13 +150,13 @@ final class FakeSource: NativeSource {
             ["--enable-owner-window", "--owner-pid", "42", "--fixture-pid", "42"]
         ] {
             do { _ = try Request.parse(arguments); print("FAIL mixed scope admitted"); exit(1) }
-            catch Refusal.arguments { }
+            catch where refusalKind(error) == .arguments { }
         }
         for request in [Request(enabled: true, ownerWindow: true, pid: 42, window: 1, target: "ordinary", operations: [.read]),
                         Request(enabled: true, ownerWindow: true, pid: 42, target: "focused", operations: [.read])] {
             let isolated = FakeSource()
             do { _ = try await run(request, source: isolated); print("FAIL invalid owner window admitted"); exit(1) }
-            catch Refusal.target { }
+            catch where refusalKind(error) == .target { }
             precondition(isolated.calls == 0)
         }
         let secureOwner = FakeSource(); secureOwner.secureInput = true
@@ -145,14 +164,14 @@ final class FakeSource: NativeSource {
             _ = try await run(Request(enabled: true, ownerWindow: true, pid: 42, window: 1,
                                       target: "focused", operations: [.capture("unused"), .text("public")]), source: secureOwner)
             print("FAIL secure input admitted in owner window"); exit(1)
-        } catch Refusal.secure { }
+        } catch where refusalKind(error) == .secure { }
         precondition(secureOwner.calls == 0)
         let longOwner = FakeSource()
         do {
             _ = try await run(Request(enabled: true, ownerWindow: true, pid: 42, window: 1,
                                       target: "focused", operations: [.capture("unused"), .text(String(repeating: "😀", count: 11))]), source: longOwner)
             print("FAIL overflowing owner batch admitted"); exit(1)
-        } catch Refusal.text { }
+        } catch where refusalKind(error) == .text { }
         precondition(longOwner.calls == 0)
         print("PASS mixed scopes, secure input and invalid owner batches refuse before dispatch")
         try checkWindowBinding(pid: 42, frontmostPID: 42, axMatches: 1, cgMatches: 1, focused: true)
@@ -163,27 +182,27 @@ final class FakeSource: NativeSource {
                 try checkWindowBinding(pid: 42, frontmostPID: facts.0,
                                        axMatches: facts.1, cgMatches: facts.2, focused: facts.3)
                 print("FAIL unsafe window binding admitted"); exit(1)
-            } catch Refusal.target { }
+            } catch where refusalKind(error) == .target { }
         }
         print("PASS frontmost, unique geometry and AX window focus fences")
         let twentyUnits = try textUnits(String(repeating: "😀", count: 10))
         precondition(twentyUnits == Array(String(repeating: "😀", count: 10).utf16))
         for text in [String(repeating: "a", count: 19) + "😀", String(repeating: "👩‍💻", count: 5), "a" + String(repeating: "\u{301}", count: 20)] {
             do { _ = try textUnits(text); print("FAIL grapheme boundary overflow admitted"); exit(1) }
-            catch Refusal.text { }
+            catch where refusalKind(error) == .text { }
         }
         print("PASS 20-unit Unicode cap refuses whole overflowing graphemes; signing flags include Team ID data")
         do {
             _ = try await run(Request(operations: [.capture("unused")]), source: source)
             print("FAIL disabled capture was admitted"); exit(1)
-        } catch Refusal.disabled { }
+        } catch where refusalKind(error) == .disabled { }
         precondition(source.calls == 0, "disabled request reached native source")
         print("PASS disabled operations never reach native source")
         do {
             _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                       target: "Safari", operations: [.read]), source: source)
             print("FAIL non-fixture target admitted"); exit(1)
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         precondition(source.calls == 0)
         print("PASS non-fixture target refused")
         for operation in [Operation.read, .click, .scroll, .text("canary")] {
@@ -191,7 +210,7 @@ final class FakeSource: NativeSource {
                 _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                           target: "secure", operations: [operation]), source: source)
                 print("FAIL secure target admitted"); exit(1)
-            } catch Refusal.secure { }
+            } catch where refusalKind(error) == .secure { }
         }
         precondition(source.calls == 0)
         print("PASS secure target refuses reads and input")
@@ -200,7 +219,7 @@ final class FakeSource: NativeSource {
                 _ = try await run(Request(enabled: true, pid: 42, window: 1,
                                           operations: [.text(text)]), source: source)
                 print("FAIL unsupported text admitted"); exit(1)
-            } catch Refusal.text { }
+            } catch where refusalKind(error) == .text { }
         }
         precondition(source.calls == 0)
         print("PASS controls and oversized text refused before native dispatch")
@@ -220,13 +239,13 @@ final class FakeSource: NativeSource {
         precondition(receipts == Array(repeating: "fake-frame", count: 5) && allowed.typed == [20013])
         for arguments in [["--unknown"], ["--text"], ["--identity", "--click"]] {
             do { _ = try Request.parse(arguments); print("FAIL invalid flags admitted"); exit(1) }
-            catch Refusal.arguments { }
+            catch where refusalKind(error) == .arguments { }
         }
         for request in [Request(enabled: true, operations: [.read]),
                         Request(enabled: true, pid: 42, window: 1, operations: [.capture("unused"), .text("\n")])] {
             let isolated = FakeSource()
             do { _ = try await run(request, source: isolated); print("FAIL invalid batch admitted"); exit(1) }
-            catch is Refusal { }
+            catch where error is Refusal || error is RefusalDetail { }
             precondition(isolated.calls == 0)
         }
         print("PASS explicit operation flags and invalid batches")
@@ -236,7 +255,7 @@ final class FakeSource: NativeSource {
                 _ = try await run(Request(enabled: true, pid: secure ? 42 : 43, window: 1,
                                           operations: [.capture("unused")]), source: unsafe)
                 print("FAIL unsafe native binding reached capture"); exit(1)
-            } catch is Refusal { }
+            } catch where error is Refusal || error is RefusalDetail { }
             precondition(unsafe.calls == 0)
         }
         print("PASS native non-fixture binding and secure-input refusal")

@@ -10,6 +10,28 @@ private func testPointerEvents(at location: CGPoint) throws -> [CGEvent] {
 }
 
 func testPointerInput() throws {
+    precondition(quartzPoint(fromCocoa: CGPoint(x: 519.109375, y: 545.28125), primaryTop: 982) ==
+        CGPoint(x: 519.109375, y: 436.71875))
+    // Retina does not divide coordinates. A display above the primary may
+    // legitimately produce a negative Quartz y, and a left display a negative x.
+    precondition(quartzPoint(fromCocoa: CGPoint(x: -20, y: 1100), primaryTop: 982) == CGPoint(x: -20, y: -118))
+    let ownerSnapshot = CGPoint(x: 182.45703125, y: 147.88671875)
+    let ownerPointerRequest = Request(clickPoint: ownerSnapshot, clickAtPointer: true)
+    try checkPointerSnapshot(ownerPointerRequest, currentPoint: ownerSnapshot)
+    do {
+        try checkPointerSnapshot(ownerPointerRequest, currentPoint: CGPoint(x: 286, y: 150))
+        preconditionFailure("changed live pointer admitted")
+    } catch {
+        precondition(refusalMessage(error) == "refused: target (stale-pointer)")
+    }
+    try checkPointerSnapshot(Request(clickPoint: ownerSnapshot), currentPoint: CGPoint(x: 286, y: 150))
+    do {
+        try checkPointerSnapshot(Request(clickAtPointer: true), currentPoint: ownerSnapshot)
+        preconditionFailure("missing pointer snapshot admitted")
+    } catch {
+        precondition(refusalMessage(error) == "refused: target (pointer-not-snapshotted)")
+    }
+    print("PASS screen point conversion and stale live pointer refusal; explicit points stay independent")
     let oversized = ClickGeometry(windowBounds: CGRect(x: 100, y: 100, width: 500, height: 300),
                                   elementBounds: CGRect(x: 120, y: 120, width: 400, height: 1200))
     guard oversized.location == CGPoint(x: 320, y: 260) else {
@@ -27,7 +49,7 @@ func testPointerInput() throws {
         do {
             _ = try visibleWindowFrame(window: partlyOffscreen, element: element, displays: [screen], point: nil)
             preconditionFailure("invisible element admitted")
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
     }
     let explicit = ClickGeometry(windowBounds: oversized.windowBounds, elementBounds: oversized.elementBounds,
                                  requestedPoint: CGPoint(x: 140, y: 180))
@@ -36,7 +58,7 @@ func testPointerInput() throws {
         _ = try visibleWindowFrame(window: partlyOffscreen, element: partlyOffscreen, displays: [screen],
                                    point: CGPoint(x: -100, y: 200))
         preconditionFailure("offscreen requested point admitted")
-    } catch Refusal.target { }
+    } catch where refusalKind(error) == .target { }
     print("PASS oversized/offscreen element centers clamp to visible intersection; invisible targets refuse")
     let requested = CGPoint(x: 140, y: 180)
     for range in [CFRange(location: 12, length: 1), CFRange(location: 12, length: 2), CFRange(location: 12, length: 0)] {
@@ -65,7 +87,7 @@ func testPointerInput() throws {
             }, releaseFence: { _ in }, releaseAllowed: { true }, post: { _ in postedTo.append(desktopPID) })
             print("FAIL unresolved text click admitted with desktop PID=\(desktopPID), posted=\(postedTo.count)")
             exit(1)
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         precondition(postedTo.isEmpty, "unresolved click posted outside its AX target")
     }
     print("PASS unresolved text clicks refuse with unchanged geometry and a foreign covering window; zero posted events")
@@ -74,12 +96,12 @@ func testPointerInput() throws {
         do {
             _ = try resolveTextClick(at: requested) { _ in range }
             preconditionFailure("malformed AX range selected fallback")
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
     }
     do {
         _ = try resolveTextClick(at: requested) { _ in throw Refusal.permission }
         preconditionFailure("AX permission failure selected fallback")
-    } catch Refusal.permission { }
+    } catch where refusalKind(error) == .permission { }
     let parsed = try Request.parse(["--enable-owner-window", "--owner-pid", "42", "--window-id", "1",
                                    "--click-at", "140", "180", "--click"])
     precondition(parsed.clickPoint == requested && parsed.operations == [.click])
@@ -90,7 +112,7 @@ func testPointerInput() throws {
                  ["--click-at-pointer", "--click-at", "140", "180", "--click"],
                  ["--click-at-pointer", "--scroll"], ["--click-at-pointer", "--click-at-pointer", "--click"]] {
         do { _ = try Request.parse(args); preconditionFailure("invalid point arguments admitted") }
-        catch Refusal.arguments { }
+        catch where refusalKind(error) == .arguments { }
     }
     print("PASS range-at-point preserves composed-character start; unavailable AX range refuses")
     var failures = 0
@@ -116,7 +138,7 @@ func testPointerInput() throws {
                 guard current.elementBounds.contains(hit) else { throw Refusal.target }
             }, releaseFence: { _ in preconditionFailure() }, releaseAllowed: { true }, post: { posted.append($0.type) })
             print("FAIL changed geometry admitted stale click"); failures += 1
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         if !posted.isEmpty { print("FAIL stale mouse-down sent after geometry changed"); failures += 1 }
     }
     var hits: [CGPoint] = []
@@ -139,7 +161,7 @@ func testPointerInput() throws {
                 posted.append(event.type); current = moved
             })
             print("FAIL move between paired events admitted"); failures += 1
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         if posted != [.leftMouseDown, .leftMouseUp] || cleanupCalls != 1 {
             print("FAIL geometry change stranded owned mouse-down without cleanup"); failures += 1
         }
@@ -157,9 +179,9 @@ func testPointerInput() throws {
                 posted.append(event.type); current = changed[0]
             })
             print("FAIL unsafe cleanup admitted"); failures += 1
-        } catch Refusal.ownedInput {
+        } catch where refusalKind(error) == .ownedInput {
             precondition(refusalMessage(Refusal.ownedInput) ==
-                "refused: ownedInput; unresolved owned input; owner reset required")
+                "refused: ownedInput (unexpected-error); unresolved owned input; owner reset required")
         } catch {
             print("FAIL owned input reported as ordinary refusal"); failures += 1
         }
@@ -171,7 +193,7 @@ func testPointerInput() throws {
         try dispatchInputEvents(staleEvents, fence: { _ in }, releaseFence: { _ in },
                                 releaseAllowed: { posted.isEmpty }, post: { posted.append($0.type) })
         print("FAIL posting permission loss admitted"); failures += 1
-    } catch Refusal.ownedInput { }
+    } catch where refusalKind(error) == .ownedInput { }
     precondition(posted == [.leftMouseDown])
     // Before a press there is no owned release and no owner reset requirement.
     posted = []
@@ -180,7 +202,7 @@ func testPointerInput() throws {
                                 releaseFence: { _ in preconditionFailure() },
                                 releaseAllowed: { false }, post: { posted.append($0.type) })
         print("FAIL missing posting permission admitted"); failures += 1
-    } catch Refusal.permission { }
+    } catch where refusalKind(error) == .permission { }
     precondition(posted.isEmpty)
     for alteredPoint in [CGPoint(x: 255, y: 180), CGPoint(x: 450, y: 180)] {
         staleEvents[0].location = alteredPoint
@@ -190,7 +212,7 @@ func testPointerInput() throws {
                 _ = try saved.checkedLocation(event.location, current: saved)
             }, releaseFence: { _ in preconditionFailure() }, releaseAllowed: { true }, post: { posted.append($0.type) })
             print("FAIL changed event coordinate admitted"); failures += 1
-        } catch Refusal.target { }
+        } catch where refusalKind(error) == .target { }
         precondition(posted.isEmpty)
     }
     if failures > 0 { exit(1) }
@@ -198,13 +220,13 @@ func testPointerInput() throws {
     for (operation, role) in [(Operation.click, kAXWindowRole), (.scroll, kAXTextAreaRole),
                               (.text("public"), kAXButtonRole), (.click, kAXUnknownRole)] {
         do { _ = try inputPath(operation, role: role); print("FAIL unsupported role admitted"); failures += 1 }
-        catch Refusal.target { }
+        catch where refusalKind(error) == .target { }
     }
     let firstStep = try nextScrollValue(0), lastStep = try nextScrollValue(0.99)
     precondition(firstStep == 0.05 && lastStep == 1)
     for value in [-0.1, 1, 1.1, Double.nan, Double.infinity] {
         do { _ = try nextScrollValue(value); print("FAIL invalid scroll value admitted"); failures += 1 }
-        catch Refusal.target { }
+        catch where refusalKind(error) == .target { }
     }
     precondition(inputReceipt(path: "CGEventPIDText") == "dispatched; path=CGEventPIDText; application completion unproven")
     precondition(inputReceipt(path: "AXPress", observed: "observed fixture counter increment") ==
