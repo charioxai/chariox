@@ -94,3 +94,71 @@ done
     backend.stop().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn md_display_host_crash_reaps_descendant_spawned_after_startup() {
+    fn alive(pid: u32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_some_and(|s| {
+                s.rsplit_once(')')
+                    .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+            })
+    }
+    let root = std::env::temp_dir().join(format!(
+        "chariox-md-host-orphan-{:032x}",
+        rand::random::<u128>()
+    ));
+    fs::create_dir(&root).unwrap();
+    let script = root.join("host.sh");
+    fs::write(&script,r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.browser"'*) sleep 30 & printf '%s' "$!" > "$root/survivor"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let mut backend = BrowserControllerProcessStdioBackend::new(
+        "/bin/sh",
+        vec![script.display().to_string(), root.display().to_string()],
+        Duration::from_secs(2),
+    )
+    .for_host();
+    backend.start().unwrap();
+    backend
+        .host_request("host.browser", serde_json::json!({"op":"open"}))
+        .unwrap();
+    let survivor: u32 = fs::read_to_string(root.join("survivor"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(survivor > 1 && alive(survivor));
+    // Independent witness cleans a failing test; it does not refresh production ownership.
+    let process = backend.process.as_mut().unwrap();
+    let mut witness =
+        super::owned_process_group::OwnedProcessGroup::new(process.child.lock().unwrap().id());
+    {
+        let mut child = process.child.lock().unwrap();
+        assert!(child.id() > 1);
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    backend.take_exited_process().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while alive(survivor) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let leaked = alive(survivor);
+    witness.signal();
+    backend.stop().unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        !leaked,
+        "MD-DISPLAY: supervisor death left a live owned descendant"
+    );
+}

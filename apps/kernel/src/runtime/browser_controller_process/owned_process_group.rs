@@ -1,5 +1,11 @@
 //! MD-2: verify membership before signaling a controller's private Unix group.
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 struct Process {
     parent: u32,
@@ -9,7 +15,8 @@ struct Process {
 
 pub(super) struct OwnedProcessGroup {
     root: u32,
-    known: BTreeMap<u32, String>,
+    known: Arc<Mutex<BTreeMap<u32, String>>>,
+    tracker: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     #[cfg(target_os = "linux")]
     seen: BTreeSet<u32>,
 }
@@ -18,7 +25,8 @@ impl OwnedProcessGroup {
     pub(super) fn new(root: u32) -> Self {
         let mut group = Self {
             root,
-            known: BTreeMap::new(),
+            known: Arc::new(Mutex::new(BTreeMap::new())),
+            tracker: None,
             #[cfg(target_os = "linux")]
             seen: BTreeSet::new(),
         };
@@ -28,7 +36,13 @@ impl OwnedProcessGroup {
 
     pub(super) fn refresh(&mut self) {
         #[cfg(target_os = "linux")]
-        let processes = linux_refresh(self.root, &self.known, &mut self.seen);
+        let known = self
+            .known
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        #[cfg(target_os = "linux")]
+        let processes = linux_refresh(self.root, &known, &mut self.seen);
         #[cfg(not(target_os = "linux"))]
         let processes = snapshot(self.root);
         if let Some(processes) = processes {
@@ -42,7 +56,10 @@ impl OwnedProcessGroup {
         }
         for (&pid, process) in processes {
             if process.group == self.root && self.owns(pid, processes) {
-                self.known.insert(pid, process.started.clone());
+                self.known
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(pid, process.started.clone());
             }
         }
     }
@@ -56,8 +73,9 @@ impl OwnedProcessGroup {
             if process.group != self.root {
                 return false;
             }
-            if (pid == self.root && !self.known.contains_key(&pid))
-                || self.known.get(&pid) == Some(&process.started)
+            let known = self.known.lock().unwrap_or_else(|error| error.into_inner());
+            if (pid == self.root && !known.contains_key(&pid))
+                || known.get(&pid) == Some(&process.started)
             {
                 return true;
             }
@@ -66,7 +84,68 @@ impl OwnedProcessGroup {
         false
     }
 
+    // MD-DISPLAY-04: record descendant start identities independently of the
+    // frame/input RPC path. Signaling still verifies EVERY live group member.
+    pub(super) fn witness(&self) -> Self {
+        Self {
+            root: self.root,
+            known: self.known.clone(),
+            tracker: None,
+            #[cfg(target_os = "linux")]
+            seen: BTreeSet::new(),
+        }
+    }
+    pub(super) fn start_tracking(&mut self) -> std::io::Result<()> {
+        if self.tracker.is_some() {
+            return Ok(());
+        }
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = stopped.clone();
+        let root = self.root;
+        let known = self.known.clone();
+        let worker = std::thread::Builder::new()
+            .name("chariox-browser-owned-identities".into())
+            .spawn(move || {
+                let mut observer = OwnedProcessGroup {
+                    root,
+                    known,
+                    tracker: None,
+                    #[cfg(target_os = "linux")]
+                    seen: BTreeSet::new(),
+                };
+                #[cfg(target_os = "linux")]
+                let mut allocated = None;
+                while !stop.load(Ordering::Acquire) {
+                    // MP-08/MP-11: a new descendant needs a newly allocated PID.
+                    // Skip the full /proc walk only when none was allocated
+                    // since the value read before the previous walk.
+                    #[cfg(target_os = "linux")]
+                    {
+                        let current = last_allocated_pid();
+                        if current.is_none() || current != allocated {
+                            observer.refresh();
+                            allocated = current;
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    observer.refresh();
+                    std::thread::park_timeout(Duration::from_millis(
+                        if cfg!(target_os = "linux") { 25 } else { 250 },
+                    ));
+                }
+            })?;
+        self.tracker = Some((stopped, worker));
+        Ok(())
+    }
+    fn stop_tracking(&mut self) {
+        if let Some((stop, worker)) = self.tracker.take() {
+            stop.store(true, Ordering::Release);
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
     pub(super) fn signal(&mut self) {
+        self.stop_tracking();
         if self.root <= 1 || self.root > i32::MAX as u32 {
             return;
         }
@@ -86,6 +165,21 @@ impl OwnedProcessGroup {
             libc::kill(-(self.root as i32), libc::SIGKILL);
         }
     }
+}
+
+impl Drop for OwnedProcessGroup {
+    fn drop(&mut self) {
+        self.stop_tracking()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn last_allocated_pid() -> Option<String> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .nth(4)
+        .map(str::to_owned)
 }
 
 #[cfg(target_os = "linux")]
@@ -220,7 +314,8 @@ mod tests {
     fn md2_group_membership_rejects_foreign_reused_and_unsafe_ids() {
         let mut group = OwnedProcessGroup {
             root: 42,
-            known: BTreeMap::new(),
+            known: Arc::new(Mutex::new(BTreeMap::new())),
+            tracker: None,
             #[cfg(target_os = "linux")]
             seen: BTreeSet::new(),
         };
@@ -271,6 +366,13 @@ mod tests {
         assert_eq!(process.group, 42);
         assert_eq!(process.started, "12345");
         assert!(linux_identity("42 (broken) S 2").is_none());
+        let before = last_allocated_pid().unwrap();
+        std::process::Command::new("true").status().unwrap();
+        assert_ne!(
+            last_allocated_pid().unwrap(),
+            before,
+            "a new process allocates a PID"
+        );
         for root in [0, 1, u32::MAX] {
             assert!(snapshot(root).is_none());
         }

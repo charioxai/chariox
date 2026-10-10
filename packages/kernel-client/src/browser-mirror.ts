@@ -76,6 +76,7 @@ export class BrowserMirrorRenderer {
     const removers:Array<()=>void>=[]
     this.documentBindings.set(doc,removers)
     let lastComposition:string|null=null
+    let wheelX=0,wheelY=0,wheelDocument=this.documentId
     const target=(event:Event):Node=>event.composedPath()[0] as Node
     const point=(event:MouseEvent):{x:number;y:number}=>{let x=event.clientX,y=event.clientY;for(let view:Window|null=doc.defaultView;view&&view!==this.frame.contentWindow;view=view.parent){const frame=view.frameElement as HTMLElement|null;if(!frame)throw Error('MP-11: detached mirror frame');const box=frame.getBoundingClientRect();const style=view.parent.getComputedStyle(frame);x+=box.x+frame.clientLeft+(parseFloat(style.paddingLeft)||0);y+=box.y+frame.clientTop+(parseFloat(style.paddingTop)||0)}return {x:Math.floor(x),y:Math.floor(y)}}
     const id=(node:Node|null):string|undefined=>node ? this.ids.get(node) : undefined
@@ -86,7 +87,7 @@ export class BrowserMirrorRenderer {
     const on=(kind:string,fn:EventListener):void=>{doc.addEventListener(kind,fn,true);removers.push(()=>doc.removeEventListener(kind,fn,true))}
     on('focusin',event=>{if(!this.applying&&!this.disposed&&!this.nativeFocus)this.rememberFocus(target(event))})
     on('click',event=>{event.preventDefault();const element=target(event) as HTMLElement,node=id(element);if(node){const record=this.records.get(node);if(record?.kind==='mask')return;this.nativeFocus=null;if(record?.kind==='tile'||record?.form||element.isContentEditable){const mouse=event as MouseEvent;this.enqueue({kind:'coordinate',input:{kind:'click',...point(mouse)}})}else this.enqueue({kind:'click',node_id:node})}})
-    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;const delta_x=Math.trunc(wheel.deltaX),delta_y=Math.trunc(wheel.deltaY);if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
+    on('wheel',event=>{event.preventDefault();const wheel=event as WheelEvent,node=id(target(event));if(!node)return;const record=this.records.get(node);if(record?.kind==='mask')return;if(wheelDocument!==this.documentId){wheelX=wheelY=0;wheelDocument=this.documentId;}const unit=wheel.deltaMode===1?(parseFloat(doc.defaultView?.getComputedStyle(target(event) as Element).lineHeight??'')||16):wheel.deltaMode===2?(doc.defaultView?.innerHeight||800):1;wheelX+=wheel.deltaX*unit;wheelY+=wheel.deltaY*unit;const integer=(value:number)=>Math.trunc(value+Math.sign(value)*1e-9);const delta_x=integer(wheelX),delta_y=integer(wheelY);wheelX-=delta_x;wheelY-=delta_y;if(!delta_x&&!delta_y)return;if(record?.kind==='tile')this.enqueue({kind:'coordinate',input:{kind:'scroll',...point(wheel),delta_x,delta_y}});else this.enqueue({kind:'scroll',node_id:node,delta_x,delta_y})})
     // MP-08/MP-11: after native focus progress, keys follow the same live-focus
     // bridge as text. A newer credit in flight cannot bind them to painted focus.
     // Shift+Tab is the one modified key: backward focus must stay backward.
@@ -135,7 +136,7 @@ export class BrowserMirrorRenderer {
     if(!previous||JSON.stringify(previous.style??{})!==JSON.stringify(record.style??{}))this.style(element,record.style??{},previous?.style)
     if(record.kind==='mask'){element.style.boxSizing='border-box';if(record.tag==='div'&&(!record.style?.display||record.style.display==='inline'))element.style.display='inline-block';element.style.appearance='none';element.style.borderStyle='solid';element.style.boxShadow='none';element.style.borderRadius='0';if(record.tag==='input'||record.tag==='textarea'){(element as HTMLInputElement).readOnly=true;(element as HTMLInputElement).disabled=true}element.style.background='black';element.style.color='transparent';element.style.borderColor='black';element.setAttribute('aria-label','Protected content')}
     if(record.kind==='tile'||record.kind==='mask') {
-      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
+      element.style.boxSizing='border-box';element.style.width=`${record.box?.width??0}px`;element.style.height=`${record.box?.height??0}px`;if(!record.style?.position||record.style.position==='static')element.style.position='relative';element.style.overflow='hidden';element.style.background='black'
     }
     if(record.kind==='tile'&&record.reason==='observer_bounds_or_unavailable') {
       element.contentEditable='plaintext-only';element.style.color='transparent';element.style.caretColor='transparent'
@@ -249,7 +250,7 @@ export class BrowserMirrorRenderer {
         if(!image.hasAttribute('style')||entry.placement!==imageStyle){image.style.cssText=imageStyle;entry.placement=imageStyle}
         this.doc.documentElement.append(image);this.overlays.push(image)
       }
-      for(const record of next.values())if(record.box&&(record.kind==='mask'||['cross_origin_frame','opaque_shadow'].includes(record.reason??''))) {
+      for(const record of next.values())if(record.box&&record.kind==='mask') {
         const doc=this.doc,box=globalBox(record),scale=this.dpr
         const left=Math.floor(box.x*scale)-4,top=Math.floor(box.y*scale)-4,right=Math.ceil((box.x+box.width)*scale)+4,bottom=Math.ceil((box.y+box.height)*scale)+4
         const mask=doc.createElement('div');mask.setAttribute('aria-label','Protected content')

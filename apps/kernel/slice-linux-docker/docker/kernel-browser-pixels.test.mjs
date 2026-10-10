@@ -26,16 +26,22 @@ test("MD-5: trusted mask replaces pixels while keeping unrelated pixels", () => 
   assert.deepEqual(decoded(original).pixel(8, 8), [255, 255, 255, 255]);
   assert.throws(() => maskPng(original.slice(0, -12), []), /frame/);
 });
-test("MD-5: failed/unknown layout masks the full frame without exposing capture", async () => {
-  let captures = 0;
-  const result = await captureProtectedPage({ ensureConnection: async () => { throw new Error("synthetic-only-secret"); } }, { target_id: "target" }, ["synthetic-only-secret"], [], async () => { captures++; return "raw-pixels"; });
-  assert.equal(result, wholeFrameMask());
-  assert.equal(captures, 0);
-  const frame = decoded(result);
-  assert.deepEqual([frame.width, frame.height], [1280, 800]);
-  assert.deepEqual(frame.pixel(0, 0), [0, 0, 0, 255]);
-  assert.deepEqual(frame.pixel(1279, 799), [0, 0, 0, 255]);
-  assert.equal(await captureProtectedPage({}, {}, [], [], async () => "ordinary"), "ordinary");
+test("MP-11: registration alone leaves every pixel visible; failed target lookup refuses capture", async () => {
+  let captures=0;
+  assert.equal(await captureProtectedPage({}, {}, ['synthetic-only-secret'], [], async()=>{captures++;return 'ordinary';}), 'ordinary');
+  await assert.rejects(captureProtectedPage({}, {target_id:'target'}, ['synthetic-only-secret'], [{target_id:'target'}], async()=>{captures++;return 'raw';}), /capture unavailable/);
+  assert.equal(captures,1);
+});
+
+test('MP-08/MP-11: negotiated controller bounds admit exact images and reject mismatches', () => {
+  const bounds={width:1920,height:1080};
+  const png=encodePng(bounds.width,bounds.height,Buffer.alloc(bounds.width*bounds.height*4,255));
+  assert.throws(()=>decodePng(png),/frame format/,'display defaults remain bounded');
+  const frame=decodePng(maskPng(png,[[100,100,20,20]],1,bounds),1,bounds);
+  assert.deepEqual([...frame.pixels.subarray((110*frame.width+110)*4,(110*frame.width+110)*4+4)],[0,0,0,255]);
+  assert.throws(()=>maskPng(png,[],1,{width:1921,height:1080}),/frame/);
+  assert.throws(()=>decodePng(png,1,{width:1920,height:1079}),/frame/);
+  for(const width of [0,-1,NaN,Infinity,1.5])assert.throws(()=>decodePng(png,1,{width,height:1080}),/frame/);
 });
 
 // MD-DISPLAY-02/04: arbitrary RGB/RGBA rows exercise every PNG predictor,
@@ -61,4 +67,18 @@ test("MD-DISPLAY optimized PNG filters preserve all pixels and reject corruption
     for(let p=0;p<width*height;p++) assert.deepEqual([...decoded.pixels.subarray(p*4,p*4+4)],[raw[p*channels],raw[p*channels+1],raw[p*channels+2],channels===4?raw[p*channels+3]:255]);
     png[33]^=1;assert.throws(()=>decodePng(png.toString('base64')),/corrupt|frame/);
   }
+});
+
+// MP-08/MP-10/MP-11: indexed PNGs decode exactly or not at all.
+test('MP-11 indexed PNG decoding rejects out-of-palette indices, transparency and a missing palette', async () => {
+  const { deflateSync, crc32 } = await import('node:zlib');
+  const chunk = (type, data) => { const body = Buffer.concat([Buffer.from(type), data]), out = Buffer.alloc(body.length + 8); out.writeUInt32BE(data.length); body.copy(out, 4); out.writeUInt32BE(crc32(body), out.length - 4); return out; };
+  const header = Buffer.alloc(13); header.writeUInt32BE(2); header.writeUInt32BE(1, 4); header[8] = 8; header[9] = 3;
+  const png = (...chunks) => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), ...chunks, chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  const data = indices => chunk('IDAT', deflateSync(Buffer.from([0, ...indices])));
+  const palette = chunk('PLTE', Buffer.from([1, 2, 3, 4, 5, 6]));
+  assert.deepEqual([...decodePng(png(palette, data([1, 0]))).pixels], [4, 5, 6, 255, 1, 2, 3, 255]);
+  assert.throws(() => decodePng(png(palette, data([2, 0]))), /palette index/);
+  assert.throws(() => decodePng(png(palette, chunk('tRNS', Buffer.from([0])), data([0, 0]))), /unsupported frame format/);
+  assert.throws(() => decodePng(png(data([0, 0]))), /chunk order/);
 });

@@ -6,7 +6,8 @@ import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-r
 import { encodePng } from './kernel-browser-pixels.mjs';
 function fixture() {
   const tab={tab_id:'t',target_id:'target',document_id:'d'},state={document:'d',snapshot:{root:'n1',nodes:[{id:'n1',parent:null,children:['n2'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:40}},{id:'n2',parent:'n1',children:[],kind:'text',text:'fixture'}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null,selection:null}};
-  const connection={async send(method,params){
+  const calls=[],connection={async send(method,params){
+    calls.push({method,params});
     if(method==='Target.createTarget')return {targetId:'css-initial'};
     if(method==='Target.closeTarget')return {success:true};
     if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:state.document}}};
@@ -18,9 +19,40 @@ function fixture() {
     throw Error(`unexpected CDP method ${method}`);
   }};
   const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(){return {data_base64:encodePng(1280,800,Buffer.alloc(1280*800*4,100)),protected_regions:[]};}};
-  return {host,state,service:new MirrorService(host)};
+  return {host,state,calls,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
+test('MP-08/MP-11: registered and retired matching text uses visible tiles before hashing incremental bases',async()=>{
+ const {service,state,host}=fixture();host.protection.values=['fixture'];
+ state.snapshot.nodes[0].parent='n3';state.snapshot.nodes.unshift({id:'n3',parent:null,children:['n1'],kind:'element',tag:'html',box:{x:0,y:0,width:1280,height:800}});state.snapshot.root='n3';
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const first=await service.next(next(sub.subscription_id),'a');
+ assert.equal(first.nodes.find(n=>n.id==='n1').kind,'tile');
+ assert(!JSON.stringify(first.nodes).includes('fixture'),'MP-11 ordinary matching text never enters the structured wire tree');
+ assert.equal(first.tiles.length,1,'MP-08 ordinary matching pixels stay visible');
+ assert.equal(first.hash,mirrorHash({root:first.root,nodes:first.nodes,fonts:first.fonts,scroll:first.scroll,focused:first.focused,selection:first.selection}));
+ state.snapshot.nodes[2].text='ordinary';
+ const delta=await service.next(next(sub.subscription_id,first.sequence),'a');
+ assert(!delta.reset);assert.equal(delta.base_sequence,first.sequence);assert.equal(delta.nodes.find(n=>n.id==='n1').kind,'element');
+ const records=new Map(first.nodes.map(n=>[n.id,n]));for(const id of delta.removed)records.delete(id);for(const n of delta.nodes)records.set(n.id,n);
+ assert.equal(delta.hash,mirrorHash({root:delta.root,nodes:[records.get('n3'),records.get('n1'),records.get('n2')],fonts:delta.fonts,scroll:delta.scroll,focused:delta.focused,selection:delta.selection}));
+ state.snapshot.nodes[1].attributes={title:'fixture'};state.snapshot.nodes[1].pseudo={'::before':{text:'FIXTURE',style:{color:'black'}}};
+ const retired=await service.next(next(sub.subscription_id,delta.sequence),'a');
+ assert(retired.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'),'MP-08 unmeasured generated text uses full compositor pixels');assert(retired.nodes.every(n=>n.attributes===undefined&&n.pseudo===undefined));
+ clearInterval(service.expiry);service.clear();
+});
+test('MP-08/MP-11: matching styles fonts and overflowing text use protected full compositor fallback',async()=>{
+ for(const seam of ['style','font','overflow','pseudo']) {
+  const {service,state,host}=fixture();host.protection.values=['fixture'];
+  if(seam==='style')state.snapshot.nodes[0].style={'font-family':'fixture'};
+  if(seam==='font')state.snapshot.fonts=[{family:'fixture',resource:'missing'}];
+  if(seam==='pseudo')state.snapshot.nodes[0].pseudo={'::after':{text:'fixture',style:{'white-space':'nowrap','overflow':'visible'}}};
+  if(seam==='overflow')state.snapshot.nodes[1].box={x:70,y:0,width:80,height:40};
+  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a'),packet=await service.next(next(sub.subscription_id),'a');
+  assert(packet.nodes.some(n=>n.reason==='observer_bounds_or_unavailable'));assert(!JSON.stringify(packet.nodes).includes('fixture'));assert.equal(packet.tiles.length,1);
+  clearInterval(service.expiry);service.clear();
+ }
+});
 test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
  for(const fallback of [false,true]) {
   const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
@@ -66,7 +98,7 @@ test('MP-11: resource service reads only Chromium-loaded resources, strips URL, 
  const connection={async send(method,params){if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'frame'},resources:[{url:'https://fixture/image'},{url:'https://fixture/svg'}]}};if(method==='Page.getResourceContent'){reads++;return {base64Encoded:true,content:params.url.endsWith('/svg')?Buffer.from('<svg onload="alert(1)"/>').toString('base64'):png};}throw Error('unexpected');}};
  const descriptors=[{key:'r0',url:'https://fixture/image',kind:'image'},{key:'r1',url:'https://fixture/svg',kind:'image'},{key:'r2',url:'http://private-address/unloaded',kind:'image'}];
  const result=await materializeMirrorResources(connection,'s',descriptors,[]);assert.equal(reads,2);assert.equal(result.resources.size,1);assert.equal(result.mapped.get('r1'),null);assert.equal(result.mapped.get('r2'),null);assert(!JSON.stringify([...result.resources.values()]).includes('https://fixture'));
- await assert.rejects(materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value']),/protected/);
+ assert.equal((await materializeMirrorResources(connection,'s',descriptors,['synthetic-private-value'])).resources.size,1,'MP-11 value registration alone cannot mask media');
 });
 
 test('MP-11: resource cache is epoch bounded and oversized decoded images never reach the client',async()=>{
@@ -121,11 +153,11 @@ test('MP-11: CSS initial probe always closes its trusted blank target',async()=>
  }
 });
 
-test('MP-10/MP-11: fully opaque foreign/closed regions do not require compositor readback',async()=>{
+test('MP-10/MP-11: MP-11 foreign/closed regions display compositor pixels',async()=>{
  for(const reason of ['cross_origin_frame','opaque_shadow']){
   const {service,state,host}=fixture();state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'img',box:{x:5,y:5,width:30,height:20},reason};
-  host.screenshot=async()=>{throw Error('opaque region must not capture')};
-  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert.deepEqual(packet.tiles,[]);
+  let captures=0;const capture=host.screenshot;host.screenshot=async(...args)=>{captures++;return capture(...args)};
+  const s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:2},'a');const packet=await service.next(next(s.subscription_id),'a');assert.equal(packet.nodes[1].reason,reason);assert(packet.tiles.length>0);assert.equal(captures,1);
  }
 });
 
@@ -239,6 +271,12 @@ test('MP-11: native keyboard unknown/protected focus refuses with no retry marke
  service.evaluate=async()=> 'unknown';
  const result=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:first.sequence,action:{kind:'coordinate',input:{kind:'key',key:'Backspace'}}},'a');
  await assert.rejects(result.guard(),error=>!error.message.includes('stale mirror input epoch'));
+});
+
+// MP-08/MP-10/MP-11: both transports must size the actual compositor view.
+for(const dpr of [1,2])test(`MP-10 mirror negotiates native view image scale at DPR${dpr}`,async()=>{
+ const {service,calls}=fixture();await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'a');
+ assert.deepEqual(calls.find(c=>c.method==='Emulation.setDeviceMetricsOverride').params,{width:1280,height:800,deviceScaleFactor:dpr,scale:dpr,mobile:false});
 });
 
 // MP-11: no new packet is produced after the live page/native focus moves.

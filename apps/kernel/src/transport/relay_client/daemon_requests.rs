@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod app_tests;
+mod prepare;
+pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,6 +47,7 @@ pub(super) struct RelayRequestOutcome {
     pub(super) error: Option<RelayError>,
 }
 
+#[cfg(test)]
 pub(super) async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -53,68 +56,35 @@ pub(super) async fn handle_daemon_request(
     command_result_cache: &Arc<CommandResultCache>,
     display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
 ) -> RelayRequestOutcome {
-    if relay_crypto::validate_encrypted_payload_shape(
-        &encrypted_request,
-        MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
-    )
-    .is_err()
-    {
-        return RelayRequestOutcome {
-            display_event: None,
-            encrypted_response: None,
-            error: Some(relay_error(
-                "invalid_request",
-                "invalid relay request payload",
-                false,
-            )),
-        };
+    match prepare_daemon_request(router, caller_identity, encrypted_request) {
+        Ok(prepared) => {
+            handle_prepared_daemon_request(
+                router,
+                command_sequence,
+                prepared,
+                command_result_cache,
+                display_subscriptions,
+            )
+            .await
+        }
+        Err(outcome) => outcome,
     }
-    if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
-    {
-        return RelayRequestOutcome {
-            display_event: None,
-            encrypted_response: None,
-            error: Some(error),
-        };
-    }
-    let (message, client_public_key, daemon_private_key) = {
-        let daemon_private_key = router.relay_private_key();
-        let decrypted = match relay_crypto::decrypt_payload_for_private_key(
-            &daemon_private_key,
-            &encrypted_request,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &format!("invalid relay request payload: {error}"),
-                        false,
-                    )),
-                };
-            }
-        };
-        let request = match parse_relay_client_request(&decrypted.plaintext) {
-            Ok(request) => request,
-            Err(error) => {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "invalid_request",
-                        &crate::transport::request_decode_error::message(
-                            "invalid relay request payload",
-                            &error,
-                        ),
-                        false,
-                    )),
-                };
-            }
-        };
-        (request, decrypted.sender_public_key, daemon_private_key)
-    };
+}
+
+pub(super) async fn handle_prepared_daemon_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    prepared: PreparedDaemonRequest,
+    command_result_cache: &Arc<CommandResultCache>,
+    display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
+) -> RelayRequestOutcome {
+    let PreparedDaemonRequest {
+        message,
+        client_public_key,
+        daemon_private_key,
+        caller_identity,
+        encrypted_request,
+    } = prepared;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
             if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
@@ -135,6 +105,30 @@ pub(super) async fn handle_daemon_request(
                     encrypted_response: None,
                     error: Some(error),
                 };
+            }
+            // MP-08/MP-10: protocol 475 acknowledgements stay in the relay
+            // layer: they only gate this sender's own push pump and renew
+            // its delivery lease; the pump's frames take the admitted path.
+            if let LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command:
+                    crate::local::KernelBrowserCommand::DisplayAck {
+                        subscription_id,
+                        generation,
+                        sequence,
+                        lost,
+                    },
+            }) = &request.request
+            {
+                let status = super::browser_display::acknowledge(
+                    display_subscriptions,
+                    subscription_id,
+                    &client_public_key,
+                    *generation,
+                    *sequence,
+                    *lost,
+                )
+                .await;
+                return display_ack_outcome(status, &daemon_private_key, &client_public_key);
             }
             let poll = match &request.request {
                 LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
@@ -261,14 +255,17 @@ pub(super) async fn handle_daemon_request(
             let display_event = if let Some((id, sequence, event)) =
                 crate::transport::kernel_browser_display::take_display_event(&mut response)
             {
-                match serde_json::to_vec(&event).ok().and_then(|bytes| {
-                    relay_crypto::encrypt_payload_for_peer(
-                        &daemon_private_key,
-                        &client_public_key,
-                        &bytes,
-                    )
+                // MP-08/MP-10: protocol 466 binary display plaintext.
+                match crate::transport::kernel_browser_display::encode_display_event(event)
                     .ok()
-                }) {
+                    .and_then(|bytes| {
+                        relay_crypto::encrypt_payload_for_peer(
+                            &daemon_private_key,
+                            &client_public_key,
+                            &bytes,
+                        )
+                        .ok()
+                    }) {
                     Some(payload) => Some((id, sequence, payload)),
                     None => {
                         return RelayRequestOutcome {
@@ -369,6 +366,46 @@ pub(super) async fn handle_daemon_request(
             display_event: None,
             encrypted_response: None,
             error: Some(error),
+        },
+    }
+}
+
+fn display_ack_outcome(
+    status: Option<&'static str>,
+    daemon_private_key: &str,
+    client_public_key: &str,
+) -> RelayRequestOutcome {
+    let Some(status) = status else {
+        return RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "display_subscription_required",
+                "MD-DISPLAY: register a fresh display subscription with the same sender identity",
+                false,
+            )),
+        };
+    };
+    let response = crate::local::LocalDaemonResponse::KernelBrowser {
+        result: serde_json::json!({"acknowledged":true,"push":status}),
+    };
+    match serde_json::to_vec(&response).ok().and_then(|plaintext| {
+        relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+            .ok()
+    }) {
+        Some(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        None => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                "failed to encrypt relay response",
+                false,
+            )),
         },
     }
 }

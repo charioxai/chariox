@@ -1,4 +1,90 @@
-# MD-DISPLAY-02/04: experimental kernel browser display, protocol 419
+# MD-DISPLAY-02/04: kernel browser display implementation and history
+
+MD-DISPLAY-02/04: current transport uses reserved local 441 / relay 84; dependent
+video requires the explicit `chariox-video-dependencies-v1` codec capability.
+Legacy offers retain independent frames. The client minimum is 441.
+
+Current Phase 10 native motion prefers negotiated H.264, with realtime VP9 fallback,
+three default display credits, bounded reference recovery and exact PNG damage
+repair. PyAV needs libx264/libvpx; optional FFmpeg plus an accessible render device
+can attempt VAAPI, falling back on actual failure. Builder evidence is software
+only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
+coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
+and reduced software motion scale are implemented; exact settled pixels stay
+native DPR. Current results remain RED and the flag stays off. See the source-bound
+Phase 10 matrix and integration limits in the performance doc.
+
+MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
+1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
+Resizing precedes color conversion. Reduced video certifies no native pixels;
+lossless repair restores native resolution. Protected, striped and hardware
+frames retain native geometry. Capture manually redirects the owned window on
+its private X server, avoiding composition onto an unused root, and falls back
+to automatic redirection when another capture owns the manual redirect.
+These changes do not establish performance or live acceptance.
+
+MP-08/MP-10/MP-11 owner amendment, 2026-10-09: keep the 45,000-byte
+unprotected recovery-key contract and full fidelity at settle. If a native
+whole-frame software key exceeds that bound, retry once at the existing
+1280×720 or 1280×800 motion geometry and keep its delta chain at that size.
+If that key still cannot fit, refuse it through the existing exact fallback.
+Protected streams retain native geometry and their independent output guard.
+Reduced reconstruction certifies no native pixels, so exact repair covers the
+full raster. No client geometry or serialized contract is expanded. Actual
+end-to-end settle cost remains a live validation requirement.
+
+MP-08/MP-10/MP-11: native exact preparation uses a separate, request-bound
+32 MiB private reply ceiling. At admitted 2560×1600 geometry, a random RGB
+raster needs about 16.4 MB for base64 lossless repair alone, exceeding the
+former 8 MiB ceiling. The new ceiling fits full PNG plus WebP repair and
+metadata. Raw raster and codec reply ceilings retain their existing limits.
+the Rust exact worker and the Node pipe both apply the exact-reply ceiling,
+so base64 repair output is never constrained by the smaller raw-raster bound.
+Each public display packet still passes the 1 MiB egress check.
+If a prepared lossless strip exceeds the legacy relay's base64 egress budget,
+the native worker bisects it into independently decodable lossless clips.
+Ordinary text strips keep their original geometry and encoding. The existing
+repair queue marks the frame exact only after every clip has been delivered.
+
+MP-08/MP-10 protocol 466 (relay unchanged): display frame events are binary.
+The encrypted plaintext is `CXD1`, a big-endian u32 header length, the JSON
+header `{"event":"kernel_browser_frame","subscription_id","frame"}`, then raw
+payload bytes. Each `data_base64` of the frame, its tiles and stripes becomes
+`data:[offset,length]`; segments are contiguous in header order and cover the
+payload exactly. JSON plaintexts never start with `CXD1`. Browser clients use
+`decryptRelayEvent` from `browser-relay-crypto`; the local kernel socket sends
+the same bytes as a binary WebSocket message. Native packet files are
+`u32 header length + JSON segment headers (with length) + raw segments`; the
+kernel binds the headers to the frame before projecting raw bytes.
+
+Tiles carry `format` `png` or lossless `webp`, up to 2560×256 pixels. Native
+exact repair merges each 128-row band into WebP strips (about half the bytes of
+tile PNG on text). A `tiles` frame may carry `moves`: `[x,y,w,h,dy]`
+destination rectangles copied from one snapshot of the previous canvas at
+`y-dy`, applied before tiles. The capture proves every moved and unchanged
+cell byte-for-byte against the previous readback or the admitted base; WebP
+tiles cover the rest. Only an exact, unprotected canvas whose base is the
+delivered frame may receive moves, so scrolling text stays lossless and exact.
+Larger residuals use native-resolution video. Reduced 720p/800p whole-frame
+software motion may engage after an oversized key, or while host CPU idle
+stays below 10% (held at least 10 s). Both use the existing
+`motion_reduced_contention` timing marker; it alone does not prove CPU saturation.
+
+When a readback skips the delivered frame, the worker plans moves (or a
+static residual) against its committed exact canvas instead; a refused plan
+replies normally and holds lossless frames until exactness returns. Mouse
+wheel notches (multiples of 120) go through XTest on the kernel's private X
+server after the same document fence and actor ledger, so Chromium applies
+its native smooth scrolling (CDP wheel deltas are precise and unanimated);
+other deltas stay on CDP. Wheel dispatch does not wait for the renderer's
+frame-aligned ack. x264 runs on its own worker thread, and capture plans are
+requested only while a viewer canvas is exact and unprotected.
+
+The historical427/74 configuration, pipeline, client and Phase7 evidence are
+in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
+The sections below record earlier419-era implementation and receipts; their
+codec, source, pacing and credit descriptions are historical, not current
+configuration. Their source identities and limitations remain unchanged.
 
 This implements the Phase-2 recommendation as an opt-in, removable adapter.
 It does not close an MD or MP acceptance item. The owner still decides the final
@@ -26,7 +112,8 @@ The source is the existing `KernelBrowserHost.screenshot` protected PNG seam.
 An emulated canonical tab viewport stays 1280×800 CSS pixels with negotiated
 DPR 1 or 2. Different DPR selections on the same live tab are refused. Screenshots
 and Vault region masks follow that geometry, including DPR2 pixel conversion.
-The display never consumes unmasked CDP screencast pixels. Capture checks the
+MP-08/MP-11: the display covers only recorded Vault-filled plain fields;
+password fields already show dots. No other content receives a mask. Capture checks the
 observed document again after screenshot acquisition; replacement documents fail
 that frame instead of attaching old input coordinates to new content.
 
@@ -208,7 +295,7 @@ open. Native secrets/masking source tests are narrower than those live gates.
 
 Clean implementation source `836e64630bc53d42e488dc97142416fdb0c92271`, rebased
 onto kbrowser `d6d03751ffea37198fb33530829f4cd76ae30fbf`. Final receipt:
-`/root/.codex/evidence/browser-resume-20260930/display/phase3/final-typed-relay-2mbps/results.json`.
+`<lane evidence>/phase3/final-typed-relay-2mbps/results.json`.
 `phase3/provenance.json` binds this source, the test binary SHA-256, 118 source
 file hashes, 28 exact embedded controller assets, commands, exits and receipt.
 This is historical Phase-3 coverage; Phase-4 execution files differ and the
@@ -371,3 +458,128 @@ Owner decisions: acceptable moving and settled fidelity, p95 input latency/WAN
 and total-egress budgets, required client codecs/platforms, initial page scope,
 cursor/IME/file-chooser coverage, and criteria for Room desktop migration. Until
 those decisions and independent review, keep the flag off by default.
+
+
+## MD-DISPLAY-02/04: current Cloud integration handoff,427/74
+
+Copy `apps/browser-display/presenter.mjs`, `decoder-worker.mjs`, `tile-cache.mjs`
+and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
+with the application's restrictive CSP and correct JavaScript MIME; no page
+scripts or provider/account state are added to the client. The self-contained
+`harness.html` demonstrates the transport adapter; coordinator wires private
+Cloud separately. Do not use the historical419 instructions as a version bump.
+
+`attachBrowserDisplay(canvas, transport, {tab_id,generation}, options)` needs the
+existing encrypted kernel `request`, event listener and scoped
+`subscribeDisplay`/`unsubscribeDisplay` adapter. Preserve shared-client sender
+pinning, display-next no-replay and durable session replay-cursor separation.
+Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:4`;
+`start()` maintains bounded continuous credits and `stop()` awaits them. For
+manual polls use `next()` while stopped. Input/takeover/release/actors route
+through the same kernel actor/document seam; `close()` releases local presenter,
+scoped relay registration and kernel subscription. Polling unchanged frames
+still renews display admission. Default-off feature and minimum427 remain.
+
+Worker decode adds no jitter buffer; authoritative frames retain dependency
+order. Keep `scrollPredictionRegion` unset unless product geometry is explicitly
+trusted; prediction does not count as source acknowledgement. Surface stream
+errors and actor takeover to users through existing flows. The presenter canvas
+is an image surface, so IME/clipboard/file chooser/drag-drop remain existing
+kernel input capability questions rather than DOM replay inferred from pixels.
+See `MULTIDOMAIN_DISPLAY_PERFORMANCE.md` for RED performance targets and exact
+execution/binary evidence; this module is reviewable, not rollout acceptance.
+
+## MD-DISPLAY-04: protocol441 dependent-video compatibility
+
+Phase9 uses reservation local 441 / relay 84 for the dependent-video transport
+contract. A display subscription explicitly offers
+`chariox-video-dependencies-v1` alongside its real codecs and PNG. The kernel
+retains independent keyframes for older offers using the same VP9/H.264 names.
+Only admitted modern offers may receive persistent key/delta chains. Sequence,
+document, source and actor fences still apply; a missing dependency needs an
+independent recovery frame. H.264 intra-refresh recovery points are delta
+packets, not independent IDRs; explicit resets force an IDR.
+
+Cloud should use the supplied441-minimum presenter and its capability offer.
+The local/relay versions and shared client constant are bumped together; the
+focused subscription snapshot/hash now pins the capability value, and the
+frame-contract drill covers both legacy independent offers and negotiated
+dependencies. Historical427/74 receipts retain their own source identities.
+
+
+## MP-08/MP-10/MP-11 peer-96 binary relay events
+
+Local protocol 466's `CXD1` display plaintext is unchanged. Peer 96 adds an
+optional `CXR1` WebSocket binary envelope: four magic bytes, a big-endian u32
+JSON-header length, a bounded routing header, then contiguous opaque ciphertext.
+The header contains event direction, subscription ID, event ID, sender public
+key and nonce. Its maximum size is 4096 bytes; ciphertext is 16 through 1048576
+bytes. No display metadata or pixels are exposed to the relay.
+
+The kernel offers `x-chariox-relay-protocol: 96` in the WebSocket handshake and
+enables binary writes only after the relay echoes that response header. The
+configured URL, authority, path and query remain unchanged.
+Browsers use the `chariox-relay-binary-v96` WebSocket subprotocol; if a legacy
+relay cannot select it, they reconnect using the existing connection contract.
+The display presenter offers the matching codec-list capability only after
+successful negotiation. This changes internal byte accounting, without changing
+any local request, response or display-frame JSON shape. Legacy offers retain
+base64 byte accounting and pacing.
+
+The relay applies the existing daemon/realm/subscription route and backpressure
+cleanup to both encodings. A receiver that did not negotiate binary events gets
+the original JSON/base64 envelope. A peer-94 relay therefore continues to work,
+and an older client can attach to a newer kernel and relay. The existing peer90
+runtime/security admission floor remains unchanged: advertising optional
+transport96 does not revoke compatible peer94 workers. Binary-event routing
+never decrypts ciphertext or parses a display payload. Kernel and browser bounds,
+wrong-daemon/realm refusal, sender-key pinning, ciphertext authentication,
+legacy negotiation and wire-size accounting have focused regression coverage.
+
+These source and component checks do not establish MP-08/MP-10 live acceptance.
+Hosted realistic-network, public-site, real-app/provider, DPR1/DPR2, Intel/iHD
+and multi-hour validation remain separate required gates.
+
+### MP-08/MP-10/MP-11 adapter and native-input review gates
+
+Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
+`decryptRelayEvent` for authenticated CXD1 events, pass the connected kernel's
+version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
+The presenter refuses missing/older versions and JSON-only adapters before any
+subscription request. These are adapter properties, not serialized protocol
+fields; the local protocol remains 466. Peer-96 negotiation is independent.
+
+Only the kernel-admitted human display input path with a live caller-owned
+viewer lease may use asynchronous or native wheel dispatch. Agent wheel calls
+retain the awaited CDP acknowledgement and hidden-target capture lifetime.
+A native wheel that reports no dispatch falls back to fenced CDP input.
+
+Identical readbacks may advance source bookkeeping, but overlay plans and
+adjacent commits use the last actual worker commit. Codec jobs retain an owned
+mapping lease: releasing a client lease cannot recycle its pixels while encoding,
+and dropping the supervisor cannot unmap a codec's input. Scroll votes are local
+to each planner invocation. Focused checks are supplementary; real app/provider,
+hosted-network and public-site acceptance remain required.
+
+### MP-08/MP-10 typing measurement conditions
+
+The original component campaign's `type_latency` probes run after motion has
+settled. They do not establish typing latency during scrolling. A separate run
+with `MD_TYPE_DURING_MOTION=1 MD_WINDOW=1` keeps scroll/wheel active through20
+admitted typing actions and measures their presented-pixel echoes under
+`motion.typing`. This extra input changes the workload, so its CPU/fps results
+must be labelled separately from the unchanged phase29 matrix. Both are
+supplementary fixture checks, not real live acceptance.
+
+## MP-08/MP-10/MP-11 field-only display protection (2026-10-09)
+
+The video and screenshot paths consume the shared recorded Vault fill targets
+from the Room collector. Generic password, marker, iframe, shadow-host, media,
+and page-text masks are removed. Password fields retain their native dots;
+the collector checks the current type, value and document on each capture.
+Changing or unavailable field geometry refuses that capture for retry rather
+than replacing the page with a whole-frame mask. Native motion remains eligible
+with fill targets and applies only their measured boxes before encoding.
+Legacy subscriptions clear stale frames and await a fresh protected capture.
+These source regressions do not establish hosted Vault/provider/Web/TUI
+acceptance; the live conjunction remains a separate MP-10 gate.

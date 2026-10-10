@@ -1361,7 +1361,7 @@ fn hosted_slice_token_installation_matches(
 ) -> bool {
     slice_id == expected_slice_id
         && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        && peer_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
 }
 
 async fn wait_for_hosted_slice_relay_activation(
@@ -1657,11 +1657,16 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+    fn mp08_mp10_mp11_browser_artifact_peer_minimum_hosted_install_gate() {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
-        for version in [70, 73] {
+        let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+        for version in [
+            minimum - 1,
+            minimum,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ] {
             for (slice_id, nonce) in [
                 ("slice-1", "nonce-1"),
                 ("other", "nonce-1"),
@@ -1693,7 +1698,7 @@ mod tests {
                         "slice-1",
                         "nonce-1",
                     ),
-                    version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                    version >= minimum && slice_id == "slice-1" && activation_nonce == "nonce-1"
                 );
             }
         }

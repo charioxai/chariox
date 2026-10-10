@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>MP-10 legacy Selkies baseline</title>
+<canvas width="1920" height="1080"></canvas><video muted autoplay playsinline style="display:none"></video>
+<script type="module">
+import {wheelMessages} from "./baseline-input.mjs";
+import {MotionSamples} from "./motion-samples.mjs";const motionSamples=new MotionSamples();
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true}),video=document.querySelector('video');
+window.mdFrames=[];window.mdWireBytes=0;window.mdPresentations=[];window.mdErrors=[];window.mdPacketMetadata=[];window.mdControlKinds=[];
+let socket,peer,channel,sequence=0;
+const stamp=()=>performance.timeOrigin+performance.now();
+function draw(){ctx.drawImage(video,0,0,1920,1080);const sample={sequence:++sequence,drawn_ms:stamp(),content_changed:motionSamples.sample(canvas)};mdPresentations.push(sample);requestAnimationFrame(()=>{let n=0;for(let i=0;i<5;i++)if(ctx.getImageData((window.mdProbeLeft??1868)+4+i*8,28,1,1).data[0]>128)n|=1<<i;sample.step=n;sample.presented_ms=stamp();window.mdPresentation=sample;});video.requestVideoFrameCallback(draw);}
+window.mdAttach=async({url})=>{
+ peer=new RTCPeerConnection({iceServers:[]});window.mdPeer=peer;
+ peer.onicecandidate=({candidate})=>{if(candidate)socket.send(JSON.stringify({ice:{candidate:candidate.candidate,sdpMLineIndex:candidate.sdpMLineIndex}}));};
+ peer.ondatachannel=({channel:c})=>{channel=c;channel.onmessage=({data})=>{let m;try{m=JSON.parse(data)}catch{}if(m?.type==='ping')channel.send('pong');};};
+ peer.ontrack=({track})=>{video.srcObject=new MediaStream([track]);video.play();video.requestVideoFrameCallback(draw);};
+ socket=new WebSocket(url);socket.onmessage=async({data})=>{try{
+  if(data==='HELLO'||data.startsWith('SESSION_OK'))return;
+  if(data.startsWith('ERROR')){mdErrors.push(data.split(' ')[0]);return;}
+  const message=JSON.parse(data);
+  if(message.sdp){await peer.setRemoteDescription(message.sdp);if(message.sdp.type==='offer'){await peer.setLocalDescription(await peer.createAnswer());socket.send(JSON.stringify({sdp:peer.localDescription}));}}
+  else if(message.ice)await peer.addIceCandidate(message.ice);
+ }catch(e){mdErrors.push(e.message);}};
+ await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});socket.send('HELLO 1');window.mdCodec='GStreamer x264enc / RTP H264';
+};
+window.mdInput=({kind,x,y,delta_y,text})=>{if(!channel||channel.readyState!=='open')throw Error('MP-10 legacy input channel unavailable');if(kind==='click'){channel.send(`m,${x},${y},1,0`);channel.send(`m,${x},${y},0,0`)}else if(kind==='scroll'){for(const message of wheelMessages(x,y,delta_y))channel.send(message)}else if(kind==='text')for(const ch of text){channel.send('kd,'+ch.codePointAt(0));channel.send('ku,'+ch.codePointAt(0));}};
+window.mdStats=async()=>{let bytes=0;for(const r of (await peer.getStats()).values())if(r.type==='inbound-rtp'&&r.kind==='video')bytes+=r.bytesReceived;return {bytes,frames:mdFrames.slice(),presentations:mdPresentations.slice()};};
+window.mdSnapshot=()=>({png:canvas.toDataURL('image/png'),presentation:{...mdPresentation}});
+window.mdClose=()=>{socket?.close();peer?.close();};
+</script>

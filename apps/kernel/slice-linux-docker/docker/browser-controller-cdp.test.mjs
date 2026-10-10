@@ -1612,3 +1612,15 @@ test("isolated-world focus keeps the physical visibility captured by input emula
   assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
   await browser.close();
 });
+
+// MP-08/MP-10: a native viewer click can navigate between the frame read and
+// the focus poll; the destroyed world is a stale document, which reconcile retries.
+test("MP-08/MP-10 a focus poll racing a navigation reports a stale document", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => ({}) });
+  const connection = { async send(method) {
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 3 };
+    throw new Error("Runtime.evaluate: Cannot find context with specified id");
+  } };
+  await assert.rejects(browser.readFocus(connection, "s", "t", { id: "f", loaderId: "d" }), error => error.code === "stale_document_reference");
+  assert.equal(browser.focusWorldsByTarget.has("t"), false);
+});

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 pub(crate) struct KernelBrowserActors {
     generation: u64,
+    viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
     ledger: EnvironmentActionLedger,
@@ -29,6 +30,7 @@ impl Default for KernelBrowserActors {
     fn default() -> Self {
         Self {
             generation: 0,
+            viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
             ledger: EnvironmentActionLedger::new(256, 0),
@@ -56,6 +58,14 @@ impl KernelBrowserActors {
             self.pointers.clear();
             self.pointer_tabs.clear();
             self.generation = generation;
+        }
+        if let (Some(width), Some(height)) = (
+            state["viewport"]["css_width"].as_u64(),
+            state["viewport"]["css_height"].as_u64(),
+        ) {
+            if matches!((width, height), (1280, 800) | (1920, 1080)) {
+                self.viewport = (width, height);
+            }
         }
         let observations = tabs
             .iter()
@@ -102,6 +112,22 @@ impl KernelBrowserActors {
         }
         self.host_tabs.retain(|tab, _| retained.contains(tab));
         Ok(())
+    }
+    // MP-08/MP-10/MP-11: reuse only an already observed exact generation/document.
+    // The controller still checks that live document before physical dispatch.
+    pub(crate) fn input_is_current(&self, params: &Value) -> bool {
+        if params["generation"].as_u64() != Some(self.generation) {
+            return false;
+        }
+        let Some(host) = params["tab_id"].as_str() else {
+            return false;
+        };
+        self.tab(host)
+            .ok()
+            .and_then(|tab| self.tabs.controller_binding(&tab).ok())
+            .is_some_and(|binding| {
+                params["document_id"].as_str() == Some(binding.document_id.as_str())
+            })
     }
     fn tab(&self, host_tab: &str) -> Result<String, String> {
         self.tabs
@@ -210,7 +236,7 @@ impl KernelBrowserActors {
             _ => return Err("MD-3: browser action lane busy".into()),
         };
         if let (Some(x), Some(y)) = (input["x"].as_u64(), input["y"].as_u64()) {
-            if x < 1280 && y < 800 {
+            if x < self.viewport.0 && y < self.viewport.1 {
                 if let Some(tab) = params["tab_id"].as_str() {
                     self.pointer_tabs.insert(actor.actor_id.clone(), tab.into());
                 }
@@ -340,6 +366,38 @@ mod tests {
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
+    #[test]
+    fn mp11_input_cache_requires_exact_observed_generation_target_and_document() {
+        let mut model = ready();
+        let current = json!({"generation":1,"tab_id":"host-tab-a","document_id":"d"});
+        assert!(model.input_is_current(&current));
+        for stale in [
+            json!({"generation":0,"tab_id":"host-tab-a","document_id":"d"}),
+            json!({"generation":1,"tab_id":"missing","document_id":"d"}),
+            json!({"generation":1,"tab_id":"host-tab-a","document_id":"old"}),
+            json!({"generation":1,"tab_id":"host-tab-a"}),
+        ] {
+            assert!(!model.input_is_current(&stale));
+        }
+        model
+            .reconcile(
+                &json!({"generation":2,"tabs":[{"tab_id":"host-tab-a","document_id":"new"}]}),
+            )
+            .unwrap();
+        assert!(!model.input_is_current(&current));
+        assert!(model
+            .input_is_current(&json!({"generation":2,"tab_id":"host-tab-a","document_id":"new"})));
+    }
+    #[test]
+    fn mp08_pointer_projection_uses_the_bounded_host_viewport() {
+        let mut model = ready();
+        model.reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}],"viewport":{"css_width":1920,"css_height":1080}})).unwrap();
+        let (action, _) = model.begin(human("terminal:1080p"), &json!({"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1919,"y":1079}})).unwrap();
+        assert_eq!(model.snapshot()["pointers"][0]["x"], 1919);
+        assert_eq!(model.snapshot()["pointers"][0]["y"], 1079);
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+
     #[test]
     fn md3_terminal_disconnect_releases_input_and_reclaims_actor_capacity() {
         let mut model = ready();
