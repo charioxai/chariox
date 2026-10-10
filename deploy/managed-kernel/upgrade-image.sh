@@ -993,7 +993,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   require_root_owned_ancestor_chain "$trusted_builder_runtime_key" "trusted builder runtime key"
   if path_exists "$trusted_builder_runtime_key"; then
     require_root_owned_private_regular_file "$trusted_builder_runtime_key" "trusted builder runtime key"
-    if ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+    if ! compare_builder_pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
       echo "installed trusted builder key differs from the independent input" >&2
       exit 1
     fi

@@ -8,6 +8,12 @@ journal_builder_pins() {
   chmod 0600 "$1/previous-builder-public-key" "$1/target-builder-public-key"
 }
 
+# MP-07/MP-11: the production verifier admits canonical 32-byte base64 keys.
+# Journal/input LF formatting must not change identity or the trust authority.
+compare_builder_pins() {
+  node "$script_root/managed-kernel-upgrade-state.mjs" compare-builder-pins "$1" "$2"
+}
+
 # MP-07/MP-11: validators may exit, so retain a safe category in their own
 # subshell. Only the category reaches the off-guest diagnostic receiver.
 validate_builder_pin_journal() (
@@ -34,7 +40,7 @@ validate_builder_pin_journal() (
     pin_validation_failure=builder_pin_journal_${pin_role}_release_file_failed
     require_root_owned_private_regular_file "$pin_release" "journaled packaged builder public key"
     pin_validation_failure=builder_pin_journal_${pin_role}_compare_failed
-    if ! cmp -s "$1/$pin_role-builder-public-key" "$pin_release"; then
+    if ! compare_builder_pins "$1/$pin_role-builder-public-key" "$pin_release"; then
       echo "journaled builder pin does not match its immutable release" >&2
       return 1
     fi
@@ -70,8 +76,8 @@ activate_builder_pin() (
   builder_pin_diagnostic builder_pin_runtime_returned
   # Refuse to overwrite an unrelated authority introduced during the transaction.
   builder_pin_diagnostic builder_pin_compare_start
-  if ! cmp -s "$trusted_builder_runtime_key" "$1/previous-builder-public-key" \
-    && ! cmp -s "$trusted_builder_runtime_key" "$1/target-builder-public-key"; then
+  if ! compare_builder_pins "$trusted_builder_runtime_key" "$1/previous-builder-public-key" \
+    && ! compare_builder_pins "$trusted_builder_runtime_key" "$1/target-builder-public-key"; then
     builder_pin_diagnostic builder_pin_compare_failed
     echo "runtime builder pin does not belong to the upgrade transaction" >&2
     return 1
@@ -94,8 +100,8 @@ validate_active_builder_pin() {
   validate_builder_runtime_key || return 1
   require_root_owned_private_regular_file \
     "$chariox_root/$3/usr/lib/chariox/builder-public-key" "active packaged builder public key"
-  if ! cmp -s "$trusted_builder_runtime_key" "$1/$2-builder-public-key" \
-    || ! cmp -s "$trusted_builder_runtime_key" "$chariox_root/$3/usr/lib/chariox/builder-public-key"; then
+  if ! compare_builder_pins "$trusted_builder_runtime_key" "$1/$2-builder-public-key" \
+    || ! compare_builder_pins "$trusted_builder_runtime_key" "$chariox_root/$3/usr/lib/chariox/builder-public-key"; then
     echo "active builder pin does not match its release transaction" >&2
     return 1
   fi
