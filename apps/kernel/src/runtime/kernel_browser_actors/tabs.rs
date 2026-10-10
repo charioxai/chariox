@@ -17,11 +17,9 @@ impl BrowserTabActivity {
         if let Some(tabs) = tabs.as_array() {
             let live = |id: &str| tabs.iter().any(|tab| tab["tab_id"] == id);
             self.openers.retain(|id, _| live(id));
-            self.actions.retain(|_, (source, document, _)| {
-                tabs.iter().any(|tab| {
-                    tab["tab_id"] == source.as_str() && tab["document_id"] == document.as_str()
-                })
-            });
+            // MP-08/MP-11: captured creations survive their source navigation.
+            // finish() bounds these associations by the compacted action ledger;
+            // cancellation, takeover and process restart still discard them.
             if self
                 .activity
                 .as_ref()

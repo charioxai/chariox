@@ -576,7 +576,7 @@ mod visible_tab_tests {
         assert_eq!(later["agent_activity"], activity);
     }
     #[test]
-    fn mp08_delayed_popup_evidence_expires_on_document_change_or_close() {
+    fn mp08_captured_popup_survives_source_document_change_or_close() {
         for changed in [true, false] {
             let mut model = KernelBrowserActors::default();
             model
@@ -596,7 +596,8 @@ mod visible_tab_tests {
             let mut later = json!({"generation":1,"_tab_creation_actions":{"popup":action},"tabs":[{"tab_id":"source","document_id":"doc"},{"tab_id":"popup","document_id":"popup"}]});
             model.reconcile(&later).unwrap();
             model.project_tabs(&mut later);
-            assert!(later["tabs"][1]["opened_by"].is_null());
+            assert_eq!(later["tabs"][1]["opened_by"]["actor_id"], "agent:a");
+            assert_eq!(later["agent_activity"]["tab_id"], "popup");
         }
     }
     #[test]
