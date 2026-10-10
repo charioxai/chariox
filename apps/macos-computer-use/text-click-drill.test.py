@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Headless checks of the unattended caret verdict and GUI hold gate."""
 import importlib.util
+import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,6 +34,24 @@ class CaretVerdictTests(unittest.TestCase):
                 patch.object(drill, 'selection', return_value=selected), \
                 patch.object(drill.time, 'monotonic', side_effect=[0, 2]):
             return drill.verify_caret(self.evidence, 'probe', [], 42, '366', '571', '125', False)[0]
+
+    def test_nondefault_build_selects_exact_helper_and_fixture(self):
+        with patch.dict(os.environ, {'CUMAC_BUILD_DIR': '/Users/miguel/.chariox/dev/cumac/build/r6'}):
+            spec = importlib.util.spec_from_file_location('configured', Path(__file__).with_name('text-click-drill.py'))
+            configured = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(configured)
+        self.assertEqual(configured.BUILD, Path('/Users/miguel/.chariox/dev/cumac/build/r6'))
+        self.assertEqual(configured.HELPER, configured.BUILD / 'Chariox Computer Helper.app')
+
+    def test_receipt_refuses_other_build_before_accepting_evidence(self):
+        expected = '/Users/miguel/.chariox/dev/cumac/build/r6/Chariox Computer Helper.app/Contents/MacOS/helper'
+        receipt = {'path': expected, 'identifier': 'ai.chariox.computer-helper',
+                   'signatureValid': True, 'cdhash': 'a' * 40, 'parentPID': 1}
+        drill.verify_launch_receipt(json.dumps(receipt), Path(expected), 'a' * 40)
+        for field, value in [('path', expected.replace('/r6/', '/')), ('cdhash', 'b' * 40),
+                             ('signatureValid', False), ('parentPID', 2)]:
+            with self.assertRaises(RuntimeError):
+                drill.verify_launch_receipt(json.dumps({**receipt, field: value}), Path(expected), 'a' * 40)
 
     def test_exact_point_index_and_latest_selection_pass(self):
         self.assertTrue(self.verdict('dispatched; path=AXSelectedTextRange; observed AXSelectedTextRange location=125 length=0; point=366.0,571.0', ('125', '0')))

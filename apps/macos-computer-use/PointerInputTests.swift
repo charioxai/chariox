@@ -28,15 +28,21 @@ func testPointerInput() throws {
         }
     }
     try checkWindowStack([target, cover], request: scope, point: point, windowBounds: rect)
-    try checkWindowStack([WindowOwnership(id: 9, pid: 42, bounds: rect, alpha: 1), target],
-                         request: scope, point: point, windowBounds: rect)
+    var coveredMutations = 0
+    do {
+        try checkWindowStack([WindowOwnership(id: 9, pid: 42, bounds: rect, alpha: 1), target],
+                             request: scope, point: point, windowBounds: rect)
+        coveredMutations += 1
+        preconditionFailure("same-process window cover admitted")
+    } catch { precondition(refusalMessage(error) == "refused: target (foreign-window-cover)") }
+    precondition(coveredMutations == 0)
     for stack in [[], [cover], [WindowOwnership(id: 7, pid: 43, bounds: rect, alpha: 1)],
                   [WindowOwnership(id: 7, pid: 42, bounds: rect.offsetBy(dx: 1, dy: 0), alpha: 1)]] {
         do { try checkWindowStack(stack, request: scope, point: point, windowBounds: rect)
             preconditionFailure("stale window generation admitted") }
         catch { precondition(refusalKind(error) == .target) }
     }
-    print("PASS foreign covers fence all mutation paths; behind/same owner allowed; stale windows refused")
+    print("PASS foreign covers fence all mutation paths; behind-target allowed, same-process covers refused; stale windows refused")
 
     precondition(quartzPoint(fromCocoa: CGPoint(x: 519.109375, y: 545.28125), primaryTop: 982) ==
         CGPoint(x: 519.109375, y: 436.71875))
