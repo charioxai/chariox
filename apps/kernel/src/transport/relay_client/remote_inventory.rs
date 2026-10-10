@@ -94,7 +94,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
     if let Some(profile) = runtime_config.cloud_relay.as_ref() {
         let token =
             issue_cloud_relay_inventory_discovery_token(profile, &runtime_config.daemon_id).await?;
-        discovery_config.relay_token = Some(token.token);
+        discovery_config = relay_discovery::with_metadata_token(&discovery_config, token.token);
     }
 
     let live_machines = relay_discovery::list_live_machines(&discovery_config).await?;
@@ -170,9 +170,8 @@ async fn validate_live_relay_kernels(
 }
 
 fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
-    // Hosted inventory is already freshness-filtered by the relay. A second
-    // lookup inside the temporary peer probe would incorrectly reuse the
-    // daemon token for client metadata discovery.
+    // Hosted inventory is already freshness-filtered by the relay, so a
+    // second metadata lookup and peer probe add no reachability evidence.
     is_known && !is_hosted
 }
 
