@@ -54,6 +54,22 @@ pub(crate) fn workflow_node(
     }
 }
 
+/// MP-08 / MP-10 / MP-11 A01-S04: execute an existing public graph in the same room.
+/// New bindings still use `workflow_node`; running conveys no mutation authority.
+pub(crate) fn workflow_execution_target(
+    actor: &AgentInstance,
+    target: &AgentInstance,
+) -> Result<(), DaemonError> {
+    if target.session_id() == actor.session_id() && target.owner_user_id() == actor.owner_user_id()
+    {
+        Ok(())
+    } else {
+        Err(denied(
+            "workflow execution target is outside the caller room",
+        ))
+    }
+}
+
 pub(crate) fn owns_object(
     actor: &AgentInstance,
     creator: Option<&str>,

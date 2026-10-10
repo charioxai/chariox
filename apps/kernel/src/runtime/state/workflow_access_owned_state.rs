@@ -120,7 +120,9 @@ impl KernelRuntimeOwnedState {
                     .resolve_workflow_ref(&r.session_id, &r.workflow_ref)?;
                 for node in workflow.nodes() {
                     let target = self.agent_store.get_agent(node.agent_id())?;
-                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                    crate::runtime::room_tool_admission::workflow_execution_target(
+                        &actor, &target,
+                    )?;
                 }
             }
             if matches!(
@@ -426,7 +428,9 @@ impl KernelRuntimeOwnedState {
                     );
                 for target_id in targets {
                     let target = self.agent_store.get_agent(target_id)?;
-                    crate::runtime::room_tool_admission::workflow_node(&actor, &target)?;
+                    crate::runtime::room_tool_admission::workflow_execution_target(
+                        &actor, &target,
+                    )?;
                 }
             }
             Ok(())

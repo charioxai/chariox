@@ -226,3 +226,78 @@ async fn artifact_creator_race() {
     );
     assert_eq!(survivor.source, "peer replacement");
 }
+
+// MP-08 / MP-10 / MP-11 A01-S04: existing public bindings permit execution, not mutation.
+#[tokio::test]
+async fn room_admission_existing_peer_workflow_is_runnable_without_child_authority() {
+    let root = TestRoot::new();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (room, actor) = KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.path().to_string_lossy(),
+            root.path().to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub"))
+        .unwrap();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow_controlled_by_metaagent(
+            room.id(),
+            Some("peer-public".into()),
+            Some(peer.id().into()),
+        )
+        .unwrap();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(room.id(), workflow.id(), peer.id())
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(room.id(), workflow.id(), node.id(), Some("entry".into()))
+        .unwrap();
+    let state = CommandRouter::with_interactive_capacity_from_app(Arc::new(Mutex::new(app)), 1)
+        .runtime_state();
+    let request =
+        LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {
+            session_id: room.id().into(),
+            workflow_ref: workflow.id().into(),
+            endpoint_ref: endpoint.id().into(),
+            queue_ref: None,
+            prompt: Some("review".into()),
+            publication_invocation: None,
+        });
+    assert!(
+        state
+            .owned
+            .ensure_workflow_request_controlled_by_metaagent(&request, actor.id())
+            .is_ok(),
+        "A01-S04 any room agent may run an existing public workflow"
+    );
+    assert!(
+        crate::runtime::room_tool_admission::workflow_node(&actor, &peer).is_err(),
+        "creating a new peer binding must retain its mutation fence"
+    );
+    assert!(state
+        .owned
+        .ensure_workflow_controlled_by_metaagent(
+            room.id(),
+            workflow.id(),
+            actor.id(),
+            "edit workflow"
+        )
+        .is_err());
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_ref(room.id(), workflow.id())
+            .unwrap()
+            .created_by_agent_id(),
+        Some(peer.id())
+    );
+}

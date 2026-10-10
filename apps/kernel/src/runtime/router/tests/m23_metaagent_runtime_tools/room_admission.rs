@@ -533,8 +533,8 @@ async fn room_boundaries() {
         "known queue rejection must close only its dispatch intent"
     );
     drop(app_guard);
-    // MP-11 F3: saved runs retain their actual execution bindings even when a
-    // newer definition is safe. Model a pre-admission snapshot at the store seam.
+    // MP-08 / MP-10 / MP-11 A01-S04: caller-owned saved runs retain their public
+    // execution bindings. Running does not permit editing the peer.
     let legacy_run = {
         let app = app.lock().await;
         let mut sessions = app.sessions_mut();
@@ -576,11 +576,8 @@ async fn room_boundaries() {
         )
         .await;
     assert!(
-        resumed
-            .unwrap_err()
-            .to_string()
-            .contains("immutable direct child"),
-        "MP-11 F3: saved peer graph bindings cannot resume"
+        resumed.is_ok(),
+        "MP-08 / MP-10 / MP-11 A01-S04: caller-owned saved public peer graph may resume: {resumed:?}"
     );
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
     assert!(!peer_alias.ok);
