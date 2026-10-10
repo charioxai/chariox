@@ -22,11 +22,7 @@ class Diagnostics(unittest.TestCase):
             with self.assertRaises(ValueError):diag.ship(guest,'http://observer.example/',set(),post)
             with self.assertRaises(ValueError):diag.ship(guest,'https://secret@observer.example/',set(),post)
     def test_mp07_builder_pin_substeps_survive_observer_shipping(self):
-        events = ('builder_pin_journal_start', 'builder_pin_journal_returned',
-                  'builder_pin_runtime_start', 'builder_pin_runtime_returned',
-                  'builder_pin_compare_start', 'builder_pin_compare_returned',
-                  'builder_pin_atomic_start', 'builder_pin_atomic_returned', 'builder_pin_failed',
-                  *sorted(event for event in diag.EVENTS if event.startswith('builder_pin_') and event.endswith('_failed')))
+        events = tuple(sorted(event for event in diag.EVENTS if event.startswith('builder_pin_')))
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             guest, observer = pathlib.Path(a), pathlib.Path(b)
             for event in events:
