@@ -216,7 +216,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: clipboardController.copyPromptSelection,
+    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,

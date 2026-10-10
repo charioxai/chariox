@@ -1,4 +1,4 @@
-import { parseKeypress } from "@opentui/core"
+import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
@@ -53,6 +53,7 @@ export type CliInputRoutingCompositionDeps = {
   clearCommandCenter: AnyFn
   flashFooter: AnyFn
   appendNotice: AnyFn
+  providerLoginInteractions: import("./provider-login-interaction-controller.js").ProviderLoginInteractionController
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   promptStopController: {
@@ -207,6 +208,7 @@ export type CliInputRoutingCompositionDeps = {
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
   copyPromptSelection: AnyFn
+  clearTextSelection?: () => void
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -501,6 +503,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applySessionState: deps.applySessionState,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
+    providerLogin: deps.providerLoginInteractions,
   })
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
@@ -672,7 +675,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const stdinKeyController = createCliStdinKeyController({
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    // Same settings as the renderer's own parser, so both agree on every chunk.
+    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
@@ -696,6 +700,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
+    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()

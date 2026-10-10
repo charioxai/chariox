@@ -134,6 +134,12 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     }
   }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
+    // A zero-length click selection holds nothing worth preserving.
+    preserveTextSelection: () => {
+      const selection = deps.renderer.getSelection()
+      return !deps.isAttached() && Boolean(selection && (selection.isDragging || selection.getSelectedText()))
+    },
+    textSelectionView: () => !deps.isAttached(),
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEmptyRenderable: deps.primaryTranscriptRuntimeStore.getEmptyRenderable,
     setEmptyRenderable: deps.primaryTranscriptRuntimeStore.setEmptyRenderable,
@@ -353,6 +359,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     reconcileMountedTranscript,
     updateTranscriptEntry,
     rebuildTranscript,
+    flushDeferredRebuild: primaryTranscriptRenderController.flushDeferredRebuild,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     primeAttachedSessionBinding,

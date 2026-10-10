@@ -235,6 +235,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ...token, isActive: () => waitingRoomWorkspaceController.isCurrent(token),
     }, read),
     render: deps.rebuildTranscript,
+    visible: () => !deps.isAttached(),
   })
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
