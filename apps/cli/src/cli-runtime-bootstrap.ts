@@ -296,6 +296,12 @@ export async function bootstrapCliRuntime(
       bootstrap = buildDetachedBootstrap(client, cliOptions, preferences)
     }
   }
+  if (cliOptions.detached && !cliOptions.relayUrl) {
+    // MP-08 / MP-10 / MP-11: Cloud login and later kernel pivots must retain
+    // this terminal's receiving CLIENT, including login after TUI startup.
+    const identity = deps.getRelayIdentity(true)
+    if (identity) cliOptions.clientId = `cli:${identity.publicKeyThumbprint}`
+  }
   bootstrap.themeRegistry = themeRegistry
   if (bootstrap.binding) {
     options.logger?.info("bootstrapped cli session", {

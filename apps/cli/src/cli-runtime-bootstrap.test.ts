@@ -316,6 +316,30 @@ test("buildDetachedBootstrap creates a waiting-room bootstrap shell", () => {
   assert.equal(bootstrap.preferences, preferences)
 })
 
+// MP-08 / MP-10 / MP-11: later Cloud pivots and kernel-issued grants must use
+// the same receiving CLIENT as device login, including a first login in the TUI.
+for (const launch of ["explicit", "unreachable", "lost-during-attach"] as const) {
+  test(`detached ${launch} launch retains the receiving CLIENT identity for later attachment`, async t => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "chariox-detached-client-"))
+    t.after(() => rmSync(root, {recursive: true, force: true}))
+    const store = createCliRelayIdentityStore(path.join(root, "relay", "cli-identity-v1.json"))
+    const options = cliOptions({detached: launch === "explicit"})
+    const result = await bootstrapCliRuntime({argv: launch === "explicit" ? ["--detached"] : [], cwd: "/repo"}, createDeps({
+      parseArgs: () => options,
+      getRelayIdentity: create => create ? store.getOrCreate() : store.load(),
+      isNoArgDefaultKernelLaunch: () => launch !== "explicit",
+      isKernelEndpointReachable: async () => launch !== "unreachable",
+      bootstrapAttachedSession: async () => {throw new Error("kernel unavailable")},
+      isKernelEndpointUnavailableError: () => true,
+    }))
+    assert.equal(result.kind, "ready")
+    if (result.kind !== "ready") throw new Error("expected ready")
+    assert.equal(result.bootstrap.binding, null)
+    assert.equal(result.bootstrap.options.clientId, `cli:${store.getOrCreate().publicKeyThumbprint}`)
+    assert.equal(store.load()?.publicKeyThumbprint, store.getOrCreate().publicKeyThumbprint)
+  })
+}
+
 function createDeps(overrides: Partial<CliRuntimeBootstrapDeps> = {}): CliRuntimeBootstrapDeps {
   const client = fakeClient()
   return {
