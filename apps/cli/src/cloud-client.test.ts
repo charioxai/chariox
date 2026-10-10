@@ -13,12 +13,11 @@ import { CloudClientCredentialStore } from "./cloud-client-credential-store.js"
 import { CloudClientAuthError } from "./cloud-client-http.js"
 
 type Family = { clientId: string; key: string; access: string; refresh: string; revoked: boolean }
-// Renewal includes the real OS profile lock and synchronized credential writes.
-// MP-08 / MP-10 / MP-11: retain eight accelerated grant periods with enough
-// renewal lead for disk-backed fsync and profile locking on the shared builder.
-const ACCESS_LIFETIME_MS = 11_200
-const GRANT_LIFETIME_MS = 8_000
-async function fixture() {
+const ACCESS_LIFETIME_MS = 2_800
+const GRANT_LIFETIME_MS = 2_000
+async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: number } = {}) {
+  const accessLifetimeMs = options.accessLifetimeMs ?? ACCESS_LIFETIME_MS
+  const grantLifetimeMs = options.grantLifetimeMs ?? GRANT_LIFETIME_MS
   const key = createECDH("prime256v1"); key.generateKeys()
   const daemon = new RelayClientIdentity(key.getPrivateKey())
   const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 })
@@ -67,7 +66,7 @@ async function fixture() {
       } else if (path === "/auth/device/poll") {
         const family = devices.get(body.deviceCode)!
         rotate(family)
-        send({ status: "approved", profile: { enrollmentKind: invalidEnrollment ? "KERNEL" : "CLIENT", publicKeyThumbprint: family.key, accountId: "account-a", userId: "owner-a", email: "fixture@example.test", accountSlug: "fixture", realmId: "realm-a", relayUrl, issuerId: "fixture", clientId: family.clientId }, refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+ACCESS_LIFETIME_MS).toISOString() })
+        send({ status: "approved", profile: { enrollmentKind: invalidEnrollment ? "KERNEL" : "CLIENT", publicKeyThumbprint: family.key, accountId: "account-a", userId: "owner-a", email: "fixture@example.test", accountSlug: "fixture", realmId: "realm-a", relayUrl, issuerId: "fixture", clientId: family.clientId }, refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+accessLifetimeMs).toISOString() })
       } else if (path === "/auth/client/refresh") {
         const family = families.get(body.clientId)
         if (!family || family.revoked) return deny("client_revoked")
@@ -75,7 +74,7 @@ async function fixture() {
         assert.equal(body.publicKeyThumbprint, family.key)
         assert.ok(/^[0-9a-f]{64}$/.test(body.rotationId))
         metrics.refreshes++; rotate(family)
-        send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+ACCESS_LIFETIME_MS).toISOString() })
+        send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+accessLifetimeMs).toISOString() })
       } else if (path === "/relay/targets") {
         if (!active(request.headers.authorization?.slice("Bearer ".length))) return deny("session_invalid")
         send({ targets })
@@ -85,7 +84,7 @@ async function fixture() {
         assert.equal(body.subjectKind, "client"); assert.equal(body.subject, family.clientId)
         assert.equal(body.machineId, undefined); assert.equal(body.publicKeyThumbprint, family.key)
         assert.ok(body.allowedTargets.length === 1 && targets.some(t => t.daemonId === body.allowedTargets[0] && t.status === "ONLINE"))
-        const expiry = Date.now()+GRANT_LIFETIME_MS
+        const expiry = Date.now()+grantLifetimeMs
         const payload = { public_key_thumbprint: wrongKey ? "b".repeat(64) : family.key, allowed_targets: body.allowedTargets, jti: `grant-${++metrics.grants}` }
         const token = `fixture.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.fixture`
         grants.set(token, { family, target: body.allowedTargets[0], expiry })
@@ -151,7 +150,8 @@ function profile(root: string) {
 const authCode = (code: string) => (error: unknown) => error instanceof CloudClientAuthError && error.code === code
 
 test("detached client-only login survives process resume and several access/grant expiries without reconnect or re-login", async () => {
-  const root = await mkdtemp(join(tmpdir(), "kauth-detached-")), cloud = await fixture()
+  // MP-08 / MP-10 / MP-11: allow disk-backed fsync and profile locking during renewal.
+  const root = await mkdtemp(join(tmpdir(), "kauth-detached-")), cloud = await fixture({ accessLifetimeMs: 11_200, grantLifetimeMs: 8_000 })
   const first = profile(root), notices: string[] = []
   const resumed = profile(root)
   try {

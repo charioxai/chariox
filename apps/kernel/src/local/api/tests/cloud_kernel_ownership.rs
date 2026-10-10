@@ -23,6 +23,12 @@ fn cloud_kernel_ownership_local_router_drill() {
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let profile = serde_json::json!({"email":"owner@example.test", "accountId":"account-a", "userId":"owner-a", "accountSlug":"fixture", "realmId":"realm-a", "relayUrl":"wss://relay.example.test", "issuerId":"fixture", "kernelId":"kernel-a", "machineId":"machine-fixture", "publicKeyThumbprint":key});
+    // MP-08 / MP-10 / MP-11: begin the HTTP fixture deadline after router startup.
+    let mut sibling_config = config.clone();
+    sibling_config.daemon_id = "kernel-b".into();
+    sibling_config.user_config.state.path = Some(root.join("b/state.db").to_string_lossy().into());
+    let sibling = LocalRouterTestHarness::with_config(sibling_config);
+    let harness = LocalRouterTestHarness::with_config(config);
     let fixture = thread::spawn(move || {
         use base64::Engine;
         let mut observed = Vec::new();
@@ -104,11 +110,6 @@ fn cloud_kernel_ownership_local_router_drill() {
         }
         observed
     });
-    let mut sibling_config = config.clone();
-    sibling_config.daemon_id = "kernel-b".into();
-    sibling_config.user_config.state.path = Some(root.join("b/state.db").to_string_lossy().into());
-    let sibling = LocalRouterTestHarness::with_config(sibling_config);
-    let harness = LocalRouterTestHarness::with_config(config);
     harness
         .dispatch(LocalDaemonRequest::StartCloudRelayLogin(
             StartCloudRelayLoginRequest {
