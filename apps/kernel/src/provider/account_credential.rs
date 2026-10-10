@@ -80,12 +80,31 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
     profile_id: &str,
     client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
+    resolve_provider_account_credentials_for_platform(
+        config,
+        profiles,
+        owner_user_id,
+        provider,
+        profile_id,
+        client_interface,
+        std::env::consts::OS,
+    )
+}
+fn resolve_provider_account_credentials_for_platform(
+    config: &DaemonConfig,
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    client_interface: crate::provider::ProviderClientInterface,
+    platform: &str,
+) -> Result<ProviderCredentialEnvironment, DaemonError> {
     if crate::provider::canonical_provider_family(provider) != Some("claude")
         || client_interface == crate::provider::ProviderClientInterface::NativeTui
     {
         return resolve_provider_account_credentials(config, owner_user_id, provider, profile_id);
     }
-    if claude_login_runs_agents(profiles, owner_user_id, profile_id)? {
+    if claude_login_runs_agents_for_platform(profiles, owner_user_id, profile_id, platform)? {
         return Ok(ProviderCredentialEnvironment::default());
     }
     let environment =
@@ -107,12 +126,28 @@ fn claude_login_runs_agents(
     owner_user_id: &str,
     profile_id: &str,
 ) -> Result<bool, DaemonError> {
-    match std::env::consts::OS {
+    claude_login_runs_agents_for_platform(profiles, owner_user_id, profile_id, std::env::consts::OS)
+}
+fn claude_login_runs_agents_for_platform(
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    profile_id: &str,
+    platform: &str,
+) -> Result<bool, DaemonError> {
+    match platform {
         "linux" => profiles.has_portable_claude_credentials(owner_user_id, profile_id),
-        "macos" => Ok(profiles
-            .get(owner_user_id, "claude", profile_id)?
-            .auth_state
-            == crate::account_profile::ProviderAccountAuthState::Authenticated),
+        "macos" => {
+            // MP-08 / MP-10 / MP-11: manual enrollment authenticates the
+            // account without creating a native Keychain login. Preserve its
+            // registered launch credential instead of assuming one exists.
+            if provider_account_credential_registered(owner_user_id, "claude", profile_id)? {
+                return Ok(false);
+            }
+            Ok(profiles
+                .get(owner_user_id, "claude", profile_id)?
+                .auth_state
+                == crate::account_profile::ProviderAccountAuthState::Authenticated)
+        }
         _ => Ok(false),
     }
 }
@@ -472,5 +507,64 @@ mod tests {
         std::env::remove_var("CHARIOX_HOME");
         std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
         let _ = std::fs::remove_dir_all(root);
+    }
+    // MP-08 / MP-10 / MP-11: REVIEW_954 P1 manual token enrollment is not a native Mac login.
+    #[test]
+    fn review954_manual_claude_token_is_injected_after_mac_enrollment() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("review954-manual-token");
+        std::env::set_var("CHARIOX_HOME", root.path());
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("accounts.json"),
+        )
+        .unwrap();
+        let p = profiles
+            .create_managed("local", "claude", "manual")
+            .unwrap();
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude",
+            &p.profile_id,
+            "synthetic-enrollment-token",
+            false,
+        )
+        .unwrap();
+        profiles
+            .update_observation(
+                "local",
+                "claude",
+                &p.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(!profiles
+            .has_portable_claude_credentials("local", &p.profile_id)
+            .unwrap());
+        let env = resolve_provider_account_credentials_for_platform(
+            &config,
+            &profiles,
+            "local",
+            "claude-p",
+            &p.profile_id,
+            crate::provider::ProviderClientInterface::Chariox,
+            "macos",
+        )
+        .unwrap();
+        assert!(
+            !env.is_empty(),
+            "manual enrollment must retain protected Vault injection without a native login"
+        );
+        std::env::remove_var("CHARIOX_HOME");
+        std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
     }
 }

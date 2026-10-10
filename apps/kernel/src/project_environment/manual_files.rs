@@ -184,6 +184,19 @@ pub(crate) fn verify_manual_files(
         let RequirementSpec::Files { folder_id, entries } = &mut requirement.spec else {
             continue;
         };
+        // MP-08 / MP-10 / MP-11: a detached folder cannot be rescanned, but
+        // an unchanged saved Files selection remains valid revision metadata.
+        let attached = current
+            .folders
+            .iter()
+            .any(|f| &f.folder_id == folder_id && !f.local_workspace_binding.is_empty());
+        if !attached && current.project_requirements.iter()
+            .chain(current.folders.iter().flat_map(|f| &f.requirements))
+            .any(|r| r.requirement_id == requirement.requirement_id
+                && r.scope == requirement.scope
+                && matches!(&r.spec, RequirementSpec::Files { folder_id: old_folder, entries: old_entries } if old_folder == folder_id && old_entries == entries)) {
+            continue;
+        }
         let folder = current
             .folders
             .iter()
