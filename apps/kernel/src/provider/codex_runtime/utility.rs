@@ -181,12 +181,27 @@ mod tests {
     #[test]
     fn mp08_mp11_discovery_preserves_multiline_json() {
         let output = "\n{\n  \"definition\": null,\n  \"missing_user_inputs\": []\n}\n";
-        assert_eq!(codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery), output.trim());
-        assert_eq!(codex_utility_output(output, ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery), output.trim());
+        assert_eq!(
+            codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            output.trim()
+        );
+        assert_eq!(
+            codex_utility_output(
+                output,
+                ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            ),
+            output.trim()
+        );
     }
 
     #[test]
     fn mp08_mp11_existing_title_utility_keeps_single_line_cleanup() {
-        assert_eq!(codex_utility_output("\n\"Short title\"\nExtra explanation", ProviderUtilityExecutionPolicy::ExistingRun), "Short title");
+        assert_eq!(
+            codex_utility_output(
+                "\n\"Short title\"\nExtra explanation",
+                ProviderUtilityExecutionPolicy::ExistingRun
+            ),
+            "Short title"
+        );
     }
 }
