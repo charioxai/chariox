@@ -231,5 +231,6 @@ jobs:
           node --test apps/browser-display/native-capture-*.test.mjs
         env:
           CHARIOX_BROWSER_DISPLAY_SOFTWARE: '1'
+          CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER: libx264
           CHARIOX_NATIVE_DISPLAY_INCLUDE: /usr/include
           CHARIOX_NATIVE_DISPLAY_LIB: /usr/lib/x86_64-linux-gnu
