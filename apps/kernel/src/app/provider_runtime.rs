@@ -414,7 +414,7 @@ impl DaemonApp {
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
+                Some(crate::account_profile::provider_account_selection_for_run(&run).to_string()),
                 run.resume_state().clone(),
                 Some(run.id()),
                 None,
@@ -521,7 +521,10 @@ impl DaemonApp {
                     run.provider(),
                     Some(run.model().to_string()),
                     run.variant().map(str::to_string),
-                    Some(run.account_profile().to_string()),
+                    Some(
+                        crate::account_profile::provider_account_selection_for_run(&run)
+                            .to_string(),
+                    ),
                     run.resume_state().clone(),
                     Some(run.id()),
                     None,

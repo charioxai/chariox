@@ -30,17 +30,35 @@ pub(crate) struct ResolvedProviderAccount {
     owner: String,
     provider: String,
     profile_id: String,
+    selection: String,
+}
+
+impl ResolvedProviderAccount {
+    pub(crate) fn selection(&self) -> &str {
+        &self.selection
+    }
+}
+
+pub(crate) fn provider_account_selection_for_run(
+    run: &crate::provider::RuntimeProviderRun,
+) -> &str {
+    run.resolved_provider_account
+        .as_ref()
+        .map(|account| account.selection())
+        .unwrap_or_else(|| run.account_profile())
 }
 
 pub(crate) fn bind_provider_account_authority(
     request: &mut crate::provider::LaunchProviderRequest,
     owner: String,
+    selection: String,
 ) {
     request.resolved_provider_account = Some(ResolvedProviderAccount {
         runtime_owner: request.owner_user_id.clone(),
         owner,
         provider: request.provider.clone(),
         profile_id: request.account_profile.clone(),
+        selection,
     });
 }
 

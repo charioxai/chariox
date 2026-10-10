@@ -170,10 +170,16 @@ impl KernelRuntimeOwnedState {
                 &request.provider,
                 &profile.profile_id,
             )?;
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
             crate::account_profile::bind_provider_account_authority(
                 &mut request,
                 account_owner_user_id,
+                selection,
             );
             request = request.with_provider_account_env(provider_account_env);
         }
@@ -442,6 +448,14 @@ mod tests {
             false,
         )
         .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::for_user(
+                session.id(),
+                "account-next-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+                "cloud-owner",
+            ))
+            .unwrap();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
         let request = crate::provider::LaunchProviderRequest::new(
@@ -492,6 +506,123 @@ mod tests {
                 working_directory: prepared.working_directory.clone(),
                 structured_endpoint: None,
             },
+        );
+        // MP-08 / MP-10 / MP-11: finish the real launch state transition,
+        // then admit a second prompt while the same-id replica is expired.
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        let started = crate::app::StartedProviderLaunch {
+            run: run.clone(),
+            previous_active_run_id: None,
+            provider_credential_env: prepared.provider_credential_env.clone(),
+        };
+        let completed = runtime
+            .owned
+            .finish_provider_launch_success(&started, None)
+            .unwrap();
+        let source = attachment.id();
+        let prompt = crate::app::KernelPreparedPromptSubmission {
+            session_id: session.id().into(),
+            prompt: crate::session::PromptQueueItem::new(
+                "account-next-turn",
+                source,
+                agent.id(),
+                "continue on the authenticated home account",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        };
+        assert!(runtime
+            .owned
+            .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+            .expect("next prompt must use the completed home run's account authority")
+            .is_some());
+        let completed_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+        assert_eq!(
+            completed_agent.provider_account_profile(),
+            "default",
+            "launch completion must retain the home selection alias"
+        );
+        let restored_completed: crate::provider::RuntimeProviderRun =
+            serde_json::from_value(serde_json::to_value(&completed).unwrap()).unwrap();
+        runtime
+            .owned
+            .require_agent_account_authenticated(
+                &completed_agent,
+                Some(&restored_completed),
+                "MP-08 / MP-10 / MP-11 restored home admission",
+            )
+            .unwrap();
+        assert!(runtime.owned.provider_account_allows_queued_prompt_advance(
+            session.id(),
+            &completed_agent,
+            "MP-08 / MP-10 / MP-11 home queue"
+        ));
+        registry
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        registry
+            .update_observation(
+                "cloud-owner",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .owned
+                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+                .is_err(),
+            "authenticated replica must never rescue an expired home run"
+        );
+        assert!(
+            !runtime.owned.provider_account_allows_queued_prompt_advance(
+                session.id(),
+                &completed_agent,
+                "MP-08 / MP-10 / MP-11 expired home queue"
+            )
         );
         let credentials = runtime
             .resolve_provider_account_credentials_for_run_with_vault(

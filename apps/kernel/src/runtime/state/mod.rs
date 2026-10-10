@@ -389,6 +389,7 @@ mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
+mod provider_account_admission;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;

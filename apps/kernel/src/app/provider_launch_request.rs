@@ -160,10 +160,16 @@ impl DaemonApp {
             for (name, value) in provider_credential_env.iter() {
                 launch_environment.insert(name, zeroize::Zeroizing::new(value.to_string()));
             }
+            let selection = request
+                .resolved_provider_account
+                .as_ref()
+                .map(|account| account.selection().to_string())
+                .unwrap_or_else(|| request.account_profile.clone());
             request.account_profile = profile.profile_id;
             crate::account_profile::bind_provider_account_authority(
                 &mut request,
                 account_owner_user_id,
+                selection,
             );
             request = request
                 .with_provider_account_env(provider_account_env)

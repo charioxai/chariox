@@ -190,6 +190,7 @@ impl KernelRuntimeState {
         crate::account_profile::bind_provider_account_authority(
             &mut request,
             account_owner_user_id.clone(),
+            agent.provider_account_profile().to_string(),
         );
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)

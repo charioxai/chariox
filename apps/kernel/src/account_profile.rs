@@ -24,7 +24,8 @@ mod authority;
 pub(crate) use authority::{
     bind_provider_account_authority, copy_provider_account_selection,
     provider_account_authority_for_launch, provider_account_authority_for_run,
-    provider_account_authority_owner_for_profile, ResolvedProviderAccount,
+    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
+    ResolvedProviderAccount,
 };
 
 const REGISTRY_VERSION: u32 = 1;
