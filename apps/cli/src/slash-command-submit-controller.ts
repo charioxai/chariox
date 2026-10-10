@@ -122,6 +122,7 @@ export function createSlashCommandSubmitController(
         }
       }
       const clearBeforeHandler = slashCommand?.kind === "exit" || slashCommand?.kind === "approvals"
+        || slashCommand?.kind === "attachment"
       if (clearBeforeHandler) {
         clearHandledCommandUi(slashCommand)
       }
