@@ -6,20 +6,30 @@ import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import type { TranscriptEntry } from "./cli-types.js"
 import { createTranscriptMarkdownNodeRenderer, linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
 
-test("MP-08/MP-10/MP-11 plaintext code-fence URLs have native link metadata without a syntax grammar", async () => {
+test("MP-08/MP-10/MP-11 code-fence URLs retain native links while the language streams in", async () => {
   const harness = await createTestRenderer({width:80,height:5,useThread:false})
   const syntax = SyntaxStyle.fromStyles({})
   const node = new MarkdownRenderable(harness.renderer,{
-    content:"```text\nhttps://github.com/charioxai/chariox\n```",syntaxStyle:syntax,
+    content:"```t\nhttps://github.com/charioxai/chariox",syntaxStyle:syntax,streaming:true,
     renderNode:createTranscriptMarkdownNodeRenderer(harness.renderer),
   })
   harness.renderer.root.add(node)
+  const waitForLink = async () => {
+    for (let i=0;i<100;i++) {
+      await harness.renderOnce()
+      if ([...harness.renderer.currentRenderBuffer.buffers.attributes].some(value=>getLinkId(value)>0)) return
+      await new Promise(resolve=>setTimeout(resolve,50))
+    }
+    assert.fail("streamed code fence lost native link metadata")
+  }
   try {
     await harness.renderOnce()
+    node.content="```text\nhttps://github.com/charioxai/chariox\n```"
+    await waitForLink()
     assert.ok(harness.captureCharFrame().includes("https://github.com/charioxai/chariox"))
     assert.ok([...harness.renderer.currentRenderBuffer.buffers.attributes].some(value=>getLinkId(value)>0))
     node.content="```text\nUPDATED https://github.com/charioxai/chariox\n```"
-    await harness.renderOnce()
+    await waitForLink()
     assert.ok(harness.captureCharFrame().includes("UPDATED https://github.com/charioxai/chariox"))
     assert.ok([...harness.renderer.currentRenderBuffer.buffers.attributes].some(value=>getLinkId(value)>0))
   } finally { harness.renderer.destroy(); syntax.destroy() }

@@ -1,4 +1,4 @@
-import { CodeRenderable, StyledText, TextRenderable, type MarkdownOptions, type TextChunk } from "@opentui/core"
+import { CodeRenderable, type MarkdownOptions, type TextChunk } from "@opentui/core"
 import { providerLoginUrl } from "./provider-login-link.js"
 
 // MP-08/MP-10/MP-11: native links retain visible text and styling, including
@@ -30,21 +30,25 @@ export function linkifyTranscriptChunks(chunks: TextChunk[]): TextChunk[] {
   })
 }
 
-class LinkedPlainTextRenderable extends TextRenderable {
-  override get content(): StyledText { return super.content }
-  override set content(value: StyledText | string) {
-    super.content = typeof value === "string"
-      ? new StyledText(linkifyTranscriptChunks([{ __isChunk: true, text: value }])) : value
-  }
+function linkableCodeFiletype(value: string | undefined): string {
+  return !value || /^(?:text|txt|plaintext)$/i.test(value) ? "markdown" : value
 }
 
-export const createTranscriptMarkdownNodeRenderer = (renderer: ConstructorParameters<typeof TextRenderable>[0]): NonNullable<MarkdownOptions["renderNode"]> => (token, context) => {
-  if (token.type === "code" && (!token.lang || /^(?:text|txt|plaintext)$/i.test(token.lang))) {
-    // No syntax grammar invokes onChunks for plaintext fences. Preserve the
-    // bytes and native targets on creation and subsequent streaming updates.
-    return new LinkedPlainTextRenderable(renderer, {
-      width: "100%", wrapMode: "word",
-      content: new StyledText(linkifyTranscriptChunks([{ __isChunk: true, text: token.text }])),
+class TranscriptCodeRenderable extends CodeRenderable {
+  override get filetype(): string | undefined { return super.filetype }
+  override set filetype(value: string | undefined) { super.filetype = linkableCodeFiletype(value) }
+}
+
+export const createTranscriptMarkdownNodeRenderer = (renderer: ConstructorParameters<typeof CodeRenderable>[0]): NonNullable<MarkdownOptions["renderNode"]> => (token, context) => {
+  if (token.type === "code") {
+    // Markdown reuses the same code node while a fence's language streams in.
+    // Plaintext has no grammar; use Markdown's chunk path without concealment
+    // so it preserves the exact code bytes and invokes native linkification.
+    return new TranscriptCodeRenderable(renderer, {
+      content: token.text, filetype: linkableCodeFiletype(token.lang),
+      syntaxStyle: context.syntaxStyle, conceal: false, streaming: true,
+      ...(context.treeSitterClient ? { treeSitterClient: context.treeSitterClient } : {}), width: "100%",
+      onChunks: chunks => linkifyTranscriptChunks(chunks),
     })
   }
   const node = context.defaultRender()
