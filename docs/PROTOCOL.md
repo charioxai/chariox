@@ -553,7 +553,7 @@ client surface includes:
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
 
-MP-05 / MP-08 / MP-11 owner-managed admission (local 445, relay peer 88)
+MP-05 / MP-08 / MP-11 owner-managed admission (local 480, relay peer 88)
 adds `ownerManaged` to the same `StartManagedContextTransfer` request. Exactly one
 of `ticket` and `ownerManaged` is allowed; owner-managed requests require
 `interactive: true`. The client supplies only destination identity pins and
@@ -598,7 +598,7 @@ and owner/realm/key binding; its response has `destination` and omits `environme
 Each owner copy publishes a fresh workspace and registers it as target Project
 `copy-<contextId>`, so copying an updated Project again adds a Project beside the earlier copy.
 It never reports completion to the managed-environment endpoint. Clients must check
-`owner_managed_context_transfer_v1` on both kernels and local >=445 / relay peer >=88.
+`owner_managed_context_transfer_v1` on both kernels and local >=480 / relay peer >=88.
 Cloud presence publishes `owner_managed_context_transfer_protocol_version: 1` plus
 the peer protocol version; the older managed-context source marker alone is insufficient.
 Web activation still requires end-to-end acceptance, including target first-login readiness.
@@ -3267,7 +3267,7 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
-### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 444)
+### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
 
 `AddSshMachine { host, install_id?, port?, release? }` and
 `RemoveSshMachine { install_id }` use the owning kernel's normal admitted
@@ -3293,10 +3293,10 @@ requires an explicit later upgrade. Remove stops/uninstalls the owned service
 and release tree while retaining private kernel state and directory identity.
 No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
 inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
-commands themselves require a local-444-capable kernel/client pair.
+commands themselves require a local-479-capable kernel/client pair.
 
 MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
-existing device enrollment; local 444/relay 73 are retained. Generic Setup
+existing device enrollment; local 479/relay 73 are retained. Generic Setup
 creates a separate user service/root/ports and invokes a pre-daemon stdin
 bootstrap. Kernel device flow uses the existing `KERNEL` start/poll exchange,
 public verification URL/code and #888 key/machine/owner profile admission.
