@@ -53,6 +53,14 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   validateMirror2Packet(delta([{ op: 'form', id: 'n2', form: { value: 'ab', selection_start: 2, selection_end: 2 } }]), previous)
   for (const form of [{ value: 1 }, { checked: 'yes' }, { selection_start: 1.5 }, { innerHTML: '<b>' }, null])
     assert.throws(() => validateMirror2Packet(delta([{ op: 'form', id: 'n2', form } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/, JSON.stringify(form))
+  // Protocol 492: UA state is a closed set of booleans on elements; the fragment is a bounded string.
+  validateMirror2Packet(delta([{ op: 'state', id: 'n2', state: { popover_open: true, defined: false } }]), previous)
+  for (const state of [{ open: true }, { modal: 'yes' }, null, []]) assert.throws(() => validateMirror2Packet(delta([{ op: 'state', id: 'n2', state } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/, JSON.stringify(state))
+  assert.throws(() => validateMirror2Packet(delta([{ op: 'state', id: 'n5', state: { modal: true } }]), previous), /unsafe mirror op/)
+  assert.throws(() => validateMirror2Record({ id: 'n3', parent: 'n2', kind: 'text', text: 'x', state: { defined: true } } as Mirror2Record), /unsafe mirror/)
+  validateMirror2Packet({ ...delta([]), fragment: 'section-2' }, previous)
+  assert.throws(() => validateMirror2Packet({ ...delta([]), fragment: 'x'.repeat(2049) }, previous), /unsafe mirror header/)
+  assert.throws(() => validateMirror2Packet(base(tree(element('p', { 'chariox-target': '' }))), new Map()), /unsafe mirror/)
   // Slices: 4-aligned offsets inside a bounded whole.
   const slice = (offset: unknown, total: unknown, data = 'AAAA') => ({ ...delta([]), resources: [{ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total }] } as Mirror2Packet)
   validateMirror2Packet(slice(0, 8), previous); validateMirror2Packet(slice(4, 8), previous)

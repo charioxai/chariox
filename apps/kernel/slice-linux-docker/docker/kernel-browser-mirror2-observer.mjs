@@ -31,6 +31,8 @@ export function sanitizeMirrorCss(text, base, resource) {
     const key = resource(value, base, fontFaces.some(([start, end]) => at >= start && at < end) ? 'font' : 'image');
     return key ? `url("mr:${key}")` : 'none';
   });
+  // `:target` follows the document fragment (protocol 492 `fragment` header): the viewer marks that element.
+  out = out.replace(/(?<!:):target(?![\w-])/gi, '[chariox-target]');
   // Invalidates (never rewrites) legacy executable/binding constructs.
   out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
   out = out.replace(/@import[^;]*;/gi, '');
@@ -64,7 +66,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const OPAQUE = new Set('canvas video audio object embed applet frame frameset portal fencedframe'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
     const MATH_TAGS = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '));
-    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes'.split(' '));
+    const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target'.split(' '));
     // HTML attributes that the UA renders or exposes (presentational, form,
     // accessibility, tooltips); any other attribute ships only if a selector or
     // attr() of the page's own CSS references it (CSS is the only reader).
@@ -82,7 +84,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const closedHosts = new WeakSet();
     const urlKeys = new Map();
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, cssAttrs = null;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, cssAttrs = null;
     const referenced = text => { const out = []; for (const m of String(text).matchAll(/\[\s*(?:[\w-]*\|)?([a-zA-Z_:][-a-zA-Z0-9_:.]*)|attr\(\s*([a-zA-Z_:][-a-zA-Z0-9_:.]*)/g)) out.push((m[1] ?? m[2]).toLowerCase()); return out; };
     const keepAttr = (html, lower) => !html || !cssAttrs || RENDERED.has(lower) || lower.startsWith('aria-') || cssAttrs.has(lower);
     // New attribute names in CSS mean earlier records lack attributes: resnapshot.
@@ -91,7 +93,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const learned = new Set(); let cssStale = false;
     const learnCss = text => { for (const name of referenced(text)) if (!RENDERED.has(name) && !name.startsWith('aria-')) { learned.add(name); if (cssAttrs && !cssAttrs.has(name)) cssStale = true; } };
     const noteCss = text => { if (!cssAttrs) return false; let grew = false; for (const name of referenced(text)) if (!cssAttrs.has(name) && !RENDERED.has(name) && !name.startsWith('aria-')) { cssAttrs.add(name); grew = true; } return grew; };
-    const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
+    const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
     const observer = new MutationObserver(list => { revision++; if (records.length + list.length > 100000) overflow = true; else for (const record of list) records.push(record); wake(); });
@@ -150,9 +152,12 @@ export function installMirror2(sanitizeMirrorCss) {
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // The composed target: a control inside an open shadow root, not its retargeted host.
-        const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
+        const formEvent = event => { const target = event.composedPath()[0] ?? event.target; changedForm(target); if (stateNodes.has(mirrored(target))) dirty.state.add(target); if (target.type === 'radio' && target.name) for (const radio of target.getRootNode().querySelectorAll?.('input[type=radio]') ?? []) if (radio.name === target.name) dirty.form.add(radio); wake(); };
         listen('input', formEvent); listen('change', formEvent); listen('reset', event => { for (const control of event.target.elements ?? []) changedForm(control); wake(); });
-        listen('focusin', wake); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; wake(); });
+        listen('focusin', wake);
+        // Popover and dialog transitions (toggle does not bubble: capture sees it); the cursor samples the rest.
+        const stateEvent = event => { const target = event.composedPath()[0] ?? event.target; if (target?.nodeType === 1) { dirty.state.add(target); wake(); } };
+        listen('toggle', stateEvent); listen('close', stateEvent); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; wake(); });
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
@@ -161,7 +166,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -218,6 +223,29 @@ export function installMirror2(sanitizeMirrorCss) {
       const form = formState(node), sent = sentForms.get(node), changed = Object.fromEntries(Object.entries(form).filter(([name, value]) => !sent || sent[name] !== value));
       if (!Object.keys(changed).length) return;
       sentForms.set(node, form); ops.push({ op: 'form', id, form: changed });
+    };
+    // Protocol 492: UA state without an attribute footprint (open popover, modal dialog, indeterminate
+    // checkbox, custom element definition), sampled like form state. Records carry non-default values only.
+    const stateNodes = new Map(), STATE_DEFAULT = { popover_open: false, modal: false, indeterminate: false, defined: true };
+    let sentStates = new Map();
+    const stateful = node => node.nodeType === 1 && node.namespaceURI === HTML && (node.hasAttribute('popover') || node.localName === 'dialog' || node.localName === 'input' && node.type === 'checkbox' || node.localName.includes('-'));
+    const stateOf = node => {
+      const out = {};
+      if (node.hasAttribute('popover')) out.popover_open = node.matches(':popover-open');
+      if (node.localName === 'dialog') out.modal = node.matches(':modal');
+      if (node.localName === 'input' && node.type === 'checkbox') out.indeterminate = node.indeterminate;
+      if (node.localName.includes('-')) out.defined = node.matches(':defined');
+      return out;
+    };
+    const stateRecord = (node, record) => {
+      const state = stateOf(node), shown = Object.fromEntries(Object.entries(state).filter(([name, value]) => value !== STATE_DEFAULT[name]));
+      stateNodes.set(record.id, node); sentStates.set(record.id, state);
+      if (Object.keys(shown).length) record.state = shown;
+    };
+    const stateOp = (node, id, ops) => {
+      const state = stateOf(node), sent = sentStates.get(id) ?? {}, changed = Object.fromEntries(Object.entries(state).filter(([name, value]) => (sent[name] ?? STATE_DEFAULT[name]) !== value));
+      stateNodes.set(id, node); sentStates.set(id, state);
+      if (Object.keys(changed).length) ops.push({ op: 'state', id, state: changed });
     };
     // Adopted sheets have no mutation records: identity + rule count + disabled state + media each
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
@@ -294,6 +322,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === SVG && tag === 'image') { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); const key = href && !href.startsWith('#') ? resource(href, base, 'image') : null; if (key) record.res = key; }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
+      if (stateful(node)) stateRecord(node, record);
       if (node.scrollLeft || node.scrollTop) record.scroll = [node.scrollLeft, node.scrollTop];
       spend(64 + JSON.stringify(record.attrs).length);
       out.push(record); remember(record, node);
@@ -318,16 +347,16 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       // Nothing focused (the page's body or root element) is null: the viewer blurs too (protocol 492).
       const focusId = focused && focused !== focused.ownerDocument.body && focused !== focused.ownerDocument.documentElement ? mirrored(focused) : null;
-      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, revision };
+      return { scroll: [scrollX, scrollY], focused: focusId && kindOf.get(focusId) !== 'mask' ? focusId : null, selection, fragment: location.hash.length > 1 ? location.hash.slice(1, 2049) : null, revision };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new WeakSet(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = () => {
-      observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap();
+      observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map();
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
       cssAttrs = null;
@@ -356,6 +385,7 @@ export function installMirror2(sanitizeMirrorCss) {
         const before = attributes(old, old.baseURI), after = attributes(node, node.baseURI);
         for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name]) ops.push({ op: 'attr', id: oldId, name, value: after[name] ?? null });
         if (node.localName === 'img') imageOp(node, oldId, ops);
+        if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(oldId); sentStates.delete(oldId); }
         if (node.scrollLeft || node.scrollTop) ops.push({ op: 'scroll', id: oldId, scroll: [node.scrollLeft, node.scrollTop] });
       }
       ids.delete(old); ids.set(node, oldId); nodes.set(oldId, node);
@@ -421,6 +451,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (kind === 'mask' || kind === 'tile') { if (kind === 'tile') dirty.masks.add(node); continue; }
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
         if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
+        if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
         // A new input type, or a select gaining/losing `multiple` (its options become/stop being form controls), re-serializes.
         if (node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
@@ -452,6 +483,8 @@ export function installMirror2(sanitizeMirrorCss) {
       // eventually sampled); unchanged controls stay silent (formOp compares with the last sent state).
       const formNow = performance.now();
       if (formNow - lastFormCheck > 2000 && formNodes.size) { lastFormCheck = formNow; const list = [...formNodes.values()]; formCursor %= list.length; for (let i = 0; i < Math.min(2000, list.length); i++) dirty.form.add(list[(formCursor + i) % list.length]); formCursor += 2000; }
+      if (formNow - lastStateCheck > 2000 && stateNodes.size) { lastStateCheck = formNow; const list = [...stateNodes.values()]; stateCursor %= list.length; for (let i = 0; i < Math.min(2000, list.length); i++) dirty.state.add(list[(stateCursor + i) % list.length]); stateCursor += 2000; }
+      for (const node of dirty.state) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && stateful(node)) stateOp(node, id, ops); }
       for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && formControl(node)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
       // Live focus may change a value without input events (programmatic writes).
       let active = document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;

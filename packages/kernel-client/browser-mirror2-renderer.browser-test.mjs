@@ -328,3 +328,22 @@ test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s
     assert.deepEqual((await sent()).filter(action => action.kind === 'blur'), [{ kind: 'blur', node_id: 'n4' }], 'MP-08: clicking plain text leaves the control in the kernel too');
   } finally { await page.close(); }
 });
+
+test('MP-10: protocol 492 the viewer takes the kernel\'s UA state (open popover, modal dialog with backdrop, indeterminate checkbox, custom element definitions) and marks the fragment\'s target', async () => {
+  const page = await viewer();
+  try {
+    const css = '[popover]:popover-open{color:rgb(0, 0, 255)} dialog:modal{color:rgb(0, 128, 0)} input:indeterminate{width:31px} x-late:not(:defined),x-never:not(:defined){display:none} [chariox-target]{color:rgb(255, 0, 0)}';
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'style', css }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { popover: '', id: 'p' }, state: { popover_open: true } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'pop' },
+      { id: 'n7', parent: 'n3', kind: 'element', tag: 'dialog', attrs: { open: '' }, state: { modal: true } }, { id: 'n8', parent: 'n7', kind: 'text', text: 'dialog' },
+      { id: 'n9', parent: 'n3', kind: 'element', tag: 'input', attrs: { type: 'checkbox' }, state: { indeterminate: true }, form: textForm('on', null) },
+      { id: 'n10', parent: 'n3', kind: 'element', tag: 'x-ready' }, { id: 'n11', parent: 'n3', kind: 'element', tag: 'x-late', state: { defined: false } }, { id: 'n12', parent: 'n11', kind: 'text', text: 'late' }, { id: 'n13', parent: 'n3', kind: 'element', tag: 'x-never', state: { defined: false } },
+      { id: 'n14', parent: 'n3', kind: 'element', tag: 'p', attrs: { id: 'sec' } }, { id: 'n15', parent: 'n14', kind: 'text', text: 'section' }])));
+    const seen = () => page.evaluate(() => { const d = window.r.frame.contentDocument, $ = s => d.querySelector(s); return { popover: $('#p').matches(':popover-open'), modal: $('dialog').matches(':modal'), backdrop: $('dialog').matches(':modal') ? getComputedStyle($('dialog'), '::backdrop').position : null, indeterminate: $('input').matches(':indeterminate'), ready: $('x-ready').matches(':defined'), late: getComputedStyle($('x-late')).display, never: $('x-never').matches(':defined'), target: getComputedStyle($('#sec')).color }; });
+    assert.deepEqual(await seen(), { popover: true, modal: true, backdrop: 'fixed', indeterminate: true, ready: true, late: 'none', never: false, target: 'rgb(0, 0, 0)' });
+    await apply(page, delta(2, [{ op: 'state', id: 'n5', state: { popover_open: false } }, { op: 'state', id: 'n7', state: { modal: false } }, { op: 'state', id: 'n9', state: { indeterminate: false } }, { op: 'state', id: 'n11', state: { defined: true } }], { fragment: 'sec' }));
+    assert.deepEqual(await seen(), { popover: false, modal: false, backdrop: null, indeterminate: false, ready: true, late: 'inline', never: false, target: 'rgb(255, 0, 0)' });
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.querySelector('dialog').open), true, 'MP-10: a dialog that leaves modal stays open in flow (its open attribute)');
+    await apply(page, delta(3, [], { fragment: null }));
+    assert.equal((await seen()).target, 'rgb(0, 0, 0)', 'MP-10: a cleared fragment unmarks the target');
+  } finally { await page.close(); }
+});

@@ -676,3 +676,22 @@ test("MP-10: CSSOM edits of sheets over 4000 rules (style element, adopted in do
   const edited = await next(2000);
   assert.match(JSON.stringify(edited.ops) + JSON.stringify(edited.sheets ?? {}), /rgb\(3, 4, 5\)/);
 }));
+
+// Audit 2026-10-10 §4.3 (protocol 492): UA state with no attribute footprint, the fragment, custom element definitions.
+const uaState = '<style>:target{color:rgb(1,2,3)} x-late:not(:defined){display:none}</style><button popovertarget="p">open</button><div popover id="p">pop</div><dialog id="d">dialog</dialog><input id="i" type="checkbox"><x-late>late</x-late><x-never>never</x-never><p id="sec">section</p>';
+test("MP-10: protocol 492 popover/modal/indeterminate/definition state and the fragment reach the viewer (state records and ops, fragment header, :target marker)", () => mirrored(uaState, async ({ next, evaluate }) => {
+  const snapshot = await next(), records = []; let id = 0;
+  for (const row of snapshot.nodes) { id += row[0]; records.push({ id: `n${id}`, tag: row[2], attrs: row[3] || {}, extra: row[4] || {} }); }
+  const of = predicate => records.find(predicate)?.id;
+  assert.deepEqual(records.find(r => r.tag === "x-never").extra.state, { defined: false }, "MP-10: an undefined custom element is marked");
+  assert.equal(records.find(r => r.attrs.id === "p").extra.state, undefined, "MP-10: default state travels as nothing");
+  assert.match(JSON.stringify(snapshot.nodes), /\[chariox-target\] \{ color: rgb\(1, 2, 3\); \}/, "MP-10: :target follows the fragment marker");
+  await evaluate("document.getElementById('d').showModal();document.getElementById('p').showPopover();document.getElementById('i').indeterminate=true;customElements.define('x-late',class extends HTMLElement{});location.hash='sec';true");
+  const states = new Map(); let fragment;
+  for (let i = 0; i < 4 && (states.size < 4 || fragment === undefined); i++) { const packet = await next(2000); for (const op of packet.ops.filter(op => op.op === "state")) states.set(op.id, { ...states.get(op.id), ...op.state }); if (packet.fragment !== undefined) fragment = packet.fragment; }
+  assert.deepEqual(Object.fromEntries(states), { [of(r => r.attrs.id === "p")]: { popover_open: true }, [of(r => r.attrs.id === "d")]: { modal: true }, [of(r => r.attrs.id === "i")]: { indeterminate: true }, [of(r => r.tag === "x-late")]: { defined: true } });
+  assert.equal(fragment, "sec", "MP-10: the fragment travels in the header");
+  await evaluate("document.getElementById('d').close();document.getElementById('p').hidePopover();true");
+  const closed = new Map(); for (let i = 0; i < 3 && closed.size < 2; i++) for (const op of (await next(2000)).ops.filter(op => op.op === "state")) closed.set(op.id, op.state);
+  assert.deepEqual(Object.fromEntries(closed), { [of(r => r.attrs.id === "p")]: { popover_open: false }, [of(r => r.attrs.id === "d")]: { modal: false } });
+}));

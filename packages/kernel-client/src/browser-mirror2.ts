@@ -2,7 +2,7 @@
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp } from './browser-mirror2-security.js'
-import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
+import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
 export const browserMirror2MinimumProtocolVersion = 492
@@ -37,6 +37,8 @@ export class BrowserMirror2Renderer {
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
   private selects: Array<[Element, Mirror2Form]> = []
+  private states: Element[] = [] // UA state to apply once this packet's DOM is attached
+  private targeted: Element | null = null // the element the kernel's fragment names (`:target`)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
   private empty: string
   sequence = 0
@@ -247,8 +249,11 @@ export class BrowserMirror2Renderer {
   private decorate(record: Mirror2Record, element: Element): void {
     for (const [name, value] of Object.entries(record.attrs ?? {})) {
       if (name === 'style') this.setStyled(record.id, { kind: 'attr', raw: value, node: element, keys: [] })
-      else try { element.setAttribute(name, value) } catch { /* invalid names were refused by validation */ }
+      // The kernel opens and closes popovers (state ops): the viewer's copy never light-dismisses itself.
+      else try { element.setAttribute(name, name === 'popover' ? 'manual' : value) } catch { /* invalid names were refused by validation */ }
     }
+    if (record.kind === 'element' && !record.ns && record.tag?.includes('-') && record.state?.defined !== false) this.define(record.tag, element.ownerDocument)
+    if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
     if (record.kind === 'mask' || record.kind === 'tile') {
@@ -263,6 +268,32 @@ export class BrowserMirror2Renderer {
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
     // A select's state waits for its options (the build appends children after their parent).
     if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
+  }
+  // Protocol 492: the kernel's definition of a custom tag, in the viewer's own registry (`:defined`).
+  private define(tag: string, doc: Document): void {
+    const view = doc.defaultView as (Window & typeof globalThis) | null
+    if (view && !view.customElements.get(tag)) try { view.customElements.define(tag, class extends view.HTMLElement {}) } catch { /* not a valid custom element name */ }
+  }
+  private uaState(element: Element): void {
+    const record = this.records.get(this.ids.get(element) ?? ''), state: Mirror2State = record?.state ?? {}
+    if (!record || !element.isConnected) return
+    const html = element as HTMLElement
+    try {
+      if (element.hasAttribute('popover') && html.matches(':popover-open') !== Boolean(state.popover_open)) { if (state.popover_open) html.showPopover(); else html.hidePopover() }
+      if (element.localName === 'dialog') {
+        const dialog = element as HTMLDialogElement
+        if (state.modal && !dialog.matches(':modal')) { if (dialog.open) dialog.close(); dialog.showModal() }
+        else if (!state.modal && dialog.matches(':modal')) { dialog.close(); if (record.attrs?.open !== undefined) dialog.show() }
+      }
+      if (element.localName === 'input') (element as HTMLInputElement).indeterminate = Boolean(state.indeterminate)
+    } catch { /* a state the viewer cannot take stays at its default */ }
+  }
+  // `:target` (rewritten to [chariox-target] by the kernel's sanitizer) marks the element the fragment names.
+  private target(fragment: string | null): void {
+    let next: Element | null = null
+    if (fragment && this.doc) { let name = fragment; try { name = decodeURIComponent(fragment) } catch { /* raw */ } next = this.doc.getElementById(name) ?? Array.from(this.doc.getElementsByName(name)).find(e => e.localName === 'a') ?? null }
+    if (next === this.targeted && next?.hasAttribute('chariox-target') !== false) return
+    this.targeted?.removeAttribute('chariox-target'); next?.setAttribute('chariox-target', ''); this.targeted = next
   }
   private image(id: string, element: Element, key: string | null): void {
     const url = key ? this.resources.get(key) ?? null : null
@@ -385,6 +416,9 @@ export class BrowserMirror2Renderer {
       for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
       for (const tile of packet.tiles) this.tile(tile)
+      const states = this.states; this.states = []
+      for (const element of states) this.uaState(element)
+      this.target(packet.fragment ?? null)
       // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
       // scroller, kept while deferred) apply on reset or once the viewer settles.
       if (packet.reset) this.deferred.clear()
@@ -476,7 +510,7 @@ export class BrowserMirror2Renderer {
         const element = node as Element; const record = this.records.get(op.id)!
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
-        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.value) }
+        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
         break
       }
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
@@ -486,6 +520,7 @@ export class BrowserMirror2Renderer {
       case 'scroll': scrolls.push([node as Element, op.scroll[0], op.scroll[1]]); break
       case 'size': { const style = (node as HTMLElement).style; style.setProperty('width', `${op.size[0]}px`, 'important'); style.setProperty('height', `${op.size[1]}px`, 'important'); this.records.get(op.id)!.size = op.size; break }
       case 'res': this.image(op.id, node as Element, op.res); break
+      case 'state': { const record = this.records.get(op.id)!; record.state = { ...record.state, ...op.state }; if (op.state.defined) this.define(record.tag!, node.ownerDocument!); this.states.push(node as Element); break }
     }
   }
   // Opaque region pixels paint as the element's own background: they scroll and
@@ -556,9 +591,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'selection') => Object.hasOwn(body, name) ? body[name] : base![name]
+    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment') => Object.hasOwn(body, name) ? body[name] : base![name] ?? null
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment') } as Mirror2Packet)
   }
   const renderer = createRenderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }

@@ -6,7 +6,9 @@ const id = /^n[1-9][0-9]{0,15}$/
 const FORBIDDEN_HTML = new Set('script noscript template meta base link object embed applet frame frameset portal fencedframe param'.split(' '))
 export const mirror2SvgTags = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '))
 export const mirror2MathTags = new Set('math mi mo mn ms mtext mrow mfrac msqrt mroot msub msup msubsup munder mover munderover mtable mtr mtd mspace mstyle mpadded mphantom menclose semantics annotation merror'.split(' '))
-const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes'.split(' '))
+const DENY_ATTR = new Set('src srcset href xlink:href action formaction srcdoc ping data codebase nonce integrity poster background lowsrc dynsrc manifest autofocus target download http-equiv is sizes imagesrcset imagesizes chariox-target'.split(' '))
+const STATE_KEYS = new Set(['popover_open', 'modal', 'indeterminate', 'defined'])
+const validState = (state: unknown): boolean => Boolean(state) && typeof state === 'object' && !Array.isArray(state) && Object.entries(state as object).every(([name, value]) => STATE_KEYS.has(name) && typeof value === 'boolean')
 const INPUT_TYPES = new Set('text search email url number tel checkbox radio range button submit reset date time color hidden'.split(' '))
 const MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml', 'font/woff', 'font/woff2', 'font/ttf', 'font/otf'])
 const fail = (why: string): never => { throw Error(`MP-11: unsafe mirror ${why}`) }
@@ -81,7 +83,7 @@ export function decodeMirror2Packet(packet: Mirror2Packet): Mirror2Packet {
   if (packet.ops !== undefined) { if (!Array.isArray(packet.ops)) fail('ops'); decoded.ops = packet.ops.map(op => op?.op === 'children' ? { ...op, nodes: decodeMirror2Records(op.nodes, op.id) } : op) }
   return decoded
 }
-const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted'])
+const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted', 'state'])
 export function validateMirror2Record(record: Mirror2Record): void {
   if (record && typeof record === 'object' && Object.keys(record).some(key => !RECORD_KEYS.has(key))) fail('node')
   if (!record || typeof record !== 'object' || !id.test(record.id) || record.parent !== null && !id.test(record.parent) || !['document', 'shadow', 'element', 'text', 'frame', 'mask', 'tile'].includes(record.kind)) fail('node')
@@ -103,6 +105,7 @@ export function validateMirror2Record(record: Mirror2Record): void {
   if (record.adopted !== undefined) { if (!Array.isArray(record.adopted) || record.adopted.length > 256 || !['document', 'shadow'].includes(record.kind)) fail('adopted'); record.adopted.forEach(validateMirror2Css) }
   if (record.kind === 'mask' && (record.text !== undefined || record.res !== undefined || record.form !== undefined || record.css !== undefined || Object.keys(record.attrs ?? {}).some(name => !['class', 'id'].includes(name)) || !record.size)) fail('protected payload')
   if (record.kind === 'tile' && !record.size) fail('tile')
+  if (record.state !== undefined && (record.kind !== 'element' || record.ns !== undefined || !validState(record.state))) fail('state')
 }
 // Pre-order: every parent precedes its children; leaves never parent nodes.
 function validateTree(records: Mirror2Record[], known: (id: string) => Mirror2Record | undefined, root: string | null): void {
@@ -134,12 +137,13 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     }
     case 'scroll': case 'size': { const value = op.op === 'scroll' ? op.scroll : op.size; if (!Array.isArray(value) || value.length !== 2 || !finite(value)) fail('op'); break }
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
+    case 'state': if (!validState(op.state) || known(op.id) && known(op.id)!.kind !== 'element') fail('op'); break
     default: fail('op')
   }
 }
 export function validateMirror2Packet(packet: Mirror2Packet, previous: ReadonlyMap<string, Mirror2Record>): void {
   if (packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0 || packet.css_width !== 1280 || packet.css_height !== 800 || ![1, 2].includes(packet.device_scale_factor) || !Array.isArray(packet.resources) || !Array.isArray(packet.tiles) || packet.resources.length > 4096 || packet.tiles.length > 256) throw Error('MP-11: mirror packet bounds')
-  if (!Array.isArray(packet.scroll) || packet.scroll.length !== 2 || !finite(packet.scroll) || packet.focused !== null && !id.test(packet.focused)) fail('header')
+  if (!Array.isArray(packet.scroll) || packet.scroll.length !== 2 || !finite(packet.scroll) || packet.focused !== null && !id.test(packet.focused) || packet.fragment !== undefined && packet.fragment !== null && (typeof packet.fragment !== 'string' || packet.fragment.length > 2048)) fail('header')
   if (packet.fallback !== undefined) { if (typeof packet.fallback !== 'string' || !/^[a-z_]{1,64}$/.test(packet.fallback)) fail('fallback'); return }
   const fresh = new Map<string, Mirror2Record>()
   const known = (key: string): Mirror2Record | undefined => fresh.get(key) ?? (packet.reset ? undefined : previous.get(key))
