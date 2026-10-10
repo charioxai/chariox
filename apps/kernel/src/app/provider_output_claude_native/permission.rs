@@ -23,6 +23,25 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+    if value
+        .strip_prefix("accepted:")
+        .is_some_and(|id| !id.is_empty())
+    {
+        // The matching official hook/queue acknowledgement proves this exact
+        // provider instance initialized. Each launch has a fresh runtime root;
+        // this proof survives Stop and incremental PTY buffer rollover only.
+        let _ = fs::write(
+            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+            "accepted",
+        );
+    }
+}
+
+pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
+    fs::read_to_string(
+        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+    )
+    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
@@ -740,5 +759,35 @@ mod approval_lifetime_tests {
             take_claude_permission_inputs(&context_file),
             vec![b"\r".to_vec()]
         );
+    }
+}
+
+#[cfg(test)]
+mod composer_initialization_tests {
+    use super::*;
+    // MP-08 / MP-10 / MP-11: PTY writes and malformed markers cannot prove
+    // provider initialization; acknowledgement does not warm a fresh launch.
+    #[test]
+    fn composer_initialization_requires_acknowledgement_in_the_same_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "claude-composer-proof-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(root.join("first")).unwrap();
+        std::fs::create_dir_all(root.join("replacement")).unwrap();
+        let context = root.join("first/context.json").display().to_string();
+        let fresh = root.join("replacement/context.json").display().to_string();
+        let mut evidence = vec![claude_headless_composer_initialized(&context)];
+        write_claude_native_marker(&context, "injected:pending");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "accepted:");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "accepted:matching-prompt");
+        evidence.push(claude_headless_composer_initialized(&context));
+        write_claude_native_marker(&context, "");
+        evidence.push(claude_headless_composer_initialized(&context));
+        evidence.push(claude_headless_composer_initialized(&fresh));
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(evidence, vec![false, false, false, true, true, false]);
     }
 }

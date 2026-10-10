@@ -1572,7 +1572,16 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
 
 #[test]
 fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() {
-    let worktree = crate::test_support::TestWorktree::new("claude-slow-composer");
+    claude_headless_composer_readiness_fixture(false);
+}
+
+#[test]
+fn claude_headless_warm_turn_survives_composer_scrolling_out_of_recent_output() {
+    claude_headless_composer_readiness_fixture(true);
+}
+
+fn claude_headless_composer_readiness_fixture(warm: bool) {
+    let worktree = crate::test_support::TestWorktree::new("claude-warm-composer");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -1580,14 +1589,15 @@ fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() 
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
-            "slow-composer-client",
+            "warm-composer-client",
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
     let root = std::env::temp_dir().join(format!(
-        "chariox-slow-composer-{}-{}",
+        "chariox-warm-composer-{}-{}-{}",
         std::process::id(),
-        timestamp_millis()
+        timestamp_millis(),
+        if warm { "warm" } else { "cold" }
     ));
     fs::create_dir_all(&root).unwrap();
     let context = root.join("hidden-context.txt");
@@ -1597,7 +1607,7 @@ fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() 
     let mut run = startup_readiness_run(
         session.id(),
         agent.id(),
-        "slow-composer-run",
+        "warm-composer-run",
         &context,
         &events,
         "cat >/dev/null".into(),
@@ -1634,6 +1644,38 @@ fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() 
         .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
         .unwrap();
     let after_composer = claude_native_marker(&context);
+    let warm_marker = if warm {
+        let first_prompt = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        // A matching official UserPromptSubmit/queue acknowledgement is the proof
+        // that this exact live provider instance has initialized its composer.
+        write_claude_native_marker(&context, &format!("accepted:{}", first_prompt.id()));
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .complete_native_prompt_after_stop(session.id(), run.id(), agent.id(), &context, true)
+            .unwrap();
+        // Ink emits incremental frames; unchanged composer/footer pixels need not
+        // be emitted again when a long answer rolls the bounded text buffer over.
+        let recent =
+            update_claude_permission_recent(&context, &"Public response text ".repeat(300));
+        assert!(!claude_headless_composer_visible(&recent));
+        app.record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "A second admitted task must reach the same warm provider",
+            Vec::new(),
+        )
+        .unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .inject_pending_prompt(session.id(), run.id(), agent.id(), &context, &run)
+            .unwrap();
+        claude_native_marker(&context)
+    } else {
+        None
+    };
     app.pty.remove_process(run.id()).unwrap();
     fs::remove_dir_all(root).unwrap();
     assert_eq!(
@@ -1641,6 +1683,10 @@ fn claude_headless_slow_start_waits_for_observed_composer_after_startup_grace() 
         "elapsed startup grace is not evidence that the provider can accept a prompt"
     );
     assert!(after_composer.is_some_and(|marker| marker.starts_with("submit-wait:")));
+    if warm {
+        assert!(warm_marker.is_some_and(|marker| marker.starts_with("submit-wait:")),
+            "warm provider readiness must survive unchanged footer pixels leaving the recent output buffer");
+    }
 }
 
 #[test]

@@ -18,6 +18,7 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+mod dispatch_timing;
 mod permission;
 #[cfg(test)]
 mod tests;
@@ -31,9 +32,9 @@ use attachments::{
 };
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
-    claude_headless_bypass_selection_pending, claude_headless_composer_visible,
-    claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_denied,
-    claude_headless_workspace_trust_interaction_id,
+    claude_headless_bypass_selection_pending, claude_headless_composer_initialized,
+    claude_headless_composer_visible, claude_headless_prompt_waiting_in_composer,
+    claude_headless_workspace_trust_denied, claude_headless_workspace_trust_interaction_id,
     claude_headless_workspace_trust_interaction_marker, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
     claude_workspace_trust_approval_input, claude_workspace_trust_selection_started_at,
@@ -638,6 +639,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             write_claude_native_marker(context_file, "");
             return Ok(Some(true));
         }
+        dispatch_timing::record(context_file, &prompt_id, "stop_settlement");
         self.complete_native_prompt_after_stop(
             session_id,
             provider_run_id,
@@ -645,6 +647,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             context_file,
             mark_next_headless_prompt_ready,
         )?;
+        dispatch_timing::record(context_file, &prompt_id, "stop_settled");
         Ok(Some(true))
     }
 
@@ -1285,6 +1288,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             format!("injected:{}", prompt.id)
         };
         if marker.as_deref() == Some(completed_marker.as_str()) {
+            dispatch_timing::record(
+                context_file,
+                prompt.id,
+                if provider_run.provider() == "claude-headless" {
+                    "accepted"
+                } else {
+                    "injected"
+                },
+            );
             self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
@@ -1398,6 +1410,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run: &RuntimeProviderRun,
         prompt: &ClaudeNativePromptInjection<'_>,
     ) -> Result<(), DaemonError> {
+        dispatch_timing::record(context_file, prompt.id, "attempt");
         let mut marker = claude_native_marker(context_file);
         if marker.as_deref().is_some_and(|value| {
             value.starts_with("permission:")
@@ -1438,10 +1451,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         // delay passes, so the daemon is never blocked mid-injection.
         match submit_wait_state(marker.as_deref(), prompt.id, unix_epoch_ms()) {
             SubmitWaitState::Waiting => {
+                dispatch_timing::record(context_file, prompt.id, "submit_wait");
                 append_claude_headless_debug(context_file, "submit_wait", prompt.id);
                 return Ok(());
             }
             SubmitWaitState::ReadyToSubmit => {
+                dispatch_timing::record(context_file, prompt.id, "submit_enter");
                 append_claude_headless_debug(context_file, "submit_enter", prompt.id);
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
@@ -1495,6 +1510,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             && marker.is_none()
             && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
         {
+            dispatch_timing::record(context_file, prompt.id, "startup_wait");
             append_claude_headless_debug(context_file, "inject_wait", prompt.id);
             return Ok(());
         }
@@ -1524,11 +1540,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             }
             if !force_post_stop_ready
                 && !prompt_typed_for_headless
+                && !claude_headless_composer_initialized(context_file)
                 && !claude_headless_composer_visible(&recent)
             {
                 // Elapsed startup time cannot prove readiness: input and Enter
                 // can otherwise reach Claude's default No/exit trust selector
-                // before its first PTY frame is processed.
+                // before its first PTY frame is processed. Once this run has
+                // acknowledged a prompt, unchanged footer pixels need not be
+                // re-emitted by every incremental terminal frame.
+                dispatch_timing::record(context_file, prompt.id, "composer_wait");
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id);
                 return Ok(());
             }
@@ -1679,6 +1699,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else {
                 visible.clone()
             };
+            dispatch_timing::record(context_file, prompt.id, "type");
             append_claude_headless_debug(context_file, "inject_prompt", &input);
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
