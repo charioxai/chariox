@@ -157,9 +157,9 @@ Capture with `showsCursor=false`. Publish the observed human cursor position
 and agent intended pointer separately through the shared actor projection.
 The viewer draws actor names, colors and action status above video. A small
 local helper overlay may show the agent pointer and Stop control; it must be
-excluded from captured pixels. Planned session/HID CGEvent mouse input moves the
-real system cursor. M0 prefers AX caret placement for text clicks; its scoped
-HID fallback can move the system cursor. No separate automation cursor is claimed.
+excluded from captured pixels. Planned M3 session/HID CGEvent mouse input moves
+the real system cursor. M0 clicks use AX only and post no mouse events; text
+clicks require AX caret placement. No separate automation cursor is claimed.
 There is no second independently clickable Mac cursor.
 Use a labeled arrow for the human cursor initially; exact cross-app cursor shapes
 need separate validation. Cursor-only movement updates presence without a frame.
@@ -483,22 +483,24 @@ zero-length AXSelectedTextRange at the returned character range's start, and
 read back the selection. This operation reads numeric range metadata only,
 never document text. Without a requested point, it uses the center of the
 element/window/display intersection. A fully invisible target still refuses.
-Only an unsupported or unavailable AX position range selects the session/HID
-CGEvent click fallback. Malformed ranges, permission errors, failed focus or
-selection mutations, and unproven readback never trigger a fallback or retry.
-Text typing retains per-PID CGEvent delivery and its 20-UTF-16-unit limit.
+An unsupported or unavailable AX position range returns `refused: target`
+before any mutation or event dispatch. M0 clicks use AX only. Malformed ranges,
+permission errors, failed focus or selection mutations, and unproven readback
+never trigger a fallback or retry. Text typing retains per-PID CGEvent delivery,
+its 20-UTF-16-unit limit and owned key-up cleanup.
 
 Every path retains PID/window, frontmost, focused-window, secure-input and live
 hit-test fences. Clicks retain the geometry snapshot and actual point across
-resolution, mutation, posting and observation. An owned HID mouse-up retains
-the original process lifetime and AX/CG window ownership checks while allowing
-geometry changes, or reports unresolved owned input requiring owner reset.
-AX receipts prove a synthetic button-counter increment, numeric scrollbar
-increase, or selection-range readback. HID dispatch alone remains unproven.
+resolution, mutation and observation. Typing's owned key-up cleanup retains
+permission and target fences, or reports unresolved owned input requiring owner
+reset. AX receipts prove a synthetic button-counter increment, numeric scrollbar
+increase, or selection-range readback. Per-PID key dispatch alone does not prove
+application completion. Physical mouse input and its owned mouse-up cleanup
+remain planned M3 work.
 See `apps/macos-computer-use/OWNER_RECHECK.md` for the single pending owner
 recheck. The unattended NSTextView drill reached the public helper's permission
 gate but could not use the owner's Accessibility grant. Real TextEdit caret
-placement, live HID delivery and fatal input recovery remain unproven. No
+placement, live per-PID typing and fatal input recovery remain unproven. No
 session-tap observation or self-tagging is claimed. Unicode typing refuses an
 entire overflowing string without splitting a grapheme or surrogate pair. The
 broader steps below remain later acceptance gates, not instructions to run
