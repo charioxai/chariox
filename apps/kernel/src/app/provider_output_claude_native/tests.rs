@@ -3281,3 +3281,88 @@ fn native_claude_cancellation_clears_only_its_unacknowledged_composer() {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn native_auto_compaction_hook_keeps_current_user_turn() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-auto-compact");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "compact-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-native-auto-compact-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Summary: Preserve the audit and answer the current memory probe."
+    }).to_string()).unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "run-auto-compact",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Recall the ten accepted audit facts without tools.",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        outcome => panic!("unexpected prompt outcome: {outcome:?}"),
+    };
+    write_claude_native_marker(
+        &context_file.display().to_string(),
+        &format!("native:{}", prompt.id()),
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let active_id = app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .active_prompt_for_agent(agent.id())
+        .map(|prompt| prompt.id().to_string());
+    let (_, queued) = app.prompt_state_owner().state_parts(
+        &app.sessions().get_session(session.id()).unwrap(),
+        agent.id(),
+    );
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(
+        active_id.as_deref(),
+        Some(prompt.id()),
+        "provider compaction must not replace the user's active turn with a generated summary"
+    );
+    assert!(
+        queued.is_empty(),
+        "provider compaction must not enqueue a generated user prompt"
+    );
+}
