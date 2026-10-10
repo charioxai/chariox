@@ -159,6 +159,24 @@ fn terminate_isolated_child(child: &mut Child) {
             }
         }
     }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // The unreaped child reserves its group leader PID. Verify the group
+        // contains only that child and its descendants before a group signal.
+        if let Ok(output) = Command::new("/bin/ps")
+            .args(["-axo", "pid=,ppid=,pgid="])
+            .output()
+        {
+            let snapshot = String::from_utf8_lossy(&output.stdout);
+            if output.status.success()
+                && owned_isolated_group(root_pid, &snapshot)
+                && matches!(child.try_wait(), Ok(None))
+            {
+                let _ = unsafe { libc::kill(-(root_pid as i32), libc::SIGKILL) };
+            }
+        }
+    }
+
     if child.id() > 1 && matches!(child.try_wait(), Ok(None)) {
         let _ = child.kill();
         let _ = child.wait();
@@ -194,4 +212,70 @@ fn isolated_timeout_cleanup_stops_its_owned_child_and_descendant() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[cfg(unix)]
+fn owned_isolated_group(root: u32, snapshot: &str) -> bool {
+    use std::collections::{BTreeMap, BTreeSet};
+    if root <= 1 || root > i32::MAX as u32 {
+        return false;
+    }
+    let mut processes = BTreeMap::new();
+    for line in snapshot.lines().filter(|line| !line.trim().is_empty()) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 3 {
+            return false;
+        }
+        let (Ok(pid), Ok(parent), Ok(group)) = (
+            fields[0].parse::<u32>(),
+            fields[1].parse::<u32>(),
+            fields[2].parse::<u32>(),
+        ) else {
+            return false;
+        };
+        if processes.insert(pid, (parent, group)).is_some() {
+            return false;
+        }
+    }
+    if processes.get(&root).map(|(_, group)| *group) != Some(root) {
+        return false;
+    }
+    processes
+        .iter()
+        .filter(|(_, (_, group))| *group == root)
+        .all(|(pid, _)| {
+            if *pid <= 1 || *pid > i32::MAX as u32 {
+                return false;
+            }
+            let mut current = *pid;
+            let mut seen = BTreeSet::new();
+            while current != root {
+                if !seen.insert(current) {
+                    return false;
+                }
+                let Some((parent, _)) = processes.get(&current) else {
+                    return false;
+                };
+                current = *parent;
+            }
+            true
+        })
+}
+
+#[cfg(unix)]
+#[test]
+fn isolated_timeout_group_requires_safe_id_and_owned_members() {
+    assert!(owned_isolated_group(
+        42,
+        "42 7 42\n43 42 42\n44 43 42\n99 1 99\n"
+    ));
+    for root in [0, 1, u32::MAX] {
+        assert!(!owned_isolated_group(root, "42 7 42"));
+    }
+    assert!(!owned_isolated_group(42, "42 7 42\n43 1 42"));
+    assert!(!owned_isolated_group(42, "42 7 7\n43 42 42"));
+    assert!(!owned_isolated_group(42, "43 42 42"));
+    assert!(!owned_isolated_group(42, "42 7 42\n42 7 42"));
+    assert!(!owned_isolated_group(42, "42 7 42\nmalformed"));
+    assert!(!owned_isolated_group(42, "42 7 42\n43 44 42\n44 43 42"));
 }
