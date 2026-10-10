@@ -177,6 +177,38 @@ class TraversalTest(unittest.TestCase):
         self.desktop = Node('Desktop', 'desktop', applications)
         return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
 
+    def test_mp11_unresolved_child_blocks_clipboard_paste_and_live_press_fence(self):
+        # Exercise the producer, not a fabricated traversed=False receipt.
+        from unittest.mock import Mock
+        spec = importlib.util.spec_from_file_location('native_clipboard', pathlib.Path(__file__).with_name('native-clipboard.py'))
+        clipboard = importlib.util.module_from_spec(spec); spec.loader.exec_module(clipboard)
+        pressed = Mock()
+        action = types.SimpleNamespace(nActions=1, getName=lambda i: 'paste', doAction=pressed)
+        paste = Node('Paste', 'push button'); paste.queryAction = lambda: action
+        app = Node('Editor', 'application', [paste])
+        self.desktop = Node('Desktop', 'desktop', [app])
+        owner = types.SimpleNamespace(id=99, get_full_property=lambda *args: None)
+        self.connection.get_selection_owner = lambda atom: owner
+        self.connection.has_extension = lambda name: True
+        self.connection.res_query_version = lambda: types.SimpleNamespace(server_major=1, server_minor=2)
+        self.connection.res_query_client_ids = lambda ids: types.SimpleNamespace(ids=[types.SimpleNamespace(spec=types.SimpleNamespace(mask=2), value=[200])])
+        processes = [{'pid': 200, 'started': '1'}]
+        with patch.object(clipboard, 'selection_fingerprint', return_value='public-selection'):
+            fence = clipboard.input_admission(processes, self.driver)
+            fence()  # A completely resolved public owner is admitted.
+            app.children.append(None); app.childCount += 1
+            tree = self.driver.snapshot(processes)
+            for admit in (lambda: clipboard.input_admission(processes, self.driver), fence):
+                with self.assertRaises(self.driver.NativeInputDenied):
+                    admit(); pressed()  # Pointer/key event must not be dispatched.
+        with self.assertRaises(self.driver.NativeInputDenied):
+            self.driver.act({'processes': processes, 'pid': 200, 'started': '1', 'path': [0],
+                             'action': 'paste', 'agent_input': True,
+                             'expected_tree_digest': self.driver.tree_digest(tree)})
+        pressed.assert_not_called()
+        self.assertFalse(tree['complete'])
+        self.assertFalse(tree['traversed'])
+
     def foreground(self, pid=200, name='Writer'):
         window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
             get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))

@@ -221,6 +221,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                         complete=traversed=False
                         break
                     if child:pending.append((child,pid,started,path+[i],depth+1))
+                    else:
+                        # MP-11: an advertised but unresolved child can hide
+                        # protected clipboard contents; it is not a public proof.
+                        complete=traversed=False
                 if not managed_table and node.childCount>MAX_NODES:complete=traversed=False
             except (ValueError, NotImplementedError):
                 complete=traversed=False
