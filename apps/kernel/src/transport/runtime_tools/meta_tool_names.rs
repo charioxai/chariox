@@ -1,6 +1,13 @@
 use super::*;
 
 pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
+    if let Some(name) = super::room_tool_names::canonical_room_tool_name(tool_name) {
+        return Some(name);
+    }
+    canonical_legacy_meta_tool_name(tool_name)
+}
+
+pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         META_SESSION_OVERVIEW_TOOL
         | "chariox_meta_session_overview"

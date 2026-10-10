@@ -854,7 +854,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f6e7e181738b182da73d2156f9f876698b70f464d03f1becd6e62d4dc21e3196"
+        "3010e5dff7c4bb9ab88882aaed728cc088c05376bb6c3160eebacee7896ec58a"
     );
 }
 
@@ -953,8 +953,14 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8131833901ed9d875c52c838b2c8ff5829f3d72eea99e24f2b8f0b99464be8cd"
+        "d9e988094de326f60e3a75f3c2235d3cbcef32f31893fdf3fe77c67a8590033d"
     );
+    // MP-11: historical bindings predate creator lineage. Compare their frozen
+    // projection; the protocol-450 full-agent hash above guards the added field.
+    snapshot["AgentMovedToRemote"]["agent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("spawned_by_agent_id");
     // Only the advertised peer version differs from these historical bindings.
     snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
         serde_json::json!(46);

@@ -235,3 +235,6 @@ pub struct RuntimeToolResult {
     pub ok: bool,
     pub payload: Value,
 }
+
+mod room_tool_names;
+pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};

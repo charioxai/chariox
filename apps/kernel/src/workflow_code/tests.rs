@@ -1,3 +1,4 @@
+mod schema_replay;
 use super::*;
 
 mod compiler;

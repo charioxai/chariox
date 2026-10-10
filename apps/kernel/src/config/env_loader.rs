@@ -255,6 +255,7 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
+            room_agent_tools: env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
             accept_remote_leases,
             kernel_runtime_role,
             remote_lease_capacity,

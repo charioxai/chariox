@@ -175,9 +175,18 @@ fn scoped_session_id(
     requested_session_id: Option<String>,
 ) -> Result<Option<String>, DaemonError> {
     match scope.unwrap_or("current_session") {
-        "current_session" => Ok(Some(
-            requested_session_id.unwrap_or_else(|| provider_run.session_id().to_string()),
-        )),
+        "current_session" => {
+            if requested_session_id
+                .as_deref()
+                .is_some_and(|requested| requested != provider_run.session_id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_recall_scope",
+                    message: "current-session recall requires the caller room; use an explicit broader scope for broader recall".into(),
+                });
+            }
+            Ok(Some(provider_run.session_id().to_string()))
+        }
         "all" => Ok(requested_session_id),
         other => Err(DaemonError::LocalTransport {
             operation: "runtime_tool_recall_scope",
@@ -401,6 +410,49 @@ fn protected_semantic_recall_events_tool_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-11 G08: current-session recall uses the authenticated provider room.
+    #[test]
+    fn mp11_review_recall_current_scope_rejects_foreign_room() {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "caller-room",
+            "caller-agent",
+            "codex",
+            "default",
+            "default",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "recall-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "codex".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        for scope in [None, Some("current_session")] {
+            assert_eq!(
+                scoped_session_id(&run, scope, None).unwrap().as_deref(),
+                Some("caller-room")
+            );
+            assert_eq!(
+                scoped_session_id(&run, scope, Some("caller-room".into()))
+                    .unwrap()
+                    .as_deref(),
+                Some("caller-room")
+            );
+            assert!(
+                scoped_session_id(&run, scope, Some("different-room".into())).is_err(),
+                "MP-11 G08: current-session recall must reject a different room"
+            );
+        }
+    }
 
     fn event(sequence: u64, content: &str) -> crate::history::HistoryEvent {
         crate::history::HistoryEvent::transcript(

@@ -317,12 +317,6 @@ async fn metaagent_workflow_code_applies_inline_typescript_source_inner() {
             return;
         }
     };
-    if !node_supports_workflow_code_typescript(&node_path) {
-        eprintln!(
-            "skipping meta inline TypeScript workflow-code test because Node.js cannot strip TypeScript"
-        );
-        return;
-    }
 
     let env = TestMetaRuntimeEnv::new("workflow-code-inline-typescript");
     let workspace = env.root.join("workspace");

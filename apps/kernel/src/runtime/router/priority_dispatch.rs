@@ -651,6 +651,7 @@ impl CommandRouter {
             request => Box::pin(async move {
                 if is_workflow_command(&request) {
                     self.workflow_runtime
+                        .with_command_authority(&self.runtime_state)
                         .dispatch_workflow_command(command, request)
                         .await
                 } else if is_interactive_command(&request) {

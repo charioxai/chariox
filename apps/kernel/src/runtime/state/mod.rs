@@ -146,6 +146,8 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    room_provider_origin: Option<(String, String)>,
+    room_request_origin: Option<(String, LocalDaemonRequest)>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -475,6 +477,7 @@ mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
+mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
@@ -754,6 +757,8 @@ impl KernelRuntimeState {
         );
         let runtime = Self {
             external_command_authority: None,
+            room_provider_origin: None,
+            room_request_origin: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
@@ -1147,3 +1152,7 @@ impl KernelRuntimeState {
         ).await
     }
 }
+
+mod room_agent_admission;
+
+mod room_dispatch_obligation;

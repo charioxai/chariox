@@ -292,7 +292,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "af59e1fd1b99bef8f8c2e8595b856d1d1b5016a8f1bad4aa5bc332e3f8a8cec7"
+        "3ae4a6662952561e71558786fecdd029cb52da933fca33e0933445a27fe3ba90"
     );
 }
 
