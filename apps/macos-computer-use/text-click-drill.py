@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-BUILD = Path('/Users/miguel/.chariox/dev/cumac/build')
+BUILD = Path(os.environ.get('CUMAC_BUILD_DIR', '/Users/miguel/.chariox/dev/cumac/build'))
 HELPER = BUILD / 'Chariox Computer Helper.app'
 LANE = Path('/Users/miguel/.chariox/dev/browser-computer-use/resume-20260930/agents/cumac')
 

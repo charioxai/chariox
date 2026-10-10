@@ -343,3 +343,61 @@ fn m1_old_reaper_cannot_remove_the_root_during_new_pairing_setup() {
         "old reaping removed the empty parent during new pairing setup"
     );
 }
+
+#[test]
+fn m1_revocation_interrupts_a_request_already_received_by_the_helper() {
+    let root = std::env::temp_dir().join(format!("cumac-revoke-{:08x}", rand::random::<u32>()));
+    let (entered, received) = std::sync::mpsc::channel();
+    let launch: Launch = Box::new(move |dir| {
+        let (dir, entered) = (dir.to_path_buf(), entered.clone());
+        std::thread::spawn(move || {
+            let bootstrap: Value =
+                serde_json::from_slice(&std::fs::read(dir.join("bootstrap")).unwrap()).unwrap();
+            let mut stream = UnixStream::connect(dir.join("s")).unwrap();
+            writeln!(stream, "{}", json!({"token":bootstrap["token"],"epoch":bootstrap["epoch"],"pid":std::process::id()})).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            entered.send(()).unwrap();
+            // The native operation has begun. Do not reply until the peer fences.
+            let mut byte = [0];
+            let ended = reader.read(&mut byte).unwrap();
+            assert_eq!(ended, 0, "revocation did not close the pairing connection");
+        });
+        Ok(())
+    });
+    let mut seat = MacComputerHelper::new(root.join("h"), "always".into(), launch);
+    seat.start().unwrap();
+    let cancel = Arc::new(BrowserCancellation::default());
+    let authority = cancel.clone();
+    let (finished, outcome) = std::sync::mpsc::channel();
+    let request = std::thread::spawn(move || {
+        let result = seat.request("host.computer", json!({"op":"input"}), Some(authority));
+        finished.send(result).unwrap();
+        seat.shutdown().unwrap();
+    });
+    received.recv_timeout(Duration::from_secs(2)).unwrap();
+    let started = Instant::now();
+    cancel.request_cancel();
+    let result = outcome.recv_timeout(Duration::from_millis(500));
+    // Terminate the red-case worker through its existing 20 s request timeout.
+    let passed = matches!(&result, Ok(Err(error)) if error.to_string().contains("grant revoked"));
+    request.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        passed && started.elapsed() < Duration::from_secs(2),
+        "in-flight grant revocation was not reported promptly"
+    );
+}
+
+#[test]
+fn m1_private_drill_scope_is_bounded_and_has_no_extra_fields() {
+    assert!(drill_scope(r#"{"pid":42,"window":7,"owner_window":true,"target":"focused"}"#).is_ok());
+    for value in [
+        "{}",
+        r#"{"pid":42,"window":7,"owner_window":true,"target":"secure"}"#,
+        r#"{"pid":42,"window":7,"owner_window":false,"target":"text","extra":1}"#,
+    ] {
+        assert!(drill_scope(value).is_err());
+    }
+}

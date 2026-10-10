@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 mod code_identity;
+mod request_fence;
+use request_fence::RequestFence;
 #[cfg(test)]
 mod tests;
 
@@ -124,6 +126,10 @@ impl MacComputerHelper {
             rand::random::<u128>(),
             rand::random::<u128>()
         );
+        let scope = std::env::var("CHARIOX_MACOS_COMPUTER_DRILL_SCOPE")
+            .ok()
+            .map(|value| drill_scope(&value))
+            .transpose()?;
         let bootstrap = dir.join("bootstrap");
         std::fs::OpenOptions::new()
             .write(true)
@@ -133,7 +139,7 @@ impl MacComputerHelper {
             .and_then(|mut file| {
                 serde_json::to_writer(
                     &mut file,
-                    &json!({"token":token,"epoch":epoch,"kernel_pid":std::process::id()}),
+                    &json!({"token":token,"epoch":epoch,"kernel_pid":std::process::id(),"scope":scope}),
                 )?;
                 Ok(())
             })
@@ -410,14 +416,25 @@ impl ComputerBackend for MacComputerHelper {
         params: Value,
         cancellation: Option<Arc<BrowserCancellation>>,
     ) -> Result<Value, HostFailure> {
-        if cancellation.is_some_and(|c| c.requested()) {
+        if cancellation.as_ref().is_some_and(|c| c.requested()) {
             return Err("MP-11: Computer action cancelled before dispatch".into());
         }
         if !self.ready() {
             return Err("MP-11: browser_unavailable: explicitly start the Computer seat".into());
         }
         let link = self.link.as_ref().unwrap();
-        let result = link.call(method, params, REQUEST)?;
+        // Revoke sets authority before waiting for the seat lock. Interrupt the
+        // socket independently of its channel lock, including during native I/O.
+        let _fence = cancellation.as_ref().map(|cancel| {
+            let (cancel, link) = (cancel.clone(), link.clone());
+            RequestFence::watch(move || cancel.requested(), move || link.fence())
+        });
+        let result = link.call(method, params, REQUEST);
+        if cancellation.as_ref().is_some_and(|c| c.requested()) {
+            link.fence();
+            return Err("MP-11: Computer grant revoked; action cancelled".into());
+        }
+        let result = result?;
         // The desktop generation is the kernel's pairing epoch, never helper-chosen.
         if result
             .get("generation")
@@ -434,4 +451,32 @@ impl Drop for MacComputerHelper {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+// Private adapter configuration only. No new shared client protocol fields.
+fn drill_scope(value: &str) -> Result<Value, String> {
+    let scope: Value =
+        serde_json::from_str(value).map_err(|_| "MP-11: invalid native drill scope")?;
+    let valid = scope.as_object().is_some_and(|map| {
+        map.len() == 4
+            && map
+                .keys()
+                .all(|k| ["pid", "window", "owner_window", "target"].contains(&k.as_str()))
+    }) && scope["pid"]
+        .as_i64()
+        .is_some_and(|n| n > 0 && n <= i32::MAX as i64)
+        && scope["window"]
+            .as_u64()
+            .is_some_and(|n| n > 0 && n <= u32::MAX as u64)
+        && match scope["owner_window"].as_bool() {
+            Some(true) => scope["target"] == "focused",
+            Some(false) => ["ordinary", "text", "button", "scroll"]
+                .iter()
+                .any(|t| scope["target"] == *t),
+            None => false,
+        };
+    if !valid {
+        return Err("MP-11: invalid native drill scope".into());
+    }
+    Ok(scope)
 }

@@ -47,39 +47,6 @@ func peerSatisfies(_ token: audit_token_t, _ requirement: String) -> Bool {
     return SecCodeCheckValidity(code, [], rule) == errSecSuccess
 }
 
-func runPairing(_ path: String) throws -> Never {
-    var directory = stat()
-    guard lstat(path, &directory) == 0, directory.st_uid == getuid(),
-          directory.st_mode & S_IFMT == S_IFDIR, directory.st_mode & 0o077 == 0 else { throw Refusal.arguments }
-    // Read, then delete, the one-use bootstrap before connecting.
-    let bootstrapPath = path + "/bootstrap"
-    let data = try Data(contentsOf: URL(fileURLWithPath: bootstrapPath))
-    unlink(bootstrapPath)
-    guard let bootstrap = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let token = bootstrap["token"] as? String, let epoch = bootstrap["epoch"] as? String,
-          let kernelPID = bootstrap["kernel_pid"] as? Int else { throw Refusal.arguments }
-    let requirement = try kernelRequirement(Bundle.main.infoDictionary ?? [:])
-    signal(SIGPIPE, SIG_IGN)
-    let fd = try connectUnix(path + "/s")
-    // Admit only the expected kernel process, by kernel-reported identity.
-    var peer = audit_token_t(), length = socklen_t(MemoryLayout<audit_token_t>.size)
-    guard getsockopt(fd, 0 /* SOL_LOCAL */, 6 /* LOCAL_PEERTOKEN */, &peer, &length) == 0,
-          peer.val.1 == getuid(), Int(peer.val.5) == kernelPID,
-          peerSatisfies(peer, requirement) else { throw Refusal.target }
-    // The kernel heartbeats every second; two silent seconds end the lease.
-    var lease = timeval(tv_sec: 2, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &lease, socklen_t(MemoryLayout<timeval>.size))
-    try send(fd, ["token": token, "epoch": epoch, "pid": Int(getpid())])
-    var buffer = Data()
-    while let line = readLine(fd, &buffer),
-          let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-        let (reply, stop) = pairedReply(request, epoch: epoch)
-        try send(fd, reply)
-        if stop { break }
-    }
-    // Stop, lease loss or kernel exit: identity mode has nothing else to fence.
-    exit(0)
-}
 
 func connectUnix(_ path: String) throws -> Int32 {
     var address = sockaddr_un()

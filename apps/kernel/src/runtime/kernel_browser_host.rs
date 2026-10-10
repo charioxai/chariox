@@ -695,6 +695,21 @@ impl KernelBrowserHost {
                 std::mem::take(&mut state.seats),
             )
         };
+        // Fence active human work too, before waiting for a native seat lock.
+        let models = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .actors
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for model in models {
+            model
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .fence_computer_actions();
+        }
         // Seat requests check admission under the host lock; stop them outside it.
         let mut first = None;
         for (_, seat) in seats {

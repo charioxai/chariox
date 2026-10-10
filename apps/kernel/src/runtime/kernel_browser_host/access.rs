@@ -139,6 +139,14 @@ impl KernelBrowserHost {
             .map(|(_, id)| id)
             .collect::<Vec<_>>();
         drop(state);
+        if seat.is_some() {
+            if let Some(model) = &model {
+                model
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .fence_computer_actions();
+            }
+        }
         self.retire_actors(user, &retired, model);
         Self::cancel_subscriptions(backend, subscriptions, scopes);
         Self::stop_seat(seat);

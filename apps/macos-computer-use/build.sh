@@ -36,7 +36,7 @@ EOF
     /usr/libexec/PlistBuddy -c "Add :CharioxDrillKernelCDHash string $CHARIOX_DRILL_KERNEL_CDHASH" "$bundle/Contents/Info.plist"
   fi
   if [[ $kind == Helper ]]; then
-    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift TextClick.swift TextDrillReference.swift Pairing.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
+    swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift Native.swift NativeSurface.swift TextClick.swift TextDrillReference.swift Pairing.swift PairedSession.swift Helper.swift -o "$bundle/Contents/MacOS/helper"
   else
     swiftc "${flags[@]}" Policy.swift Coordinates.swift Fixture.swift -o "$bundle/Contents/MacOS/fixture"
   fi

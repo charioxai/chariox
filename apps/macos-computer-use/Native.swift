@@ -5,7 +5,10 @@ import ScreenCaptureKit
 import Security
 
 struct MacSource: NativeSource {
+    var authority: () throws -> Void = {}
+
     func checkPermission(_ operation: Operation) throws {
+        try authority()
         try checkOperationPermissions(operation, screenCaptureAccess: {
             if #available(macOS 14.0, *) { return CGPreflightScreenCaptureAccess() }
             return false
@@ -168,6 +171,7 @@ struct MacSource: NativeSource {
         // AX hit-testing is app-scoped. A foreign nonactivating panel can leave
         // both focus and AX hits unchanged; prove visibility using current CG order.
         try checkWindowOcclusion(request, point: geometry.location, windowBounds: geometry.windowBounds)
+        try authority()
     }
     func bind(_ element: AXUIElement, to ancestor: AXUIElement, pid: pid_t) throws {
         var actual: pid_t = 0, candidate = element

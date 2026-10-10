@@ -379,6 +379,14 @@ impl KernelBrowserActors {
             .release(actor_id, &InputTarget::BrowserTab(tab))
             .map_err(|_| "MD-3: only the input owner may release takeover".into())
     }
+    pub(crate) fn fence_computer_actions(&mut self) {
+        // Stop cancels human and agent work before waiting for native delivery.
+        for cancel in self.active.values() {
+            cancel.request_cancel();
+        }
+        self.desktop = None;
+        self.ledger.clear_ownership();
+    }
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
         self.ledger.release_actor_input(actor_id);
         for action in self
