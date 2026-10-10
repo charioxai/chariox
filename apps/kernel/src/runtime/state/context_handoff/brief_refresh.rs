@@ -336,7 +336,9 @@ fn fallback_after_unavailable_model(
         "not supported when using codex with a chatgpt account",
     ]
     .iter()
-    .any(|reason| message.contains(reason));
+    .any(|reason| message.contains(reason))
+        || (message.contains("there's an issue with the selected model (")
+            && message.contains("it may not exist or you may not have access to it."));
     if unsupported {
         store.remember_unavailable_brief_model(utility_run);
     }
@@ -448,6 +450,46 @@ mod tests {
             &target,
             &target,
             &brief_error("unsupported model")
+        ));
+    }
+
+    #[tokio::test]
+    async fn claude_native_model_rejection_retries_once_and_is_remembered() {
+        let store = super::super::PendingAgentContextHandoffStore::default();
+        let override_model = "ctxfix-unsupported-brief-model-mp08";
+        let target = run("work", "haiku");
+        let mut utility = run("work", override_model);
+        let mut models = Vec::new();
+        let result = call_with_model_fallback(
+            &store,
+            &mut utility,
+            &target,
+            AgentUtilityPromptParts {
+                visible_user_prompt: "fold".into(),
+                hidden_system_context: "brief".into(),
+            },
+            true,
+            |run, _| {
+                models.push(run.model().to_string());
+                std::future::ready(if run.model() == override_model {
+                    Err(brief_error("There's an issue with the selected model (ctxfix-unsupported-brief-model-mp08). It may not exist or you may not have access to it. Run --model to pick a different model."))
+                } else {
+                    Ok("folded".into())
+                })
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), ("folded".into(), 2));
+        assert_eq!(models, [override_model, "haiku"]);
+        assert!(store.brief_model_is_unavailable(&run("work", override_model)));
+        assert!(!store.brief_model_is_unavailable(&run("personal", override_model)));
+        assert!(!fallback_after_unavailable_model(
+            &store,
+            &run("work", "another-model"),
+            &target,
+            &brief_error(
+                "There's an issue with the selected model (another-model): network timeout"
+            )
         ));
     }
 }
