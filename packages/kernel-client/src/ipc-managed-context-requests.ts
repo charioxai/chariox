@@ -45,7 +45,7 @@ export type ManagedContextLaunchTarget = {
 
 // MP-08 / MP-11: clients select inventory only; the kernel pins source/owner/plan.
 export const OWNER_MANAGED_CONTEXT_CAPABILITY = "owner_managed_context_transfer_v1"
-export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 445
+export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 480
 export const OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION = 88
 
 export type OwnerManagedDestination = {

@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn mp11_f7_public_provider_run_protocol_435_snapshot() {
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 480);
         let run = private_run();
         let dto = PublicProviderRun::from(&run);
         let value = serde_json::to_value(&dto).unwrap();

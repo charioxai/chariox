@@ -2,7 +2,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 #[test]
 fn byom_mp08_ssh_machine_protocol_479_shape_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let request = LocalDaemonRequest::AddSshMachine(crate::local::AddSshMachineRequest {
         host: "linux-lan".into(),
         install_id: Some("byom-lan-eval".into()),

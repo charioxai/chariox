@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn relay_status_control_capabilities_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -42,7 +42,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 
 #[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
 
     let token_request =
         LocalDaemonRequest::IssueCloudRelayClientToken(IssueCloudRelayClientTokenRequest {
@@ -166,7 +166,7 @@ fn legacy_terminal_join_requests_and_responses_remain_unbound() {
 
 #[test]
 fn relay_status_native_process_identity_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let legacy = serde_json::json!({
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
@@ -195,7 +195,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
 
 #[test]
 fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let private = crate::config::PersistedCloudRelayProfile {
         kernel_id: Some("kernel-a".into()),
         kernel_credential: Some("synthetic-kernel-secret".into()),
@@ -228,7 +228,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
 
 #[test]
 fn self_host_terminal_admission_response_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 479);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 480);
     let response = LocalDaemonResponse::TerminalPairingLinkJoined {
         terminal: TerminalRecord {
             terminal_id: "terminal".into(),

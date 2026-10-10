@@ -122,3 +122,106 @@ pub(crate) fn isolate_environment_test() -> bool {
     }
     true
 }
+
+#[cfg(target_os = "linux")]
+fn verified_isolated_group(pid: i32) -> Option<i32> {
+    if pid <= 1 || unsafe { libc::getpgid(pid) } != pid {
+        return None;
+    }
+    // Read only process ancestry/group metadata; no new dependency or command
+    // line/environment inspection is needed for this Linux builder guard.
+    let mut parents = std::collections::HashMap::new();
+    let mut members = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(member) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let _state = fields.next();
+        let Some(parent) = fields.next().and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(group) = fields.next().and_then(|field| field.parse::<i32>().ok()) else {
+            continue;
+        };
+        parents.insert(member, Some(parent));
+        if group == pid {
+            members.push(member);
+        }
+    }
+    if parents.get(&(pid as u32)).copied().flatten() != Some(std::process::id())
+        || !members.contains(&(pid as u32))
+        || members
+            .iter()
+            .any(|member| !owned_descendant(*member, pid as u32, &parents))
+    {
+        return None;
+    }
+    (unsafe { libc::getpgid(pid) } == pid).then_some(pid)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn verified_isolated_group(_pid: i32) -> Option<i32> {
+    // Without a process-ancestry snapshot, never send a group signal.
+    None
+}
+
+#[cfg(unix)]
+fn owned_descendant(
+    mut member: u32,
+    root: u32,
+    parents: &std::collections::HashMap<u32, Option<u32>>,
+) -> bool {
+    if root <= 1 || member <= 1 {
+        return false;
+    }
+    for _ in 0..=parents.len() {
+        if member == root {
+            return true;
+        }
+        match parents.get(&member).copied().flatten() {
+            Some(parent) if parent > 1 && parent != member => member = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+#[cfg(all(test, unix))]
+mod signal_guard_tests {
+    use super::*;
+    #[test]
+    fn reserved_groups_are_refused_before_process_inspection() {
+        for pid in [i32::MIN, -1, 0, 1] {
+            assert_eq!(verified_isolated_group(pid), None);
+        }
+    }
+    #[test]
+    fn group_members_must_descend_from_the_owned_child() {
+        let parents = [
+            (20, Some(10)),
+            (21, Some(20)),
+            (22, Some(21)),
+            (30, Some(1)),
+            (40, Some(41)),
+            (41, Some(40)),
+        ]
+        .into_iter()
+        .collect();
+        assert!(owned_descendant(20, 20, &parents));
+        assert!(owned_descendant(22, 20, &parents));
+        for member in [0, 1, 30, 40, 99] {
+            assert!(!owned_descendant(member, 20, &parents));
+        }
+    }
+}
