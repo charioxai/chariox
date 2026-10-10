@@ -1373,6 +1373,7 @@ impl KernelRuntimeState {
                 }
             },
             Err(error) => {
+                log_project_environment_binding_failure("discovery-utility", &error);
                 let _ = self
                     .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                     .await;
