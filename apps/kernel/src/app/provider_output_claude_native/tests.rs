@@ -2,6 +2,21 @@ use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
 #[test]
+fn numbered_workspace_trust_ignores_incremental_row_order() {
+    // MP-08/MP-10/MP-11: appended Ink updates preserve numbered screen order.
+    let frames = "1. Yes, I trust this folder\n2. No, exit\n1. Yes, I trust this folder";
+    assert_eq!(
+        claude_workspace_trust_approval_input(frames),
+        Some(b"\r".as_slice())
+    );
+    let no_selected = "1. Yes, I trust this folder\n❯ 2. No, exit\n1. Yes, I trust this folder";
+    assert_eq!(
+        claude_workspace_trust_approval_input(no_selected),
+        Some(b"\x1b[A".as_slice())
+    );
+}
+
+#[test]
 fn native_usage_maps_only_the_configured_cloud_owner_to_local_accounts() {
     crate::test_support::isolated_env_test!();
     let root = crate::test_support::TestWorktree::new("native-usage-owner");
@@ -2017,6 +2032,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
+    crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",

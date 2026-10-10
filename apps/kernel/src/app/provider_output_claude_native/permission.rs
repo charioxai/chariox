@@ -532,7 +532,15 @@ pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'stat
     if yes_selected {
         return Some(b"\r");
     }
-    if yes < no {
+    // MP-08/MP-10/MP-11: row repaint order is not numbered screen order.
+    let yes_first = if compact.contains("1.yes,itrustthisfolder") && compact.contains("2.no,exit") {
+        true
+    } else if compact.contains("2.yes,itrustthisfolder") && compact.contains("1.no,exit") {
+        false
+    } else {
+        yes < no
+    };
+    if yes_first {
         Some(if no_selected { b"\x1b[A" } else { b"\r" })
     } else {
         Some(b"\x1b[B")
