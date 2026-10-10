@@ -1,4 +1,5 @@
-import { MouseButton } from "@opentui/core"
+import { MouseButton, type Selection } from "@opentui/core"
+import { onCleanup } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -63,7 +64,6 @@ export type CliOverlayInteractionCompositionDeps = {
   flashFooter: AnyFn
   attachBinding: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
-  retainPromptFocus: AnyFn
 }
 
 export function createCliOverlayInteractionComposition(deps: CliOverlayInteractionCompositionDeps) {
@@ -200,15 +200,20 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     logWarning: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
   })
-  const copySelection = clipboardController.copySelection
-
   const promptSurfaceMouseController = createPromptSurfaceMouseController({
     delayMs: 0,
     scheduleTimer: deps.scheduleTimer,
-    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
-    copySelection,
-    retainPromptFocus: deps.retainPromptFocus,
+    isPrimaryButton: (event: { button: MouseButton; isDragging?: boolean }) => event.button === MouseButton.LEFT,
+    copyText: clipboardController.copyTextWithFeedback,
+    retainPromptFocus: () => {
+      if (deps.isAttached()) deps.promptInputRefController.currentOrNull()?.focus()
+    },
   })
+  const handleSelection = (selection: Selection) => {
+    promptSurfaceMouseController.handleSelection(selection.getSelectedText())
+  }
+  deps.renderer.on("selection", handleSelection)
+  onCleanup(() => deps.renderer.off("selection", handleSelection))
 
   return {
     assignDialogOverlayBox: dialogOverlayController.assignOverlayBox,

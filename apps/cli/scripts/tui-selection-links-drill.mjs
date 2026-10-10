@@ -505,6 +505,38 @@ try {
     const nativeCopy = options['native-selection-review'] ? await nativeCopyCases(marker) : null
     if (options['timing-only']) {
       result = {items:['MP-08','MP-10'], source:options.source, provider:options.provider, dpr:Number(options.dpr??1), providerTiming}
+    } else if (options['release-edit-review']) {
+      // MP-08 / MP-10: real provider text, followed immediately by an edit in
+      // the same terminal write as release (as buffered SSH stdin can arrive).
+      const cells = []
+      for (const paste of [false, true]) for (const delivery of ['separate', 'release-coalesced', 'drag-coalesced', 'all-coalesced']) {
+        await press('\x15')
+        const at = await settledRowOf(marker)
+        assert.ok(at, 'real provider response remains visible')
+        const before = await cellColors(at, 13)
+        const edit = paste ? '\x1b[200~z\x1b[201~' : 'z'
+        const down = `\x1b[<0;${at.x+1};${at.y+1}M`
+        const drag = `\x1b[<32;${at.x+14};${at.y+1}M`
+        const up = `\x1b[<0;${at.x+14};${at.y+1}m`
+        const count = (await copiedTexts()).length
+        if (delivery === 'separate') { await press(down + drag + up); await press(edit) }
+        else if (delivery === 'release-coalesced') { await press(down + drag); await capture(`release-${paste ? 'paste' : 'typing'}-selected`); await press(up + edit) }
+        else if (delivery === 'drag-coalesced') { await press(down); await press(drag + up + edit) }
+        else await press(down + drag + up + edit)
+        await sleep(500)
+        const copies = (await copiedTexts()).slice(count)
+        const copiedOnce = copies.length === 1 && copies[0].startsWith('TUIFIX MARKER')
+        const inserted = await promptShows('z')
+        const cleared = JSON.stringify(await cellColors(at, 13)) === JSON.stringify(before)
+        cells.push({ paste, delivery, copiedOnce, inserted, cleared })
+        await capture(`release-${paste ? 'paste' : 'typing'}-${delivery}`)
+        await writeFile(path.join(evidence, 'release-edit.json'), JSON.stringify({ items: ['MP-08', 'MP-10'], cells }, null, 2))
+      }
+      result = { items: ['MP-08', 'MP-10'], source: options.source, provider: options.provider, dpr: Number(options.dpr ?? 1), cells,
+        cliSha256: await hashClient(path.dirname(cli)), kernelSha256: options['kernel-binary'] ? await hashFile(options['kernel-binary']) : null }
+      const green = cells.every(cell => cell.copiedOnce && cell.inserted && cell.cleared)
+      if (options['expect-red']) assert.ok(!green && cells.some(cell => cell.delivery !== 'separate' && !cell.copiedOnce), 'base must lose a released coalesced copy')
+      else assert.ok(green, 'every released selection copies once before its following edit')
     } else if (options['mouse-order-review']) {
       const cells=[]
       for (const paste of [false,true]) for(const delivery of ['separate','down-coalesced','drag-coalesced']) {

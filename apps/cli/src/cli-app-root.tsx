@@ -583,7 +583,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     options,
     flashFooter: (message, tone) => flashFooter(message, tone),
     attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),
-    applyWaitingRoomSessionLifecycleAction, retainPromptFocus,
+    applyWaitingRoomSessionLifecycleAction,
   })
   const {
     turnCompletionController, cancelPendingTurnCompletion, recordTurnActivity, collapsedTurnIdsForAgent,
