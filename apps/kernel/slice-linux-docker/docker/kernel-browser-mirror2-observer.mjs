@@ -82,7 +82,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const PLAIN = new Set('text search email url number tel'.split(' '));
     let serial = 0, targets = new WeakSet(), records = [], overflow = false, revision = 0;
     const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
-    const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set();
+    const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
     const closedHosts = new WeakSet();
@@ -131,6 +131,8 @@ export function installMirror2(sanitizeMirrorCss) {
     const css = (sheet, base) => sheetText(sheet, base, 0, (text, at) => sanitizeMirrorCss(text, at, resource));
     const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
+    // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
+    const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     const plainText = node => node.localName === 'input' ? PLAIN.has(node.type) : node.localName === 'textarea' || node.isContentEditable;
     const secretElement = node => targets.has(node) && plainText(node);
@@ -165,7 +167,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -174,18 +176,20 @@ export function installMirror2(sanitizeMirrorCss) {
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
-      const [, , width, height] = box(node);
+      const [width, height] = layoutSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
+      shapes.set(record.id, { size: record.size, display: null });
       const attrs = {}; for (const name of ['class', 'id', 'width', 'height']) { const value = node.getAttribute(name); if (value !== null && value.length <= 4096) attrs[name] = value; } record.attrs = attrs;
     };
     const maskRecord = (node, record) => {
       const element = node.nodeType === 1;
-      const [, , width, height] = element ? box(node) : textBox(node);
+      const [width, height] = layoutSize(node);
       record.kind = 'mask'; record.size = [width, height];
       record.tag = element && node.namespaceURI === HTML && /^[a-z][a-z0-9]*$/.test(node.localName) && !OPAQUE.has(node.localName) && !DROP.has(node.localName) && node.localName !== 'iframe' ? node.localName : 'span';
       if (element) { const attrs = {}; for (const name of ['class', 'id']) { const value = node.getAttribute(name); if (value !== null && value.length <= 4096) attrs[name] = value; } record.attrs = attrs; record.display = getComputedStyle(node).display; }
       else record.display = 'inline-block';
+      shapes.set(record.id, { size: record.size, display: element ? record.display : null });
     };
     const attributes = (node, base) => {
       const attrs = {}, html = node.namespaceURI === HTML;
@@ -355,7 +359,7 @@ export function installMirror2(sanitizeMirrorCss) {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear();
       pendingSheets = []; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.entries()].map(([url, { key, kind }]) => ({ key, url, kind }));
       const out = [], root = serialize(document, null, out);
@@ -444,7 +448,7 @@ export function installMirror2(sanitizeMirrorCss) {
         const kind = kindOf.get(id);
         if (node.nodeType !== 1) continue;
         if ((kind === 'mask') !== secretElement(node)) { dirty.replace.add(node); continue; }
-        if (kind === 'mask' || kind === 'tile') { if (kind === 'tile') dirty.masks.add(node); continue; }
+        if (kind === 'mask' || kind === 'tile') continue; // reconciled every drain (size, mask display)
         if (styleNodes.has(id)) { dirty.sheets.add(node); continue; }
         if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
         if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
@@ -474,14 +478,22 @@ export function installMirror2(sanitizeMirrorCss) {
         if (!['element', 'document', 'shadow'].includes(kind) || styleNodes.has(id)) continue;
         childList(node, out, ops);
       }
-      for (const node of dirty.masks) { const id = mirrored(node); if (id && node.isConnected) { const [, , width, height] = node.nodeType === 1 ? box(node) : textBox(node); ops.push({ op: 'size', id, size: [width, height] }); } }
+      // Masks and opaque regions (few): their size, and a mask's display, follow layout and style without
+      // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
+      for (const [id, node] of nodes) {
+        const kind = kindOf.get(id); if (kind !== 'mask' && kind !== 'tile' || !node.isConnected) continue;
+        const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
+        if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
+        if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
+        shapes.set(id, { size, display });
+      }
       // Bounded reconciliation, 2000 controls per check from a rotating cursor (every control is
       // eventually sampled); unchanged controls stay silent (formOp compares with the last sent state).
       const formNow = performance.now();
       if (formNow - lastFormCheck > 2000 && formNodes.size) { lastFormCheck = formNow; const list = [...formNodes.values()]; formCursor %= list.length; for (let i = 0; i < Math.min(2000, list.length); i++) dirty.form.add(list[(formCursor + i) % list.length]); formCursor += 2000; }
       if (formNow - lastStateCheck > 2000 && stateNodes.size) { lastStateCheck = formNow; const list = [...stateNodes.values()]; stateCursor %= list.length; for (let i = 0; i < Math.min(2000, list.length); i++) dirty.state.add(list[(stateCursor + i) % list.length]); stateCursor += 2000; }
       for (const node of dirty.state) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && stateful(node)) stateOp(node, id, ops); }
-      for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && formControl(node)) { if (secretElement(node)) { replaceNode(node); const parent = nodes.get(parentOf.get(id)); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
+      for (const node of dirty.form) { const id = mirrored(node); if (id && kindOf.get(id) === 'element' && formControl(node)) { if (secretElement(node)) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); } else formOp(node, id, ops); } }
       // Live focus may change a value without input events (programmatic writes).
       let active = document.activeElement; while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
       const activeId = active && mirrored(active);
@@ -516,9 +528,40 @@ export function installMirror2(sanitizeMirrorCss) {
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
         let [x, y, width, height] = box(node);
         for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0) out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}) });
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0) out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}), ...(distorted(node) ? { distorted: true } : {}) });
       }
       return out;
+    };
+    // A viewport screenshot of a region under a scale/rotate transform or a filter would be transformed
+    // again by the mirrored DOM: such regions are flagged (the service then needs the element's own pixels).
+    const distorted = node => {
+      const [, , width, height] = box(node), [layoutWidth, layoutHeight] = layoutSize(node);
+      if (Math.abs(width - layoutWidth) > 1 || Math.abs(height - layoutHeight) > 1) return true;
+      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host) if (at.nodeType === 1 && getComputedStyle(at).filter !== 'none') return true;
+      return false;
+    };
+    // An opaque region's own pixels (a canvas bitmap, a video's current frame) at the viewer's scale:
+    // overlays and sticky headers above it stay mirrored DOM, never baked in. Null when tainted
+    // (cross-origin pixels never leave this way), blank (WebGL without preserveDrawingBuffer), without a
+    // frame yet, or another kind (plugins, closed roots, frames: masked screenshots).
+    const elementPixels = async (id, scale) => {
+      const node = nodes.get(id);
+      if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
+      const style = getComputedStyle(node), px = name => parseFloat(style[name]) || 0, video = node.localName === 'video';
+      const x = node.clientLeft + px('paddingLeft'), y = node.clientTop + px('paddingTop'), width = node.clientWidth - px('paddingLeft') - px('paddingRight'), height = node.clientHeight - px('paddingTop') - px('paddingBottom');
+      const sw = video ? node.videoWidth : node.width, sh = video ? node.videoHeight : node.height;
+      if (!(width > 0 && height > 0 && sw > 0 && sh > 0)) return null;
+      const W = Math.min(4096, Math.round(width * scale)), H = Math.min(4096, Math.round(height * scale)), canvas = new OffscreenCanvas(W, H), g = canvas.getContext('2d');
+      const fit = style.objectFit, k = fit === 'fill' ? null : fit === 'cover' ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
+      const [dw, dh] = k ? [sw * k, sh * k] : [W, H];
+      try {
+        g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        if (!video) { const data = g.getImageData(0, 0, W, H).data; let blank = true; for (let i = 3; i < data.length && blank; i += 4) blank = !data[i]; if (blank) return null; }
+        const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
+        if (bytes.length > 4 * 1024 * 1024) return null;
+        let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+        return { x, y, width, height, data_base64: btoa(binary) };
+      } catch { return null; }
     };
     // ---- MP-11 input guards: kernel-authoritative, live, never trusting viewer geometry.
     const protectedAncestor = node => {
@@ -710,6 +753,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, loaded, loadedCount, nearImages, preview, idOfNode, frameOrigin, activeForeign, opaqueBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
   }
 }

@@ -175,7 +175,7 @@ export class MirrorFrames {
       try {
         const origin = await this.mirror.evaluate(parent, `${parent.ref}.frameOrigin(${JSON.stringify(owner)})`);
         const boxes = await this.mirror.evaluate(entry.child, `${entry.child.ref}.opaqueBoxes()`);
-        for (const { id, box } of boxes) out.push({ id: rebaseId(id, entry.slot), box: [box[0] + origin[0], box[1] + origin[1], box[2], box[3]] });
+        for (const { id, box, distorted } of boxes) out.push({ id: rebaseId(id, entry.slot), box: [box[0] + origin[0], box[1] + origin[1], box[2], box[3]], ...(distorted ? { distorted } : {}) });
       } catch {}
     }
     return out;

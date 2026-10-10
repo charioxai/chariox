@@ -330,8 +330,8 @@ export class Mirror2 {
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
     if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still); } catch (error) {
-      if (error.mirrorReason !== 'region_area') throw error;
-      fallback = 'region_area'; this.host.timing?.('mirror2_fallback_region_area', timestamp()); source = null; reset = true; resources = [];
+      if (!['region_area', 'region_transform'].includes(error.mirrorReason)) throw error;
+      fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp()); source = null; reset = true; resources = [];
     }
     mark('tiles');
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); assertNotCancelled(signal);
@@ -547,10 +547,12 @@ export class Mirror2 {
     if (!await read(url, '', '', 0)) return null;
     return this.evaluate(world, `(sheets=>{const parse=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return out};let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return out})(${JSON.stringify(sheets)})`);
   }
-  // Opaque regions (canvas/video/foreign frames) as masked lossless stills,
-  // refreshed at most once a second until phase 3 binds them to video rows.
+  // Opaque regions as lossless stills, refreshed at most once a second until phase 3
+  // binds them to video rows: a canvas or video as its own pixels; plugins, closed
+  // roots, unattached frames and tainted media as viewport screenshot crops, which
+  // a transformed or filtered region cannot use (labelled video fallback).
   async tiles(world, tab, stream, reset, still) {
-    const boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
+    let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Plan 3.2 handoff: opaque regions over a quarter of the viewport hand the
     // whole page to protected video (labelled; the client retries later).
@@ -559,7 +561,17 @@ export class Mirror2 {
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
-    const scale = this.host.scales.get(tab.tab_id) ?? 1;
+    const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
+    const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
+    for (const b of boxes) {
+      const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
+      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
+      if (own) send(b.id, own);
+      else if (b.distorted) { const error = new Error('MP-10: a transformed opaque region needs video'); error.mirrorReason = 'region_transform'; throw error; }
+      else shots.push(b);
+    }
+    if (!shots.length) return out;
+    boxes = shots;
     const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
     const x1 = Math.min(1280, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(800, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
     if (x1 <= x0 || y1 <= y0) return [];
@@ -568,16 +580,12 @@ export class Mirror2 {
     const captured = await this.host.screenshot(tab, clip);
     const protectedRegions = await masks.afterCapture({ width: 1280 * scale, height: 800 * scale });
     const frame = maskPixels(decodePng(captured.data_base64, scale), protectedRegions.map(r => [r.x - clip.x * scale, r.y - clip.y * scale, r.width, r.height]));
-    const out = [];
     for (const { id, box } of boxes) {
       const left = Math.max(box[0], x0), top = Math.max(box[1], y0), right = Math.min(box[0] + box[2], x1), bottom = Math.min(box[1] + box[3], y1);
       const x = Math.floor((left - x0) * scale), y = Math.floor((top - y0) * scale);
       const w = Math.min(frame.width, Math.ceil((right - x0) * scale)) - x, h = Math.min(frame.height, Math.ceil((bottom - y0) * scale)) - y;
       if (w <= 0 || h <= 0) continue;
-      const data = losslessRegion(frame, x, y, w, h).data_base64, digest = createHash('sha256').update(`${x},${y},${w},${h},${data}`).digest('hex');
-      if (stream.tileHashes.get(id) === digest) continue;
-      stream.tileHashes.set(id, digest);
-      out.push({ node_id: id, x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: data });
+      send(id, { x: x / scale + x0 - box[0], y: y / scale + y0 - box[1], width: w / scale, height: h / scale, data_base64: losslessRegion(frame, x, y, w, h).data_base64 });
     }
     return out;
   }

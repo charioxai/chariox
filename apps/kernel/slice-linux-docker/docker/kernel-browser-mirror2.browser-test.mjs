@@ -745,3 +745,45 @@ test("MP-10: past the resource-key budget the least recently used URL mapping go
     assert.equal(images.filter(row => typeof row[4]?.res === "string").length, 4200, "MP-10: every image has a key");
     assert.equal(new Set(images.map(row => row[4].res)).size, 4200, "MP-10: keys are never reused");
   }));
+
+// Audit 2026-10-10 §4.7: opaque regions as element pixels, not viewport screenshots (R8-3, item 15).
+const { decodePng } = await import("./kernel-browser-pixels.mjs");
+const tilePixels = tile => { const png = Buffer.from(tile.data_base64, "base64"), width = png.readUInt32BE(16), height = png.readUInt32BE(20), { pixels } = decodePng(tile.data_base64, 1, { width, height }); let red = 0, blue = 0; for (let i = 0; i < pixels.length; i += 4) { if (pixels[i] > 200 && pixels[i + 2] < 60) red++; if (pixels[i + 2] > 200 && pixels[i] < 60) blue++; } return { width, height, red, blue }; };
+const canvasPage = '<div style="position:relative"><canvas id="c" width="300" height="150"></canvas><div style="position:absolute;left:0;top:0;width:300px;height:40px;background:rgb(0,0,255)">controls</div></div>' +
+  '<div style="transform:scale(0.5);transform-origin:0 0;width:400px;height:200px"><canvas id="t" width="200" height="100" style="width:200px;height:100px"></canvas></div>' +
+  '<script>for(const id of ["c","t"]){const g=document.getElementById(id).getContext("2d");g.fillStyle="rgb(255,0,0)";g.fillRect(0,0,400,400)}</script>';
+test("MP-10: a canvas region is its own pixels: an overlay above it is not baked in, and under a scale transform it keeps its layout size", () => mirrored(canvasPage, async ({ next }) => {
+  const snapshot = await next(), tiles = new Map(snapshot.tiles.map(tile => [tile.node_id, tile]));
+  const records = []; let id = 0; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 5) records.push({ id: `n${id}`, ...(row[4] ?? {}), attrs: row[3] }); }
+  const [overlaid, scaled] = ["c", "t"].map(name => records.find(r => r.attrs?.id === name));
+  const a = tilePixels(tiles.get(overlaid.id)), b = tilePixels(tiles.get(scaled.id));
+  assert.equal(a.blue, 0, "MP-10: the overlay is mirrored DOM, not pixels of the canvas");
+  assert(a.red > 0.9 * a.width * a.height, "MP-10: the canvas bitmap travels");
+  assert.deepEqual(scaled.size, [200, 100], "MP-10: the region keeps its layout size (the viewer applies the transform)");
+  assert.deepEqual([tiles.get(scaled.id).width, tiles.get(scaled.id).height, b.red === b.width * b.height], [200, 100, true]);
+}));
+
+test("MP-10: a tainted canvas falls back to a screenshot crop, and under a filter (doubly applied) hands the page to labelled video", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate }) => {
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const plain = await next();
+    assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas still shows (screenshot crop)");
+    await evaluate("document.getElementById('wrap').style.filter='grayscale(1)';true");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+    assert.equal(packet.fallback, "region_transform");
+  }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
+
+test("MP-11: a Vault-filled plain field that changes its own display is re-serialized as a mask with the new display", () => mirrored('<form><input id="v" value="filled"><p>after</p></form>', async ({ next, evaluate, host }) => {
+  const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#v" }, sessionId);
+  const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+  await host.protect({ values: ["filled"], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}` }] });
+  const masks = packet => { const out = []; let id = 0; for (const row of packet.nodes ?? []) { id += row[0]; if (row[2] === 4) out.push(row[4]); } for (const op of packet.ops ?? []) if (op.op === "children") { let at = 0; for (const row of op.nodes) { at += row[0]; if (row[2] === 4) out.push(row[4]); } } return out; };
+  const first = await next(0, true);
+  assert.deepEqual(masks(first).map(mask => mask.display), ["inline-block"]);
+  await evaluate("document.getElementById('v').style.display='block';true");
+  let packet = await next(1000); for (let i = 0; i < 3 && !masks(packet).length; i++) packet = await next(1000);
+  assert.deepEqual(masks(packet).map(mask => mask.display), ["block"], "MP-11: the viewer's mask follows the field's display");
+  assert.doesNotMatch(JSON.stringify(packet), /filled/, "MP-11: the protected value never travels");
+}));
